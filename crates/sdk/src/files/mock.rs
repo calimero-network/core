@@ -13,6 +13,13 @@ const NO_SUCH_FILE: &str = "no such file";
 
 thread_local! {
     static FILES: RefCell<BTreeMap<String, Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
+    static WRITE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many `write` calls reached the store on this thread: what a guest pays per host call.
+#[cfg(test)]
+pub fn write_calls() -> usize {
+    WRITE_CALLS.with(std::cell::Cell::get)
 }
 
 pub struct Writer(Vec<u8>);
@@ -44,6 +51,7 @@ pub fn info(id: &str) -> Option<FileInfo> {
 
 impl Writer {
     pub fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
+        WRITE_CALLS.with(|c| c.set(c.get() + 1));
         self.0.extend_from_slice(bytes);
         Ok(())
     }

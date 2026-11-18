@@ -1,0 +1,152 @@
+---
+title: Trust and the sealed channel
+description: What CalimeroClient's policy checks in a node's TDX quote, how a signed mero-tee release is trusted at run time, and how every request is sealed end to end to the attested enclave.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A node speaks plain HTTP, and whatever TLS sits in front of it ends outside the
+enclave, at a load balancer or a proxy. `CalimeroClient` therefore trusts no
+hop: it verifies the node's quote itself, and seals every request, credentials
+included, to a key only the attested enclave holds.
+
+## The policy
+
+```ts
+const client = new CalimeroClient({
+  baseUrl,
+  policy: {
+    release: {
+      minReleaseVersion: '2.3.109', // required: the oldest mero-tee release trusted
+      // profile: 'locked-read-only', // the default image profile
+      // releaseSource: 'github',     // or a mirror's URL, or a function; default the cloud's mirror
+      // collateralSource: 'intel',    // or a PCCS URL; default the cloud's mirror (DEFAULT_COLLATERAL_MIRROR)
+      // maxCollateralAgeDays: 7,     // refuse TCB info Intel issued longer ago; default only its nextUpdate
+    },
+  },
+});
+```
+
+Intel's collateral (TCB info, QE identity, CRLs) comes from the cloud's
+mirror by default, `https://cloud.calimero.network/api/tee/pcs`: Intel's PCS
+sends no CORS header, so a browser cannot read it. The mirror cannot forge
+anything, since every item is Intel-signed and `@phala/dcap-qvl` checks it up
+to Intel's root CA, which it carries. What a mirror could do is replay an older
+copy that is still valid; Intel's `nextUpdate` (about 30 days) bounds that, and
+`maxCollateralAgeDays` bounds it tighter. Outside a browser, `collateralSource:
+'intel'` asks Intel directly; `fetchCollateral` replaces the fetch altogether.
+
+`fetchAttestedKey(baseUrl, policy)` is the check on its own. For a real quote,
+as core's Rust client judges it (`attest::verify`, `Measurements::Release`):
+
+1. The node's attestation names the mero-tee release it runs. A release below
+   `minReleaseVersion` is refused before anything is fetched
+   (`claimedRelease`).
+2. The release's `published-mrtds.json` and its cosign bundle are fetched, from
+   the `cloud.calimero.network` mirror by default, and the Sigstore signature
+   is checked here against the node release workflow of
+   `calimero-network/mero-tee` (`NODE_RELEASE_SIGNER`). The server is not
+   trusted: a file that does not verify is refused.
+3. The quote's signature chain and TCB status are checked against Intel's
+   collateral with `@phala/dcap-qvl`. The node sends no collateral, and could
+   not forge it.
+4. A TD in debug mode is refused.
+5. Its five registers must be the release's image for the profile,
+   `locked-read-only` unless `allowDebugProfile` (testing only: a debug image is
+   readable by its operator).
+6. Its report data must be the client's nonce and
+   `SHA-256("calimero.tee-attest.transport-key.v1" ‖ app_hash ‖ transport_key)`.
+
+`releaseSource: 'github'` reads the release from GitHub, as the Rust client
+does; GitHub sends no CORS headers, so that works in Node only.
+
+**Why the floor is required.** A signature never expires, so every release
+ever signed stays valid. Without `minReleaseVersion` a node could run an old
+release with a flaw since fixed and pass. Raise it when a release must no
+longer be trusted. A node can choose which signed release at or above the floor
+it presents, and nothing more: its quote must then match that release exactly.
+
+**Pinned measurements.** To trust exactly the releases you shipped with the app
+instead, build a verifier and pass it as `verifyQuote`, which takes precedence
+over `release`:
+
+```ts
+import { verify as dcapVerify } from '@phala/dcap-qvl';
+import { createQuoteVerifier, trustedMeasurementsFromReleases } from '@calimero-network/mero-js';
+import published from './trusted/mero-tee-v2.3.120.published-mrtds.json';
+
+const verifyQuote = createQuoteVerifier({
+  dcapVerify,
+  fetchCollateral,
+  ...trustedMeasurementsFromReleases([published], { profile: 'locked-read-only' }),
+});
+const client = new CalimeroClient({ baseUrl, policy: { verifyQuote } });
+```
+
+During a rollout, list the old release and the new one. An MRTD alone names no
+image (it measures the platform's firmware), so `createQuoteVerifier` matches
+all five registers of one image.
+
+**Development clusters.** `merod --dev` nodes send mock quotes, which pass only
+with `policy.allowMock`. Nothing is read from the environment.
+
+<Aside type="caution">
+  `policy.app` (an app instance id) makes the node bind its own record of that app's
+  bundle hash into the quote, which `client.attestApp(app)` verifies and records;
+  `policy.appHash` (hex) then pins the hash it must be. `policy.appHash` alone is
+  only echoed by the node, so it proves nothing about the code. Leave both unset
+  to talk to the node as a whole, which is what every method of the client does.
+</Aside>
+
+## The sealed channel
+
+After attestation, the client opens a Noise `NK` session to the attested X25519
+key (`POST /sealed/handshake`, prologue `calimero/sealed-http/v2`), then sends
+each request as `POST /sealed`: method, path, headers (the
+`Authorization` header among them) and body, sealed with AES-256-GCM. The
+answer streams back in sealed, numbered frames, event streams included. This is
+byte for byte core's `calimero-sealed`.
+
+What a proxy sees: opaque `POST`s with content type
+`application/vnd.calimero.sealed`. Each request has an id its session accepts
+once, so a replay is refused; numbered frames cannot be reordered, dropped or
+cut short unnoticed.
+
+**Forward secrecy.** The transport key only authenticates the node. Session
+keys come from ephemeral keys on both sides; a session lasts at most an hour,
+and once the node drops it what was sent cannot be opened, not even with the
+transport key. The client opens a new session, and attests a restarted node
+again, on its own.
+
+**Limits.** 64 MiB per request; a larger body is refused in the clear with
+`413`, which the client reports as `TOO_LARGE`. No WebSockets.
+
+## On its own
+
+`createSealedFetch` is the same channel as a plain `fetch`, for code that is
+not `CalimeroClient`:
+
+```ts
+import { createSealedFetch, fetchAttestedKey } from '@calimero-network/mero-js';
+
+const sealedFetch = createSealedFetch({
+  baseUrl,
+  transportPublicKey: () => fetchAttestedKey(baseUrl, policy),
+});
+const response = await sealedFetch(`${baseUrl}/auth/me`, { headers: { authorization: `Bearer ${token}` } });
+```
+
+It refuses any URL outside `baseUrl` rather than sending it in the clear. Given
+a function, it attests a restarted node again; given fixed key bytes, a restart
+surfaces as `StaleTransportKeyError`. A refusal of the envelope itself
+(`malformed`, `undecryptable`, `replayed_request`) is a `SealedTransportError`.
+
+## Runtimes
+
+Sealing uses WebCrypto (X25519, AES-GCM, HMAC, SHA-256), which current browsers
+and Node 18+ have. React Native has none of its own: install
+[`react-native-quick-crypto`](https://www.npmjs.com/package/react-native-quick-crypto)
+as the global `crypto`. A runtime without X25519 fails at the first handshake,
+never sending anything unsealed.

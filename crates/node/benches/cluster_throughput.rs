@@ -29,7 +29,7 @@
 //! so the rows approximate nodes on separate machines. Clients still reach
 //! the nodes directly. The nodes share this machine's cores and disk either way.
 //!
-//! Builds the kv component `apps/v2-fixtures/kv` (see `tests/harness/cluster.rs`).
+//! Builds the kv component `apps/fixture-kv` (see `tests/harness/cluster.rs`).
 //! Not a criterion bench: one run is a few seconds of load per row, reported once.
 
 use std::collections::HashMap;

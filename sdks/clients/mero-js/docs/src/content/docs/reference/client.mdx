@@ -1,0 +1,365 @@
+---
+title: CalimeroClient
+description: Every CalimeroClient method, generated or hand-written, its arguments, and the node route it calls on a Calimero 1.0 cluster.
+sidebar:
+  order: 1
+---
+
+```ts
+// A Calimero Cloud cluster by name: its nodes come from the node directory,
+// each attested under `policy` before anything is sent to it.
+await CalimeroClient.connect({
+  cluster: string,         // e.g. 'eu-shared-1'
+  policy: NodePolicy,
+  directory?: string,      // default DEFAULT_DIRECTORY (Calimero Cloud's)
+  zone?: string,           // try this zone's nodes first
+  fetch?: typeof fetch,
+  retry?: { retries?: number; baseDelayMs?: number; maxDelayMs?: number },
+  random?: () => number,   // for the weighted order; default Math.random
+}) // throws DirectoryError (reason 'unreachable' | 'not-found' | 'bad-response' | 'empty')
+
+// A fixed list of nodes, or a cluster you run yourself.
+new CalimeroClient({
+  baseUrl: string,         // one node of the cluster
+  nodes?: string[],        // other nodes, moved to on 421 WRONG_NODE or when one stays unavailable
+  policy: NodePolicy,     // which nodes to trust; see Trust and the sealed channel
+  fetch?: typeof fetch,    // carries attestation and envelopes; default the global fetch
+  retry?: { retries?: number; baseDelayMs?: number; maxDelayMs?: number }, // default 6, 200 ms, 2 s
+})
+```
+
+`client.nodeUrl` is the node in use and `client.nodes` every node the client
+may move to.
+
+`client.verification(url?)` is where the client's attestation check of a node
+stands, `url` being one of `client.nodes` exactly as listed (default: the node in use):
+
+- `{ status: 'checking', url }`
+- `{ status: 'verified', url, mock, release?, profile?, checkedAt }`, only what the check
+  verified (`release` and `profile` when a signed release policy judged the quote)
+- `{ status: 'refused', url, reason, checkedAt }`, a failed verification, or a `4xx`
+  other than `429` from the node, the release mirror or the collateral source
+- `{ status: 'unreachable', url, reason, checkedAt }`, no answer: the node, the release
+  mirror or the collateral source could not be reached or dropped the connection, or
+  the node or the release mirror answered a `429` or `5xx`; the next `verify()` or
+  request attests again
+
+A `5xx` from the default collateral source reads as `refused`: `@phala/dcap-qvl` reports it only as a message.
+
+It is `undefined` before the node's check first ran.
+`client.verify(url?)` starts that check if none runs and answers its settled outcome
+without a request; it waits for the check requests wait for and does not repeat it, and
+`checkedAt` is when that check ran. A failure is answered, not thrown.
+`client.attestApp(app, url?)` attests one app instance on the node under the same
+policy and answers the record with `appHash`, the bundle hash the node bound from
+its own record of the app (never all zero); it throws when the node refuses.
+
+Every route below is sent inside the sealed channel, but
+`GET attestation` and `GET health`. `passkey` is a `PasskeyProvider`
+(`browserPasskey()` in a page); a step-up takes `{ confirm: passkeyConfirm(passkey) }`.
+
+## Flows and streams
+
+The hand-written methods: each is more than one route, or a stream.
+
+| Method | Routes |
+| --- | --- |
+| `signUp(passkey, name, { origin?, invite?, signal? })` → `CalimeroSession` (the new passkey is asked twice: to register, then to sign the account it creates; `SignUpRefused` when the policy or the invite refuses) | `POST auth/passkey/register/begin`, `…/finish` |
+| `signIn(passkey, { origin?, signal? })` → `CalimeroSession` (`PasskeyUnknownHere` for a passkey this cluster does not know) | `POST auth/passkey/login/begin`, `…/finish` |
+| `refresh()`, `signOut()`, `signOutEverywhere()`, `useSession(session)`, `useApiKey(key)` | `POST auth/refresh`, `auth/logout`, `auth/logout-all` |
+| `addPasskey(newPasskey, approver)` → credential id | `POST auth/passkeys/add/begin`, `…/finish` |
+| `startAccountRecovery(code, passkey)`, `finishAccountRecovery(passkey, accountId?)` | `POST auth/recovery/begin`, `…/start`, `…/finish` |
+| `startRecovery(org, seed)` (the seed signs here) | `GET auth/me`, `POST orgs/{org}/recovery/start` |
+| `downloadBlob(app, id)`, `downloadBlobGranted(app, id, grant)` → bytes | `GET apps/{app}/blobs/{id}` |
+| `uploadFile(app, data)` → `FileInfo` | `POST apps/{app}/files`, or a session: `POST .../files/uploads`, `PUT .../uploads/{u}/parts/{k}`, `POST .../uploads/{u}/complete` |
+| `events(app, from?, signal?)`, `presenceStream(app, signal?)` → server-sent events | `GET apps/{app}/events`, `apps/{app}/presence/stream` |
+| `appsReportAll(org)`, `pendingApprovals(org?)` | `GET orgs/{org}/apps` or `auth/apps` (every page), `GET releases` |
+| `packageCapabilities(package, version, { service? })` → `PackageCapabilities` (manifest facts and the app's ABI; a multi-service release needs `service`, else `400 NO_SUCH_SERVICE`) | `GET packages/{package}/{version}/capabilities` |
+| `openConsentPage(request, navigate \| { navigate?, confirm? })`, `waitForConsent(requestId, { intervalMs?, signal?, expiresAt? })`, `resumeConsent({ requestId?, href? })` | `POST consent/requests`, `GET consent/{request}/result` |
+
+## The generated methods
+
+Every route of the node is a method, generated from core's OpenAPI document
+(core's `docs/public/openapi.json`, by `pnpm gen:api` into `src/generated/`), in a
+group per tag: `client.apps`, `client.auth`, `client.orgs`, `client.packages`,
+`client.deployments`, `client.consent`, `client.ops`, `client.public`. Each takes
+one typed argument object (path parameters, query and body fields merged; a raw
+body under `body`, with `contentType`) and answers the route's typed payload; a
+refusal is thrown as its typed `CalimeroError`.
+
+```ts
+import { passkeyConfirm } from '@calimero-network/mero-js';
+
+const org = await client.orgs.get({ org: orgId });
+await client.orgs.setMember({ org: orgId, account, role: 'member' }, { confirm: passkeyConfirm(passkey) });
+```
+
+The second argument, `{ confirm, operatorProof, signal }`, answers this call's
+`412 CONFIRM_REQUIRED` or `428 OPERATOR_SIGNATURE_REQUIRED`;
+`new CalimeroClient(options, { confirm, operatorProof })` answers every call that
+gives none. Routes the document marks retry-safe are retried on `503` (D70), and
+one that requires an idempotency key gets one. The event streams stay on the transport.
+`createRoutes(createRouteClient(transport))` builds the groups on any
+`NodeTransport`.
+
+Every generated method, by group (`?` marks an optional argument):
+
+### `client.apps`
+
+| Method | Route |
+| --- | --- |
+| `abi({ app })` | `GET apps/{app}/abi` |
+| `access({ app, access })` | `POST apps/{app}/access` |
+| `attestation({ app, nonce })` | `GET apps/{app}/attestation` |
+| `blobDelete({ app, id })` | `DELETE apps/{app}/blobs/{id}` |
+| `blobDownload({ app, id, grant? })` | `GET apps/{app}/blobs/{id}` |
+| `blobInfo({ app, id })` | `GET apps/{app}/blobs/{id}/info` |
+| `blobList({ app })` | `GET apps/{app}/blobs` |
+| `blobRevoke({ app, id })` | `POST apps/{app}/blobs/{id}/revoke` |
+| `blobUpload({ app, sealed?, body, contentType? })` | `POST apps/{app}/blobs` |
+| `call({ app, method, args?, idempotencyKey? })` (retried on 503) | `POST apps/{app}/intents` |
+| `create({ name?, bundle?, package?, version?, service?, org?, access?, initArgs?, metadata?, deployment? })` | `POST apps` |
+| `delete({ app })` | `DELETE apps/{app}` |
+| `fileInfo({ app, id })` | `GET apps/{app}/files/{id}` |
+| `filesList({ app })` | `GET apps/{app}/files` |
+| `filesUpload({ app, body, contentType? })` | `POST apps/{app}/files` |
+| `get({ app })` | `GET apps/{app}` |
+| `list({ package?, bundle? })` | `GET apps` |
+| `metadata({ app, metadata })` | `POST apps/{app}/metadata` |
+| `method({ app, method, args?, idempotencyKey?, consistency?, minIndex? })` (retried on 503) | `POST apps/{app}/methods/{method}` |
+| `move({ app, toOrg, bringMembers? })` (step-up) | `POST apps/{app}/move` |
+| `openapi({ app })` | `GET apps/{app}/openapi.json` |
+| `presenceGet({ app })` | `GET apps/{app}/presence` |
+| `presencePublish({ app, seq, state? })` | `POST apps/{app}/presence` |
+| `run({ app, run })` | `GET apps/{app}/runs/{run}` |
+| `runs({ app, limit?, before? })` | `GET apps/{app}/runs` |
+| `storage({ app })` | `GET apps/{app}/storage` |
+| `transfer({ app, to })` (step-up) | `POST apps/{app}/transfer` |
+| `upgrade({ app, bundle?, package?, version?, service?, migrate? })` (step-up) | `POST apps/{app}/upgrade` |
+| `uploadAbort({ app, upload })` | `DELETE apps/{app}/files/uploads/{upload}` |
+| `uploadBegin({ app, size })` | `POST apps/{app}/files/uploads` |
+| `uploadComplete({ app, upload })` | `POST apps/{app}/files/uploads/{upload}/complete` |
+| `uploadPart({ app, upload, k, body, contentType? })` | `PUT apps/{app}/files/uploads/{upload}/parts/{k}` |
+| `uploadStatus({ app, upload })` | `GET apps/{app}/files/uploads/{upload}` |
+| `usage({ app })` | `GET apps/{app}/usage` |
+| `view({ app, method, args?, consistency?, minIndex? })` (retried on 503) | `POST apps/{app}/views` |
+| `xcalls({ app })` | `GET apps/{app}/xcalls` |
+
+### `client.auth`
+
+| Method | Route |
+| --- | --- |
+| `accountApps({ after?, limit? })` | `GET auth/apps` |
+| `accountProofProve({ nonce, audience })` | `POST auth/account-proof` |
+| `accountRecoveryBegin({ code })` | `POST auth/recovery/begin` |
+| `accountRecoveryCancel()` (step-up) | `POST auth/recovery/cancel` |
+| `accountRecoveryFinish({ accountId? })` (step-up) | `POST auth/recovery/finish` |
+| `accountRecoveryStart({ challengeId, code, registration })` | `POST auth/recovery/start` |
+| `activityList({ after? })` | `GET auth/activity` |
+| `aliasDelete({ alias })` | `DELETE auth/aliases/{alias}` |
+| `aliasGet({ alias })` | `GET auth/aliases/{alias}` |
+| `aliasList()` | `GET auth/aliases` |
+| `aliasSet({ alias, app })` | `PUT auth/aliases/{alias}` |
+| `apikeyCreate({ label?, apps?, methods?, readOnly?, allowConfirm?, ttlSecs?, upgrades? })` (step-up) | `POST auth/apikeys` |
+| `apikeyList()` | `GET auth/apikeys` |
+| `apikeyRevoke({ key })` (step-up) | `DELETE auth/apikeys/{key}` |
+| `loginBegin({ origin? })` | `POST auth/passkey/login/begin` |
+| `loginFinish({ challengeId, assertion })` | `POST auth/passkey/login/finish` |
+| `logout()` | `POST auth/logout` |
+| `logoutAll()` | `POST auth/logout-all` |
+| `me()` | `GET auth/me` |
+| `passkeyAddBegin()` | `POST auth/passkeys/add/begin` |
+| `passkeyAddFinish({ challengeId, registration })` (step-up) | `POST auth/passkeys/add/finish` |
+| `passkeyLabel({ cred, label })` | `POST auth/passkeys/{cred}` |
+| `passkeyRemove({ cred })` (step-up) | `DELETE auth/passkeys/{cred}` |
+| `recoveryCreate()` (step-up) | `POST auth/recovery` |
+| `recoveryRemove()` (step-up) | `DELETE auth/recovery` |
+| `refresh({ refreshToken })` | `POST auth/refresh` |
+| `registerBegin({ name?, origin?, invite? })` | `POST auth/passkey/register/begin` |
+| `registerFinish({ challengeId, registration, invite? })` (step-up) | `POST auth/passkey/register/finish` |
+| `sessionRevoke({ session })` | `DELETE auth/sessions/{session}` |
+| `sessionsList()` | `GET auth/sessions` |
+| `usage()` | `GET auth/usage` |
+
+### `client.consent`
+
+| Method | Route |
+| --- | --- |
+| `pageCreate({ body })` | `POST consent/requests` |
+| `pageResult({ request })` | `GET consent/{request}/result` |
+
+### `client.deployments`
+
+| Method | Route |
+| --- | --- |
+| `create({ name, owner })` (step-up) | `POST deployments` |
+| `delete({ id })` (step-up) | `DELETE deployments/{id}` |
+| `deployerGrant({ deployer, until? })` (step-up) | `POST deployers` |
+| `deployerList()` | `GET deployers` |
+| `deployerRevoke({ key })` (step-up) | `DELETE deployers/{key}` |
+| `get({ id })` | `GET deployments/{id}` |
+| `list()` | `GET deployments` |
+| `offer({ id, app, package, version })` (step-up) | `POST deployments/{id}/apps` |
+| `orgs({ id })` | `GET deployments/{id}/orgs` |
+| `signUpInviteCreate({ uses?, ttlSecs? })` (step-up) | `POST sign-up/invites` |
+| `signUpInviteList()` | `GET sign-up/invites` |
+| `signUpInviteRevoke({ key })` (step-up) | `DELETE sign-up/invites/{key}` |
+| `signUpPublic()` | `GET sign-up` |
+| `signUpSet({ policy })` (step-up) | `POST sign-up` |
+| `withdraw({ id, app })` (step-up) | `DELETE deployments/{id}/apps/{app}` |
+
+### `client.ops`
+
+| Method | Route |
+| --- | --- |
+| `apps({ after?, limit? })` | `GET ops/apps` |
+| `backup({ all? })` | `POST ops/backup` |
+| `cluster()` | `GET ops/cluster` |
+| `clusterOwner({ owner })` (operator signature) | `POST ops/cluster-owner` |
+| `deployerGrant({ deployer, until? })` (operator signature) | `POST ops/deployers` |
+| `deployerRevokeDelete({ key })` (operator signature) | `DELETE ops/deployers/{key}` |
+| `deployerRevokePost({ key })` (operator signature) | `POST ops/deployers/{key}/revoke` |
+| `deploymentsGranted()` (operator signature) | `POST ops/deployments/granted` |
+| `metrics()` | `GET ops/metrics` |
+| `orgs({ after?, limit? })` | `GET ops/orgs` |
+| `orgUpgrade({ org, package, version, team?, cascade?, migrate? })` (operator signature) | `POST ops/orgs/{org}/upgrade` |
+| `outbound({ package, prefixes?, replace? })` (operator signature) | `POST ops/outbound` |
+| `packageInstall({ package, version })` | `POST ops/packages/install` |
+| `packageList()` | `GET ops/packages` |
+| `packageUninstall({ package })` | `DELETE ops/packages/{package}` |
+| `packageUpload({ body, contentType? })` | `POST ops/packages` |
+| `packageVersionUninstall({ package, version })` | `DELETE ops/packages/{package}/{version}` |
+| `placement()` | `GET ops/placement` |
+| `poolsGet()` | `GET ops/pools` |
+| `poolsSet({ pools })` (operator signature) | `POST ops/pools` |
+| `quotasGet()` | `GET ops/quotas` |
+| `quotasSet({ org? })` (operator signature) | `POST ops/quotas` |
+| `receiptKey({ id })` | `GET ops/nodes/{id}/receipt-key` |
+| `registerNode({ id, addr, zone?, role?, pool? })` (operator signature) | `POST ops/nodes` |
+| `release({ version, approved? })` (operator signature) | `POST ops/releases` |
+| `releaseDeadline({ version, after? })` (operator signature) | `POST ops/releases/{version}/deadline` |
+| `releaseDeadlineLift({ version })` (operator signature) | `DELETE ops/releases/{version}/deadline` |
+| `removeNode({ id })` (operator signature) | `DELETE ops/nodes/{id}` |
+| `restore({ app, backup? })` (operator signature) | `POST ops/apps/{app}/restore` |
+| `served()` | `GET ops/served-origins` |
+| `setReplicas({ app, replicas })` (operator signature) | `POST ops/apps/{app}/replicas` |
+| `signUpInviteCreate({ token, uses?, expiresAt })` (operator signature) | `POST ops/sign-up/invites` |
+| `signUpInviteList()` | `GET ops/sign-up/invites` |
+| `signUpInviteRevokeDelete({ key })` (operator signature) | `DELETE ops/sign-up/invites/{key}` |
+| `signUpInviteRevokePost({ key })` (operator signature) | `POST ops/sign-up/invites/{key}/revoke` |
+| `signUpSet({ policy })` (operator signature) | `POST ops/sign-up` |
+| `status()` | `GET ops/status` |
+| `upgrade({ app, bundle?, package?, version?, service?, migrate? })` (operator signature) | `POST ops/apps/{app}/upgrade` |
+
+### `client.orgs`
+
+| Method | Route |
+| --- | --- |
+| `allApps({ org, account, allApps })` (step-up) | `POST orgs/{org}/all-apps` |
+| `apps({ org, after?, limit? })` | `GET orgs/{org}/apps` |
+| `appTeamList({ org })` | `GET orgs/{org}/app-teams` |
+| `appTeamsScope({ org, apps?, shared? })` (step-up) | `POST orgs/{org}/app-teams` |
+| `capabilities({ org, account?, team?, capabilities })` (step-up) | `POST orgs/{org}/capabilities` |
+| `create({ name, recoveryKey? })` | `POST orgs` |
+| `delete({ org })` (step-up) | `DELETE orgs/{org}` |
+| `get({ org })` | `GET orgs/{org}` |
+| `inviteCreate({ org, role, teams?, ttlSecs?, uses?, allApps? })` (step-up) | `POST orgs/{org}/invites` |
+| `inviteList({ org })` | `GET orgs/{org}/invites` |
+| `inviteRedeem({ token })` | `POST invites/{token}/redeem` |
+| `inviteRevoke({ org, key })` (step-up) | `DELETE orgs/{org}/invites/{key}` |
+| `memberMetadata({ org, account, metadata })` | `POST orgs/{org}/members/{account}/metadata` |
+| `memberRemoveTeams({ org, account, teams })` (step-up) | `DELETE orgs/{org}/members/{account}/teams` |
+| `members({ org, detail? })` | `GET orgs/{org}/members` |
+| `memberSetTeams({ org, account, teams })` (step-up) | `POST orgs/{org}/members/{account}/teams` |
+| `metadata({ org, metadata })` | `POST orgs/{org}/metadata` |
+| `outboundApproval({ org, package, prefixes?, replace? })` (step-up) | `POST orgs/{org}/outbound` |
+| `publisher({ org, signerId, publicKey, signature })` (step-up) | `POST orgs/{org}/publishers` |
+| `publisherUpgrade({ org, package, version, migrate? })` (step-up) | `POST orgs/{org}/packages/{package}/upgrade` |
+| `recoveryCancel({ org })` (step-up) | `POST orgs/{org}/recovery/cancel` |
+| `recoveryFinish({ org })` (step-up) | `POST orgs/{org}/recovery/finish` |
+| `recoverySet({ org, publicKey? })` (step-up) | `POST orgs/{org}/recovery` |
+| `recoveryStart({ org, nonce, signature })` | `POST orgs/{org}/recovery/start` |
+| `releaseApproval({ org, version, approved? })` (step-up) | `POST orgs/{org}/releases` |
+| `removeMember({ org, account })` (step-up) | `DELETE orgs/{org}/members/{account}` |
+| `rename({ org, name })` (step-up) | `POST orgs/{org}/name` |
+| `setMember({ org, account, role })` (step-up) | `POST orgs/{org}/members` |
+| `teamCreate({ org, name, parent?, join })` | `POST orgs/{org}/teams` |
+| `teamDelete({ org, team })` (step-up) | `DELETE orgs/{org}/teams/{team}` |
+| `teamGet({ org, team })` | `GET orgs/{org}/teams/{team}` |
+| `teamRemoveMember({ org, team, account })` (step-up) | `DELETE orgs/{org}/teams/{team}/members/{account}` |
+| `teamSetMember({ org, team, account, lead?, role?, capabilities? })` (step-up) | `POST orgs/{org}/teams/{team}/members` |
+| `teamUpdate({ org, team, name?, join?, parent?, metadata? })` | `POST orgs/{org}/teams/{team}` |
+| `upgrade({ org, package, version, team?, cascade?, migrate? })` (step-up) | `POST orgs/{org}/upgrade` |
+| `upgradeRetry({ org, run })` (step-up, operator signature) | `POST orgs/{org}/upgrades/{run}/retry` |
+| `upgradeStatus({ org, run })` | `GET orgs/{org}/upgrades/{run}` |
+| `usage({ org })` | `GET orgs/{org}/usage` |
+
+### `client.packages`
+
+| Method | Route |
+| --- | --- |
+| `bundlePut({ body, contentType? })` | `POST bundles` |
+| `get({ package })` | `GET packages/{package}` |
+| `install({ package, version })` | `POST packages/install` |
+| `list()` | `GET packages` |
+| `originsAdd({ package, origin, rpId?, served? })` (step-up) | `POST package-origins/{package}` |
+| `originsList({ package })` | `GET package-origins/{package}` |
+| `originsRemove({ package, origin })` (step-up) | `DELETE package-origins/{package}` |
+| `uninstall({ package })` | `DELETE packages/{package}` |
+| `upload({ body, contentType? })` | `POST packages` |
+| `versionUninstall({ package, version })` | `DELETE packages/{package}/{version}` |
+
+### `client.public`
+
+| Method | Route |
+| --- | --- |
+| `attestation({ nonce, app?, appHash?, purpose? })` | `GET attestation` |
+| `health()` | `GET health` |
+| `publisherBinding({ signer })` | `GET publishers/{signer}` |
+| `releasesPublic()` | `GET releases` |
+
+## The runtime
+
+Every request goes through `client.transport`, a `Transport` from
+`@calimero-network/mero-js/runtime`: attestation, the sealed channel, the
+session and its refresh, `421` moves, D70 retries, the `412` step-up, error
+mapping and server-sent events, behind `request(method, path, options)`,
+`json(method, path, options)` and `events(path, options)`; `exchange(method,
+path, options)` answers a refusal as the node's response, which is what the
+generated client sends through. `options` takes `query`, a JSON `body` or raw
+`bytes` with `contentType`, a `passkey` that answers a `412 CONFIRM_REQUIRED`,
+`retry` (`true` for a call or a view, `'once'` for a confirmed attempt) and
+`signal`. `routePath('orgs/{org}', { org })` encodes the path's segments.
+`new CalimeroClient(transport)` builds a client on a `NodeTransport` made
+elsewhere.
+
+## Pipeline receipts
+
+`client.pipelineReceipt(app, run)` fetches the signed receipt of an ended pipeline run as version 2, and
+`client.verifyPipelineReceipt(app, run, answer)` checks it as core's `Client::verify_receipt` does.
+It attests every replica of the app under the client's policy, checks the answering node's signature and that the
+receipt is for that app and run, then proves each job's report: the job key signed what the proof says, and a job node's
+quote binds that key to its node, the cluster and the cluster identity.
+A version 1 receipt is refused.
+The test vectors come from core (`pnpm refresh:receipt-vectors`).
+
+## Not covered
+
+- The rest of `/ops/*`, the operator's API: use core's `meroctl`.
+- `/internal/*`: node to node only.
+
+## Other exports
+
+`fetchAttestedKey`, `verifyNode`, `claimedRelease`, `MOCK_QUOTE_HEADER`, `browserPasskey`,
+`b64url`, `fromB64url`, `errorFrom`, `ORG_CAPABILITIES`, `orgCapabilities`,
+`DEFAULT_ORG_CAPABILITIES`; for approvals `releaseConsent`, `withdrawConsent`, `upgradeConsent`,
+`createOrgConsent`, `createInviteConsent`, `acceptInviteConsent`, `leaveOrgConsent`, `removeMemberConsent`,
+`setMemberRoleConsent`, `setMemberTeamsConsent`, `removeMemberTeamsConsent`, `revokeInviteConsent`, `renameOrgConsent`,
+`deleteOrgConsent`, `setCapabilitiesConsent`, `setAllAppsConsent`, `withoutConsentReturn`, `CONSENT_STORAGE_KEY`,
+`consentReturn`, `confirmationCode`, `pendingApprovalsFrom`, `stalledBy`, `publisherBindingMessage`,
+`publisherBindingBytes`, `releaseNotesUrl`, `verifyReleaseUrl`, `verifyNodeUrl`; the sealed transport (`createSealedFetch`,
+`transportKeyBinding`, `SealedTransportError`, `StaleTransportKeyError`); quote
+and release verification (`createQuoteVerifier`, `trustedMeasurementsFromReleases`,
+`createSignedReleaseVerifier`, `trustSignedRelease`, `verifySignedNodeRelease`,
+`fetchNodeRelease`, `fetchGithubNodeRelease`, `cloudNodeReleaseUrl`); and the
+private agent gate (`attestAgent`, `provisionAgent`, `releaseAgent`, …).

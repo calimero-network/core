@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calimero | mero-react — MeroProvider</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta name="description" content="The client, the passkey session and the default app">
+<meta name="theme-color" content="#0d1117">
+</head>
+<body>
+<div class="main">
+<div class="content prose">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>MeroProvider</span></div>
+<h1>MeroProvider</h1>
+<p class="page-subtitle">The client, the passkey session and the default app</p>
+<div class="table-wrap"><table><thead><tr><th>Prop</th><th>Type</th><th>What it does</th></tr></thead><tbody><tr><td><span class="code">minReleaseVersion</span></td><td><span class="code">string</span></td><td>The oldest mero-tee release to trust, for example <span class="code">2.3.109</span>. This is shorthand for <span class="code">policy: { release: { minReleaseVersion } }</span>.</td></tr><tr><td><span class="code">policy</span></td><td><span class="code">NodePolicy</span></td><td>The full attestation policy (profile, release source, <span class="code">verifyQuote</span>, <span class="code">appHash</span>). Takes precedence over <span class="code">minReleaseVersion</span>.</td></tr><tr><td><span class="code">allowMock</span></td><td><span class="code">boolean</span></td><td>Accept mock quotes (<span class="code">merod local</span>, <span class="code">--dev</span> clusters). The provider throws if <span class="code">minReleaseVersion</span>, <span class="code">policy</span> and <span class="code">allowMock</span> are all missing.</td></tr><tr><td><span class="code">servedByNode</span></td><td><span class="code">boolean</span></td><td>The node serves this page. The node is then <span class="code">window.location.origin</span>, and a passkey ceremony here opens a session bound to this app's package. <span class="code">ConnectButton</span> skips the node field.</td></tr><tr><td><span class="code">nodeUrl</span></td><td><span class="code">string</span></td><td>The node to use when the page is not node-served. Without it (and without <span class="code">cluster</span>), the provider uses the node or cluster kept from the last visit, or waits for <span class="code">connectToNode</span> / <span class="code">connectToCluster</span>.</td></tr><tr><td><span class="code">nodes</span></td><td><span class="code">string[]</span></td><td>Other nodes of the cluster, with <span class="code">nodeUrl</span>. On <span class="code">421 WRONG_NODE</span>, or when a node stays unavailable, the client moves to the next one.</td></tr><tr><td><span class="code">cluster</span></td><td><span class="code">string</span></td><td>A Calimero Cloud cluster by name (<span class="code">eu-shared-1</span>), in place of <span class="code">nodeUrl</span>. The client reads the cluster's nodes from the public node directory (mero-js <span class="code">CalimeroClient.connect</span>) and fails over between them. The directory only picks which nodes to try: each is attested under your policy first. <span class="code">nodeUrl</span> wins when both are given.</td></tr><tr><td><span class="code">zone</span>, <span class="code">directory</span></td><td><span class="code">string</span></td><td>With <span class="code">cluster</span>: the zone whose nodes are tried first, and another node directory than mero-js <span class="code">DEFAULT_DIRECTORY</span>.</td></tr><tr><td><span class="code">appId</span></td><td><span class="code">string</span></td><td>The app instance that hooks default to.</td></tr><tr><td><span class="code">sessionStore</span></td><td><span class="code">SessionStore</span></td><td>Where the session is kept. The default is <span class="code">localStorageSessionStore</span>; <span class="code">memorySessionStore()</span> keeps it for the tab's lifetime only.</td></tr><tr><td><span class="code">passkey</span></td><td><span class="code">PasskeyProvider</span></td><td>The WebAuthn prompt. The default is mero-js <span class="code">browserPasskey()</span>.</td></tr><tr><td><span class="code">fetch</span>, <span class="code">retry</span></td><td></td><td>Passed through to <span class="code">CalimeroClient</span>.</td></tr><tr><td><span class="code">client</span></td><td><span class="code">CalimeroClient</span></td><td>Use this client instead of building one, for tests or custom setups.</td></tr><tr><td><span class="code">onError</span></td><td><span class="code">(failure) =&gt; void</span></td><td>Called with every failure that a hook or a sign-in reports.</td></tr></tbody></table></div>
+<h3><span class="code">useMero()</span></h3>
+<pre class="typedef">const {
+  client,            // CalimeroClient | null (null until a node is known, or a cluster's nodes are)
+  nodeUrl,           // the node in use
+  cluster,           // the cluster connected to by name, or null
+  isConnecting,      // the node directory is being read
+  connectToNode,     // (url) =&gt; void
+  connectToCluster,  // (name) =&gt; void
+  disconnect,
+  session, accountId, isAuthenticated, isLoading,
+  signIn,            // () =&gt; Promise&lt;CalimeroSession | null&gt;: an existing passkey
+  signUp,            // (name) =&gt; Promise&lt;CalimeroSession | null&gt;: a new account and passkey
+  signOut, signOutEverywhere,
+  appId, setAppId,
+  passkey, servedByNode, allowMock,
+  failure,           // the last sign-in, connection or session failure, described
+  reportError,
+} = useMero();</pre>
+<p><strong>Sessions.</strong> A 1.0 session is a session token (<span class="code">v2.…</span>) that lasts 15 minutes, plus a refresh token (<span class="code">rt_…</span>) that lasts 30 days and can be used once.</p>
+<ul><li>The client refreshes by itself on a <span class="code">401</span>. One refresh is shared by every request waiting on it, because reusing a refresh token revokes the session. When the node that issued the session is gone, the refresh goes to another node of the cluster (mero-js#318).</li><li>The provider saves every new session to <span class="code">sessionStore</span>, so a reload resumes the session.</li><li>When a refresh is refused, hooks get <span class="code">LoginRequired</span>, and the provider ends the session and sets <span class="code">failure.kind = 'login'</span>.</li><li><span class="code">mero</span> is still on the value as a deprecated alias of <span class="code">client</span>.</li></ul>
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

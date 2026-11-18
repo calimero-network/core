@@ -103,6 +103,9 @@ pub enum StorageError {
     /// An index entry points at a record that is gone: the index has drifted.
     #[error("index entry without a record")]
     Dangling,
+    /// A list has no item with this id.
+    #[error("list has no item `{0}`")]
+    UnknownItem(String),
     /// A counter's stored value is negative or not an integer.
     #[error("counter `{0}` does not hold a non-negative integer")]
     BadCounter(String),
@@ -117,6 +120,17 @@ pub enum StorageError {
     /// A text has no character with this id.
     #[error("no character with id {0}")]
     UnknownId(u64),
+    /// One edit would pass a run's write limits (`MAX_RUN_WRITES`, `MAX_RUN_BYTES`), so it
+    /// was refused before any write; split it over several calls.
+    #[error(
+        "the edit needs {writes} writes of {bytes} bytes, over a run's 10,000 writes or 1 MiB"
+    )]
+    EditTooLarge {
+        /// The writes it would make.
+        writes: usize,
+        /// The bytes it would write, as the host counts them.
+        bytes: usize,
+    },
 }
 
 /// A failure of a table operation.

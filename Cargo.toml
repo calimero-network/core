@@ -77,6 +77,8 @@ hex = "0.4.3"
 hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
 html5ever = "0.40"
 http = "1"
+# A persistent ordered map: a component's state, shared by structure with the runs reading it.
+imbl = "7.0.2"
 indexmap = "2.6.0"
 libc = "0.2"
 libp2p-identity = "0.2.12"

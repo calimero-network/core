@@ -161,8 +161,43 @@ In a Raft group:
   leader that has just confirmed it leads, for the same reason
   ([Reads](/protocol/reads/)).
 
-There is therefore no divergence report, no sync handshake, no verdict and no
-merge on the replication path.
+There is therefore no sync handshake, no verdict and no merge on the
+replication path.
+
+## State digests
+
+Raft keeps the logs equal, not what each replica made of them: a replica that
+applies an entry differently (a row it misread, an entry it skipped, code that
+is not deterministic) or whose disk changes a row holds another state, and
+nothing in the protocol notices. So each replica of an app group keeps a
+digest of its state (`calimero_log::digest`): the sum, modulo 2^256, of
+`SHA-256(label ‖ len(key) ‖ key ‖ value)` over every row of the group. A sum
+depends on the rows alone, not on the order they were written, how entries
+were batched, or whether they came by entries or a snapshot, so replicas at the
+same index hold the same digest exactly when they hold the same rows.
+
+- **Kept as entries apply.** A write moves the digest by the row it writes less
+  the row it replaces (one read of that row, never a scan); a read that fails
+  fails the batch. The digest after every entry whose index is a multiple of
+  `DIGEST_EVERY` (16) is recorded, the last `DIGEST_KEPT` (16) of them, so
+  replicas that batched differently meet at the same indexes.
+- **Stored with the applied index** (the group's meta row `digest`), in the same
+  batch. A start whose stored digest is not at the applied index (rows changed
+  outside the log, `StateTx::commit`) takes it again from the rows. A snapshot
+  install and a backup restore take it from the rows they write.
+- **Compared by the leader.** Every minute (`DIGEST_COMPARE_EVERY`), the leader
+  of each app group asks the other replicas for their digests
+  (`POST /internal/digests`, only of groups the caller is a member of, at most
+  `DIGEST_GROUPS_PER_ASK` an ask) and compares them at the latest index both
+  recorded. A difference is logged with the group, the peer and the index, and
+  shows in `calimero_group_diverged` ([Observability](/operate/observability/),
+  [runbook](/operate/runbooks/#a-replicas-state-differs)).
+- **Across releases**: replicas compare only digests of the same
+  `DIGEST_VERSION`, raised with any change to a row's stored shape; a peer on a
+  release before digests answers `404` and is not compared.
+
+The system group is not covered: its machine keeps its state in memory and
+writes no rows as it applies.
 
 ## Timing
 
@@ -203,6 +238,29 @@ rest from the leader, so no entry applies twice or is skipped
 `an_in_memory_machine_applies_each_entry_once_after_losing_its_commit_index`
 in `crates/log/tests/cluster.rs`).
 
+A group's Raft core on a node stops when that node cannot go on safely: a
+write the disk refused (EIO, ENOSPC), a machine that panicked in an entry, an
+entry it could not apply. openraft treats each as fatal to the core, so the
+group itself starts it again. As the core stops, the node drops what it applied
+in memory (a batch that never committed, half an entry) and reads the group's
+state and applied index back from the disk: the last committed batch for an app
+group, the last checkpoint for the system group. A stopped replica then answers
+like one that lags (a read that waits for an index waits for it to be applied
+again), and the node forwards its app's calls and views to the other replicas.
+After `RESTART_FIRST` (1 s) it starts a new core on the disk's state, which
+catches up from the log and the leader. A core that stops again within
+`RESTART_MAX` (5 min) waits twice as long before the next try, up to that, with
+up to a quarter of jitter, so a fault that persists (a full disk, an entry this
+release cannot decode) keeps the group stopped without a hot loop. Each stop is
+logged, and `calimero_group_stopped` and `calimero_group_restarts_total` show it
+([Observability](/operate/observability/)). Tests:
+`a_batch_that_fails_to_commit_stops_the_group_which_reloads_and_restarts`,
+`a_machine_that_panics_stops_the_group_which_reloads_and_restarts` and
+`a_fault_that_outlasts_a_restart_backs_off_and_shows_in_the_status` in
+`crates/log/tests/cluster.rs`;
+`a_node_whose_system_group_stopped_on_a_disk_error_rejoins_on_its_own` in
+`crates/node/tests/cluster.rs`.
+
 A **snapshot** is a file of sealed frames under `<data-dir>/snapshots`, written
 from a consistent RocksDB view of the group's rows, never the whole state in
 memory. A follower that needs one receives the file in chunks. Every node of
@@ -228,7 +286,11 @@ rest, deleting their data from that node.
 - **Creation.** `CreateApp` assigns the next group number. The first replica in
   the instance's replica list initializes the group with all replicas as
   voters; whichever replica becomes leader runs `init` and appends the
-  `componentInit` entry.
+  `componentInit` entry. The first replica stays one that holds the group: a
+  move keeps the current replicas first in every list it records, and the
+  nodes it adds after them, so a node that has not joined yet never forms a
+  group of its own (initializing a node that already holds the group does
+  nothing).
 - **Late start.** A Raft RPC for a group a node does not run yet goes through
   the engine's group factory: the node starts it if the directory lists it as a
   replica, and answers "not hosted here" otherwise.
@@ -236,7 +298,15 @@ rest, deleting their data from that node.
   peer, `Node::may_send` checks that the peer's attested mero-tee release is
   one approved to hold that app's data ([Deployment
   governance](/protocol/governance/#release-approvals)). The system group goes
-  to every attested peer.
+  to every attested peer. The receiving node makes the same check, and that the
+  sender is a member of the group (`api::internal_raft`). Both ends run it for
+  every heartbeat of every app group, so neither scans the directory: the
+  system machine keeps an index from group to app and from node to its apps,
+  and caches each (group, release) decision, all derived from the applied
+  state and dropped when the next system entry applies or a snapshot restores
+  (`SystemMachine::app_of_group`, `apps_on`, `group_may_hold`). Nothing of it
+  is stored or replicated. `reconcile` reads the same index, so a pass costs
+  this node's groups, not groups times apps.
 
 ## Replica moves
 
@@ -248,15 +318,17 @@ before writing anything. The leader:
 1. refuses any target node whose attested release the app's owner has not
    approved;
 2. records the union of old and new replicas in the directory, so every node
-   involved starts the group;
+   involved starts the group (the current replicas first, in their order, then
+   the new ones, so the first replica is still one that formed or joined the
+   group);
 3. hands each new node the app's bundle and every blob the app's state
    marks (bytes that live outside the log, and that a cluster grown from one
    node holds only on that node), so the new replica can run and serve the app
    without the old ones;
 4. adds each new node as a learner and waits for it to catch up;
 5. changes the voter set to the new replicas (joint consensus);
-6. records the new replica list, after which reconcile stops the group on
-   nodes that left.
+6. records the new replica list (the replicas that stay first, in their
+   order), after which reconcile stops the group on nodes that left.
 
 A rebalancer may repeat or race a move. A move to the replica set the app
 already has (as a set, in any order) writes nothing and answers

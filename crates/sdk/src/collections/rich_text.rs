@@ -18,8 +18,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::app::StateField;
-use crate::collections::text::{Text, Tree};
-use crate::commons::{bounds, clear_prefix, collection_key, key_after};
+use crate::collections::text::Text;
+use crate::commons::{bounds, clear_prefix, collection_key, key_after, KeyPath};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
@@ -99,23 +99,14 @@ impl<S: Store> RichText<S> {
         value: Option<&str>,
         expand: bool,
     ) -> Result<u64, StorageError> {
-        let tree = self.text.load()?;
-        let live: Vec<u64> = tree
-            .order()
-            .into_iter()
-            .filter(|id| tree.is_live(*id))
-            .collect();
-        let len = live.len() as u64;
-        let (Some(first), Some(last)) = (
-            usize::try_from(start).ok().and_then(|i| live.get(i)),
-            end.checked_sub(1)
-                .filter(|_| end > start)
-                .and_then(|e| usize::try_from(e).ok())
-                .and_then(|i| live.get(i)),
-        ) else {
+        let len = self.text.len()?;
+        if start >= end || end > len {
+            return Err(StorageError::OutOfBounds { index: end, len });
+        }
+        let (Some(first), Some(last)) = (self.text.id_at(start)?, self.text.id_at(end - 1)?) else {
             return Err(StorageError::OutOfBounds { index: end, len });
         };
-        self.write_mark(&tree, *first, *last, key, value, expand)
+        self.write_mark(first, last, key, value, expand)
     }
 
     /// Format the characters from `first` to `last` by id (either order, deleted ones
@@ -128,39 +119,27 @@ impl<S: Store> RichText<S> {
         value: Option<&str>,
         expand: bool,
     ) -> Result<u64, StorageError> {
-        let tree = self.text.load()?;
-        self.write_mark(&tree, first, last, key, value, expand)
+        self.write_mark(first, last, key, value, expand)
     }
 
     fn write_mark(
         &mut self,
-        tree: &Tree,
         first: u64,
         last: u64,
         key: &str,
         value: Option<&str>,
         expand: bool,
     ) -> Result<u64, StorageError> {
-        let order = tree.order();
-        let at = |id: u64| {
-            order
-                .iter()
-                .position(|n| *n == id)
-                .ok_or(StorageError::UnknownId(id))
-        };
-        let (mut a, mut b) = (at(first)?, at(last)?);
-        if a > b {
-            core::mem::swap(&mut a, &mut b);
-        }
+        let (start, last, after) = self.text.ordered(first, last)?;
         let (end, end_inclusive) = if expand {
-            (order.get(b + 1).copied(), false)
+            (after, false)
         } else {
-            (Some(order[b]), true)
+            (Some(last), true)
         };
         let mark = Mark {
             key: key.to_owned(),
             value: value.map(str::to_owned),
-            start: order[a],
+            start,
             end,
             end_inclusive,
         };
@@ -192,47 +171,90 @@ impl<S: Store> RichText<S> {
         }
     }
 
-    /// The text as runs of equally formatted characters, in order.
+    /// The text as runs of equally formatted characters, in order: one pass over the
+    /// characters with the marks opened and closed where they start and end, O(characters +
+    /// marks log marks).
     pub fn spans(&self) -> Result<Vec<Span>, StorageError> {
-        let tree = self.text.load()?;
-        let order = tree.order();
-        let position: BTreeMap<u64, usize> =
-            order.iter().enumerate().map(|(i, id)| (*id, i)).collect();
-        // Each mark as covered positions `[from, to)` of `order`, oldest first.
-        let ranges: Vec<(usize, usize, Mark)> = self
+        let runs = self.text.sequence()?;
+        // Each run's start, with its first position in document order (tombstones count).
+        let mut at = BTreeMap::new();
+        let mut total = 0;
+        for (start, run) in &runs {
+            let _old = at.insert(*start, (total, run.len()));
+            total += run.len();
+        }
+        let position = |id: u64| {
+            let (start, (base, len)) = at.range(..=id).next_back()?;
+            (id - start < *len).then_some(base + (id - start))
+        };
+        // Each mark as covered positions `[from, to)`, oldest first.
+        let marks: Vec<(u64, u64, Mark)> = self
             .marks()?
             .into_iter()
             .filter_map(|(_, mark)| {
-                let from = *position.get(&mark.start)?;
-                let to = match (mark.end, mark.end_inclusive) {
-                    (None, _) => order.len(),
-                    (Some(end), inclusive) => *position.get(&end)? + usize::from(inclusive),
+                let from = position(mark.start)?;
+                let to = match mark.end {
+                    None => total,
+                    Some(end) => position(end)? + u64::from(mark.end_inclusive),
                 };
-                Some((from, to, mark))
+                (from < to).then_some((from, to, mark))
             })
             .collect();
+        let mut opens: Vec<(u64, usize)> =
+            marks.iter().enumerate().map(|(i, m)| (m.0, i)).collect();
+        let mut closes: Vec<(u64, usize)> =
+            marks.iter().enumerate().map(|(i, m)| (m.1, i)).collect();
+        opens.sort_unstable();
+        closes.sort_unstable();
+        let (mut opens, mut closes) = (opens.into_iter().peekable(), closes.into_iter().peekable());
+        // Per key, the covering marks by age: the newest decides.
+        let mut active: BTreeMap<&str, BTreeMap<usize, Option<&String>>> = BTreeMap::new();
         let mut spans: Vec<Span> = Vec::new();
-        for (at, id) in order.iter().enumerate() {
-            let Some(ch) = tree.nodes.get(id).and_then(|n| n.ch) else {
-                continue;
-            };
-            let mut attrs = BTreeMap::new();
-            for (_, _, mark) in ranges.iter().filter(|(f, t, _)| *f <= at && at < *t) {
-                match &mark.value {
-                    Some(v) => {
-                        let _old = attrs.insert(mark.key.clone(), v.clone());
+        let mut changed = true;
+        let mut pos = 0;
+        for (_, run) in &runs {
+            for cell in &run.cells {
+                while let Some((_, i)) = opens.next_if(|(from, _)| *from <= pos) {
+                    let mark = &marks[i].2;
+                    let _old = active
+                        .entry(mark.key.as_str())
+                        .or_default()
+                        .insert(i, mark.value.as_ref());
+                    changed = true;
+                }
+                while let Some((_, i)) = closes.next_if(|(to, _)| *to <= pos) {
+                    let key = marks[i].2.key.as_str();
+                    if let Some(by_age) = active.get_mut(key) {
+                        let _old = by_age.remove(&i);
+                        if by_age.is_empty() {
+                            let _gone = active.remove(key);
+                        }
                     }
-                    None => {
-                        let _old = attrs.remove(&mark.key);
+                    changed = true;
+                }
+                pos += 1;
+                let Some(ch) = cell else {
+                    continue;
+                };
+                if changed || spans.is_empty() {
+                    changed = false;
+                    let attrs: BTreeMap<String, String> = active
+                        .iter()
+                        .filter_map(|(key, by_age)| {
+                            let (_, value) = by_age.last_key_value()?;
+                            Some(((*key).to_owned(), (*value)?.clone()))
+                        })
+                        .collect();
+                    if spans.last().is_none_or(|span| span.attrs != attrs) {
+                        spans.push(Span {
+                            text: String::new(),
+                            attrs,
+                        });
                     }
                 }
-            }
-            match spans.last_mut() {
-                Some(span) if span.attrs == attrs => span.text.push(ch),
-                _ => spans.push(Span {
-                    text: ch.to_string(),
-                    attrs,
-                }),
+                if let Some(span) = spans.last_mut() {
+                    span.text.push(*ch);
+                }
             }
         }
         Ok(spans)
@@ -243,6 +265,14 @@ impl<S: Store> RichText<S> {
         let base = collection_key(&self.text.name, "k", &[])?;
         let _removed = clear_prefix(&mut self.text.store, &base);
         self.text.clear()
+    }
+}
+
+impl<S: Store> crate::collections::Nestable<S> for RichText<S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            text: <Text<S> as crate::collections::Nestable<S>>::at(path, store),
+        }
     }
 }
 
@@ -356,5 +386,31 @@ mod tests {
         assert!(d.spans().unwrap().is_empty());
         assert!(d.marks().unwrap().is_empty());
         assert_eq!(store.len(), 1, "only the next id stays");
+    }
+
+    #[test]
+    fn marks_hold_across_run_splits() {
+        let mut d = doc();
+        // One run; the bold mark ends inside it, before the space.
+        let ids = d.text_mut().insert(0, "hello world").unwrap();
+        let _ = d.mark(0, 5, "bold", bold(), true).unwrap();
+        let _ = d
+            .mark_ids(ids[8], ids[6], "link", Some("x"), false)
+            .unwrap();
+        // Split the run inside each mark and at the bold mark's end.
+        let _ = d.text_mut().insert_after(Some(ids[1]), "E").unwrap();
+        let _ = d.text_mut().insert_after(Some(ids[7]), "O").unwrap();
+        let _ = d.text_mut().insert_after(Some(ids[4]), "!").unwrap();
+        assert_eq!(
+            render(&d.spans().unwrap()),
+            "[heEllo!|bold=true] [woOr|link=x]ld"
+        );
+        // A mark by ids across the split pieces, then a delete across them.
+        let _ = d.mark_ids(ids[2], ids[9], "u", Some("1"), false).unwrap();
+        let _ = d.text_mut().delete(3, 3).unwrap();
+        assert_eq!(
+            render(&d.spans().unwrap()),
+            "[heE|bold=true][!|bold=true,u=1][ |u=1][woOr|link=x,u=1][l|u=1]d"
+        );
     }
 }

@@ -1,0 +1,28 @@
+---
+title: Glossary
+description: The Calimero 1.0 terms used across these docs, and the v1 names they replace.
+sidebar:
+  order: 2
+---
+
+| Term | Meaning | v1 name |
+| --- | --- | --- |
+| **Account** | A person or service; its devices are passkeys. Its id is what an app sees as the caller. | identity / account root |
+| **Session** | A short-lived token from a passkey sign-in, with a single-use refresh token. | JWT |
+| **API key** | A scoped, revocable `cal_...` key for an agent or server. | client key |
+| **Organization** | Accounts with roles (`guest`, `member`, `admin`, `owner`) that own apps together. | namespace |
+| **Team** | A group inside an organization, nested, open or invite-only; an app with `access: team` is reached by its members. | group / subgroup |
+| **Capabilities** | Bits a member holds beyond their role (`ORG_CAPABILITIES`). | member capabilities |
+| **Package** | A signed `.mpk` release: manifest, WASM, ABI, optional frontend. | application |
+| **App** (instance) | A running instance of a package release or a bundle, on its own replicated log. Its context id is `hex(SHA-256(app id))`. | context |
+| **Bundle** | A WASM module by its hash. Raw uploads are for development clusters only. | application blob |
+| **Call** | A method that may write, run by the leader and logged (`POST /apps/{app}/intents`). | JSON-RPC `execute` |
+| **View** | A read-only method, strong (through the leader) or stale (any replica). | JSON-RPC query |
+| **Idempotency key** | Names a call so a retry is answered from its record instead of running again. | — |
+| **Confirmation** | The account holder's passkey over one exact request (`412 CONFIRM_REQUIRED`). | — |
+| **Upgrade run** | An organization-wide upgrade of every app that runs a package. | group upgrade |
+| **Approval** | An owner's passkey decision: a mero-tee release may hold the data, or apps may call out to URL prefixes. | TEE admission policy |
+| **Attestation** | The node's TDX quote, binding its transport key and the client's nonce. | `/admin-api/tee/attest` |
+| **Sealed channel** | Noise NK to the attested key; every request and answer encrypted end to end. | sealed transport |
+| **mero-tee release** | The signed node image a quote must match (`minReleaseVersion` and up). | — |
+| **Presence** | Who is in an app now: ephemeral, in memory on the nodes, never logged. | ephemeral / awareness |

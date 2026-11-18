@@ -1,5 +1,5 @@
 //! A three-node cluster in one process, driven only through the client, over
-//! sealed channels, with the real v2 fixture components (`apps/v2-fixtures/*`,
+//! sealed channels, with the real app components (`apps/fixture-*`, `apps/team-space`,
 //! built on first use by `common::component`).
 
 mod common;
@@ -16,7 +16,7 @@ use reqwest::Method;
 use serde_json::{json, Value};
 
 fn kv_wasm() -> Vec<u8> {
-    common::component("kv")
+    common::component("fixture-kv")
 }
 
 fn wasm(name: &str) -> Vec<u8> {
@@ -935,7 +935,7 @@ async fn apps_see_the_callers_organization_role_and_teams() {
 
     let bundle = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -2495,7 +2495,7 @@ async fn removed_member_stops_receiving_org_events() {
     let bob_id = s(bob.auth().me().await.map(wire).unwrap(), "accountId");
     let bundle = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -3129,7 +3129,7 @@ async fn compute_and_compute_result_methods_are_refused_to_clients() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
         .packages()
-        .bundle_put(wasm("compute"))
+        .bundle_put(wasm("fixture-compute"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -3726,14 +3726,14 @@ async fn upgrades_through_intents_are_refused_for_everyone() {
 
 /// I2 (Ruling 40): the ABI checks read the bundle the app group runs, not the directory's
 /// record of it. Here the two disagree (the directory's second write of an upgrade has
-/// not happened): the directory says org-gated, the group runs kv.
+/// not happened): the directory says team-space, the group runs kv.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_abi_gate_reads_the_bundle_the_app_runs() {
     let c = Cluster::start(3).await;
     let (alice, _a) = signed_up(&c, 0, "alice").await;
     let gated = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -3870,7 +3870,7 @@ async fn a_read_only_members_emit_only_call_is_refused() {
         .unwrap();
     let bundle = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -6086,7 +6086,7 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let captcha_bundle = alice
         .packages()
-        .bundle_put(wasm("captcha"))
+        .bundle_put(wasm("fixture-captcha"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -6203,6 +6203,160 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
     );
 }
 
+/// `xcall.batch`: two calls a run awaits together (`app::join!`) run at once. `bumpBoth`
+/// calls `slowBump` (host-made randomness, then a count) on two apps; to two different apps
+/// both start together, where the same two calls to one app take turns on that app's
+/// proposal lock (the second starts once the first committed), which is what a host running
+/// a batch one after another would do with any two. Each target applies its call once, and a re-run of the caller (the same key after
+/// a timeout, which is not logged, D23) replays both answers instead of counting again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let mut apps = Vec::new();
+    for name in ["source", "left", "right"] {
+        let created = alice
+            .apps()
+            .create(typed(json!({ "name": name, "bundle": &bundle })))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+        apps.push(created);
+    }
+    let (source, left, right) = (&apps[0], &apps[1], &apps[2]);
+    // Calibrate: how many spins make one `slowBump` body take about `BODY` on this machine
+    // (and build), so the same target's two calls in turn stay within the caller's 2 s budget.
+    const BODY: Duration = Duration::from_millis(300);
+    let direct = |spins: u32| {
+        let (alice, left) = (&alice, apps[1].clone());
+        async move {
+            let started = std::time::Instant::now();
+            let _r = alice
+                .apps()
+                .call(
+                    &left,
+                    "slowBump",
+                    Some(json!({ "key": "calibrate", "spins": spins })),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            started.elapsed()
+        }
+    };
+    // A call's own cost (its run, its commit, the network) is in every timing and grows
+    // under load, so a spin's cost is the difference 30 more spins make, never a whole
+    // call divided by its spins (that sized the body from the overhead and left it ~70 ms
+    // under load, too short to tell at once from in turn).
+    let _warm = direct(1).await;
+    let few = direct(10).await.min(direct(10).await);
+    let more = direct(40).await.min(direct(40).await);
+    let per_spin = (more.saturating_sub(few) / 30).max(Duration::from_micros(100));
+    let spins = u32::try_from(BODY.as_micros() / per_spin.as_micros().max(1))
+        .unwrap_or(u32::MAX)
+        .clamp(10, 2_000);
+    let both = |a: &str, b: &str, key: &str, stall: bool, idem: Option<String>| {
+        let args = json!({ "a": a, "b": b, "key": key, "spins": spins, "stall": stall });
+        let (alice, source) = (&alice, source.clone());
+        async move {
+            let started = std::time::Instant::now();
+            let answer = alice
+                .apps()
+                .call(&source, "bumpBoth", Some(args), idem.as_deref(), None)
+                .await;
+            (answer, started.elapsed())
+        }
+    };
+    let count = |app: &str, key: &str| {
+        let (alice, app, key) = (&alice, app.to_owned(), key.to_owned());
+        async move { strong_view(alice, &app, "get", json!({ "key": key })).await }
+    };
+
+    // Warm: every node has prepared the component and each app's group has a leader.
+    let (warm, _) = both(left, right, "warm", false, None).await;
+    assert_eq!(warm.unwrap().result, json!([1, 1]));
+
+    // When each target call started: `slowBump` keeps its run's time (the entry's, stamped
+    // under the target's proposal lock as the run starts) under `<key>@<count>`. Two apps'
+    // calls start together; one app's second call starts once its first committed. Wall
+    // time cannot tell them apart on a loaded machine (the bodies are CPU work, and two at
+    // once share its cores); when each started can.
+    let started = |app: &str, key: String| {
+        let (alice, app) = (&alice, app.to_owned());
+        async move {
+            let at = strong_view(alice, &app, "get", json!({ "key": key })).await;
+            at.as_str()
+                .and_then(|t| t.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("{key} holds no start time: {at}"))
+        }
+    };
+    let (mut apart_gap, mut turn_gap) = (u64::MAX, u64::MAX);
+    let (mut apart, mut together) = (Duration::MAX, Duration::MAX);
+    for round in 0..2 {
+        let key = format!("apart{round}");
+        let (r, took) = both(left, right, &key, false, None).await;
+        assert_eq!(r.unwrap().result, json!([1, 1]));
+        apart = apart.min(took);
+        let (a, b) = (
+            started(left, format!("{key}@1")).await,
+            started(right, format!("{key}@1")).await,
+        );
+        apart_gap = apart_gap.min(a.abs_diff(b));
+        // Both start at once, so which takes the target's lock first varies.
+        let key = format!("same{round}");
+        let (r, took) = both(left, left, &key, false, None).await;
+        let mut counts: Vec<u64> = serde_json::from_value(r.unwrap().result).unwrap();
+        counts.sort_unstable();
+        assert_eq!(counts, [1, 2], "one app, its two calls in turn");
+        together = together.min(took);
+        let (first, second) = (
+            started(left, format!("{key}@1")).await,
+            started(left, format!("{key}@2")).await,
+        );
+        turn_gap = turn_gap.min(second.saturating_sub(first));
+    }
+    eprintln!(
+        "{spins} spins; two apps at once: {apart:?}, starts {apart_gap} ms apart; \
+         one app twice: {together:?}, starts {turn_gap} ms apart"
+    );
+    assert!(
+        apart_gap.saturating_mul(2) < turn_gap,
+        "two apps' calls started {apart_gap} ms apart, one app's {turn_gap} ms: not at once"
+    );
+
+    // A run that times out after both calls: each target applied its call once. Sent
+    // once, raw: `apps().call` sends a call again while the node answers `503` (D70), and
+    // a timeout is one, so through it the stalled run would run seven times, about 20 s.
+    let key = "replay".to_owned();
+    let stalled = alice
+        .transport()
+        .json(
+            // App ids are base64url: nothing in one needs escaping in a path.
+            Request::new(Method::POST, format!("apps/{source}/intents")).json(json!({
+                "method": "bumpBoth",
+                "args": { "a": left, "b": right, "key": &key, "spins": spins, "stall": true },
+                "idempotencyKey": &key,
+            })),
+        )
+        .await;
+    let e = stalled.unwrap_err();
+    assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
+    assert_eq!(count(left, &key).await, json!("1"));
+    assert_eq!(count(right, &key).await, json!("1"));
+    // The retry under the same key runs the caller again: both calls replay their answers.
+    let (retried, _) = both(left, right, &key, false, Some(key.clone())).await;
+    assert_eq!(retried.unwrap().result, json!([1, 1]));
+    assert_eq!(count(left, &key).await, json!("1"));
+    assert_eq!(count(right, &key).await, json!("1"));
+}
+
 /// D76: a call makes an outbound request itself. The forms app (kv) asks the captcha
 /// service (a signed release declaring Turnstile's siteverify) inside its call; the
 /// service checks the token with Turnstile from its own call, through the outbound gate
@@ -6242,7 +6396,7 @@ async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
         .upload(mpk_declaring(
             PACKAGE,
             "0.1.0",
-            &wasm("captcha"),
+            &wasm("fixture-captcha"),
             &publisher,
             &[calimero_outbound::TURNSTILE_VERIFY_URL],
         ))
@@ -6716,7 +6870,7 @@ async fn a_retry_replays_even_after_an_upgrade_removed_its_method() {
         .unwrap();
     let gated = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -6777,7 +6931,7 @@ async fn a_retry_replays_even_after_an_upgrade_removed_its_method() {
 }
 
 /// Review nit, codes: a confirm method a stale front node did not know is confirm
-/// (here: a node that hosts no replica reads the directory's bundle, org-gated,
+/// (here: a node that hosts no replica reads the directory's bundle, team-space,
 /// while the group runs kv, whose `wipe` is a confirm method) still answers the
 /// spec's step-up, `412 CONFIRM_REQUIRED` with a challenge,
 /// not the leader's `422 ConfirmRequired`.
@@ -6787,7 +6941,7 @@ async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let gated = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
