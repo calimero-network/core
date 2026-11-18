@@ -146,8 +146,13 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 
 Tests: `cargo test -p calimero-log` runs a 3-node cluster in one process
 (replication, failover, restart from disk, a lost or older commit index, learner catch-up, no plaintext in snapshot files,
-a disk machine restarting without replay, a ~6 MiB state streamed to a new node) and
-the store format (`format::tests`).
+a disk machine restarting without replay, a ~6 MiB state streamed to a new node),
+the store format (`format::tests`), and a seeded fault simulator (`tests/sim.rs`:
+writes, crashes losing unsynced writes, restarts, partitions, dropped and delayed
+messages, snapshot builds and log purges; then no acknowledged write lost, strong
+reads see them, every replica's digest equal at one index). One test per seed in
+`ci_seeds!`; `SIM_SEED`, `SIM_RUNS` and `SIM_TRACE` replay, widen and print
+(docs: contribute/testing, "Seeded faults").
 
 Bench: `cargo bench -p calimero-log --bench log` (`benches/log.rs`): a proposal
 appended, committed and applied on one group, on 1 node and on a 3-node group
