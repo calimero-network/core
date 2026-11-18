@@ -1,0 +1,65 @@
+---
+title: Bundling & runtimes
+description: How the package ships (ESM, CJS and a browser build), its one dependency, which runtimes it runs on, and the browser concerns (origins, passkeys, CORS).
+sidebar:
+  order: 8
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Module formats
+
+The package is `"type": "module"` and ships three builds through its `exports`
+map:
+
+| Condition | File | Format |
+| --- | --- | --- |
+| `import` (bundlers, Node ESM) | `dist/index.mjs` | ESM |
+| `require` (Node CommonJS) | `dist/index.cjs` | CommonJS |
+| `browser` (bundler browser target) | `dist/index.browser.mjs` | ESM, minified |
+| `types` | `dist/index.d.ts` | TypeScript declarations |
+
+```ts
+import { CalimeroClient } from '@calimero-network/mero-js';
+// or: const { CalimeroClient } = require('@calimero-network/mero-js');
+```
+
+It sets `"sideEffects": false`, so a bundler drops what you do not import.
+
+## The one dependency
+
+[`@phala/dcap-qvl`](https://www.npmjs.com/package/@phala/dcap-qvl) verifies TDX
+quotes. It is imported dynamically, the first time the client meets a real
+quote, so a development page against mock quotes never loads it. In a browser
+build it needs Node polyfills for `buffer`, `crypto` and `stream`; see its README
+for Vite and webpack settings.
+
+## Runtimes
+
+| | Browser | Node 18+ | Deno / Bun | React Native |
+| --- | :-: | :-: | :-: | :-: |
+| `CalimeroClient` with an API key or a session | ✅ | ✅ | ✅ | ⚠️¹ |
+| `browserPasskey()` | ✅ | ❌² | ❌² | ❌² |
+| `releaseSource: 'github'` | ❌³ | ✅ | ✅ | ✅ |
+
+1. Needs WebCrypto with X25519: install `react-native-quick-crypto` as the global `crypto`.
+2. WebAuthn is a browser API. Elsewhere, sign in with an API key, or implement
+   `PasskeyProvider` yourself.
+3. GitHub's release downloads send no CORS headers; the default mirror does.
+
+## Browsers
+
+- **Origins.** The node runs passkey ceremonies, and answers CORS, only for
+  the origins it was started with (`--origins`, `http://localhost:3000` by
+  default), with passkeys bound to its `--rp-id` (`localhost` by default).
+  A page on another origin fails the ceremony.
+- **Secure context.** WebAuthn needs `https://` or `localhost`.
+- **Sessions.** Keep a `CalimeroSession` in `sessionStorage` and hand it to
+  `useSession` on the next page load, so a reload does not prompt for the
+  passkey again.
+
+<Aside type="note">
+  React bindings live in the separate
+  [`@calimero-network/mero-react`](https://github.com/calimero-network/mero-react)
+  package.
+</Aside>

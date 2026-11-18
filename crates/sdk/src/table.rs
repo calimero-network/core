@@ -5,7 +5,15 @@
 //! - `(table, "r", key..)` is the record, a deterministic CBOR value;
 //! - `(table, "i", index, fields.., key..)` is an index entry, holding the record's storage key;
 //! - `(table, "u", name, fields..)` is a unique entry, holding the record's storage key;
-//! - `(table, "c", name, fields..)` is a count, a CBOR integer changed only with `Store::add` (D47).
+//! - `(table, "c", name, fields..)` is a count, a CBOR integer changed only with `Store::add` (D47);
+//! - `(table, "n")` is how many records the table holds, a CBOR integer: written once by the
+//!   first write that finds it missing (by counting the records), then changed only with
+//!   `Store::add`;
+//! - `(table, "l")` holds CBOR `null` once `(table, "n")` is kept: a write reads it, never
+//!   `(table, "n")`, so inserts into one table do not conflict over the length (D47).
+//!
+//! A table written before the length existed has neither row until its first insert or
+//! removal; until then [`Table::len`] counts its records.
 
 use core::marker::PhantomData;
 
@@ -18,6 +26,13 @@ use crate::encoding::key::{self, KeyPart, ToKey};
 use crate::encoding::value;
 use crate::error::{StorageError, TableError};
 use crate::store::{check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
+
+/// The kind part of the row holding how many records the table holds.
+const LEN: &str = "n";
+/// The kind part of the row saying [`LEN`] is kept; it is written once and only ever read.
+const LEN_KEPT: &str = "l";
+/// What the [`LEN_KEPT`] row holds: CBOR `null`.
+const PRESENT: &[u8] = &[0xF6];
 
 /// A named set of fields: an index, a unique constraint or a count.
 pub type FieldSet = (&'static str, &'static [&'static str]);
@@ -362,6 +377,48 @@ impl<T: Record, S: Store> Table<T, S> {
         }
     }
 
+    /// The encoded key of `(table, kind)`. Never over the key limit once a record key of this
+    /// table passed it: `(table, "r", key..)` is longer.
+    fn table_row(&self, kind: &str) -> Vec<u8> {
+        key::encode(&self.prefix(kind, &[], &[]))
+    }
+
+    /// How many records are stored, counted through one cursor without decoding any.
+    fn count_records(&self) -> Result<u64, StorageError> {
+        let base = self.encode(&self.prefix("r", &[], &[]))?;
+        let (start, end) = bounds(&base);
+        let mut cursor = self.store.range(&start, &end, false);
+        let mut n = 0;
+        loop {
+            let batch = cursor.next(MAX_RANGE_BATCH);
+            if batch.is_empty() {
+                return Ok(n);
+            }
+            n += batch.len() as u64;
+        }
+    }
+
+    /// Move the stored length by `delta` after the records changed by it. Nothing when it is
+    /// 0. When the length is kept, one read of [`LEN_KEPT`] and one `add`; otherwise (a table
+    /// stored before the length existed, or emptied by `clear`) the records are counted, as
+    /// they are now, and the length and [`LEN_KEPT`] written: the length is never started
+    /// from 0 under records it did not count.
+    fn adjust_len(&mut self, delta: i64) -> Result<(), StorageError> {
+        if delta == 0 {
+            return Ok(());
+        }
+        let len = self.table_row(LEN);
+        let kept = self.table_row(LEN_KEPT);
+        if self.store.get(&kept).is_some() {
+            self.store.add(&len, delta);
+            return Ok(());
+        }
+        let n = self.count_records()?;
+        self.store.put(&len, &value::to_vec(&n)?);
+        self.store.put(&kept, PRESENT);
+        Ok(())
+    }
+
     fn read(&self, record_key: &[u8]) -> Result<Option<T>, StorageError> {
         self.store
             .get(record_key)
@@ -381,7 +438,7 @@ impl<T: Record, S: Store> Table<T, S> {
         self.check_unique(&new, None)?;
         self.store.put(&new.record, &bytes);
         self.reindex(None, Some(&new));
-        Ok(())
+        Ok(self.adjust_len(1)?)
     }
 
     /// Insert or replace a record; unique constraints still apply.
@@ -395,6 +452,9 @@ impl<T: Record, S: Store> Table<T, S> {
         self.check_unique(&new, old.as_ref())?;
         self.store.put(&new.record, &bytes);
         self.reindex(old.as_ref(), Some(&new));
+        if old.is_none() {
+            self.adjust_len(1)?;
+        }
         Ok(())
     }
 
@@ -454,6 +514,29 @@ impl<T: Record, S: Store> Table<T, S> {
         Ok(self.store.get(&self.record_key(&key.to_key())?).is_some())
     }
 
+    /// How many records the table holds: one read of the length every insert and removal
+    /// keeps.
+    ///
+    /// A table with no length row (stored before tables kept one and not inserted into or
+    /// removed from since, or emptied by [`Table::clear`]) is counted instead: one cursor
+    /// over every record, a host call per 1,000. Its next insert or removal writes the row.
+    pub fn len(&self) -> Result<u64, StorageError> {
+        let Some(bytes) = self.store.get(&self.encode(&self.prefix(LEN, &[], &[]))?) else {
+            return self.count_records();
+        };
+        u64::try_from(value::int_from_slice(&bytes)?)
+            .map_err(|_| StorageError::BadCounter(format!("{}.len", self.name.label())))
+    }
+
+    /// Whether the table holds no record: one read of the length, or, with no length row,
+    /// one cursor read of one record.
+    pub fn is_empty(&self) -> Result<bool, StorageError> {
+        let Some(bytes) = self.store.get(&self.encode(&self.prefix(LEN, &[], &[]))?) else {
+            return Ok(!self.any_under(&self.encode(&self.prefix("r", &[], &[]))?));
+        };
+        Ok(value::int_from_slice(&bytes)? == 0)
+    }
+
     /// Change the record with this key and re-index what changed; false when it is absent.
     pub fn update<K: ToKey + ?Sized>(
         &mut self,
@@ -484,10 +567,12 @@ impl<T: Record, S: Store> Table<T, S> {
             return Ok(false);
         };
         self.remove_record(&record)?;
+        self.adjust_len(-1)?;
         Ok(true)
     }
 
-    /// Remove a record already read, with its index, unique and count entries: no read.
+    /// Remove a record already read, with its index, unique and count entries: no read. The
+    /// caller moves the length ([`Table::adjust_len`]), once for every record it removed.
     fn remove_record(&mut self, record: &T) -> Result<(), StorageError> {
         let old = self.entries(record)?;
         self.store.delete(&old.record);
@@ -504,23 +589,35 @@ impl<T: Record, S: Store> Table<T, S> {
     /// Keep only the records `keep` accepts; returns how many were removed. Every record is
     /// read once, through one cursor, and a rejected one is removed from what was read (a
     /// delete for it and each of its index and unique entries, an `add` per count), with no
-    /// second read. Each removal costs `1 + indexes + uniques + counts` writes against the
-    /// run's 10,000: past that, use [`Table::remove_by`] or [`Table::clear_some`] a slice per run.
-    pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) -> Result<u64, StorageError> {
+    /// second read; the length moves once for all of them. Each removal costs
+    /// `1 + indexes + uniques + counts` writes against the run's 10,000: past that, use
+    /// [`Table::remove_by`] or [`Table::clear_some`] a slice per run.
+    pub fn retain(&mut self, keep: impl FnMut(&T) -> bool) -> Result<u64, StorageError> {
+        let mut removed = 0;
+        let outcome = self.retain_counting(keep, &mut removed);
+        // The length follows what was removed, even when a later record failed.
+        self.adjust_len(-len_delta(removed))?;
+        outcome.map(|()| removed)
+    }
+
+    fn retain_counting(
+        &mut self,
+        mut keep: impl FnMut(&T) -> bool,
+        removed: &mut u64,
+    ) -> Result<(), StorageError> {
         let base = self.encode(&self.prefix("r", &[], &[]))?;
         let (start, end) = bounds(&base);
         let mut all = self.store.range(&start, &end, false);
-        let mut removed = 0;
         loop {
             let batch = all.next(MAX_RANGE_BATCH);
             if batch.is_empty() {
-                return Ok(removed);
+                return Ok(());
             }
             for (_, bytes) in batch {
                 let record: T = value::from_slice(&bytes)?;
                 if !keep(&record) {
                     self.remove_record(&record)?;
-                    removed += 1;
+                    *removed += 1;
                 }
             }
         }
@@ -545,28 +642,42 @@ impl<T: Record, S: Store> Table<T, S> {
             });
         }
         let base = self.encode(&self.prefix("i", &[index], prefix))?;
-        let (start, end) = bounds(&base);
-        let mut found = self.store.range(&start, &end, false);
         let mut removed = 0;
-        while removed < max {
-            let want = (max - removed).min(u64::from(MAX_RANGE_BATCH)) as u32;
-            let batch = found.next(want);
-            if batch.is_empty() {
-                return Ok(Progress {
-                    removed,
-                    done: true,
-                });
-            }
-            for (_, record_key) in batch {
-                let record = self.read(&record_key)?.ok_or(StorageError::Dangling)?;
-                self.remove_record(&record)?;
-                removed += 1;
-            }
-        }
+        let outcome = self.remove_under(&base, max, &mut removed, |t, record_key| {
+            t.read(&record_key)?.ok_or(StorageError::Dangling)
+        });
+        self.adjust_len(-len_delta(removed))?;
+        let exhausted = outcome?;
         Ok(Progress {
             removed,
-            done: !self.any_under(&base),
+            done: exhausted || !self.any_under(&base),
         })
+    }
+
+    /// Remove at most `max` of the records the entries under `base` lead to (`record` reads
+    /// one from its entry's value), counting them in `removed`; whether the entries ran out.
+    fn remove_under(
+        &mut self,
+        base: &[u8],
+        max: u64,
+        removed: &mut u64,
+        record: impl Fn(&Self, Vec<u8>) -> Result<T, StorageError>,
+    ) -> Result<bool, StorageError> {
+        let (start, end) = bounds(base);
+        let mut found = self.store.range(&start, &end, false);
+        while *removed < max {
+            let want = (max - *removed).min(u64::from(MAX_RANGE_BATCH)) as u32;
+            let batch = found.next(want);
+            if batch.is_empty() {
+                return Ok(true);
+            }
+            for (_, entry) in batch {
+                let record = record(self, entry)?;
+                self.remove_record(&record)?;
+                *removed += 1;
+            }
+        }
+        Ok(false)
     }
 
     /// Remove at most `max` records, in key order, with their index, unique and count
@@ -574,27 +685,15 @@ impl<T: Record, S: Store> Table<T, S> {
     /// clear a table too large for one run's writes.
     pub fn clear_some(&mut self, max: u64) -> Result<Progress, StorageError> {
         let base = self.encode(&self.prefix("r", &[], &[]))?;
-        let (start, end) = bounds(&base);
-        let mut all = self.store.range(&start, &end, false);
         let mut removed = 0;
-        while removed < max {
-            let want = (max - removed).min(u64::from(MAX_RANGE_BATCH)) as u32;
-            let batch = all.next(want);
-            if batch.is_empty() {
-                return Ok(Progress {
-                    removed,
-                    done: true,
-                });
-            }
-            for (_, bytes) in batch {
-                let record: T = value::from_slice(&bytes)?;
-                self.remove_record(&record)?;
-                removed += 1;
-            }
-        }
+        let outcome = self.remove_under(&base, max, &mut removed, |_, bytes| {
+            value::from_slice(&bytes)
+        });
+        self.adjust_len(-len_delta(removed))?;
+        let exhausted = outcome?;
         Ok(Progress {
             removed,
-            done: !self.any_under(&base),
+            done: exhausted || !self.any_under(&base),
         })
     }
 
@@ -714,6 +813,11 @@ impl<T: Record, S: Store> Table<T, S> {
         };
         u64::try_from(sum).map_err(|_| StorageError::BadCounter(name.into()))
     }
+}
+
+/// A number of records as a length change: a run removes far fewer than `i64::MAX`.
+fn len_delta(n: u64) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
 }
 
 impl<T: Record, S: Store> crate::collections::Nestable<S> for Table<T, S> {

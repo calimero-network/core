@@ -1,0 +1,26 @@
+---
+/**
+ * Figure — wraps a hand-authored (structural) SVG in the animated diagram
+ * container + a Replay button, so static SVGs get the same step-cascade and
+ * reset behaviour as the data-driven SeqDiagram. The SVG (with `seq-step`
+ * groups) is passed as the default slot.
+ *
+ *   <Figure id="d-scope-tree">
+ *     <svg ...> ... <g class="seq-step" style="--step-i:0"> ... </g> ... </svg>
+ *   </Figure>
+ *
+ * Authored as an Astro component (not JSX), so raw SVG with hyphenated
+ * attributes (stroke-width, text-anchor, …) passes through untouched.
+ */
+interface Props { id: string; wide?: boolean }
+const { id, wide = false } = Astro.props as Props;
+---
+
+<div class="diagram-tools">
+  <button class="replay-btn" data-replay={id}>&#9654; Replay</button>
+</div>
+<div class={`diagram-container animating${wide ? ' seq' : ''}`} id={id}>
+  <slot />
+</div>
+
+<script>import '../scripts/diagrams.client.ts';</script>

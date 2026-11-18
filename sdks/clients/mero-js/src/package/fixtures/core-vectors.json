@@ -1,0 +1,58 @@
+{
+  "canonicalUtf8": "{\"appVersion\":\"1.2.3\",\"compute\":{\"hash\":\"6b71504fa99bda90624abd4f71fd91a3a9911ca6d3858bb4e7d8b58cbf2690e1\",\"path\":\"compute.wasm\",\"size\":38},\"minRuntimeVersion\":\"0.1.0\",\"package\":\"com.example.pipeline\",\"pipelines\":[{\"hash\":\"49349aef729f224d688499a6ab4c17ab69f92224ed154675f3836ffb7044c67b\",\"path\":\"pipelines/double.yaml\",\"size\":46},{\"hash\":\"679e2cebafdd098363a3a9f64362957195c9a87c21feb7e4f4589636cc3c1bbe\",\"path\":\"pipelines/triple.yaml\",\"size\":46}],\"signerId\":\"did:key:z6MkehRgf7yJbgaGfYsdoAsKdBPE3dj2CYhowQdcjqSJgvVd\",\"version\":\"1.0\"}",
+  "payloadHex": "8270f18418001c0db5cc06d9ef7c0ad6616a033cabf4f8efe5153fba7e18a380",
+  "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "signedManifest": {
+    "appVersion": "1.2.3",
+    "compute": {
+      "hash": "6b71504fa99bda90624abd4f71fd91a3a9911ca6d3858bb4e7d8b58cbf2690e1",
+      "path": "compute.wasm",
+      "size": 38
+    },
+    "minRuntimeVersion": "0.1.0",
+    "package": "com.example.pipeline",
+    "pipelines": [
+      {
+        "hash": "49349aef729f224d688499a6ab4c17ab69f92224ed154675f3836ffb7044c67b",
+        "path": "pipelines/double.yaml",
+        "size": 46
+      },
+      {
+        "hash": "679e2cebafdd098363a3a9f64362957195c9a87c21feb7e4f4589636cc3c1bbe",
+        "path": "pipelines/triple.yaml",
+        "size": 46
+      }
+    ],
+    "signature": {
+      "algorithm": "ed25519",
+      "publicKey": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+      "signature": "SapcTf9yQVnNNd2DAckIXn3RztNq8-Frr3OJApXXQqQE6yonLdj7Kic-AKkQ9PFZO1vtL1RaK4gQnPvn-_ZhAg"
+    },
+    "signerId": "did:key:z6MkehRgf7yJbgaGfYsdoAsKdBPE3dj2CYhowQdcjqSJgvVd",
+    "version": "1.0"
+  },
+  "signerId": "did:key:z6MkehRgf7yJbgaGfYsdoAsKdBPE3dj2CYhowQdcjqSJgvVd",
+  "unsignedManifest": {
+    "appVersion": "1.2.3",
+    "compute": {
+      "hash": "6b71504fa99bda90624abd4f71fd91a3a9911ca6d3858bb4e7d8b58cbf2690e1",
+      "path": "compute.wasm",
+      "size": 38
+    },
+    "minRuntimeVersion": "0.1.0",
+    "package": "com.example.pipeline",
+    "pipelines": [
+      {
+        "hash": "49349aef729f224d688499a6ab4c17ab69f92224ed154675f3836ffb7044c67b",
+        "path": "pipelines/double.yaml",
+        "size": 46
+      },
+      {
+        "hash": "679e2cebafdd098363a3a9f64362957195c9a87c21feb7e4f4589636cc3c1bbe",
+        "path": "pipelines/triple.yaml",
+        "size": 46
+      }
+    ],
+    "version": "1.0"
+  }
+}

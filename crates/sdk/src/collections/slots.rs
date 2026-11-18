@@ -318,9 +318,10 @@ fn collection_get<C: Nestable<S>, S: Store + Clone>(
 }
 
 /// Whether a stored row under a collection's own prefix is bookkeeping rather than content: a
-/// length or count at 0 (`(.., "n")`, a table's `(.., "c", name, ..)`), or `Text`'s next id
-/// (`(.., "i")`), at the collection's level or any collection's under it. The host keeps a row
-/// `storage.add` brought to 0, so an emptied collection still has these.
+/// length or count at 0 (`(.., "n")`, a table's `(.., "c", name, ..)`), `Text`'s next id
+/// (`(.., "i")`) or a table's mark that it keeps its length (`(.., "l")`), at the collection's
+/// level or any collection's under it. The host keeps a row `storage.add` brought to 0, so an
+/// emptied collection still has these.
 fn is_bookkeeping(mut parts: &[KeyPart], stored: &[u8]) -> bool {
     let zero = || value::int_from_slice(stored).is_ok_and(|n| n == 0);
     // Down through the collections nested in this one: (.., "c", key-bytes, ..).
@@ -332,7 +333,7 @@ fn is_bookkeeping(mut parts: &[KeyPart], stored: &[u8]) -> bool {
     }
     match parts {
         [KeyPart::Str(kind)] if kind == "n" => zero(),
-        [KeyPart::Str(kind)] if kind == "i" => true,
+        [KeyPart::Str(kind)] if kind == "i" || kind == "l" => true,
         [KeyPart::Str(kind), KeyPart::Str(_), ..] if kind == "c" => zero(),
         _ => false,
     }
