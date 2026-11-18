@@ -2055,6 +2055,11 @@ impl Node {
             .write()
             .map_err(|e| eyre::eyre!("{e}"))?
             .insert(app.group, Arc::clone(&g));
+        // Only `replicas[0]` initializes: at creation the node that forms the
+        // group, later one that holds it already (openraft refuses to
+        // initialize a node with a vote or a log, which `initialize` treats as
+        // done). A move keeps the current replicas first (`api::ops::move_replicas`),
+        // so a node that has not joined yet never forms a group of its own.
         if app.replicas.first() == Some(&self.config.node_id) {
             // A restore's seed forms the new group alone: it seeds the state,
             // then adds the others (`restore`).

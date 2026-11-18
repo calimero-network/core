@@ -251,7 +251,11 @@ rest, deleting their data from that node.
 - **Creation.** `CreateApp` assigns the next group number. The first replica in
   the instance's replica list initializes the group with all replicas as
   voters; whichever replica becomes leader runs `init` and appends the
-  `componentInit` entry.
+  `componentInit` entry. The first replica stays one that holds the group: a
+  move keeps the current replicas first in every list it records, and the
+  nodes it adds after them, so a node that has not joined yet never forms a
+  group of its own (initializing a node that already holds the group does
+  nothing).
 - **Late start.** A Raft RPC for a group a node does not run yet goes through
   the engine's group factory: the node starts it if the directory lists it as a
   replica, and answers "not hosted here" otherwise.
@@ -271,15 +275,17 @@ before writing anything. The leader:
 1. refuses any target node whose attested release the app's owner has not
    approved;
 2. records the union of old and new replicas in the directory, so every node
-   involved starts the group;
+   involved starts the group (the current replicas first, in their order, then
+   the new ones, so the first replica is still one that formed or joined the
+   group);
 3. hands each new node the app's bundle and every blob the app's state
    marks (bytes that live outside the log, and that a cluster grown from one
    node holds only on that node), so the new replica can run and serve the app
    without the old ones;
 4. adds each new node as a learner and waits for it to catch up;
 5. changes the voter set to the new replicas (joint consensus);
-6. records the new replica list, after which reconcile stops the group on
-   nodes that left.
+6. records the new replica list (the replicas that stay first, in their
+   order), after which reconcile stops the group on nodes that left.
 
 A rebalancer may repeat or race a move. A move to the replica set the app
 already has (as a set, in any order) writes nothing and answers

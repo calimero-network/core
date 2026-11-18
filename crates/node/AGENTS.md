@@ -957,9 +957,15 @@ is its command line.
   leader hands them the app's bundle and the blobs its state marks
   (`Node::hand_over_bytes`, over `internal/blob`): a bundle or blob stored while
   the cluster was one node is held by that node alone ("a majority" of one).
+  Every replica set a move records keeps the current replicas first, in their
+  order, then the new ones (`move_replicas`): `replicas[0]` is the node that
+  initializes the group (`Node::ensure_app_group`), and a sorted union made a
+  newcomer with a lower id form an empty group of its own, which a majority of
+  newcomers elected and which then overwrote the real group's log (B8).
   Regressions: `replica_moves_are_idempotent_and_one_at_a_time`,
   `a_cluster_started_on_one_node_grows_and_survives_losing_it` (node 1 stops
-  after the move; the app still runs and its blob downloads).
+  after the move; the app still runs and its blob downloads),
+  `a_replica_move_onto_lower_id_nodes_never_forms_a_second_group`.
 - **Placement read** (`GET /ops/placement`, `meroctl ops placement`, for mdma's
   rebalancer): each app's id, group and replicas, each node's id, zone,
   attested release (`Node::release_of_node`, at most `PLACEMENT_RELEASE_WAIT`)
