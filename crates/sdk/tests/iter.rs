@@ -313,9 +313,10 @@ fn clearing_a_table_removes_its_indexes_and_leaves_its_neighbours() {
     assert_eq!(other.iter().count(), 1);
     assert_eq!(
         store.len(),
-        2,
-        "the other table's record and index entry remain"
+        4,
+        "the other table's record, index entry, length and its mark remain"
     );
+    assert_eq!(other.len().unwrap(), 1);
 }
 
 /// What a node charges a guest is host calls and writes (at most 10,000 writes a run).

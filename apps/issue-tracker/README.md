@@ -36,6 +36,7 @@ below, plus `issueCount`. Errors: `Exists`, `NotFound` (each with its `id`),
 | `listByLabel` | `labels.find("byLabel", [label])` | the issues with that label |
 | `listByAssignee` | `find("byAssignee", [who])` | that person's issues |
 | `statusCounts` | `count("byStatus", [status])` | one read per status, no issue loaded |
+| `issueCount` | `len()` | one read: the table's maintained length |
 
 Changing an indexed field goes through `Table::update`, which keeps every index
 and count in step. The indexes are part of the app's state, replicated with it,
