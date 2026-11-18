@@ -1,0 +1,101 @@
+{
+  "abiVersion": 1,
+  "errors": {
+    "PrivateThroughApp": {},
+    "UnknownCaller": {}
+  },
+  "events": {
+    "Added": {
+      "at": "string",
+      "owner": "string"
+    }
+  },
+  "methods": {
+    "addEvent": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Adds an event to the caller's own calendar. Any app may call it as itself\n(`allow(app = \"*\")`); a call another app makes as a person is the person's.",
+      "kind": "call",
+      "params": [
+        [
+          "title",
+          "string"
+        ],
+        [
+          "at",
+          "string"
+        ],
+        [
+          "private",
+          "option<bool>"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "eventCount": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "How many events the caller has, private ones included: one read.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "u64"
+    },
+    "init": {
+      "allowSystem": false,
+      "confirm": false,
+      "kind": "init",
+      "params": [],
+      "public": false,
+      "returns": null
+    },
+    "myEvents": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The caller's own events in time order. Through another app (`env::via()`), the private\nones are left out.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "list<Event>"
+    }
+  },
+  "state": {
+    "fields": {
+      "events": "unorderedMap"
+    },
+    "search": {
+      "events": []
+    },
+    "version": 1
+  },
+  "types": {
+    "Event": {
+      "fields": [
+        [
+          "title",
+          "string"
+        ],
+        [
+          "at",
+          "string"
+        ],
+        [
+          "private",
+          "bool"
+        ]
+      ],
+      "kind": "record"
+    }
+  },
+  "world": "calimero:app@0.5.3"
+}

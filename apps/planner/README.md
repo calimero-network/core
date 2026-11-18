@@ -12,6 +12,10 @@ owned by the same person (`<instance>.calendar`), and links it. The planner read
 `env::linked("calendar")` and schedules on it as itself, so the agenda is the planner's own.
 `upgrade-unit` (or the consent page's `upgradeUnit`) upgrades the two together.
 
+The calendar is called through `uses::calendar`, a typed client `build.rs` generates from
+the calendar's ABI vendored in `calimero/abi/calendar.json` and pinned in `calimero.lock`
+(`meroctl app uses update calendar --from ../calendar` refreshes them).
+
 ```bash
 cargo test --manifest-path apps/planner/Cargo.toml
 ```

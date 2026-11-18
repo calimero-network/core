@@ -19,8 +19,9 @@
 
 use calimero_sdk::prelude::*;
 
-/// One event, as `myEvents` lists it.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+/// One event, as `myEvents` lists it. `AbiType` describes it in the ABI, so an app that uses
+/// the calendar gets it as a typed struct in its generated client.
+#[derive(Clone, serde::Serialize, serde::Deserialize, AbiType)]
 pub struct Event {
     pub title: String,
     /// When, as the caller writes it (an ISO date and time, say).

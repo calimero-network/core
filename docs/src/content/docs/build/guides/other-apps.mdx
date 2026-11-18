@@ -42,6 +42,59 @@ the references on the release's capability card, and an upgrade's consent page
 names the apps a new release starts using or uses differently. The full rules are in
 [Packaging and signing](/build/packaging-signing/).
 
+### Pin a release and generate its client
+
+Pin each reference to a release of its package and vendor that release's ABI:
+
+```bash
+meroctl app uses update calendar --from ../calendar   # its crate, built; or its .mpk
+meroctl app uses check                                 # what CI runs: the three agree
+```
+
+`update` checks that the release is the declared package, inside the range, and has
+every method in `methods`, then writes `calimero.lock` (the exact version, the mode and
+the ABI's hash) and `calimero/abi/calendar.json`. Commit both. `--from` takes the target
+app's crate (built, its version read from its `Cargo.toml`), its signed `.mpk`, its
+component or its ABI JSON (those two with `--version`). `app pack` packs the lock into
+the release and refuses one that disagrees with the ABI.
+
+Your `build.rs` then turns the vendored ABIs into one typed client per reference:
+
+```toml
+[build-dependencies]
+calimero-app-build = { git = "https://github.com/calimero-network/core", tag = "<release>" }
+```
+
+```rust
+// build.rs
+fn main() {
+    calimero_app_build::uses::build();
+}
+```
+
+```rust
+// src/lib.rs
+use calimero_sdk::prelude::*;
+
+app::uses!(); // brings in the `uses` module
+```
+
+Each reference becomes a module `uses::<name>` with:
+
+- a `Client` with one method per method of the target an app may call
+  (`#[app::allow(app = ..)]`, no passkey step); with `methods` listed, only those. Calls
+  go through `env::xcall_call`, views through `env::xcall_view`, and `send()` has the
+  calls as asynchronous messages (`env::xcall`);
+- the target's types from its ABI's `types`, and a type it names without describing
+  as its JSON (`serde_json::Value`);
+- `Error`, the target's own `#[app::error]` enum, plus `Other` for any other failure.
+  On the wire it stays `XcallFailed { code, fields }`: `?` passes it on unchanged.
+
+`uses::<name>()` reads the link (`env::linked`) and answers `NotLinked { name }` when
+there is none; `uses::<name>::Client::linked()` is the same as an `Option`. A misspelled
+method or a wrong argument is now a compile error, and a new release of the target
+reaches your code only through `meroctl app uses update`.
+
 Three example apps in core's `apps/` show each step, with harness tests:
 
 - [`calendar`](https://github.com/calimero-network/core/tree/master/apps/calendar): the app
@@ -51,7 +104,7 @@ Three example apps in core's `apps/` show each step, with harness tests:
   Each planner comes with its own calendar and calls it as itself.
 - [`booking`](https://github.com/calimero-network/core/tree/master/apps/booking): `attach`
   plus delegation. The owner attaches a calendar, and with a person's grant a booking lands
-  in their own calendar.
+  in their own calendar; the calendar's `PrivateThroughApp` comes back typed.
 
 ## 2. Use an app created with your instance
 
@@ -64,17 +117,21 @@ When someone creates an instance of your release, the node first creates each
 pub fn init(links: Option<BTreeMap<String, String>>) -> app::Result<Self> { .. }
 ```
 
-Any method can read a link at any time with `env::linked`:
+Any method calls it through its generated client, which reads the link
+(`env::linked`) each time:
 
 ```rust
 pub fn put(&mut self, key: String, value: String) -> app::Result<()> {
-    // `Error::NoKv` is a variant of your `#[app::error]` enum.
-    let kv = env::linked("kv").ok_or_else(|| Error::NoKv.into())?;
-    let args = std::collections::BTreeMap::from([("key", key), ("value", value)]);
-    env::xcall(&kv, "set", &args)?;
+    let kv = uses::kv()?;            // `NotLinked { name: "kv" }` without a link
+    let _version: u64 = kv.set(&key, &value, None)?;
     Ok(())
 }
 ```
+
+A call commits in the other app's own log before your run continues. It is **not
+atomic** with your run: if your method fails after it, your changes are dropped but the
+other app keeps what the call did. Make the call last, or make the other app's method
+safe to have run. A view reads the other app's latest committed state.
 
 The member must admit your app, like any app called by another
 ([Cross-app calls](/build/guides/cross-context/#1-admit-the-caller)).
@@ -95,9 +152,13 @@ release that app runs and whether that release is inside your range (`inRange`).
 Read the link each time you call. The owner may attach another app later, or none:
 
 ```rust
-let Some(calendar) = env::linked("calendar") else {
-    app::bail!(Error::NoCalendar); // attach a calendar first
-};
+let calendar = uses::calendar()?; // `NotLinked { name: "calendar" }` until one is attached
+match calendar.add_event(&title, &at, private) {
+    Ok(()) => {}
+    // The calendar's own error, typed.
+    Err(uses::calendar::Error::PrivateThroughApp) => app::bail!(Error::PrivateNotAllowed),
+    Err(other) => return Err(other.into()), // passed on as `XcallFailed`
+}
 ```
 
 ## 4. Upgrade together
@@ -160,8 +221,25 @@ grant back with `DELETE /apps/{app}/delegations/{target}`, and
   1.0.0-rc.31 or later. Before that the node refuses them (`409 FEATURE_NOT_ACTIVE`).
 </Aside>
 
+## Without a generated client
+
+A target your app only learns at run time (an id a caller passes, not a reference) has
+no vendored ABI. Call it with the raw calls the client is built on, `env::xcall_call`,
+`env::xcall_view` and `env::xcall`, with the method's name and its arguments as JSON
+([Cross-app calls](/build/guides/cross-context/)):
+
+```rust
+let version: String = env::xcall_call(&app_id, "set", &json!({ "key": key, "value": value }))?;
+```
+
+Nothing checks the name or the arguments before the run: a mistake is an
+`XcallFailed` from the target, and `u64`/`i64` travel as decimal strings, bytes as
+base64url, by hand.
+
 ## Test it
 
 In the test harness, `TestApp::link(name, Some(app))` sets what `env::linked`
 returns, and `deliver_for(from, account, method, args)` runs a delivered call as the
-person, with `env::via()` naming `from` ([Testing](/build/testing/)).
+person, with `env::via()` naming `from` ([Testing](/build/testing/)). `mock_app(app, handler)`
+plays the other app: return `Err(json!({ "code": "PrivateThroughApp", "fields": {} }))`
+to see your code get its typed error.

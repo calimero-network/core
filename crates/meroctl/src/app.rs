@@ -32,6 +32,11 @@ pub enum AppCmd {
     /// An app's ABI: print it, or compare two releases. No node.
     #[command(subcommand)]
     Abi(crate::make::AbiCmd),
+    /// The apps the crate `uses`: pin each to a release and vendor its ABI
+    /// (`update`), or check the lock and the vendored ABIs (`check`); the
+    /// crate's `build.rs` generates their typed clients from them. No node.
+    #[command(subcommand)]
+    Uses(crate::make::uses::UsesCmd),
     /// The signing key a release is signed with: a package's identity is its
     /// package id and its signer. No node.
     #[command(subcommand)]
@@ -176,6 +181,7 @@ impl AppCmd {
                 | Self::Build(_)
                 | Self::Codegen { .. }
                 | Self::Abi(_)
+                | Self::Uses(_)
                 | Self::Signer(_)
                 | Self::Pack(_)
                 | Self::Sign(_)
@@ -193,6 +199,7 @@ pub async fn run_offline(cmd: AppCmd) -> eyre::Result<Value> {
         AppCmd::Build(a) => make::build(&a),
         AppCmd::Codegen { args } => make::codegen(&args),
         AppCmd::Abi(c) => make::abi(&c),
+        AppCmd::Uses(c) => make::uses::run(&c),
         AppCmd::Signer(c) => make::signer(&c),
         AppCmd::Pack(a) => make::pack(&a),
         AppCmd::Sign(a) => make::sign(&a),
@@ -251,6 +258,7 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
         | AppCmd::Build(_)
         | AppCmd::Codegen { .. }
         | AppCmd::Abi(_)
+        | AppCmd::Uses(_)
         | AppCmd::Signer(_)
         | AppCmd::Pack(_)
         | AppCmd::Sign(_)

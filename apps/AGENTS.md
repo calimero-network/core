@@ -53,8 +53,8 @@ It prints progress as the run reports it, then the result, each output and the u
 | `name-registry`          | Usernames | Claim, verdict and admin tables: one owner per name, decided by the admins (the first claim applied wins); the app owner is the first admin, `setAdmins` hands the role on, a lost claim is renewed with `rebid` after a release |
 | `rooms`                  | Room booking | The node's Rooms tests (`crates/node/tests/rooms.rs`) and the fault test |
 | `calendar`               | Each caller's events | The app the units examples build on: a person's and an app's own events; `env::via()` keeps private events from an app acting for the person |
-| `planner`                | Team planner | `uses` with `mode = "create"`: a calendar created with each instance, read with `env::linked`, called as the planner |
-| `booking`                | Booking page | `uses` with `mode = "attach"` and `methods`: a calendar the owner attaches, called as the person with their grant |
+| `planner`                | Team planner | `uses` with `mode = "create"`: a calendar created with each instance, called as the planner through its generated client (`uses::calendar`) |
+| `booking`                | Booking page | `uses` with `mode = "attach"` and `methods`: a calendar the owner attaches, called as the person with their grant; the calendar's own error comes back typed (`uses::calendar::Error`) |
 | `compute-redact`         | CSV redaction | `#[app::compute]` runs: a preview then one run per part, a queue of at most 4 active runs, the compute component (`meroctl app build --compute-out`) that may import only the compute world; the policy is set by an admin and copied into each job; `share` publishes a done job's outputs (`compute::publish`) and `link` grants a download (`blobs.grant`) |
 | `fixture-kv`             | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls, actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
 | `fixture-compute`        | The compute fixture | Compute methods that stream files, report progress and break each cap; `crates/node/tests/job_runs.rs` and `crates/meroctl/compute/tests` |
@@ -83,6 +83,23 @@ doc comment. Their end-to-end tests are scenario files:
   `releases/<version>.mpk`, the signed bundle that release shipped, to the
   crate's build: the new code must read what every shipped release stored
   (`apps/kv-store`; `build/testing.mdx`).
+
+## Apps that use other apps
+
+An app whose release declares `[package.metadata.calimero.uses]` (`planner`, `booking`)
+calls each target through a typed client its `build.rs` generates
+(`calimero_app_build::uses::build()` in `build.rs`, brought in with `app::uses!()`; a build-dependency on `crates/app-build`, which the
+apps already reach as a dev-dependency, so their lockfiles do not change) from two committed
+files: `calimero.lock` and `calimero/abi/<name>.json`. Refresh them after the target changes
+its ABI, then commit both:
+
+```bash
+cd apps/planner && meroctl app uses update calendar --from ../calendar
+meroctl app uses check
+```
+
+A build fails while the lock, the vendored ABI and `Cargo.toml` disagree. A call commits in the
+target's log and is not rolled back if the run fails afterwards.
 
 ## App Structure
 
