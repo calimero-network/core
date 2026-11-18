@@ -53,7 +53,8 @@ The shared release version of the public crates is `version` under
 [RELEASING.md](RELEASING.md) has the whole flow, what a release publishes,
 and the rules for titles and breaking changes shared by every repository.
 
-A release PR (`chore(release): cut X`) sets that version; merging it to
+A release PR (`chore(release): cut X`) sets that version, and the SDKs' `VERSION`
+with `python3 scripts/sdks.py version-sync` after it; merging it to
 master publishes the release, with notes generated from the titles of the
 pull requests merged since the last one (`release.yml`: the tag, the binaries, the image).
 It also keeps the [upgrade path](docs/src/content/docs/contribute/testing.mdx#upgrade-path)

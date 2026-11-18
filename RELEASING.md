@@ -152,9 +152,11 @@ check lints them) and to what counts as breaking.
 ### How a release is cut
 
 - **Version.** The one version of every public crate, `merod` and `meroctl` is `version` under `[workspace.metadata.workspaces]` in the root
-  `Cargo.toml` (`1.0.0-rc.30` at the time of writing). Nothing else holds it.
+  `Cargo.toml` (`1.0.0-rc.31` at the time of writing). Nothing else holds it.
 - **Release pull request.** `chore(release): cut X` sets that version to `X`,
-  and nothing else. Deciding to cut a release and merging this pull request is
+  and the SDKs' root `VERSION` to the same (`python3 scripts/sdks.py version-sync`
+  then writes it into every SDK's version files; the `SDK scope` job fails while
+  they differ), and nothing else. Deciding to cut a release and merging this pull request is
   a human's call; an agent drafts one only when asked.
 - **Release notes, not a changelog file.** Core keeps no `CHANGELOG.md`: a
   hand-written one conflicted in nearly every pull request. The release's notes
