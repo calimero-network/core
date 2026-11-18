@@ -134,12 +134,15 @@ prefix. A page reads at most `limit + 1` entries.
 
 Every type with pages also iterates: `iter()` from the start, `iter_with(opts)`
 (`reverse`, `from`, `to`, a starting `cursor`), and on maps and sets
-`prefix_iter(&prefix, opts)`. The iterator yields `Result<T, StorageError>` and
-reads through one host cursor: one call to open it, then one call per batch of
-`limit` entries (1,000 when unset), and only when the loop reaches the batch, so
-`take`, `find` or `break` stop the reads. No entry is read twice. A failed read
-is yielded once as `Err` and ends the iteration. On a node the cursor reads the
-state as of its first batch, so writes the loop makes are not met again.
+`prefix_iter(&prefix, opts)` (whole key parts, like `prefix`) and
+`starts_with_iter(&prefix, opts)` (the last string or bytes part as a prefix,
+like `starts_with`; `from` and `to` do not apply). The iterator yields
+`Result<T, StorageError>` and reads through one host cursor: one call to open
+it, then one call per batch of `limit` entries (1,000 when unset), and only
+when the loop reaches the batch, so `take`, `find` or `break` stop the reads.
+No entry is read twice. A failed read is yielded once as `Err` and ends the
+iteration. On a node the cursor reads the state as of its first batch, so
+writes the loop makes are not met again.
 
 ```rust
 for entry in self.items.iter() {
@@ -148,6 +151,11 @@ for entry in self.items.iter() {
 }
 let first_ten: Vec<Booking> = self.bookings.iter().take(10).collect::<Result<_, _>>()?;
 let recent = self.log.iter_with(FindOpts::default().reverse().limit(20)).take(20);
+// "user:1" and "user:22" alike, a batch at a time.
+let users: BTreeMap<String, String> = self
+    .entries
+    .starts_with_iter(&["user:".to_key_part()], FindOpts::default())
+    .collect::<Result<_, _>>()?;
 ```
 
 Each run is metered, so walking a large collection in one call costs fuel for
@@ -159,8 +167,8 @@ every entry it reads. A view that answers a client should still return one
 | Type | Operations |
 | --- | --- |
 | `Cell<T>` | `get`, `set`, `clear`, `is_set`, `get_or_default`, `replace` and `take` (return the old value), `update(\|old\| new)` |
-| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `clear_some(max)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values`, `retain`; a value can be a collection ([Collections inside collections](#collections-inside-collections)) |
-| `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `clear_some(max)`, `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `retain` |
+| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `clear_some(max)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `starts_with_iter`, `keys`, `values`, `retain`; a value can be a collection ([Collections inside collections](#collections-inside-collections)) |
+| `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `clear_some(max)`, `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `starts_with_iter`, `retain` |
 | `Vector<T>` | A collection per position ([Collections inside collections](#collections-inside-collections)), or values: `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `clear_some(max)` (from the end), `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
 | `Counter` | `get`, `add`, `increment`, `decrement` (stops at zero), `reset` |
 | `List<T>` | An ordered list with stable item ids: `push_back` / `push_front` / `insert_after(id, v)` / `insert_before(id, v)` (return the new id), `get(id)`, `set(id, v)`, `remove(id)`, `move_after(id, other)`, `move_before`, `move_to_front`, `move_to_back`, `len`, `is_empty`, `first`, `last`, `iter` / `iter_with` as `(id, value)` in order, `clear`, `clear_some(max)` |

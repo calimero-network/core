@@ -137,19 +137,10 @@ impl KvStore {
     /// covers only the keys under it.
     #[app::view]
     pub fn prefix(&self, prefix: String) -> app::Result<BTreeMap<String, String>> {
-        // `starts_with` matches a prefix of the key's string, which no iterator offers
-        // (`prefix_iter` matches whole key parts), so this walks its pages by cursor.
-        let prefix = [prefix.to_key_part()];
-        let mut out = BTreeMap::new();
-        let mut opts = FindOpts::default().limit(PAGE);
-        loop {
-            let page = self.entries.starts_with(&prefix, opts.clone())?;
-            out.extend(page.items);
-            match page.next {
-                Some(next) => opts = opts.cursor(next),
-                None => return Ok(out),
-            }
-        }
+        self.entries
+            .starts_with_iter(&[prefix.to_key_part()], FindOpts::default())
+            .collect::<Result<_, _>>()
+            .map_err(Into::into)
     }
 
     /// `limit` entries after the first `offset`, ascending. The skipped entries are still

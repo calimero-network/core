@@ -122,6 +122,103 @@ fn a_map_iterates_entries_keys_values_and_a_prefix() {
     assert_eq!(counts.len().unwrap(), 1);
 }
 
+/// Every item of `page` from `opts` on, walking its pages by `next` as a caller would by hand.
+fn walk<T>(
+    mut opts: FindOpts,
+    mut page: impl FnMut(FindOpts) -> Result<Page<T>, StorageError>,
+) -> Vec<T> {
+    let mut out = Vec::new();
+    loop {
+        let p = page(opts.clone()).unwrap();
+        out.extend(p.items);
+        match p.next {
+            Some(next) => opts = opts.cursor(next),
+            None => return out,
+        }
+    }
+}
+
+/// `"user:0"` to `"user:2499"`, between neighbours that sort just before and after them.
+fn users(store: MemStore) -> UnorderedMap<String, u32, MemStore> {
+    let mut m = UnorderedMap::with_store("m", store);
+    let mut keys: Vec<String> = (0..2_500).map(|i| format!("user:{i}")).collect();
+    keys.extend(["use", "user", "user;", "usera", "v"].map(String::from));
+    let values: Vec<u32> = (0..keys.len() as u32).collect();
+    assert_eq!(
+        m.extend(keys.iter().zip(&values)).unwrap(),
+        keys.len() as u64
+    );
+    m
+}
+
+#[test]
+fn a_map_streams_a_string_prefix_across_pages() {
+    let m = users(MemStore::new());
+    let user = ["user:".to_key_part()];
+    let streamed = all(m.starts_with_iter(&user, FindOpts::default()));
+    assert_eq!(streamed.len(), 2_500);
+    assert!(streamed.iter().all(|(k, _)| k.starts_with("user:")));
+    assert_eq!(
+        streamed,
+        walk(FindOpts::default(), |o| m.starts_with(&user, o)),
+        "the stream is the page walk"
+    );
+    let back = all(m.starts_with_iter(&user, FindOpts::default().reverse()));
+    assert_eq!(back, streamed.iter().rev().cloned().collect::<Vec<_>>());
+    // A small batch still walks every page, and `from` and `to` do not apply.
+    let small = FindOpts::default()
+        .limit(7)
+        .from(vec!["user:9".to_key_part()])
+        .to(vec!["user:1".to_key_part()]);
+    assert_eq!(all(m.starts_with_iter(&user, small)), streamed);
+    // The boundary: `"user:1"` takes `"user:1"`, `"user:10"`... and nothing after them.
+    let ones: Vec<String> = all(m.starts_with_iter(&["user:1".to_key_part()], FindOpts::default()))
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(ones.len(), 1 + 10 + 100 + 1_000);
+    assert!(ones.iter().all(|k| k.starts_with("user:1")));
+    assert_eq!(ones.last().map(String::as_str), Some("user:1999"));
+    assert_eq!(
+        all(m.starts_with_iter(&["usera".to_key_part()], FindOpts::default())),
+        [("usera".to_string(), 2_503)]
+    );
+    assert!(all(m.starts_with_iter(&["w".to_key_part()], FindOpts::default())).is_empty());
+    // An empty prefix: no parts is every entry, an empty string every string key.
+    assert_eq!(
+        all(m.starts_with_iter(&[], FindOpts::default())),
+        all(m.iter())
+    );
+    assert_eq!(
+        all(m.starts_with_iter(&["".to_key_part()], FindOpts::default())),
+        walk(FindOpts::default(), |o| m
+            .starts_with(&["".to_key_part()], o))
+    );
+    assert_eq!(m.starts_with_iter(&[], FindOpts::default()).count(), 2_505);
+}
+
+#[test]
+fn a_set_streams_a_string_prefix_across_pages() {
+    let mut s: Set<String, MemStore> = Set::with_store("s", MemStore::new());
+    let mut values: Vec<String> = (0..1_200).map(|i| format!("ap{i}")).collect();
+    values.extend(["a", "ao", "aq", "b"].map(String::from));
+    assert_eq!(s.extend(&values).unwrap(), 1_204);
+    let ap = ["ap".to_key_part()];
+    let streamed = all(s.starts_with_iter(&ap, FindOpts::default().limit(500)));
+    assert_eq!(streamed.len(), 1_200);
+    assert!(streamed.iter().all(|v| v.starts_with("ap")));
+    assert_eq!(
+        streamed,
+        walk(FindOpts::default(), |o| s.starts_with(&ap, o))
+    );
+    assert_eq!(
+        all(s.starts_with_iter(&["aq".to_key_part()], FindOpts::default())),
+        ["aq"]
+    );
+    assert_eq!(s.starts_with_iter(&[], FindOpts::default()).count(), 1_204);
+    assert!(all(s.starts_with_iter(&["c".to_key_part()], FindOpts::default())).is_empty());
+}
+
 #[test]
 fn a_set_iterates_in_order_and_extend_counts_the_new() {
     let mut s: Set<u32, MemStore> = Set::with_store("s", MemStore::new());
@@ -410,6 +507,40 @@ mod costs {
             "length, open, three batches, writes"
         );
         assert_eq!(v.first().unwrap(), Some(1_000));
+    }
+
+    #[test]
+    fn a_string_prefix_streams_through_one_cursor() {
+        let store = MemStore::new();
+        let m = users(store.clone());
+        let user = ["user:".to_key_part()];
+        store.reset_calls();
+        assert_eq!(
+            m.starts_with_iter(&user, FindOpts::default()).count(),
+            2_500
+        );
+        // Open, then batches of 1,000, 1,000 and 500, then the empty batch that ends it.
+        assert_eq!(store.calls(), 5);
+        store.reset_calls();
+        let pages = FindOpts::default().limit(1_000);
+        assert_eq!(walk(pages, |o| m.starts_with(&user, o)).len(), 2_500);
+        assert_eq!(
+            store.calls(),
+            9,
+            "by hand, each of the three pages of 1,000 opens a range and reads one past its end"
+        );
+        store.reset_calls();
+        let first: Vec<(String, u32)> = all(m
+            .starts_with_iter(&user, FindOpts::default().limit(10))
+            .take(10));
+        assert_eq!(first.len(), 10);
+        assert_eq!(store.calls(), 2, "open and one batch of 10");
+        store.reset_pulled();
+        assert!(m
+            .starts_with_iter(&user, FindOpts::default())
+            .next()
+            .is_some());
+        assert_eq!(store.pulled(), 1_000, "one batch, nothing read ahead of it");
     }
 
     #[test]
