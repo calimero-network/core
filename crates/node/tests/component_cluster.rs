@@ -6204,10 +6204,10 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
 }
 
 /// `xcall.batch`: two calls a run awaits together (`app::join!`) run at once. `bumpBoth`
-/// calls `slowBump` (host-made randomness, then a count) on two apps; to two different apps it takes
-/// about one call's time, where the same two calls to one app take turns on that app's
-/// proposal lock, which is what a host running a batch one after another would take for any
-/// two. Each target applies its call once, and a re-run of the caller (the same key after
+/// calls `slowBump` (host-made randomness, then a count) on two apps; to two different apps
+/// both start together, where the same two calls to one app take turns on that app's
+/// proposal lock (the second starts once the first committed), which is what a host running
+/// a batch one after another would do with any two. Each target applies its call once, and a re-run of the caller (the same key after
 /// a timeout, which is not logged, D23) replays both answers instead of counting again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
@@ -6230,8 +6230,9 @@ async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
         apps.push(created);
     }
     let (source, left, right) = (&apps[0], &apps[1], &apps[2]);
-    // Calibrate: how many spins make one `slowBump` take about 300 ms on this machine (and
-    // build), so the same target's two calls in turn stay within the caller's 2 s budget.
+    // Calibrate: how many spins make one `slowBump` body take about `BODY` on this machine
+    // (and build), so the same target's two calls in turn stay within the caller's 2 s budget.
+    const BODY: Duration = Duration::from_millis(300);
     let direct = |spins: u32| {
         let (alice, left) = (&alice, apps[1].clone());
         async move {
@@ -6250,9 +6251,15 @@ async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
             started.elapsed()
         }
     };
+    // A call's own cost (its run, its commit, the network) is in every timing and grows
+    // under load, so a spin's cost is the difference 30 more spins make, never a whole
+    // call divided by its spins (that sized the body from the overhead and left it ~70 ms
+    // under load, too short to tell at once from in turn).
     let _warm = direct(1).await;
-    let probe = direct(10).await.min(direct(10).await);
-    let spins = u32::try_from(300 * 10 / probe.as_millis().max(1))
+    let few = direct(10).await.min(direct(10).await);
+    let more = direct(40).await.min(direct(40).await);
+    let per_spin = (more.saturating_sub(few) / 30).max(Duration::from_micros(100));
+    let spins = u32::try_from(BODY.as_micros() / per_spin.as_micros().max(1))
         .unwrap_or(u32::MAX)
         .clamp(10, 2_000);
     let both = |a: &str, b: &str, key: &str, stall: bool, idem: Option<String>| {
@@ -6276,29 +6283,69 @@ async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
     let (warm, _) = both(left, right, "warm", false, None).await;
     assert_eq!(warm.unwrap().result, json!([1, 1]));
 
-    // The fastest of three runs each way: two apps at once, then one app twice in turn.
-    let mut apart = Duration::MAX;
-    let mut together = Duration::MAX;
-    for round in 0..3 {
-        let (r, took) = both(left, right, &format!("apart{round}"), false, None).await;
+    // When each target call started: `slowBump` keeps its run's time (the entry's, stamped
+    // under the target's proposal lock as the run starts) under `<key>@<count>`. Two apps'
+    // calls start together; one app's second call starts once its first committed. Wall
+    // time cannot tell them apart on a loaded machine (the bodies are CPU work, and two at
+    // once share its cores); when each started can.
+    let started = |app: &str, key: String| {
+        let (alice, app) = (&alice, app.to_owned());
+        async move {
+            let at = strong_view(alice, &app, "get", json!({ "key": key })).await;
+            at.as_str()
+                .and_then(|t| t.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("{key} holds no start time: {at}"))
+        }
+    };
+    let (mut apart_gap, mut turn_gap) = (u64::MAX, u64::MAX);
+    let (mut apart, mut together) = (Duration::MAX, Duration::MAX);
+    for round in 0..2 {
+        let key = format!("apart{round}");
+        let (r, took) = both(left, right, &key, false, None).await;
         assert_eq!(r.unwrap().result, json!([1, 1]));
         apart = apart.min(took);
+        let (a, b) = (
+            started(left, format!("{key}@1")).await,
+            started(right, format!("{key}@1")).await,
+        );
+        apart_gap = apart_gap.min(a.abs_diff(b));
         // Both start at once, so which takes the target's lock first varies.
-        let (r, took) = both(left, left, &format!("same{round}"), false, None).await;
+        let key = format!("same{round}");
+        let (r, took) = both(left, left, &key, false, None).await;
         let mut counts: Vec<u64> = serde_json::from_value(r.unwrap().result).unwrap();
         counts.sort_unstable();
         assert_eq!(counts, [1, 2], "one app, its two calls in turn");
         together = together.min(took);
+        let (first, second) = (
+            started(left, format!("{key}@1")).await,
+            started(left, format!("{key}@2")).await,
+        );
+        turn_gap = turn_gap.min(second.saturating_sub(first));
     }
-    eprintln!("{spins} spins; two apps at once: {apart:?}; one app twice: {together:?}");
+    eprintln!(
+        "{spins} spins; two apps at once: {apart:?}, starts {apart_gap} ms apart; \
+         one app twice: {together:?}, starts {turn_gap} ms apart"
+    );
     assert!(
-        apart.as_secs_f64() < together.as_secs_f64() * 0.75,
-        "two apps took {apart:?}, as long as one app twice ({together:?}): not at once"
+        apart_gap.saturating_mul(2) < turn_gap,
+        "two apps' calls started {apart_gap} ms apart, one app's {turn_gap} ms: not at once"
     );
 
-    // A run that times out after both calls: each target applied its call once.
+    // A run that times out after both calls: each target applied its call once. Sent
+    // once, raw: `apps().call` sends a call again while the node answers `503` (D70), and
+    // a timeout is one, so through it the stalled run would run seven times, about 20 s.
     let key = "replay".to_owned();
-    let (stalled, _) = both(left, right, &key, true, Some(key.clone())).await;
+    let stalled = alice
+        .transport()
+        .json(
+            // App ids are base64url: nothing in one needs escaping in a path.
+            Request::new(Method::POST, format!("apps/{source}/intents")).json(json!({
+                "method": "bumpBoth",
+                "args": { "a": left, "b": right, "key": &key, "spins": spins, "stall": true },
+                "idempotencyKey": &key,
+            })),
+        )
+        .await;
     let e = stalled.unwrap_err();
     assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
     assert_eq!(count(left, &key).await, json!("1"));

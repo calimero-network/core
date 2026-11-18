@@ -80,6 +80,11 @@ impl Cluster {
     /// (or a rolling upgrade of its binary) does.
     async fn restart(&mut self, i: usize) {
         self.stop(i).await;
+        self.start_again(i).await;
+    }
+
+    /// Start stopped node `i` again on its data directory.
+    async fn start_again(&mut self, i: usize) {
         let peers: BTreeMap<u64, String> = self
             .urls
             .iter()
@@ -6962,6 +6967,21 @@ async fn an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart() {
     assert_eq!(reported_last_write(&cl, "ops/apps", &app).await, at);
 }
 
+/// A transport for a store opened while its node is stopped: no group runs.
+struct NoPeers;
+
+impl calimero_log::Transport for NoPeers {
+    fn send(
+        &self,
+        _target: calimero_log::NodeId,
+        _addr: String,
+        _group: calimero_log::GroupId,
+        _request: calimero_log::RpcRequest,
+    ) -> calimero_log::BoxFuture<Result<calimero_log::RpcResponse, String>> {
+        Box::pin(async { Err("the node is stopped".to_owned()) })
+    }
+}
+
 /// The leader of an app's group compares its replicas' state digests, and a
 /// replica whose state differs from the leader's at the same index (here a row
 /// that appeared on its disk outside the log, found when it restarts) is
@@ -7013,15 +7033,51 @@ async fn a_replica_whose_state_differs_from_its_leaders_is_reported() {
     }
     assert_eq!(agreed.len(), 2, "both followers were compared");
 
-    // A row appears on the follower's disk, outside the log.
+    // A row appears on the follower's disk, outside the log, while it is
+    // stopped: `StateTx::commit` is for a group that is not running. Written
+    // under a running group, the next entry it applied would store its digest
+    // again without the row, and the restart would trust that digest.
+    c.stop(follower).await;
     {
-        let node = &c.nodes[follower].as_ref().unwrap().node;
-        let state = node.engine.group_state(id);
+        let dir = c._dirs[follower].path();
+        let key = calimero_node::cluster_key::load(dir, &[42; 32])
+            .unwrap()
+            .unwrap_or([42; 32]);
+        // The stopped node's tasks may hold its store for a moment.
+        let mut engine = None;
+        for _ in 0..50 {
+            if let Ok(e) = calimero_log::Engine::open(
+                peer,
+                dir,
+                &key,
+                std::sync::Arc::new(NoPeers),
+                calimero_log::Config::default(),
+            ) {
+                engine = Some(e);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let engine = engine.expect("the stopped follower's store opens");
+        let state = engine.group_state(id);
         let mut tx = calimero_log::StateTx::new(&state);
         tx.put(b"\xffnot-from-the-log".to_vec(), b"x".to_vec());
         tx.commit().unwrap();
+        let watch = engine.store_watch();
+        drop(state);
+        drop(engine);
+        for _ in 0..100 {
+            if !watch.is_open() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
-    c.restart(follower).await;
+    // An entry the follower applies after it restarts keeps the row counted.
+    set_through(&alice, &app, "while-stopped", "v")
+        .await
+        .unwrap();
+    c.start_again(follower).await;
 
     let mut differ = None;
     for _ in 0..100 {
