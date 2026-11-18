@@ -547,3 +547,146 @@ fn only_a_moderator_removes_an_announcement_not_its_author() {
         "nothing left"
     );
 }
+
+/// A forum of `voters` members besides alice and bob, and alice's post `big` in `dev` with
+/// `tags` tags, a vote from every voter and `comments` comments by bob.
+fn forum_with_big_post(voters: usize, tags: usize, comments: usize) -> TestApp {
+    let voter_names: Vec<String> = (0..voters).map(|i| format!("v{i:03}")).collect();
+    let mut t = common::app(
+        Org::new()
+            .members(["alice", "bob"])
+            .members(voter_names.clone()),
+    );
+    let tags: Vec<String> = (0..tags).map(|i| format!("t{i:04}")).collect();
+    let post = ok(t.as_("alice").call(
+        "createPost",
+        json!({ "id": "big", "board": "dev", "title": "big", "body": "", "tags": tags,
+                "createdAt": "10" }),
+    ));
+    for v in &voter_names {
+        ok(t.as_(v).call("vote", json!({ "post": post })));
+    }
+    for i in 0..comments {
+        ok(t.as_("bob").call(
+            "comment",
+            json!({ "post": post, "id": format!("c{i}"), "body": "hi",
+                    "createdAt": (100 + i).to_string() }),
+        ));
+    }
+    t
+}
+
+/// The state once a post of one tag, one vote and one comment is deleted, in a forum of
+/// `voters` voters: a maintained count that falls to zero keeps its entry, so this, not
+/// the state before the post, is what deleting `big` must leave.
+fn after_deleting_a_small_post(voters: usize) -> Vec<u8> {
+    let mut t = forum_with_big_post(voters, 1, 1);
+    for v in 1..voters {
+        ok(t.as_(&format!("v{v:03}"))
+            .call("unvote", json!({ "post": pid("alice", "big") })));
+    }
+    assert_eq!(
+        ok(t.as_("alice")
+            .call("deletePost", json!({ "id": pid("alice", "big") }))),
+        json!(true)
+    );
+    t.export_state()
+}
+
+#[test]
+fn deleting_a_post_removes_every_tag_vote_and_comment_row() {
+    let mut t = forum_with_big_post(20, 3, 30);
+    let post = pid("alice", "big");
+    let view = ok(t.as_("bob").view("getPost", json!({ "id": post })));
+    assert_eq!(
+        (&view["votes"], &view["comments"]),
+        (&json!("20"), &json!("30"))
+    );
+    assert_eq!(
+        ok(t.as_("alice").call("deletePost", json!({ "id": post }))),
+        json!(true),
+        "53 rows fit in one call"
+    );
+    assert_eq!(
+        t.export_state(),
+        after_deleting_a_small_post(20),
+        "no row or index entry of the post is left"
+    );
+}
+
+#[test]
+fn a_post_larger_than_one_call_is_removed_over_several_and_never_orphans_a_row() {
+    // 3 tags + 10 votes + 300 comments = 313 rows, past the 250 one call removes.
+    let mut t = forum_with_big_post(10, 3, 300);
+    let post = pid("alice", "big");
+    assert_eq!(
+        ok(t.as_("alice").call("deletePost", json!({ "id": post }))),
+        json!(false),
+        "rows are left, so the post stays"
+    );
+    let view = ok(t.as_("bob").view("getPost", json!({ "id": post })));
+    assert_eq!(
+        (&view["tags"], &view["votes"], &view["comments"]),
+        (&json!([]), &json!("0"), &json!("63")),
+        "tags, then votes, then comments went first; the counts follow"
+    );
+    assert_eq!(
+        ok(t.as_("bob").view("boardStats", json!({ "board": "dev" })))["posts"],
+        json!("1")
+    );
+    assert_eq!(
+        ok(t.as_("owner").call("moderatePost", json!({ "id": post }))),
+        json!(true),
+        "a moderator finishes what the author started"
+    );
+    assert_eq!(t.export_state(), after_deleting_a_small_post(10));
+    assert_eq!(
+        code(t.as_("alice").call("deletePost", json!({ "id": post }))),
+        "NoPost"
+    );
+}
+
+#[test]
+fn retagging_drops_every_old_tag_row_past_a_page() {
+    // More tags than one page (1,000) reads: each must leave its tag feed.
+    let untagged_post = |t: &mut TestApp| {
+        ok(t.as_("alice").call(
+            "createPost",
+            json!({ "id": "p", "board": "dev", "title": "", "body": "", "tags": [],
+                    "createdAt": "10" }),
+        ))
+    };
+    let deleted = {
+        let mut t = common::app(Org::new().members(["alice"]));
+        let post = untagged_post(&mut t);
+        ok(t.as_("alice").call("deletePost", json!({ "id": post })));
+        t.export_state()
+    };
+    let mut t = common::app(Org::new().members(["alice"]));
+    let post = untagged_post(&mut t);
+    let untagged = t.export_state();
+    let tags: Vec<String> = (0..1200).map(|i| format!("t{i:04}")).collect();
+    ok(t.as_("alice")
+        .call("retag", json!({ "id": post, "tags": tags.clone() })));
+    ok(t.as_("alice")
+        .call("retag", json!({ "id": post, "tags": [] })));
+    assert_eq!(t.export_state(), untagged, "no tag row is left");
+    assert_eq!(
+        ok(t.as_("alice").view(
+            "boardTagFeed",
+            json!({ "board": "dev", "tag": "t1100", "offset": 0, "limit": 10 })
+        )),
+        json!([])
+    );
+    ok(t.as_("alice")
+        .call("retag", json!({ "id": post, "tags": tags })));
+    let calls: Vec<Value> = (0..5)
+        .map(|_| ok(t.as_("alice").call("deletePost", json!({ "id": post }))))
+        .collect();
+    assert_eq!(
+        calls,
+        [false, false, false, false, true].map(Value::Bool),
+        "1,200 tags are five calls of at most 250"
+    );
+    assert_eq!(t.export_state(), deleted);
+}

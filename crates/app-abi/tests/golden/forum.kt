@@ -302,16 +302,15 @@ class ForumClient private constructor(
     suspend fun deletePost(
         id: String,
         idempotencyKey: String? = null,
-    ) {
+    ): Boolean =
         invokeCall(
             "deletePost",
             buildJsonObject {
                 put("id", encode(String.serializer(), id))
             },
             idempotencyKey,
-            JsonElement.serializer(),
+            Boolean.serializer(),
         )
-    }
 
     /** call `editComment`. */
     suspend fun editComment(
@@ -398,16 +397,15 @@ class ForumClient private constructor(
     suspend fun moderatePost(
         id: String,
         idempotencyKey: String? = null,
-    ) {
+    ): Boolean =
         invokeCall(
             "moderatePost",
             buildJsonObject {
                 put("id", encode(String.serializer(), id))
             },
             idempotencyKey,
-            JsonElement.serializer(),
+            Boolean.serializer(),
         )
-    }
 
     /** view `moderators`. */
     suspend fun moderators(

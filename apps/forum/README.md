@@ -40,9 +40,13 @@ moderator can empty) does not slow a reader of this one.
 
 `createPost` mints the post id `"<caller>-<id>"`, so two accounts' `p1` are two posts.
 A post's tags come back sorted and de-duplicated (`createPost` and `retag` store them that
-way; v1 kept them as given). `deletePost` and `moderatePost` remove the post's votes and
-comments with it, so a post later filed at the same id starts with none
-(`scenarios/repost.json`). `postMessage` returns the message's key, `"<board>/<id>"`.
+way; v1 kept them as given). `deletePost` and `moderatePost` remove the post's tags, votes
+and comments with it (`Table::remove_by`), so a post later filed at the same id starts with
+none (`scenarios/repost.json`). Neither votes nor comments are capped, so one call removes
+at most 250 of those rows, and the post itself only once none is left; it answers `true`
+when the post is gone and `false` when rows remain, and the next call (the author's or a
+moderator's) goes on from there. A post is never removed with rows of it left behind.
+`postMessage` returns the message's key, `"<board>/<id>"`.
 Pages and listings read at most 1000 rows, offset included. `u64` values (`createdAt`,
 `at`, `after`, `sentAt`, scores, counts) travel as decimal strings.
 
@@ -66,4 +70,5 @@ moderating someone else's post, editing or deleting their comment, taking back t
 rewriting a chat message, removing an announcement or appointing oneself without being a
 moderator) as calls, each refused by the method's check, with the data unchanged; and a
 guest's writes refused with `Forbidden`. `scenarios/repost.json` files a post again at a
-deleted or moderated id.
+deleted or moderated id. The harness also deletes a post of 313 rows over two calls and
+retags one with 1,200 tags, and checks the state holds no row of it afterwards.

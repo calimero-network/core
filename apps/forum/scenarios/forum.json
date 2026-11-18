@@ -416,7 +416,7 @@
    "id": "$spam"
   },
   "expect": {
-   "ok": null
+   "ok": true
   }
  },
  {
@@ -767,7 +767,7 @@
    "id": "$p6"
   },
   "expect": {
-   "ok": null
+   "ok": true
   }
  },
  {
