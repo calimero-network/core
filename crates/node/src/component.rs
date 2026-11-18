@@ -13,9 +13,10 @@
 //!
 //! Storage (D46): the component's keys are hidden rows of the group's state (sealed,
 //! keyed by an HMAC), and a replica keeps them in memory too,
-//! ordered, as an `Arc<BTreeMap>`: a run gets the current version as its
-//! `StateView` (ordered `range` scans), and `apply` copies it only while a run still
-//! holds the previous one. The map is rebuilt from the rows on a restart and after a
+//! ordered, as a persistent map ([`Kv`]): a run gets the current version as its
+//! `StateView` (ordered `range` scans), and `apply` writes the next one sharing
+//! everything it does not change, so a run holding the previous one costs a write
+//! O(log n) copied nodes, never a copy of the whole state (B7). The map is rebuilt from the rows on a restart and after a
 //! snapshot install. Host records (`last_id`, `timers`, `install_ts_ms`,
 //! `last_ts_ms`, idempotency, blob records, the usage book) are never keys the app sees (D39).
 //!
@@ -822,7 +823,66 @@ fn stamps(raw: &[u8]) -> Option<(u64, u64)> {
 }
 
 /// An app's stored keys and values, shared between the machine and the runs reading it.
-pub type Kv = Arc<BTreeMap<Vec<u8>, Vec<u8>>>;
+///
+/// A persistent ordered map (B7): a clone is O(1) and shares every node, and a
+/// write to a version a run still reads copies only the path to the key it
+/// changes, O(log n), never the whole state. Iterated and ranged in key order,
+/// as a `BTreeMap` is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Kv(imbl::OrdMap<Vec<u8>, Vec<u8>>);
+
+impl std::ops::Deref for Kv {
+    type Target = imbl::OrdMap<Vec<u8>, Vec<u8>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Kv {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl FromIterator<(Vec<u8>, Vec<u8>)> for Kv {
+    fn from_iter<I: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl host::StateView for Kv {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.0.get(key).cloned()
+    }
+
+    fn range<'s>(
+        &'s self,
+        start: &[u8],
+        end: &[u8],
+        reverse: bool,
+    ) -> Box<dyn Iterator<Item = host::KeyValue> + 's> {
+        use std::ops::Bound;
+        // `[start, end)`, an empty `end` unbounded, as `StateView` says; an empty
+        // range when `start >= end` (which `OrdMap::range` would panic on).
+        let bounds: (Bound<&[u8]>, Bound<&[u8]>) = if end.is_empty() {
+            (Bound::Included(start), Bound::Unbounded)
+        } else if start < end {
+            (Bound::Included(start), Bound::Excluded(end))
+        } else {
+            return Box::new(std::iter::empty());
+        };
+        let iter = self
+            .0
+            .range::<_, [u8]>(bounds)
+            .map(|(k, v)| (k.clone(), v.clone()));
+        if reverse {
+            Box::new(iter.rev())
+        } else {
+            Box::new(iter)
+        }
+    }
+}
 
 /// Whether `n` is zero: a field serde leaves out then.
 const fn is_zero(n: &u64) -> bool {
@@ -975,12 +1035,12 @@ pub struct ComponentState {
 impl ComponentState {
     /// Read the app's storage and blob rows into memory (after a restart or a snapshot install).
     pub fn load(&mut self, state: &GroupState) -> eyre::Result<()> {
-        let mut kv = BTreeMap::new();
+        let mut kv = Kv::default();
         state.scan_hidden(rows::CKV, |k, v| {
             let _prev = kv.insert(k.to_vec(), v.to_vec());
             Ok(true)
         })?;
-        self.kv = Arc::new(kv);
+        self.kv = kv;
         self.blobs.load(state)
     }
 
@@ -1054,7 +1114,7 @@ impl AppMachine {
     /// The state a component's run reads (D46): the current version, shared.
     #[must_use]
     pub fn view(&self) -> Arc<dyn host::StateView> {
-        Arc::clone(&self.state.component.kv) as Arc<dyn host::StateView>
+        Arc::new(self.state.component.kv.clone())
     }
 
     /// The blobs a component's run sees (R8): the current records, shared.
@@ -1205,7 +1265,8 @@ impl AppMachine {
             if !outcome.diff.is_empty() {
                 // References to blobs move with the values that hold them (R8).
                 let mut deltas = BTreeMap::new();
-                let kv = Arc::make_mut(&mut c.kv);
+                // Copies only the paths a run's view still shares (B7).
+                let kv = &mut c.kv;
                 for w in &outcome.diff {
                     // Search catches up from the records an entry touched.
                     if search::record_table(&w.key.0).is_some() {
@@ -2807,7 +2868,7 @@ mod tests {
         );
         assert_eq!(r.machine.state.component.head.timers["beat"], 2000);
         // The same slot again (a second leader's proposal), and an older one.
-        let _gone = Arc::make_mut(&mut r.machine.state.component.kv).remove(b"k".as_slice());
+        let _gone = r.machine.state.component.kv.remove(b"k".as_slice());
         assert!(
             r.apply(3, &tick(2, 2000, Status::Ok, vec![w("k", "v")]))
                 .conflict
@@ -2906,6 +2967,104 @@ mod tests {
         let _a = r.apply(3, &call(2, None, vec![w("k", "2")]));
         assert_eq!(held.get(b"k"), Some(b"1".to_vec()));
         assert_eq!(r.machine.view().get(b"k"), Some(b"2".to_vec()));
+    }
+
+    /// The persistent map answers every read as the `BTreeMap` it replaced (B7):
+    /// the same values, ranges in the same order both ways, the same empty and
+    /// unbounded ends, after the same writes and deletes.
+    #[test]
+    fn the_state_reads_as_the_ordered_map_it_replaced() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let key = |n: u64| -> Vec<u8> {
+            let len = (n % 4) as usize;
+            (0..len).map(|i| ((n >> (8 * i + 2)) % 5) as u8).collect()
+        };
+        let mut kv = Kv::default();
+        let mut map = BTreeMap::new();
+        for _ in 0..400 {
+            let (k, v) = (key(next()), next().to_be_bytes().to_vec());
+            if next() % 3 == 0 {
+                assert_eq!(kv.remove(&k), map.remove(&k));
+            } else {
+                assert_eq!(kv.insert(k.clone(), v.clone()), map.insert(k, v));
+            }
+            let held = kv.clone();
+            let (start, end) = (key(next()), key(next()));
+            for (s, e) in [(&start, &end), (&start, &Vec::new()), (&end, &start)] {
+                for reverse in [false, true] {
+                    assert_eq!(
+                        host::StateView::range(&held, s, e, reverse).collect::<Vec<_>>(),
+                        host::StateView::range(&map, s, e, reverse).collect::<Vec<_>>(),
+                        "[{s:?}, {e:?}) reverse {reverse}"
+                    );
+                }
+            }
+            assert_eq!(
+                host::StateView::get(&held, &start),
+                host::StateView::get(&map, &start)
+            );
+        }
+        assert!(kv.iter().map(|(k, v)| (k.clone(), v.clone())).eq(map));
+    }
+
+    /// A write while a view holds the state costs about what one with no view
+    /// does: apply shares the unchanged part of a large state with the view
+    /// instead of copying all of it (B7).
+    #[test]
+    fn a_write_under_a_view_does_not_copy_the_whole_state() {
+        const KEYS: usize = 100_000;
+        const WRITES: u64 = 30;
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let fill = (0..KEYS)
+            .map(|n| w(&format!("key-{n:06}"), &"v".repeat(64)))
+            .collect();
+        let _f = r.apply(2, &call(1, None, fill));
+        assert_eq!(r.machine.view().range(b"", b"", false).count(), KEYS);
+
+        // Each write's median time, `viewing` with a view taken before each
+        // write and held across it, as a replica serving steady reads does.
+        let mut next = 3;
+        let mut median_write = |r: &mut Rig, viewing: bool| {
+            let keys = if viewing {
+                WRITES..2 * WRITES
+            } else {
+                0..WRITES
+            };
+            let mut times = keys
+                .map(|n| {
+                    let key = format!("key-{n:06}");
+                    let held = viewing.then(|| r.machine.view());
+                    let cmd = call(next - 1, None, vec![w(&key, "new")]);
+                    let start = std::time::Instant::now();
+                    assert!(!r.apply(next, &cmd).conflict);
+                    let took = start.elapsed();
+                    next += 1;
+                    if let Some(held) = held {
+                        let before = held.get(key.as_bytes()).map(|v| v.len());
+                        assert_eq!(before, Some(64), "the view moved with the write");
+                    }
+                    took
+                })
+                .collect::<Vec<_>>();
+            times.sort();
+            times[times.len() / 2]
+        };
+        let alone = median_write(&mut r, false);
+        let viewed = median_write(&mut r, true);
+        assert!(
+            viewed < alone * 5 + std::time::Duration::from_millis(2),
+            "a write under a view took {viewed:?}, one with no view {alone:?}"
+        );
+        let view = r.machine.view();
+        assert_eq!(view.get(b"key-000000"), Some(b"new".to_vec()));
+        assert_eq!(view.range(b"", b"", false).count(), KEYS);
     }
 
     fn with_ts(raw: &[u8], ts_ms: u64) -> Vec<u8> {
@@ -3190,7 +3349,7 @@ mod tests {
             Some(crate::types::Executor::Component)
         );
         assert_eq!(fresh.state.component.head, r.machine.state.component.head);
-        assert_eq!(*fresh.state.component.kv, *r.machine.state.component.kv);
+        assert_eq!(fresh.state.component.kv, r.machine.state.component.kv);
         assert!(fresh
             .component_replay(
                 &Caller::Account {
