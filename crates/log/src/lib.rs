@@ -23,6 +23,7 @@ use openraft::error::{CheckIsLeaderError, ClientWriteError, InitializeError, Raf
 use openraft::{BasicNode, ServerState};
 use tokio::sync::{watch, Mutex};
 
+pub mod digest;
 pub mod format;
 pub mod machine;
 pub mod network;
@@ -32,6 +33,7 @@ pub mod testing;
 pub mod tuning;
 pub mod types;
 
+pub use digest::{Comparison, DigestAt, Digests, StateDigest, DIGEST_VERSION};
 pub use format::{OtherStore, STORE_FORMAT};
 pub use machine::{
     read_snapshot_file, read_snapshot_rows, Applied, Machine, PortableRow, Shared, SNAPSHOT_FORMAT,
@@ -549,6 +551,27 @@ impl<M: Machine> Group<M> {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&st.machine, st.applied_index())
+    }
+
+    /// The digests of this node's applied state ([`digest`]) to compare with
+    /// another replica's: `None` for an in-memory machine, which has none.
+    #[must_use]
+    pub fn digests(&self) -> Option<Digests> {
+        if M::IN_MEMORY {
+            return None;
+        }
+        let st = self
+            .shared
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(Digests {
+            version: DIGEST_VERSION,
+            applied: DigestAt {
+                index: st.applied_index(),
+                digest: st.digest,
+            },
+            recorded: st.recorded.iter().copied().collect(),
+        })
     }
 
     /// The index this node has applied.

@@ -161,8 +161,43 @@ In a Raft group:
   leader that has just confirmed it leads, for the same reason
   ([Reads](/protocol/reads/)).
 
-There is therefore no divergence report, no sync handshake, no verdict and no
-merge on the replication path.
+There is therefore no sync handshake, no verdict and no merge on the
+replication path.
+
+## State digests
+
+Raft keeps the logs equal, not what each replica made of them: a replica that
+applies an entry differently (a row it misread, an entry it skipped, code that
+is not deterministic) or whose disk changes a row holds another state, and
+nothing in the protocol notices. So each replica of an app group keeps a
+digest of its state (`calimero_log::digest`): the sum, modulo 2^256, of
+`SHA-256(label ‖ len(key) ‖ key ‖ value)` over every row of the group. A sum
+depends on the rows alone, not on the order they were written, how entries
+were batched, or whether they came by entries or a snapshot, so replicas at the
+same index hold the same digest exactly when they hold the same rows.
+
+- **Kept as entries apply.** A write moves the digest by the row it writes less
+  the row it replaces (one read of that row, never a scan); a read that fails
+  fails the batch. The digest after every entry whose index is a multiple of
+  `DIGEST_EVERY` (16) is recorded, the last `DIGEST_KEPT` (16) of them, so
+  replicas that batched differently meet at the same indexes.
+- **Stored with the applied index** (the group's meta row `digest`), in the same
+  batch. A start whose stored digest is not at the applied index (rows changed
+  outside the log, `StateTx::commit`) takes it again from the rows. A snapshot
+  install and a backup restore take it from the rows they write.
+- **Compared by the leader.** Every minute (`DIGEST_COMPARE_EVERY`), the leader
+  of each app group asks the other replicas for their digests
+  (`POST /internal/digests`, only of groups the caller is a member of, at most
+  `DIGEST_GROUPS_PER_ASK` an ask) and compares them at the latest index both
+  recorded. A difference is logged with the group, the peer and the index, and
+  shows in `calimero_group_diverged` ([Observability](/operate/observability/),
+  [runbook](/operate/runbooks/#a-replicas-state-differs)).
+- **Across releases**: replicas compare only digests of the same
+  `DIGEST_VERSION`, raised with any change to a row's stored shape; a peer on a
+  release before digests answers `404` and is not compared.
+
+The system group is not covered: its machine keeps its state in memory and
+writes no rows as it applies.
 
 ## Timing
 

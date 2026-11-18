@@ -6823,6 +6823,105 @@ async fn an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart() {
     assert_eq!(reported_last_write(&cl, "ops/apps", &app).await, at);
 }
 
+/// The leader of an app's group compares its replicas' state digests, and a
+/// replica whose state differs from the leader's at the same index (here a row
+/// that appeared on its disk outside the log, found when it restarts) is
+/// reported: an error log and `calimero_group_diverged` for that group and
+/// peer. Replicas that hold the same state are never reported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_replica_whose_state_differs_from_its_leaders_is_reported() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _ctx) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    for i in 0..20 {
+        set_through(&alice, &app, &format!("k{i}"), "v")
+            .await
+            .unwrap();
+    }
+    let leader = c.app_leader(&app).expect("the app has a leader");
+    let group = c.nodes[leader].as_ref().unwrap().node.hosted(&app).unwrap();
+    let id = group.id();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let peer = follower as u64 + 1;
+
+    // Every replica agrees, once each has applied what the leader has.
+    let compare = |c: &Cluster| {
+        let node = std::sync::Arc::clone(&c.nodes[leader].as_ref().unwrap().node);
+        async move { node.compare_digests().await }
+    };
+    let mut agreed = Vec::new();
+    for _ in 0..100 {
+        let found: Vec<_> = compare(&c)
+            .await
+            .into_iter()
+            .filter(|x| x.group == id)
+            .collect();
+        assert!(
+            found
+                .iter()
+                .all(|x| !matches!(x.outcome, calimero_log::Comparison::Differ { .. })),
+            "replicas that hold the same state differ: {found:?}"
+        );
+        agreed = found
+            .iter()
+            .filter(|x| matches!(x.outcome, calimero_log::Comparison::Agree { .. }))
+            .map(|x| x.peer)
+            .collect();
+        if agreed.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(agreed.len(), 2, "both followers were compared");
+
+    // A row appears on the follower's disk, outside the log.
+    {
+        let node = &c.nodes[follower].as_ref().unwrap().node;
+        let state = node.engine.group_state(id);
+        let mut tx = calimero_log::StateTx::new(&state);
+        tx.put(b"\xffnot-from-the-log".to_vec(), b"x".to_vec());
+        tx.commit().unwrap();
+    }
+    c.restart(follower).await;
+
+    let mut differ = None;
+    for _ in 0..100 {
+        differ = compare(&c).await.into_iter().find(|x| {
+            x.group == id
+                && x.peer == peer
+                && matches!(x.outcome, calimero_log::Comparison::Differ { .. })
+        });
+        if differ.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        differ.is_some(),
+        "the leader never noticed node {peer}'s state"
+    );
+    let mut metrics = String::new();
+    calimero_node::metrics::render(&mut metrics);
+    assert!(
+        metrics.contains(&format!(
+            "calimero_group_diverged{{group=\"{id}\",peer=\"{peer}\"}}"
+        )),
+        "{metrics}"
+    );
+    // The follower that holds the leader's state is not reported.
+    let other = (0..3u64)
+        .find(|i| *i as usize != leader && *i as usize != follower)
+        .unwrap()
+        + 1;
+    assert!(!metrics.contains(&format!(
+        "calimero_group_diverged{{group=\"{id}\",peer=\"{other}\"}}"
+    )));
+    // A peer that is not a member of the group is told nothing of it.
+    let node = &c.nodes[leader].as_ref().unwrap().node;
+    assert!(node.digests_for(99, &[id]).groups.is_empty());
+    assert!(!node.digests_for(peer, &[id]).groups.is_empty());
+}
+
 /// Review finding B2: a node whose system-group core stopped on a write the disk
 /// refused (EIO, ENOSPC) stayed out of the cluster until the process restarted:
 /// openraft treats it as fatal, and nothing started the core again. Now the group
