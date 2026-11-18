@@ -100,7 +100,14 @@ A snapshot is `snapshots/<…>.snap`: a first line naming its format
 (`CALIMERO-SNAPSHOT-1`, [Format versions](#format-versions)), then
 frames of up to about 1 MiB of rows each, each frame sealed with associated
 data naming the group, the snapshot id, the frame's position and whether it is
-the last. It is written from a consistent RocksDB view, so a large state is
+the last. A reader refuses a frame over 64 MiB. A row too large for one frame
+(an in-memory machine's checkpoint, which holds the whole system state) is
+written in pieces of about 1 MiB, one frame each, and the file then says format
+2; a file with no such row says format 1, which every earlier release reads, so
+a rollout never sends a node a format it cannot read that it could have read
+before (a format 1 file with that row was refused by every reader). In format
+2 a row entry whose value length has its top bit set is a piece, and the next
+entry, under the same key, continues it. It is written from a consistent RocksDB view, so a large state is
 streamed rather than held in memory. A follower receiving one writes it to a
 file first, then installs it as the next generation in batches of about 4 MiB
 and switches generations in one batch ([Replication](/protocol/replication/#state-restarts-and-snapshots)).
@@ -180,7 +187,7 @@ refuses what a later release wrote instead of misreading it:
 | Container | Where the version is | This release | Unmarked (written before markers) |
 | --- | --- | --- | --- |
 | The store (every row of every column) | node row `format` in `meta` (sealed, `calimero_log::STORE_FORMAT`) | 2 (rows as they are; only format 2 is read) | refused, as every format before 2 |
-| Snapshot and backup files | the first line, `CALIMERO-SNAPSHOT-<n>` (`calimero_log::SNAPSHOT_FORMAT`) | 1 | none: every file so far says 1 |
+| Snapshot and backup files | the first line, `CALIMERO-SNAPSHOT-<n>` (`calimero_log::SNAPSHOT_FORMAT`) | 2 read; 1 written unless a row spans frames (then 2) | none: every file says its format |
 | A component app's log entries (with the outcomes and file marks they carry) | `{"v":<n>,` as the start of the entry (`component::ENTRY_FORMAT`) | 1 | format 1: no entry so far carries a marker |
 | Sealed files and their segments | the domain strings the chunk AAD and the file id are bound to (`calimero.file.v1`, `calimero.file.segments.v1`) | v1 | none |
 | Recovery files (`.rbak`) | the first line, `calimero.recovery-backup.v1`, and the header's `format` (`calimero_client::recovery::FORMAT`) | 1 | none |

@@ -659,6 +659,27 @@ pub struct SystemState {
     /// writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_rules_from: Option<u64>,
+    /// Whether the sign-in proofs in [`Self::used_proofs`] expire: from the
+    /// [`SystemCmd::ExpireProofs`] the first system leader on a release that
+    /// makes it wrote. From then on a sign-in's or sign-up's proof is
+    /// recorded with the expiry of the session it opened, which its passkey
+    /// signed ([`Self::proof_expiry`]), and forgotten once that expiry passes.
+    /// Before it, proofs are kept for good, as the releases that logged them
+    /// kept them. Left out when `false`, so state from before reads and
+    /// writes as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expires_proofs: bool,
+    /// The proofs in [`Self::used_proofs`] that are forgotten at a time
+    /// (Unix seconds): a sign-in's or sign-up's, by the expiry of the
+    /// session it opened. Left out when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub proof_expiry: BTreeMap<u64, BTreeSet<String>>,
+    /// The latest time (an entry's own `now`, never a clock) up to which
+    /// expired proofs were forgotten: a sign-in whose session expires by
+    /// then is refused, since its proof may have been forgotten. 0: none
+    /// forgotten yet. Left out when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub proofs_forgotten_through: u64,
     /// The active cluster version ([`cluster_version`]): the newest core
     /// release every node supports, logged by the system leader
     /// (`SetClusterVersion`), only ever raised. `None` until the first.
@@ -3760,6 +3781,23 @@ impl SystemState {
             let _gone = self.revoked_sessions.remove(&s);
         }
         self.rotated_refresh.retain(|_, r| r.expires_at > now);
+        if self.expires_proofs {
+            self.forget_expired_proofs(now);
+        }
+    }
+
+    /// Forget the proofs whose session expired by `now` (an entry's own time):
+    /// a sign-in that expired by then is refused before its proof is checked
+    /// against [`Self::used_proofs`] ([`Self::proofs_forgotten_through`]).
+    fn forget_expired_proofs(&mut self, now: u64) {
+        let live = self.proof_expiry.split_off(&now.saturating_add(1));
+        let expired = std::mem::replace(&mut self.proof_expiry, live);
+        if let Some(&through) = expired.keys().next_back() {
+            self.proofs_forgotten_through = self.proofs_forgotten_through.max(through);
+        }
+        for proof in expired.into_values().flatten() {
+            let _gone = self.used_proofs.remove(&proof);
+        }
     }
 }
 
@@ -4134,6 +4172,7 @@ impl SystemCmd {
             Self::RequireSessionProofs { .. } => Area::Fleet,
             Self::AttributeByRelease => Area::Fleet,
             Self::RequireCurrentRules => Area::Fleet,
+            Self::ExpireProofs => Area::Fleet,
             Self::SetClusterVersion { .. } => Area::Fleet,
             Self::SetOperatorRelease { .. } => Area::Approvals,
             Self::SetReleaseApproval { .. } => Area::Approvals,
@@ -4210,6 +4249,21 @@ pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
 }
 
 impl SystemCmd {
+    /// When the session a sign-in or a sign-up opens expires, as its passkey
+    /// signed it ([`sign_in_args`], [`account_args`]): when its proof may be
+    /// forgotten ([`SystemState::proof_expiry`]).
+    #[must_use]
+    pub const fn signed_session_expiry(&self) -> Option<u64> {
+        match self {
+            Self::CreateRefresh { record, .. } => Some(record.expires_at),
+            Self::CreateAccount {
+                refresh: Some(grant),
+                ..
+            } => Some(grant.record.expires_at),
+            _ => None,
+        }
+    }
+
     /// The commands whose proofs a cluster requires only from
     /// [`SystemState::session_proofs_from`] on.
     #[must_use]
@@ -5122,6 +5176,12 @@ pub enum SystemCmd {
     /// release that makes it. It only ever tightens: a node that logs it
     /// early takes nothing from anyone.
     RequireCurrentRules,
+    /// From this entry on, a sign-in's or sign-up's proof is forgotten once
+    /// the session it opened expires ([`SystemState::expires_proofs`]), and a
+    /// sign-in whose session expired by then is refused instead. Written once
+    /// by the first system leader on a release that makes it; entries before
+    /// it replay as they applied.
+    ExpireProofs,
     /// The system leader raises the active cluster version
     /// ([`SystemState::cluster_version`]) to `version`, once every registered
     /// node advertises it or newer (`nodes`: each one's, by id). Only forward;
@@ -5941,8 +6001,27 @@ impl SystemMachine {
         let approval = used
             .as_deref()
             .and_then(|used| approval_of(&self.state, &cmd, used));
+        // From the `ExpireProofs` mark on, a sign-in's proof is forgotten
+        // once its session expires: one whose session expired by the last
+        // time proofs were forgotten may be a forgotten proof logged again.
+        let expiry = if self.state.expires_proofs && used.is_some() {
+            cmd.signed_session_expiry()
+        } else {
+            None
+        };
+        if expiry.is_some_and(|at| at <= self.state.proofs_forgotten_through) {
+            return Err("that sign-in's session has expired: sign in again".to_owned());
+        }
         let out = self.run_authorized(cmd).map_err(str::to_owned)?;
         if let Some(used) = used {
+            if let Some(at) = expiry {
+                let _new = self
+                    .state
+                    .proof_expiry
+                    .entry(at)
+                    .or_default()
+                    .insert(used.clone());
+            }
             let _new = self.state.used_proofs.insert(used);
         }
         if let Some((account, entry)) = approval {
@@ -6077,8 +6156,10 @@ impl Machine for SystemMachine {
     fn snapshot(&self) -> eyre::Result<Vec<u8>> {
         // Never an empty snapshot: restoring one fails on the node that receives it,
         // far from here, with nothing logged where it happened.
-        serde_json::to_vec(&self.state)
-            .map_err(|e| eyre::eyre!("the system state does not serialize: {e}"))
+        let bytes = serde_json::to_vec(&self.state)
+            .map_err(|e| eyre::eyre!("the system state does not serialize: {e}"))?;
+        crate::metrics::system_state_bytes(bytes.len());
+        Ok(bytes)
     }
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
@@ -6088,6 +6169,7 @@ impl Machine for SystemMachine {
         } else {
             serde_json::from_slice(data)?
         };
+        crate::metrics::system_state_bytes(data.len());
         self.routing.forget();
         Ok(())
     }

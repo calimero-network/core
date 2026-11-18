@@ -17,7 +17,7 @@
 )]
 
 use std::collections::VecDeque;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
@@ -133,19 +133,42 @@ fn digest_of_rows(db: &Db, group: GroupId, generation: u32) -> eyre::Result<Stat
 /// snapshot file holds that machine's whole state).
 pub const CHECKPOINT_KEY: &[u8] = b"\0calimero.log.checkpoint";
 
-/// The snapshot file format this release writes, and the newest it reads: the number in the
-/// file's first line, `CALIMERO-SNAPSHOT-<format>\n`. Format 1 is the only one so far (every
-/// release since the store, backups included). A change to the framing, or to the rows a
-/// snapshot carries (`format::STORE_FORMAT`), raises it.
-pub const SNAPSHOT_FORMAT: u32 = 1;
+/// The newest snapshot file format this release reads, and the one it writes when a row spans
+/// frames: the number in the file's first line, `CALIMERO-SNAPSHOT-<format>\n`. Format 1 (every
+/// release since the store, backups included) holds each row in one frame, so a row past
+/// [`MAX_FRAME_BYTES`] (an in-memory machine's checkpoint: the whole system state) could not be
+/// read back. Format 2 lets a row span frames ([`PIECE`]). A file with no such row is written
+/// as format 1 ([`WHOLE_ROWS_FORMAT`]), which the release before reads: a rollout never sends
+/// a node a format it cannot read that it read before. A change to the framing, or to the rows
+/// a snapshot carries (`format::STORE_FORMAT`), raises it.
+pub const SNAPSHOT_FORMAT: u32 = 2;
+/// The format a snapshot file with every row in one frame says: format 1, as before rows
+/// could span frames.
+const WHOLE_ROWS_FORMAT: u32 = 1;
+// The first line is written before the rows and patched to [`SNAPSHOT_FORMAT`] in place when a
+// row was split: both numbers take one digit.
+const _: () = assert!(WHOLE_ROWS_FORMAT < 10 && SNAPSHOT_FORMAT < 10);
+/// In format 2, a row entry whose value length has this bit set is a piece of the row: the
+/// next entry, under the same key, continues it. Format 1 never sets it (a frame's values are
+/// far below 2 GiB).
+const PIECE: u32 = 1 << 31;
 /// The first line of a snapshot file, before its format number.
 const SNAPSHOT_MAGIC_PREFIX: &[u8] = b"CALIMERO-SNAPSHOT-";
 /// The longest format number a first line may carry (a `u32`).
 const MAX_FORMAT_DIGITS: usize = 10;
 /// Rows per frame stop growing past this many plaintext bytes.
 const FRAME_BYTES: usize = 1024 * 1024;
-/// A frame is refused past this size when read back.
-const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+/// A frame is refused past this size when read back (smaller in this crate's tests, so a
+/// state past it is cheap to build).
+const MAX_FRAME_BYTES: usize = if cfg!(test) {
+    4 * 1024 * 1024
+} else {
+    64 * 1024 * 1024
+};
+/// A row (key, value and their lengths) larger than this is written in pieces of
+/// [`FRAME_BYTES`] across frames (format 2): whole, its frame could pass [`MAX_FRAME_BYTES`]
+/// once sealed.
+const MAX_WHOLE_ROW_BYTES: usize = MAX_FRAME_BYTES - FRAME_BYTES;
 /// Rows written per batch while installing a snapshot.
 const INSTALL_BATCH_BYTES: usize = 4 * 1024 * 1024;
 /// Builds that may be thrown away because an install or a replace switched
@@ -195,14 +218,36 @@ struct FrameWriter<'a> {
     buf: Vec<u8>,
     rows: u32,
     n: u64,
+    /// A row was written in pieces: the file is format 2.
+    split: bool,
 }
 
 impl FrameWriter<'_> {
     fn row(&mut self, key: &[u8], sealed: &[u8]) -> eyre::Result<()> {
+        let size = 8 + key.len() + sealed.len();
+        // A large row starts a frame of its own, so a whole one stays under the cap.
+        if size > FRAME_BYTES && !self.buf.is_empty() {
+            self.flush(false)?;
+        }
+        if size <= MAX_WHOLE_ROW_BYTES {
+            return self.entry(key, sealed, false);
+        }
+        self.split = true;
+        let mut pieces = sealed.chunks(FRAME_BYTES).peekable();
+        while let Some(piece) = pieces.next() {
+            self.entry(key, piece, pieces.peek().is_some())?;
+        }
+        Ok(())
+    }
+
+    /// One entry: a whole row, or a piece of one that the next entry continues (`more`).
+    fn entry(&mut self, key: &[u8], value: &[u8], more: bool) -> eyre::Result<()> {
         put_u32(&mut self.buf, key.len());
         self.buf.extend_from_slice(key);
-        put_u32(&mut self.buf, sealed.len());
-        self.buf.extend_from_slice(sealed);
+        let len = u32::try_from(value.len())?;
+        self.buf
+            .extend_from_slice(&(if more { len | PIECE } else { len }).to_be_bytes());
+        self.buf.extend_from_slice(value);
         self.rows += 1;
         if self.buf.len() >= FRAME_BYTES {
             self.flush(false)?;
@@ -228,17 +273,22 @@ impl FrameWriter<'_> {
 
     fn finish(mut self) -> eyre::Result<()> {
         self.flush(true)?;
-        let file = self.out.into_inner().map_err(|e| eyre::eyre!("{e}"))?;
+        let mut file = self.out.into_inner().map_err(|e| eyre::eyre!("{e}"))?;
+        if self.split {
+            file.seek(SeekFrom::Start(SNAPSHOT_MAGIC_PREFIX.len() as u64))?;
+            file.write_all(SNAPSHOT_FORMAT.to_string().as_bytes())?;
+        }
         file.sync_all()?;
         Ok(())
     }
 }
 
-/// The first line of a snapshot file this release writes.
+/// The first line of a snapshot file this release writes, until a row is split
+/// ([`FrameWriter::finish`] then makes it [`SNAPSHOT_FORMAT`]).
 fn first_line() -> Vec<u8> {
     [
         SNAPSHOT_MAGIC_PREFIX,
-        format!("{SNAPSHOT_FORMAT}\n").as_bytes(),
+        format!("{WHOLE_ROWS_FORMAT}\n").as_bytes(),
     ]
     .concat()
 }
@@ -280,9 +330,12 @@ fn read_frames(
              snapshot format {SNAPSHOT_FORMAT}"
         );
     }
-    if format != SNAPSHOT_FORMAT {
+    if format == 0 {
         eyre::bail!("snapshot file format {format}, which no release wrote");
     }
+    let pieces = format >= 2;
+    // The row whose pieces are being read: its key and its value so far.
+    let mut pending: Option<(Vec<u8>, Vec<u8>)> = None;
     let mut n = 0_u64;
     loop {
         let mut head = [0_u8; 5];
@@ -305,15 +358,34 @@ fn read_frames(
         for _ in 0..rows {
             let klen = take_u32(&mut buf)?;
             let key = take(&mut buf, klen)?;
-            let vlen = take_u32(&mut buf)?;
-            let value = take(&mut buf, vlen)?;
-            f(key, value)?;
+            let raw = u32::from_be_bytes(take(&mut buf, 4)?.try_into()?);
+            let more = pieces && raw & PIECE != 0;
+            let vlen = if pieces { raw & !PIECE } else { raw };
+            let value = take(&mut buf, vlen as usize)?;
+            match pending.take() {
+                None if !more => f(key, value)?,
+                None => pending = Some((key.to_vec(), value.to_vec())),
+                Some((k, mut v)) => {
+                    if k != key {
+                        eyre::bail!("a snapshot row's pieces name different keys");
+                    }
+                    v.extend_from_slice(value);
+                    if more {
+                        pending = Some((k, v));
+                    } else {
+                        f(&k, &v)?;
+                    }
+                }
+            }
         }
         if !buf.is_empty() {
             eyre::bail!("snapshot frame has trailing bytes");
         }
         n += 1;
         if last {
+            if pending.is_some() {
+                eyre::bail!("snapshot ends inside a row");
+            }
             let mut rest = [0_u8; 1];
             if r.read(&mut rest)? != 0 {
                 eyre::bail!("snapshot has bytes past its last frame");
@@ -686,6 +758,7 @@ impl<M: Machine> StateMachine<M> {
             buf: Vec::new(),
             rows: 0,
             n: 0,
+            split: false,
         };
         let prefix = {
             let mut p = self.group.to_be_bytes().to_vec();
@@ -1343,12 +1416,12 @@ mod snapshot_format {
     fn a_snapshot_from_a_later_release_is_refused_by_its_format() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("g1-x.snap");
-        std::fs::write(&path, b"CALIMERO-SNAPSHOT-2\n\x01\x00\x00\x00\x00").unwrap();
+        std::fs::write(&path, b"CALIMERO-SNAPSHOT-3\n\x01\x00\x00\x00\x00").unwrap();
         let e = read_snapshot_file(&[0; 32], 1, "x", &path, |_, _| Ok(()))
             .unwrap_err()
             .to_string();
         assert!(
-            e.contains("format 2") && e.contains("snapshot format 1"),
+            e.contains("format 3") && e.contains("snapshot format 2"),
             "{e}"
         );
     }
@@ -1424,5 +1497,136 @@ mod snapshot_errors {
             Some(b"2".to_vec()),
             "the last good checkpoint stays; no empty one replaces it"
         );
+    }
+}
+
+#[cfg(test)]
+mod large_rows {
+    use openraft::CommittedLeaderId;
+    use tokio::io::AsyncWriteExt;
+
+    use super::*;
+
+    /// An in-memory machine whose whole state is `len` bytes (a system state that grew).
+    struct Blob(Vec<u8>);
+
+    impl Machine for Blob {
+        const IN_MEMORY: bool = true;
+
+        fn apply(&mut self, _index: u64, command: &[u8], _state: &mut StateTx<'_>) -> Vec<u8> {
+            let len: usize = std::str::from_utf8(command).unwrap().parse().unwrap();
+            self.0 = (0..len).map(|i| (i % 251) as u8).collect();
+            Vec::new()
+        }
+
+        fn snapshot(&self) -> eyre::Result<Vec<u8>> {
+            Ok(self.0.clone())
+        }
+
+        fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
+            self.0 = data.to_vec();
+            Ok(())
+        }
+    }
+
+    fn open(dir: &std::path::Path) -> StateMachine<Blob> {
+        let db = Db::open(dir, &[5; 32]).unwrap();
+        StateMachine::open(1, db, Blob(Vec::new()), Arc::new(watch::channel(0).0)).unwrap()
+    }
+
+    /// Build a snapshot of a state of `len` bytes on one node, send it to a new one and
+    /// install it there: the file's format, and the state the new node holds.
+    async fn send(len: usize) -> eyre::Result<(u32, Vec<u8>)> {
+        let a = tempfile::tempdir().unwrap();
+        let mut leader = open(a.path());
+        let entry = Entry {
+            log_id: LogId::new(CommittedLeaderId::new(1, 1), 1),
+            payload: EntryPayload::Normal(Bytes(len.to_string().into_bytes())),
+        };
+        let _ = leader.apply(vec![entry]).await.unwrap();
+        let built = leader.build().unwrap();
+        let record: SnapshotRecord = leader.db.get_meta(1, "snapshot").unwrap().unwrap();
+        let bytes = std::fs::read(leader.snapshot_path(&record.file)).unwrap();
+        let format = read_format(&mut &bytes[..]).unwrap();
+
+        let b = tempfile::tempdir().unwrap();
+        let mut joining = open(b.path());
+        let mut file = joining.begin_receiving_snapshot().await.unwrap();
+        file.write_all(&bytes).await.unwrap();
+        joining
+            .install_snapshot(&built.meta, file)
+            .await
+            .map_err(|e| eyre::eyre!("{e}"))?;
+        let held = joining.shared.read().unwrap().machine.0.clone();
+        Ok((format, held))
+    }
+
+    /// Review finding B1: an in-memory machine's state is one row, and its snapshot wrote
+    /// that row into one frame, which every reader refuses past `MAX_FRAME_BYTES`: once the
+    /// system state grew past it, no new or lagging node could install the system snapshot,
+    /// and no system backup could be restored. Such a row now spans frames.
+    #[tokio::test]
+    async fn a_state_larger_than_a_frame_installs_on_a_new_node() {
+        let len = MAX_FRAME_BYTES + 3 * FRAME_BYTES + 17;
+        let (_, held) = send(len).await.unwrap();
+        assert_eq!(held.len(), len);
+        assert!(held.iter().enumerate().all(|(i, b)| *b == (i % 251) as u8));
+    }
+
+    /// A state whose rows each fit a frame is written as format 1, byte for byte as before
+    /// rows could span frames: the release before reads it, so a rollout needs no gate. Only
+    /// a file with a split row says format 2, and a format 1 file of that row was refused by
+    /// every reader anyway.
+    #[tokio::test]
+    async fn only_a_file_with_a_split_row_says_format_2() {
+        let (format, held) = send(FRAME_BYTES * 2).await.unwrap();
+        assert_eq!((format, held.len()), (1, FRAME_BYTES * 2));
+        let whole = MAX_WHOLE_ROW_BYTES - 64;
+        let (format, held) = send(whole).await.unwrap();
+        assert_eq!((format, held.len()), (1, whole));
+        let (format, held) = send(MAX_FRAME_BYTES + 1).await.unwrap();
+        assert_eq!((format, held.len()), (2, MAX_FRAME_BYTES + 1));
+    }
+
+    /// A snapshot file as the release before wrote it (format 1, built here byte by byte,
+    /// not with this release's writer) reads back row for row.
+    #[test]
+    fn a_format_1_file_from_the_release_before_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path(), &[7; 32]).unwrap();
+        let rows: [(&[u8], &[u8]); 3] = [(b"a", b"1"), (CHECKPOINT_KEY, b"{\"n\":2}"), (b"z", b"")];
+        let mut plain = 3_u32.to_be_bytes().to_vec();
+        for (k, v) in rows {
+            let sealed = db.seal_state(4, k, v).unwrap();
+            plain.extend_from_slice(&u32::try_from(k.len()).unwrap().to_be_bytes());
+            plain.extend_from_slice(k);
+            plain.extend_from_slice(&u32::try_from(sealed.len()).unwrap().to_be_bytes());
+            plain.extend_from_slice(&sealed);
+        }
+        let frame = db
+            .snapshot_sealer
+            .seal(&frame_aad(4, "old", 0, true), &plain)
+            .unwrap();
+        let mut file = b"CALIMERO-SNAPSHOT-1\n\x01".to_vec();
+        file.extend_from_slice(&u32::try_from(frame.len()).unwrap().to_be_bytes());
+        file.extend_from_slice(&frame);
+        let path = dir.path().join("old.snap");
+        std::fs::write(&path, file).unwrap();
+
+        let mut read = Vec::new();
+        read_frames(
+            &db.snapshot_sealer,
+            4,
+            "old",
+            std::fs::File::open(&path).unwrap(),
+            |k, sealed| {
+                read.push((k.to_vec(), db.open_state(4, k, sealed)?));
+                Ok(())
+            },
+        )
+        .unwrap();
+        let want: Vec<(Vec<u8>, Vec<u8>)> =
+            rows.iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect();
+        assert_eq!(read, want);
     }
 }

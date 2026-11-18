@@ -20,7 +20,7 @@ not one app's own data:
 | `api_keys`, `refresh`, `rotated_refresh` | API-key hashes, live refresh tokens, and refresh tokens already exchanged |
 | `revoked_sessions`, `revoked_at` | Sessions that no longer verify, and when they were revoked |
 | `recovery_keys`, `account_recoveries` | Account recovery codes' public keys, and recoveries under way |
-| `used_proofs`, `operator_key` | The consents and operator signatures already used; the operator's verify key |
+| `used_proofs`, `proof_expiry`, `operator_key` | The consents and operator signatures already used, and from the `ExpireProofs` mark on, when each sign-in's proof is forgotten (the expiry of the session it opened, which its passkey signed; a sign-in that expired by the last one forgotten is refused); the operator's verify key |
 | `orgs`, `invites`, `sign_up_invites` | Organizations (members, roles, capabilities, teams, approvals, recovery key, metadata, upgrade runs; `personal` marks an account's own), org invites by token key, cluster sign-up invites |
 | `quotas`, `org_quotas` | The cluster's limits and per-payer overrides |
 | `pools`, `price_table`, `compute`, `released_runs`, `run_served`, … | The compute queue: pools of job nodes, prices, each app's run slots, and the fairness counters ([Compute actions](/protocol/compute-actions/)) |

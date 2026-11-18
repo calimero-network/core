@@ -157,8 +157,13 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   (each release has its own K_r) and receive their data by snapshot, whose format is
   unchanged; only a node restarted in place on an older directory (development) is refused. Tests: `format::tests`
   (`any_other_store_format_is_refused_and_left_as_it_was`).
-  A snapshot file's first line is `CALIMERO-SNAPSHOT-<SNAPSHOT_FORMAT>`; a later format is
-  refused by it, not by its frames. A change to any row's shape raises `STORE_FORMAT` (and
+  A snapshot file's first line is `CALIMERO-SNAPSHOT-<n>`; a later format than
+  `SNAPSHOT_FORMAT` (2) is refused by it, not by its frames. Format 2 lets a row span frames
+  (pieces of `FRAME_BYTES`, the value length's top bit marking "continued"): a reader refuses
+  a frame over `MAX_FRAME_BYTES` (64 MiB), and an in-memory machine's checkpoint (the whole
+  system state) is one row. A file with no such row is written as format 1, which the
+  release before reads, so a rollout needs no gate; the first line is patched to 2 only when
+  a row was split. Regression: `machine::large_rows`. A change to any row's shape raises `STORE_FORMAT` (and
   `SNAPSHOT_FORMAT`, since snapshots carry rows) and appends its step. Tests:
   `format::tests`, `machine::snapshot_format`.
 - Entries are capped at `MAX_ENTRY_BYTES` (1 MiB; `WriteError::TooLarge`): openraft
