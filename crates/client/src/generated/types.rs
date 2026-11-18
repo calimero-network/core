@@ -2946,6 +2946,8 @@ pub struct AppRunLogsResponse {
 pub enum AppSecretsResponseSecretsValueSource {
     /// `app`.
     App,
+    /// `deployment`.
+    Deployment,
     /// `cluster`.
     Cluster,
     /// A value this client does not know yet.
@@ -2958,6 +2960,7 @@ impl AppSecretsResponseSecretsValueSource {
     pub fn as_str(&self) -> &str {
         match self {
             Self::App => "app",
+            Self::Deployment => "deployment",
             Self::Cluster => "cluster",
             Self::Other(s) => s,
         }
@@ -2974,6 +2977,7 @@ impl<'de> Deserialize<'de> for AppSecretsResponseSecretsValueSource {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         Ok(match String::deserialize(d)?.as_str() {
             "app" => Self::App,
+            "deployment" => Self::Deployment,
             "cluster" => Self::Cluster,
             other => Self::Other(other.to_owned()),
         })
@@ -4457,6 +4461,55 @@ pub struct DeploymentOrgsResponse {
     pub orgs: Vec<DeploymentOrgsResponseOrgsItem>,
     #[serde(rename = "outsideOrgs")]
     pub outside_orgs: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentSecretsResponseSecretsValue {
+    pub apps: Vec<String>,
+    pub set: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(rename = "setBy")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_by: Option<String>,
+    #[serde(rename = "setAt")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_at: Option<u64>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentSecretsResponse {
+    pub deployment: String,
+    pub secrets: BTreeMap<String, DeploymentSecretsResponseSecretsValue>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentSecretSetResponse {
+    pub deployment: String,
+    pub name: String,
+    pub fingerprint: String,
+    #[serde(rename = "setBy")]
+    pub set_by: String,
+    #[serde(rename = "setAt")]
+    pub set_at: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentSecretClearResponse {
+    pub deployment: String,
+    pub name: String,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

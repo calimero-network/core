@@ -702,6 +702,15 @@ pub struct SystemState {
     /// empty, so state from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub deployments: BTreeMap<String, Deployment>,
+    /// The values a deployment's managers set for secrets its offered releases
+    /// declare (`SetDeploymentSecret`), by deployment id, then name: every
+    /// instance created from it uses one unless it set its own. Never in an
+    /// answer, a report or a log line: only the outbound gate reads a value
+    /// (`Node::outbound_for`, [`SystemState::deployment_secrets_of`]); the
+    /// routes answer each one's fingerprint. Left out when empty, so state from
+    /// before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub deployment_secrets: BTreeMap<String, crate::component::InstanceSecrets>,
     /// Web origins packages' managers registered for their frontends
     /// (`AddPackageOrigin`), by origin: a passkey ceremony there opens a
     /// session bound to the package ([`crate::origins`]). Left out when
@@ -1031,6 +1040,23 @@ pub const MAX_APPS_PER_DEPLOYMENT: usize = 64;
 /// The longest deployment name, in characters, and the longest app name or
 /// deployment id, in bytes.
 pub const MAX_DEPLOYMENT_NAME_CHARS: usize = 64;
+
+/// How many secret values one deployment keeps
+/// ([`SystemState::deployment_secrets`]), each at most
+/// [`crate::component::MAX_SECRET_VALUE_BYTES`]: as many as one release declares
+/// ([`calimero_bundle::MAX_SECRETS`]).
+pub const MAX_SECRETS_PER_DEPLOYMENT: usize = calimero_bundle::MAX_SECRETS;
+
+/// How many deployment secret values a cluster keeps in all: the system state is
+/// one checkpoint, so they stay under 16 MiB of it together.
+pub const MAX_DEPLOYMENT_SECRETS: usize = 4096;
+
+/// Why a deployment's secret is refused: no release it offers declares the name.
+pub const UNDECLARED_SECRET: &str =
+    "no release this deployment offers declares that secret; offer one that does first";
+
+/// Why clearing a deployment's secret is refused: it holds no value of it.
+pub const NO_DEPLOYMENT_SECRET: &str = "this deployment holds no value of that secret";
 
 /// A deployment's id: derived from the nonce its creator's consent signed,
 /// so the consent binds it and no node picks another (32 lowercase hex
@@ -2326,6 +2352,28 @@ impl SystemState {
             .values()
             .flat_map(|d| d.apps.values())
             .any(|o| o.package == package && o.version == version)
+    }
+
+    /// Whether a release `d` offers declares secret `name`
+    /// (`PackageVersion::secrets`).
+    #[must_use]
+    pub fn deployment_declares(&self, d: &Deployment, name: &str) -> bool {
+        d.apps.values().any(|o| {
+            self.offered_release(o)
+                .is_some_and(|v| v.secrets.contains_key(name))
+        })
+    }
+
+    /// The secret values of the deployment `app_id` was created from, by name:
+    /// what fills `{{secret:NAME}}` for it where the instance set no value of
+    /// its own. Empty for an instance from no deployment, or one deleted since.
+    #[must_use]
+    pub fn deployment_secrets_of(
+        &self,
+        app_id: &str,
+    ) -> Option<&crate::component::InstanceSecrets> {
+        let deployment = self.apps.get(app_id)?.deployment.as_deref()?;
+        self.deployment_secrets.get(deployment)
     }
 
     /// Whether `actor` may change `d`: [`Self::acts_for`] its owner.
@@ -4191,6 +4239,8 @@ impl SystemCmd {
             Self::AddPackageOrigin { .. } => Area::Packages,
             Self::RemovePackageOrigin { .. } => Area::Packages,
             Self::DeleteDeployment { .. } => Area::Deployments,
+            Self::SetDeploymentSecret { .. } => Area::Deployments,
+            Self::ClearDeploymentSecret { .. } => Area::Deployments,
             Self::SetOutboundApproval { .. } => Area::Approvals,
             Self::DeleteOrg { .. } => Area::Orgs,
             Self::SetOrgMetadata { .. } => Area::Orgs,
@@ -5389,9 +5439,33 @@ pub enum SystemCmd {
         consent: Value,
     },
     /// Remove a deployment that offers nothing and no instance came from
-    /// (`__delete_deployment / {}`).
+    /// (`__delete_deployment / {}`). Its secret values go with it.
     DeleteDeployment {
         deployment: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// A manager of `deployment` sets its value of secret `name`, which a
+    /// release it offers declares (`deployment:{id} / __set_secret / { name,
+    /// fingerprint }`, the manager's passkey `consent`: the value's
+    /// fingerprint, never the value). Every instance created from it uses the
+    /// value unless it set its own. `value` never shows in `Debug`.
+    SetDeploymentSecret {
+        deployment: String,
+        name: String,
+        value: crate::component::SecretValue,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// A manager removes the deployment's value of `name`
+    /// (`deployment:{id} / __clear_secret / { name }`): its instances fall
+    /// back to the operator's.
+    ClearDeploymentSecret {
+        deployment: String,
+        name: String,
         actor: AccountId,
         #[serde(default)]
         consent: Value,

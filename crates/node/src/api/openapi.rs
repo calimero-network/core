@@ -1378,8 +1378,8 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "NOT_A_UNIT"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "FEATURE_NOT_ACTIVE"), (409, "USES_NOT_INSTALLED")]),
         get("/apps/{app}/secrets", "app_secrets", SignedIn, "The secrets an app's release declares")
-            .about("For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.")
-            .ok("{ secrets: { [string]: { hosts: string[], description: string, required: bool, source: \"app\" | \"cluster\", fingerprint?: string, setBy?: string, setAt?: uint } } }")
+            .about("For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.")
+            .ok("{ secrets: { [string]: { hosts: string[], description: string, required: bool, source: \"app\" | \"deployment\" | \"cluster\", fingerprint?: string, setBy?: string, setAt?: uint } } }")
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         put("/apps/{app}/secrets/{name}", "app_secret_set", AccountHolder, "Set an app's own value of a declared secret")
             .about("Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.")
@@ -2027,6 +2027,22 @@ fn operations() -> Vec<Op> {
         get("/deployments/{id}/orgs", "deployment_orgs", SignedIn, "The organizations a deployment serves")
             .about("For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or in a personal organization, are only counted (`outsideOrgs`). Never who the members are.")
             .ok("{ deployment: string, orgs: { orgId: string, name: string | null, memberCount: uint, activeMembers30d: uint, instances: uint, apps: { app: string, version: string }[], firstCreatedAt: string }[], outsideOrgs: uint }"),
+        get("/deployments/{id}/secrets", "deployment_secrets", SignedIn, "A deployment's secrets")
+            .about("For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`, empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.")
+            .ok("{ deployment: string, secrets: { [string]: { apps: string[], set: bool, fingerprint?: string, setBy?: string, setAt?: uint } } }")
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
+        put("/deployments/{id}/secrets/{name}", "deployment_secret_set", AccountHolder, "Set a deployment's value of a secret")
+            .about("Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.")
+            .json::<super::DeploymentSecretBody>("{ value: string, confirm?: #Confirm }")
+            .ok("{ deployment: string, name: string, fingerprint: string, setBy: string, setAt: uint }")
+            .step_up()
+            .errors(&[(400, "BAD_SECRET"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "UNDECLARED_SECRET"), (409, "FEATURE_NOT_ACTIVE"), (429, "QUOTA_EXCEEDED")]),
+        delete("/deployments/{id}/secrets/{name}", "deployment_secret_clear", AccountHolder, "Remove a deployment's value of a secret")
+            .about("Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
+            .ok("{ deployment: string, name: string }")
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
     ]
 }
 

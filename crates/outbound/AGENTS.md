@@ -24,7 +24,11 @@ Secrets (`{{secret:NAME}}`) come from `EnvSecrets` or a loopback `SidecarSecrets
 scoped by package, signer and host, and are redacted from the response. A release
 that declares its secrets (`AppIdentity::secrets`, from its signed manifest's
 `secrets`) gets only those names, each only into a request to one of its declared
-hosts; `None` keeps the operator's bindings alone.
+hosts; `None` keeps the operator's bindings alone. A value set in merod for a
+declared name (`AppIdentity::own`, `OwnSecrets`: the instance owner's, else its
+deployment managers'; `calimero_node::component::run_secrets`) wins over the
+operator's for that name, still only to its declared hosts. The echo answers each
+filled-in value's length (`secretBytes`), never a value.
 
 - `OutboundService::from_settings` → `for_run(app, declared, approval, context)`;
   `for_run_counted(.., sent)` also counts each request handed to the transport

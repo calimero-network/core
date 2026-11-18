@@ -124,10 +124,16 @@ pub enum Feature {
     /// would keep every sign-in's proof and accept a sign-in this release
     /// refuses as expired.
     ExpireProofs,
+    /// `SetDeploymentSecret` and `ClearDeploymentSecret`, a deployment's managers
+    /// setting a secret's value for every instance created from it
+    /// (`SystemState::deployment_secrets`): an earlier release cannot decode them, so
+    /// an instance whose leader is on it would send the operator's value, or none, where
+    /// another leader sends the deployment's.
+    DeploymentSecrets,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 31] = [
+pub const FEATURES: [Feature; 32] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -159,6 +165,7 @@ pub const FEATURES: [Feature; 31] = [
     Feature::Delegation,
     Feature::AttachApp,
     Feature::ExpireProofs,
+    Feature::DeploymentSecrets,
 ];
 
 impl Feature {
@@ -197,6 +204,7 @@ impl Feature {
             Self::Delegation => "delegation",
             Self::AttachApp => "attachApp",
             Self::ExpireProofs => "expireProofs",
+            Self::DeploymentSecrets => "deploymentSecrets",
         }
     }
 
@@ -233,6 +241,7 @@ impl Feature {
             | Self::Delegation
             | Self::AttachApp
             | Self::ExpireProofs => "1.0.0-rc.31",
+            Self::DeploymentSecrets => "1.0.0-rc.32",
         }
     }
 }
@@ -483,6 +492,9 @@ impl SystemCmd {
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
             Self::SetDelegation { .. } => vec![Feature::Delegation],
             Self::LinkApp { .. } => vec![Feature::AttachApp],
+            Self::SetDeploymentSecret { .. } | Self::ClearDeploymentSecret { .. } => {
+                vec![Feature::DeploymentSecrets]
+            }
             Self::SetPools { .. } => vec![Feature::ComputePools],
             Self::ScopeApps {
                 apps, by_release, ..
@@ -700,6 +712,7 @@ mod tests {
     const RC24: &str = "1.0.0-rc.24";
     const RC29: &str = "1.0.0-rc.29";
     const RC31: &str = "1.0.0-rc.31";
+    const RC32: &str = "1.0.0-rc.32";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -917,6 +930,8 @@ mod tests {
             } })),
             Feature::AttachApp => entry(json!({ "op": "linkApp", "app_id": "app", "name": "kv",
                 "target": "kv-app", "actor": "a" })),
+            Feature::DeploymentSecrets => entry(json!({ "op": "setDeploymentSecret",
+                "deployment": "d", "name": "API_KEY", "value": "v", "actor": "a", "at": 1 })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1205,7 +1220,7 @@ mod tests {
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
             .iter()
-            .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC31].contains(&f.since()));
+            .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC31, RC32].contains(&f.since()));
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -1274,12 +1289,14 @@ mod tests {
             last.into_iter().partition(|f| f.since() == RC22);
         let (rc24, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC24);
-        let (rc29, rc30): (Vec<Feature>, Vec<Feature>) =
+        let (rc29, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC29);
+        let (rc30, rc32): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC31);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in rc24.iter().chain(&rc29).chain(&rc30) {
+        for &feature in rc24.iter().chain(&rc29).chain(&rc30).chain(&rc32) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1297,7 +1314,7 @@ mod tests {
         for &feature in &rc24 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in rc29.iter().chain(&rc30) {
+        for &feature in rc29.iter().chain(&rc30).chain(&rc32) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1316,7 +1333,7 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.31's wait for every node on rc.31.
-        for &feature in &rc30 {
+        for &feature in rc30.iter().chain(&rc32) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1332,6 +1349,32 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc30 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.32's (a deployment's secrets) wait for every node on rc.32.
+        assert_eq!(rc32, [Feature::DeploymentSecrets]);
+        for &feature in &rc32 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC31))
+            );
+        }
+        let clear = entry(json!({ "op": "clearDeploymentSecret", "deployment": "d",
+            "name": "API_KEY", "actor": "a" }));
+        assert_eq!(
+            propose(&mut nodes, &clear).unwrap_err().feature,
+            Feature::DeploymentSecrets
+        );
+        for n in &mut nodes {
+            n.release = RC32;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC32.into(),
+            nodes: (1..=3).map(|id| (id, RC32.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc32 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));
