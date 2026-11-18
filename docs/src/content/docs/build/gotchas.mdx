@@ -32,6 +32,10 @@ The short list. Each item links to the page that explains it.
 - Uniqueness belongs in the key or a `unique(..)` constraint, not in a check
   before an insert.
 - Prefer `env::unique_id()` to a `Counter` for ids.
+- A table's size is `len()`, one read; `iter().count()` reads every record.
+  A table stored by an older SDK counts its records on `len()` until its next
+  insert or removal, and a release built with such an SDK does not keep the
+  length: never go back to one ([The length](/build/collections/#the-length)).
 - Multi-row reads are pages of at most 1,000: a view that answers a client
   returns one page and its `next`. Inside a run, `iter()` walks every page
   through one cursor ([Iterating](/build/collections/#iterating)).
