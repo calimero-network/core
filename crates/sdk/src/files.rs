@@ -49,14 +49,29 @@ impl fmt::Display for FileIoError {
 impl core::error::Error for FileIoError {}
 
 /// A file being written; [`Writer::finish`] seals it. Dropped unfinished, it leaves no file.
-pub struct Writer(backend::Writer);
+///
+/// Small writes are gathered in the guest and sent to the host [`WRITE_BUFFER`] bytes at a
+/// time, so `write!` or `serde_json::to_writer` costs a host call per 64 KiB, not per piece. A
+/// write the host refuses is reported by the `write` or `flush` that sends it, or by `finish`.
+pub struct Writer {
+    file: backend::Writer,
+    buffer: Vec<u8>,
+}
+
+/// How many bytes a [`Writer`] gathers before it sends them to the host.
+pub const WRITE_BUFFER: usize = 64 * 1024;
 
 /// A file being read from the start.
 pub struct Reader(backend::Reader);
 
 /// Starts a new file.
 pub fn create() -> Result<Writer> {
-    backend::create().map(Writer).map_err(fail)
+    backend::create()
+        .map(|file| Writer {
+            file,
+            buffer: Vec::new(),
+        })
+        .map_err(fail)
 }
 
 /// Opens a file this app holds.
@@ -77,23 +92,42 @@ pub fn uploader(id: &BlobRef) -> Option<String> {
 
 impl Writer {
     /// Seals the file and returns the reference to store in state.
-    pub fn finish(self) -> Result<BlobRef> {
-        let id = self.0.finish().map_err(fail)?;
+    pub fn finish(mut self) -> Result<BlobRef> {
+        self.send().map_err(fail)?;
+        let id = self.file.finish().map_err(fail)?;
         BlobRef::parse(&id)
             .ok_or_else(|| fail(format!("the host returned a malformed file id: {id}")))
     }
 }
 
+impl Writer {
+    /// Send what is gathered to the host.
+    fn send(&mut self) -> std::result::Result<(), String> {
+        if !self.buffer.is_empty() {
+            self.file.write(&self.buffer)?;
+            self.buffer.clear();
+        }
+        Ok(())
+    }
+}
+
 impl io::Write for Writer {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0
-            .write(buf)
-            .map_err(|m| io::Error::other(FileIoError(m)))?;
+        let to_io = |m| io::Error::other(FileIoError(m));
+        if self.buffer.len() + buf.len() > WRITE_BUFFER {
+            self.send().map_err(to_io)?;
+        }
+        if buf.len() >= WRITE_BUFFER {
+            // A large write goes as it is, after what was gathered before it.
+            self.file.write(buf).map_err(to_io)?;
+        } else {
+            self.buffer.extend_from_slice(buf);
+        }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        self.send().map_err(|m| io::Error::other(FileIoError(m)))
     }
 }
 
@@ -121,6 +155,38 @@ fn fail(message: String) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn small_writes_reach_the_host_in_64_kib_pieces() {
+        use std::io::Write as _;
+        let before = backend::write_calls();
+        let mut w = create().unwrap();
+        for i in 0..20_000 {
+            writeln!(w, "line {i}").unwrap();
+        }
+        let big = vec![7u8; 100_000];
+        w.write_all(&big).unwrap();
+        let id = w.finish().unwrap();
+        // ~208 KB of lines in 64 KiB pieces, then the 100 KB write as it is.
+        let calls = backend::write_calls() - before;
+        assert!(calls <= 6, "{calls} host writes");
+        let mut expected: Vec<u8> = (0..20_000)
+            .flat_map(|i| format!("line {i}\n").into_bytes())
+            .collect();
+        expected.extend_from_slice(&big);
+        let got = info(&id).unwrap();
+        assert_eq!(got.size, expected.len() as u64);
+        let mut r = backend::open(&id.id()).unwrap();
+        let mut read = Vec::new();
+        loop {
+            let chunk = r.read(1 << 20).unwrap();
+            if chunk.is_empty() {
+                break;
+            }
+            read.extend(chunk);
+        }
+        assert_eq!(read, expected, "the bytes and their order are kept");
+    }
 
     #[test]
     fn only_file_io_errors_are_labelled_files() {

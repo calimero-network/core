@@ -152,3 +152,59 @@ fn distinct_keys_from_several_members_all_survive() {
         json!({ "a": "owner", "b": "bob", "c": "cy" })
     );
 }
+
+#[test]
+fn ordered_reads_first_last_and_is_empty() {
+    let mut t = app();
+    assert_eq!(view(&mut t, "isEmpty", json!({})), json!(true));
+    assert_eq!(view(&mut t, "first", json!({})), Value::Null);
+    let _ = call(&mut t, "set", json!({ "key": "b", "value": "2" }));
+    let _ = call(&mut t, "set", json!({ "key": "a", "value": "1" }));
+    let _ = call(&mut t, "set", json!({ "key": "c", "value": "3" }));
+    let entries = view(&mut t, "entries", json!({}));
+    let keys: Vec<&String> = entries.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["a", "b", "c"]);
+    assert_eq!(view(&mut t, "isEmpty", json!({})), json!(false));
+    assert_eq!(
+        view(&mut t, "first", json!({})),
+        json!({ "key": "a", "value": "1" })
+    );
+    assert_eq!(
+        view(&mut t, "last", json!({})),
+        json!({ "key": "c", "value": "3" })
+    );
+    assert_eq!(
+        view(&mut t, "range", json!({ "start": "a", "end": "c" })),
+        json!({ "a": "1", "b": "2" })
+    );
+}
+
+#[test]
+fn reads_past_one_page_and_prefix_bounds() {
+    let mut t = app();
+    // More than one internal page (1000) of keys under a prefix, between two other keys.
+    let _ = call(&mut t, "set", json!({ "key": "a", "value": "x" }));
+    for i in 0..1005 {
+        let _ = call(
+            &mut t,
+            "set",
+            json!({ "key": format!("p:{i:04}"), "value": "v" }),
+        );
+    }
+    let _ = call(&mut t, "set", json!({ "key": "q", "value": "x" }));
+    let prefix = view(&mut t, "prefix", json!({ "prefix": "p:" }));
+    assert_eq!(prefix.as_object().unwrap().len(), 1005);
+    assert_eq!(view(&mut t, "len", json!({})), json!("1007"));
+    assert_eq!(
+        view(&mut t, "page", json!({ "offset": 1004, "limit": 3 })),
+        json!({ "p:1003": "v", "p:1004": "v", "q": "x" })
+    );
+    assert_eq!(
+        view(&mut t, "page", json!({ "offset": 0, "limit": 0 })),
+        json!({})
+    );
+    assert_eq!(
+        view(&mut t, "range", json!({ "start": "q", "end": "a" })),
+        json!({})
+    );
+}

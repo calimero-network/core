@@ -9,7 +9,7 @@
 //! - F1: sessions are signed by the node that issued them, not by a key
 //!   every node holds.
 //!
-//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
 
 use std::sync::Arc;
@@ -415,18 +415,18 @@ async fn forged_decisions_are_refused_where_they_apply_on_every_node() {
         (
             "an upgrade without consent",
             json!({
-                "op": "upgradeApp", "appId": app, "bundle": bundle, "byOperator": false,
+                "op": "upgradeApp", "app_id": app, "bundle": bundle, "by_operator": false,
                 "actor": alice, "consent": null,
             }),
         ),
         (
             "a transfer without consent",
-            json!({ "op": "transferApp", "appId": app, "to": bob, "actor": alice, "consent": null }),
+            json!({ "op": "transferApp", "app_id": app, "to": bob, "actor": alice, "consent": null }),
         ),
         (
             "a transfer with bob's passkey",
             json!({
-                "op": "transferApp", "appId": app, "to": bob, "actor": alice,
+                "op": "transferApp", "app_id": app, "to": bob, "actor": alice,
                 "consent": consent(&mut bob_pk, &app, "__transfer", &json!({ "to": bob })),
             }),
         ),

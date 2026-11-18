@@ -137,7 +137,7 @@ def build_components(wd):
     if app:
         return Path(app), Path(compute)
     app, compute = wd / "app.wasm", wd / "compute.wasm"
-    subprocess.run([str(BIN / "meroctl"), "app", "build", "apps/v2-fixtures/compute", "--out", str(app),
+    subprocess.run([str(BIN / "meroctl"), "app", "build", "apps/fixture-compute", "--out", str(app),
                     "--compute-out", str(compute), "--target-dir", str(wd / "build")], cwd=ROOT, check=True)
     return app, compute
 

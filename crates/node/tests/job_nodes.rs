@@ -28,7 +28,7 @@ async fn ops(c: &Cluster) -> Client {
 async fn create(alice: &Client, name: &str) -> String {
     let bundle = alice
         .packages()
-        .bundle_put(common::component("kv"))
+        .bundle_put(common::component("fixture-kv"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -166,7 +166,7 @@ async fn a_bundles_majority_counts_only_replica_nodes() {
     // 2 of 3 replicas hold it; counting the job node it would be 2 of 4.
     let bundle = alice
         .packages()
-        .bundle_put(common::component("kv"))
+        .bundle_put(common::component("fixture-kv"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -761,7 +761,7 @@ async fn a_sealed_file_is_never_sent_to_a_job_node() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
         .packages()
-        .bundle_put(common::component("files"))
+        .bundle_put(common::component("fixture-files"))
         .await
         .map(|b| b.hash)
         .unwrap();

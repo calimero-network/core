@@ -88,7 +88,6 @@ version = "0.1.0"
 dependencies = [
  "calimero-app-build",
  "calimero-sdk",
- "serde",
  "serde_json",
 ]
 

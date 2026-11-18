@@ -984,3 +984,76 @@ fn pack_declares_the_apps_the_crate_uses() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("is not the ABI"));
 }
+
+/// `app uses update` pins a reference to a release inside its range and vendors its ABI,
+/// which `app uses check` and `app pack` then read; a release outside the range, of another
+/// package, or without a method the reference lists is refused before anything is written.
+#[test]
+fn uses_update_pins_and_vendors_what_pack_signs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    std::fs::write(
+        d.join("Cargo.toml"),
+        "[package]\nname = \"notes\"\nversion = \"0.1.0\"\n\n[package.metadata.calimero]\n\
+         package = \"com.example.notes\"\n\n[package.metadata.calimero.uses]\n\
+         kv = { package = \"com.calimero.confidential-kv\", range = \"^0.1\", mode = \"attach\", methods = [\"get\"] }\n",
+    )
+    .unwrap();
+    let abi = serde_json::json!({
+        "abiVersion": 1,
+        "methods": { "get": { "kind": "view", "params": [["key", "string"]], "returns": "option<string>", "allowApps": ["*"] } },
+    });
+    std::fs::write(d.join("kv-abi.json"), abi.to_string()).unwrap();
+    let update = |version: &str| {
+        meroctl(
+            d,
+            &[
+                "app",
+                "uses",
+                "update",
+                "kv",
+                "--from",
+                "kv-abi.json",
+                "--version",
+                version,
+            ],
+        )
+    };
+
+    let out = update("0.2.0");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("outside the declared range"));
+    assert!(!d.join("calimero.lock").exists());
+    // An ABI JSON names no version of its own.
+    let out = meroctl(d, &["app", "uses", "update", "kv", "--from", "kv-abi.json"]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--version"));
+
+    let locked = ok(&update("0.1.3"));
+    assert_eq!(locked["version"], "0.1.3");
+    assert_eq!(locked["mode"], "attach");
+    assert!(d.join("calimero/abi/kv.json").exists());
+    let checked = ok(&meroctl(d, &["app", "uses", "check"]));
+    assert_eq!(checked["uses"][0]["abi"], locked["abi"]);
+
+    std::fs::write(d.join("app.wasm"), [COMPONENT, b"app"].concat()).unwrap();
+    let _ = ok(&meroctl(
+        d,
+        &["app", "pack", ".", "--wasm", "app.wasm", "--out", "a.mpk"],
+    ));
+    let uses = &manifest(&untar(&d.join("a.mpk")))["uses"]["kv"];
+    assert_eq!(uses["version"], "0.1.3");
+    assert_eq!(uses["abi"], locked["abi"]);
+    assert_eq!(uses["methods"], serde_json::json!(["get"]));
+
+    // A release without a listed method.
+    let mut without = abi.clone();
+    without["methods"] = serde_json::json!({});
+    std::fs::write(d.join("kv-abi.json"), without.to_string()).unwrap();
+    let out = update("0.1.4");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("does not have"));
+    assert_eq!(
+        ok(&meroctl(d, &["app", "uses", "check"]))["uses"][0]["version"],
+        "0.1.3"
+    );
+}

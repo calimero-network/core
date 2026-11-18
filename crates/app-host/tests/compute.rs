@@ -147,6 +147,7 @@ fn a_run_has_no_network_xcall_or_action_host() {
     let mut h = run(&[], &files);
     denied(h.xcall_call("other", "m", b""));
     denied(h.xcall_view("other", "m", b""));
+    denied(h.xcall_batch(&[]));
     denied(h.action_key());
     denied(h.http_send(&HttpRequest {
         method: "GET".to_owned(),
@@ -362,7 +363,7 @@ fn bad_compute_caps_are_refused() {
 fn a_compute_world_abi_lists_compute_methods_without_their_result_methods() {
     let only_digest = json!({
         "abiVersion": 1,
-        "world": "calimero:app/compute@0.5.3",
+        "world": "calimero:app/compute@0.5.4",
         "methods": { "digest": { "kind": "compute", "compute": { "fuel": 5, "result": "onDone" } } },
     });
     let abi = Abi::from_json(&only_digest).unwrap();
@@ -373,7 +374,7 @@ fn a_compute_world_abi_lists_compute_methods_without_their_result_methods() {
         Abi::from_json(&other),
         Err(PrepareError::BadAbi(_))
     ));
-    // A compute component built before 0.5.3 names the world at its own patch.
+    // A compute component built before 0.5.4 names the world at its own patch.
     let mut older = only_digest.clone();
     older["world"] = json!("calimero:app/compute@0.5.1");
     assert!(matches!(
@@ -381,7 +382,7 @@ fn a_compute_world_abi_lists_compute_methods_without_their_result_methods() {
         MethodKind::Compute(_)
     ));
     let mut app_world = only_digest;
-    app_world["world"] = json!("calimero:app@0.5.3");
+    app_world["world"] = json!("calimero:app@0.5.4");
     assert!(matches!(
         Abi::from_json(&app_world),
         Err(PrepareError::BadAbi(_))

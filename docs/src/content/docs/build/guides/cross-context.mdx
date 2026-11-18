@@ -78,13 +78,17 @@ allows the system.
 ## 3. Call and read synchronously
 
 ```rust
+// Inside an `async fn` app method.
 let args = std::collections::BTreeMap::from([("account", account)]);
 // A u64 result arrives as a decimal string, like every u64 on the wire.
-let balance: String = env::xcall_view("ledger", "balance", &args)?;
+let balance: String = env::xcall_view("ledger", "balance", &args).await?;
 ```
 
 `env::xcall_call::<T>(app, method, &args)` and `env::xcall_view::<T>(..)` run
-the target now and decode its JSON result as `T`. A failure is `AppError`
+the target now and decode its JSON result as `T`. They are futures: a method that
+awaits one is an `async fn`, and futures awaited together with `app::join!` or
+`app::join_all` run at once ([Synchronous calls and
+views](/protocol/xcall/#synchronous-calls-and-views)). A failure is `AppError`
 `XcallFailed`, carrying the target's error. Messages, calls and views all reach
 only methods that `allow` this app.
 

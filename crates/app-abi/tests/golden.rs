@@ -1,18 +1,20 @@
 //! Golden files: each `tests/fixtures/<app>.abi.json` (the `calimero:abi` of an example app
 //! under `apps/`, or a crafted one covering every type) against its OpenAPI document and
 //! typed clients (TypeScript, Python, Swift, Kotlin) in `tests/golden/`; the kitchen-sink's Kotlin
-//! client also as written for the kotlinx.serialization plugin (`kitchen-sink.plugin.kt`).
+//! client also as written for the kotlinx.serialization plugin (`kitchen-sink.plugin.kt`), and
+//! its Rust `uses` client (`kitchen-sink.uses.rs`, every method opened to apps).
 //! `UPDATE_GOLDEN=1 cargo test -p calimero-app-abi` rewrites them; review the diff.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use calimero_app_abi::codegen::rust::{uses_module, Use};
 use calimero_app_abi::codegen::{kotlin, python, swift, typescript, KotlinOptions, Target};
 use calimero_app_abi::openapi::{document, Info};
 use calimero_app_abi::AppAbi;
 use serde_json::Value;
 
-const APPS: &[&str] = &["kv-store", "rooms", "permissions-showcase", "kitchen-sink"];
+const APPS: &[&str] = &["kv-store", "rooms", "forum", "kitchen-sink"];
 
 fn dir(sub: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -95,12 +97,36 @@ fn generated_documents_and_clients_match_the_golden_files() {
                 ),
                 &mut stale,
             );
+            check(
+                &golden.join(format!("{app}.uses.rs")),
+                &uses_client(&json),
+                &mut stale,
+            );
         }
     }
     assert!(
         stale.is_empty(),
         "generated output differs from {stale:?}; rerun with UPDATE_GOLDEN=1 and review the diff"
     );
+}
+
+/// The Rust client another app calls the kitchen sink through, with every method opened to apps
+/// (`allowApps`) so each parameter and result type is written.
+fn uses_client(json: &Value) -> String {
+    let mut json = json.clone();
+    for method in json["methods"].as_object_mut().unwrap().values_mut() {
+        method["allowApps"] = serde_json::json!(["*"]);
+    }
+    let abi = AppAbi::from_json(&json).unwrap();
+    let reference = Use {
+        name: "sink",
+        package: "com.calimero.kitchen-sink",
+        version: "1.0.0",
+        range: "^1",
+        mode: "create",
+        methods: &[],
+    };
+    uses_module(&[(reference, &abi)]).unwrap()
 }
 
 /// Every `$ref` in a document names a component it defines.

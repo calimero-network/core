@@ -4,7 +4,7 @@
 //! node-side facts only, and the person's passkey assertion there is the
 //! consent, bound to exactly what the page showed.
 //!
-//! Builds the component fixtures `apps/v2-fixtures/kv`, `notes-v1` and `notes-v2`
+//! Builds the component fixtures `apps/fixture-kv`, `notes-v1` and `notes-v2`
 //! from this checkout (see `harness/cluster.rs`).
 
 use calimero_identity::testing::SoftAuthenticator;
@@ -579,18 +579,8 @@ async fn an_upgrades_page_names_what_the_components_abis_change() {
     let (alice, _) = signed_up(&c, 0, "alice").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
     let d = Declares::default();
-    let (v1, _) = release(
-        "1.0.0",
-        &fixture("apps/v2-fixtures/notes-v1"),
-        &publisher,
-        &d,
-    );
-    let (v2, _) = release(
-        "2.0.0",
-        &fixture("apps/v2-fixtures/notes-v2"),
-        &publisher,
-        &d,
-    );
+    let (v1, _) = release("1.0.0", &fixture("apps/fixture-notes-v1"), &publisher, &d);
+    let (v2, _) = release("2.0.0", &fixture("apps/fixture-notes-v2"), &publisher, &d);
     let _ = alice.packages().upload(v1).await.unwrap();
     let _ = alice.packages().upload(v2).await.unwrap();
     let app = alice

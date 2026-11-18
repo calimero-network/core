@@ -175,13 +175,27 @@ pub fn expire(
             }
             let slot = (rows.ring)(c as u8, ring.first);
             let Some(key) = tx.get(&slot) else {
+                if tx.failed() {
+                    return;
+                }
                 ring.first += 1;
                 continue;
             };
-            let live = tx
-                .get_hidden(rows.tag, &key)
-                .and_then(|r| stamps(&r))
-                .is_some_and(|(expires_ms, _)| expires_ms > now_ms);
+            let live = match tx.get_hidden(rows.tag, &key) {
+                None => false,
+                Some(r) => match stamps(&r) {
+                    Some((expires_ms, _)) => expires_ms > now_ms,
+                    None => {
+                        // Dropping a record this replica cannot read would forget
+                        // what the others still answer from: stop instead.
+                        tx.fail("an idempotency record does not decode");
+                        return;
+                    }
+                },
+            };
+            if tx.failed() {
+                return;
+            }
             if live {
                 break;
             }
@@ -204,6 +218,9 @@ pub fn expire(
         // `node:` records go first: a burst of keyless calls never evicts a caller's
         // own record while the `node:` class is above its floor (D74 in spec v0.27).
         let fronts = [front(0, rings[0]), front(1, rings[1])];
+        if tx.failed() {
+            return;
+        }
         let c = match (&fronts[0], &fronts[1]) {
             (_, Some(_)) => 1,
             (Some(_), None) => 0,

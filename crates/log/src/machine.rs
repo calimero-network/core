@@ -16,7 +16,8 @@
     reason = "openraft's trait signatures fix these error types"
 )]
 
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::collections::VecDeque;
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
@@ -28,7 +29,8 @@ use openraft::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::store::{load_generation, Db, GroupState, StateTx, Transaction};
+use crate::digest::{DigestAt, StateDigest, DIGEST_EVERY, DIGEST_KEPT};
+use crate::store::{load_generation, off_workers, Db, GroupState, StateTx, Transaction};
 use crate::types::{
     Bytes, Entry, GroupId, LogId, SnapshotMeta, StorageError, StoredMembership, TypeConfig,
 };
@@ -59,9 +61,12 @@ pub trait Machine: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
-    /// An in-memory machine: replace the whole state with `data`. Otherwise
-    /// `data` is empty and the machine re-reads what it caches from its
-    /// [`GroupState`] (after a restart or a snapshot install).
+    /// An in-memory machine: replace the whole state with `data`, or with the
+    /// state it starts with when `data` is empty (its group stopped before its
+    /// first checkpoint). Otherwise `data` is empty and the machine re-reads
+    /// everything it holds from its [`GroupState`] (after a restart, a snapshot
+    /// install, or its group's Raft core stopping, when what it applied in
+    /// memory may be ahead of the disk).
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()>;
 }
 
@@ -70,6 +75,12 @@ pub struct Applied<M> {
     pub machine: M,
     pub last_applied: Option<LogId>,
     pub membership: StoredMembership,
+    /// The digest of a disk machine's state rows at `last_applied`
+    /// ([`crate::digest`]); the empty digest for an in-memory machine.
+    pub digest: StateDigest,
+    /// Its digests at the latest indexes that are multiples of
+    /// [`crate::digest::DIGEST_EVERY`] this node applied, oldest first.
+    pub recorded: VecDeque<DigestAt>,
 }
 
 impl<M> Applied<M> {
@@ -95,23 +106,69 @@ struct SnapshotRecord {
     file: String,
 }
 
+/// The group meta row the state digest at the applied index lives in
+/// ([`DigestAt`]), committed with every batch that moves it.
+pub(crate) const DIGEST_META: &str = "digest";
+
+/// Keep `at` among the recorded digests, at most [`DIGEST_KEPT`] of them.
+fn record(recorded: &mut VecDeque<DigestAt>, at: DigestAt) {
+    recorded.push_back(at);
+    while recorded.len() > DIGEST_KEPT {
+        let _oldest = recorded.pop_front();
+    }
+}
+
+/// The digest of a group generation's state rows, taken from all of them: for a
+/// state whose stored digest is missing or stale.
+fn digest_of_rows(db: &Db, group: GroupId, generation: u32) -> eyre::Result<StateDigest> {
+    let mut d = StateDigest::default();
+    db.scan_state(group, generation, &[], |k, v| {
+        d = d.plus(StateDigest::of_row(k, v));
+        Ok(true)
+    })?;
+    Ok(d)
+}
+
 /// The state row an in-memory machine's checkpoint lives in (and so where a
 /// snapshot file holds that machine's whole state).
 pub const CHECKPOINT_KEY: &[u8] = b"\0calimero.log.checkpoint";
 
-/// The snapshot file format this release writes, and the newest it reads: the number in the
-/// file's first line, `CALIMERO-SNAPSHOT-<format>\n`. Format 1 is the only one so far (every
-/// release since the store, backups included). A change to the framing, or to the rows a
-/// snapshot carries (`format::STORE_FORMAT`), raises it.
-pub const SNAPSHOT_FORMAT: u32 = 1;
+/// The newest snapshot file format this release reads, and the one it writes when a row spans
+/// frames: the number in the file's first line, `CALIMERO-SNAPSHOT-<format>\n`. Format 1 (every
+/// release since the store, backups included) holds each row in one frame, so a row past
+/// [`MAX_FRAME_BYTES`] (an in-memory machine's checkpoint: the whole system state) could not be
+/// read back. Format 2 lets a row span frames ([`PIECE`]). A file with no such row is written
+/// as format 1 ([`WHOLE_ROWS_FORMAT`]), which the release before reads: a rollout never sends
+/// a node a format it cannot read that it read before. A change to the framing, or to the rows
+/// a snapshot carries (`format::STORE_FORMAT`), raises it.
+pub const SNAPSHOT_FORMAT: u32 = 2;
+/// The format a snapshot file with every row in one frame says: format 1, as before rows
+/// could span frames.
+const WHOLE_ROWS_FORMAT: u32 = 1;
+// The first line is written before the rows and patched to [`SNAPSHOT_FORMAT`] in place when a
+// row was split: both numbers take one digit.
+const _: () = assert!(WHOLE_ROWS_FORMAT < 10 && SNAPSHOT_FORMAT < 10);
+/// In format 2, a row entry whose value length has this bit set is a piece of the row: the
+/// next entry, under the same key, continues it. Format 1 never sets it (a frame's values are
+/// far below 2 GiB).
+const PIECE: u32 = 1 << 31;
 /// The first line of a snapshot file, before its format number.
 const SNAPSHOT_MAGIC_PREFIX: &[u8] = b"CALIMERO-SNAPSHOT-";
 /// The longest format number a first line may carry (a `u32`).
 const MAX_FORMAT_DIGITS: usize = 10;
 /// Rows per frame stop growing past this many plaintext bytes.
 const FRAME_BYTES: usize = 1024 * 1024;
-/// A frame is refused past this size when read back.
-const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+/// A frame is refused past this size when read back (smaller in this crate's tests, so a
+/// state past it is cheap to build).
+const MAX_FRAME_BYTES: usize = if cfg!(test) {
+    4 * 1024 * 1024
+} else {
+    64 * 1024 * 1024
+};
+/// A row (key, value and their lengths) larger than this is written in pieces of
+/// [`FRAME_BYTES`] across frames (format 2): whole, its frame could pass [`MAX_FRAME_BYTES`]
+/// once sealed.
+const MAX_WHOLE_ROW_BYTES: usize = MAX_FRAME_BYTES - FRAME_BYTES;
 /// Rows written per batch while installing a snapshot.
 const INSTALL_BATCH_BYTES: usize = 4 * 1024 * 1024;
 /// Builds that may be thrown away because an install or a replace switched
@@ -161,14 +218,36 @@ struct FrameWriter<'a> {
     buf: Vec<u8>,
     rows: u32,
     n: u64,
+    /// A row was written in pieces: the file is format 2.
+    split: bool,
 }
 
 impl FrameWriter<'_> {
     fn row(&mut self, key: &[u8], sealed: &[u8]) -> eyre::Result<()> {
+        let size = 8 + key.len() + sealed.len();
+        // A large row starts a frame of its own, so a whole one stays under the cap.
+        if size > FRAME_BYTES && !self.buf.is_empty() {
+            self.flush(false)?;
+        }
+        if size <= MAX_WHOLE_ROW_BYTES {
+            return self.entry(key, sealed, false);
+        }
+        self.split = true;
+        let mut pieces = sealed.chunks(FRAME_BYTES).peekable();
+        while let Some(piece) = pieces.next() {
+            self.entry(key, piece, pieces.peek().is_some())?;
+        }
+        Ok(())
+    }
+
+    /// One entry: a whole row, or a piece of one that the next entry continues (`more`).
+    fn entry(&mut self, key: &[u8], value: &[u8], more: bool) -> eyre::Result<()> {
         put_u32(&mut self.buf, key.len());
         self.buf.extend_from_slice(key);
-        put_u32(&mut self.buf, sealed.len());
-        self.buf.extend_from_slice(sealed);
+        let len = u32::try_from(value.len())?;
+        self.buf
+            .extend_from_slice(&(if more { len | PIECE } else { len }).to_be_bytes());
+        self.buf.extend_from_slice(value);
         self.rows += 1;
         if self.buf.len() >= FRAME_BYTES {
             self.flush(false)?;
@@ -194,17 +273,22 @@ impl FrameWriter<'_> {
 
     fn finish(mut self) -> eyre::Result<()> {
         self.flush(true)?;
-        let file = self.out.into_inner().map_err(|e| eyre::eyre!("{e}"))?;
+        let mut file = self.out.into_inner().map_err(|e| eyre::eyre!("{e}"))?;
+        if self.split {
+            file.seek(SeekFrom::Start(SNAPSHOT_MAGIC_PREFIX.len() as u64))?;
+            file.write_all(SNAPSHOT_FORMAT.to_string().as_bytes())?;
+        }
         file.sync_all()?;
         Ok(())
     }
 }
 
-/// The first line of a snapshot file this release writes.
+/// The first line of a snapshot file this release writes, until a row is split
+/// ([`FrameWriter::finish`] then makes it [`SNAPSHOT_FORMAT`]).
 fn first_line() -> Vec<u8> {
     [
         SNAPSHOT_MAGIC_PREFIX,
-        format!("{SNAPSHOT_FORMAT}\n").as_bytes(),
+        format!("{WHOLE_ROWS_FORMAT}\n").as_bytes(),
     ]
     .concat()
 }
@@ -246,9 +330,12 @@ fn read_frames(
              snapshot format {SNAPSHOT_FORMAT}"
         );
     }
-    if format != SNAPSHOT_FORMAT {
+    if format == 0 {
         eyre::bail!("snapshot file format {format}, which no release wrote");
     }
+    let pieces = format >= 2;
+    // The row whose pieces are being read: its key and its value so far.
+    let mut pending: Option<(Vec<u8>, Vec<u8>)> = None;
     let mut n = 0_u64;
     loop {
         let mut head = [0_u8; 5];
@@ -271,15 +358,34 @@ fn read_frames(
         for _ in 0..rows {
             let klen = take_u32(&mut buf)?;
             let key = take(&mut buf, klen)?;
-            let vlen = take_u32(&mut buf)?;
-            let value = take(&mut buf, vlen)?;
-            f(key, value)?;
+            let raw = u32::from_be_bytes(take(&mut buf, 4)?.try_into()?);
+            let more = pieces && raw & PIECE != 0;
+            let vlen = if pieces { raw & !PIECE } else { raw };
+            let value = take(&mut buf, vlen as usize)?;
+            match pending.take() {
+                None if !more => f(key, value)?,
+                None => pending = Some((key.to_vec(), value.to_vec())),
+                Some((k, mut v)) => {
+                    if k != key {
+                        eyre::bail!("a snapshot row's pieces name different keys");
+                    }
+                    v.extend_from_slice(value);
+                    if more {
+                        pending = Some((k, v));
+                    } else {
+                        f(&k, &v)?;
+                    }
+                }
+            }
         }
         if !buf.is_empty() {
             eyre::bail!("snapshot frame has trailing bytes");
         }
         n += 1;
         if last {
+            if pending.is_some() {
+                eyre::bail!("snapshot ends inside a row");
+            }
             let mut rest = [0_u8; 1];
             if r.read(&mut rest)? != 0 {
                 eyre::bail!("snapshot has bytes past its last frame");
@@ -287,6 +393,74 @@ fn read_frames(
             return Ok(());
         }
     }
+}
+
+/// Read a group's applied state from the disk into `st`: the index and
+/// membership its last committed batch (or checkpoint) recorded, and the
+/// machine's state as of then.
+fn load<M: Machine>(db: &Db, state: &GroupState, st: &mut Applied<M>) -> eyre::Result<()> {
+    let applied: AppliedMeta = db.get_meta(state.group(), "applied")?.unwrap_or_default();
+    if M::IN_MEMORY {
+        st.machine
+            .restore(&state.get(CHECKPOINT_KEY).unwrap_or_default())?;
+    } else {
+        st.machine.restore(&[])?;
+    }
+    st.last_applied = applied.last_applied;
+    st.membership = applied.membership;
+    // What was recorded in memory may be of batches that never committed.
+    st.recorded.clear();
+    st.digest = if M::IN_MEMORY {
+        StateDigest::default()
+    } else {
+        let group = state.group();
+        let index = st.applied_index();
+        match db.get_meta::<DigestAt>(group, DIGEST_META)? {
+            Some(d) if d.index == index => d.digest,
+            stored => {
+                // Rows changed outside the log (`StateTx::commit`), or kept by a
+                // release before the digest: taken from the rows once.
+                let d = digest_of_rows(db, group, state.generation.load(Ordering::Acquire))?;
+                tracing::info!(
+                    group,
+                    index,
+                    had = stored.is_some(),
+                    "the state digest was taken from the rows"
+                );
+                d
+            }
+        }
+    };
+    Ok(())
+}
+
+/// Drop what a group applied in memory and read its state from the disk
+/// again: after its Raft core stopped, memory may hold a batch that never
+/// committed, or half an entry a panicking machine left. The group then
+/// serves (and its next core builds on) only what the disk holds, as a
+/// replica that lags would, and its applied index says so: a read that waits
+/// for an index ([`crate::Group::wait_applied`]) waits for the new core to
+/// apply it again.
+pub(crate) fn reload<M: Machine>(
+    db: &Db,
+    state: &GroupState,
+    st: &mut Applied<M>,
+    applied_tx: &watch::Sender<u64>,
+) -> eyre::Result<()> {
+    let generation = load_generation(db, state.group())?;
+    state.generation.store(generation, Ordering::Release);
+    load(db, state, st)?;
+    let _previous = applied_tx.send_replace(st.applied_index());
+    Ok(())
+}
+
+/// What a panic in a machine's apply carried, for the log.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic".to_owned())
 }
 
 /// openraft state machine over a [`Machine`].
@@ -299,6 +473,22 @@ pub struct StateMachine<M: Machine> {
     snapshots_built: u64,
     /// The file the snapshot being received is written to.
     receiving: Option<PathBuf>,
+}
+
+impl<M: Machine> Clone for StateMachine<M> {
+    /// Another handle on the same group state, to run disk work on tokio's
+    /// blocking pool ([`crate::store::off_workers`]).
+    fn clone(&self) -> Self {
+        Self {
+            group: self.group,
+            db: Arc::clone(&self.db),
+            state: self.state.clone(),
+            shared: Arc::clone(&self.shared),
+            applied_tx: Arc::clone(&self.applied_tx),
+            snapshots_built: self.snapshots_built,
+            receiving: self.receiving.clone(),
+        }
+    }
 }
 
 impl<M: Machine> StateMachine<M> {
@@ -316,22 +506,35 @@ impl<M: Machine> StateMachine<M> {
         db.drop_other_generations(group, generation)?;
         let state = GroupState::new(Arc::clone(&db), group, generation);
         machine.attach(state.clone());
-        let applied: AppliedMeta = db.get_meta(group, "applied")?.unwrap_or_default();
-        if M::IN_MEMORY {
-            if let Some(data) = state.get(CHECKPOINT_KEY) {
-                machine.restore(&data)?;
-            }
-        } else {
-            machine.restore(&[])?;
-        }
-        let last_applied = applied.last_applied;
-        let shared = Arc::new(RwLock::new(Applied {
+        let mut applied = Applied {
             machine,
-            last_applied,
-            membership: applied.membership,
-        }));
-        let _ = applied_tx.send(last_applied.map_or(0, |l| l.index));
-        Ok(Self {
+            last_applied: None,
+            membership: StoredMembership::default(),
+            digest: StateDigest::default(),
+            recorded: VecDeque::new(),
+        };
+        load(&db, &state, &mut applied)?;
+        let _ = applied_tx.send(applied.applied_index());
+        Ok(Self::reopened(
+            group,
+            db,
+            state,
+            Arc::new(RwLock::new(applied)),
+            applied_tx,
+        ))
+    }
+
+    /// The state machine of a group whose applied state `shared` already holds
+    /// what the disk does ([`reload`]): what a stopped group's new Raft core
+    /// runs on.
+    pub(crate) fn reopened(
+        group: GroupId,
+        db: Arc<Db>,
+        state: GroupState,
+        shared: Shared<M>,
+        applied_tx: Arc<watch::Sender<u64>>,
+    ) -> Self {
+        Self {
             group,
             db,
             state,
@@ -339,7 +542,104 @@ impl<M: Machine> StateMachine<M> {
             applied_tx,
             snapshots_built: 0,
             receiving: None,
-        })
+        }
+    }
+
+    /// Apply `entries` and commit their writes with the index they bring the
+    /// state to: the outputs, and that index (0: none). A machine that panics
+    /// fails the batch, as a write the disk refused does.
+    fn apply_batch(
+        &self,
+        st: &mut Applied<M>,
+        entries: impl IntoIterator<Item = Entry>,
+    ) -> Result<(Vec<Bytes>, u64), StorageError> {
+        let mut out = Vec::new();
+        let mut last = 0;
+        let mut tx = StateTx::new(&self.state);
+        let mut recorded = Vec::new();
+        for entry in entries {
+            st.last_applied = Some(entry.log_id);
+            last = entry.log_id.index;
+            match entry.payload {
+                EntryPayload::Blank => out.push(Bytes::default()),
+                EntryPayload::Normal(cmd) => {
+                    let machine = &mut st.machine;
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        machine.apply(entry.log_id.index, &cmd.0, &mut tx)
+                    }))
+                    .map_err(|p| {
+                        io(format!(
+                            "the machine panicked applying entry {last}: {}",
+                            panic_message(p.as_ref())
+                        ))
+                    })?;
+                    out.push(Bytes(r));
+                }
+                EntryPayload::Membership(m) => {
+                    st.membership = StoredMembership::new(Some(entry.log_id), m);
+                    out.push(Bytes::default());
+                }
+            }
+            // A machine that could not apply an entry (one it cannot decode,
+            // a row it cannot read) stops the group there: applying what
+            // follows would build on a state the other nodes do not have.
+            if tx.failed() {
+                break;
+            }
+            // Each entry's digest, wherever the batches split: replicas meet
+            // at the same indexes.
+            if !M::IN_MEMORY && last.is_multiple_of(DIGEST_EVERY) {
+                recorded.push(DigestAt {
+                    index: last,
+                    digest: st.digest.plus(tx.digest_delta()),
+                });
+            }
+        }
+        let digest = st.digest.plus(tx.digest_delta());
+        // The batch's writes and the index they bring the state to land
+        // together; readers, held off by the lock, see neither until then.
+        let mut batch = Transaction::default();
+        tx.into_batch(&mut batch).map_err(io)?;
+        if !M::IN_MEMORY && last > 0 {
+            self.db
+                .stage_meta(
+                    &mut batch,
+                    self.group,
+                    DIGEST_META,
+                    &DigestAt {
+                        index: last,
+                        digest,
+                    },
+                )
+                .map_err(io)?;
+            self.db
+                .stage_meta(
+                    &mut batch,
+                    self.group,
+                    "applied",
+                    &AppliedMeta {
+                        last_applied: st.last_applied,
+                        membership: st.membership.clone(),
+                    },
+                )
+                .map_err(io)?;
+        }
+        #[cfg(feature = "testing")]
+        if self.db.apply_fails(self.group) {
+            return Err(io("an injected write error (testing::fail_applies)"));
+        }
+        // Not synced: the entries are in the synced log, so a lost batch is
+        // re-applied from there.
+        if !self.db.losing_unsynced(self.group) {
+            self.db.commit(&batch, false).map_err(io)?;
+        }
+        if !M::IN_MEMORY {
+            st.digest = digest;
+            for at in recorded {
+                record(&mut st.recorded, at);
+            }
+        }
+        Ok((out, last))
     }
 
     #[must_use]
@@ -375,6 +675,7 @@ impl<M: Machine> StateMachine<M> {
             self.db
                 .pause_build(self.group, crate::testing::BuildPoint::Record);
             let held = self.state.lock_snapshot_record();
+            self.refuse_if_removed(&record.file)?;
             if self.state.generation.load(Ordering::Acquire) == generation {
                 return self.serve_built(record);
             }
@@ -404,6 +705,11 @@ impl<M: Machine> StateMachine<M> {
         // the lock is not held while the file is written, and an install that
         // then drops this generation's rows does not take them from the view.
         let st = self.shared.read().map_err(|e| eyre::eyre!("{e}"))?;
+        // Removed meanwhile: its rows and files are gone, and nothing (an
+        // in-memory machine's checkpoint below, a file) is written again.
+        // Under the read lock, so the removal cannot happen between this and
+        // the checkpoint.
+        self.refuse_if_removed("")?;
         let generation = self.state.generation.load(Ordering::Acquire);
         let last = st.last_applied;
         let meta = SnapshotMeta {
@@ -452,6 +758,7 @@ impl<M: Machine> StateMachine<M> {
             buf: Vec::new(),
             rows: 0,
             n: 0,
+            split: false,
         };
         let prefix = {
             let mut p = self.group.to_be_bytes().to_vec();
@@ -473,6 +780,20 @@ impl<M: Machine> StateMachine<M> {
         drop(guard);
         w.finish()?;
         Ok((SnapshotRecord { meta, file: name }, generation))
+    }
+
+    /// Fail the build of a group the engine removed (`Engine::remove_group`),
+    /// deleting the file it wrote (`file`, if any) so nothing of the group is
+    /// left. The caller holds the snapshot-record lock or the applied-state
+    /// lock, which the removal takes both of.
+    fn refuse_if_removed(&self, file: &str) -> eyre::Result<()> {
+        if !self.state.removed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if !file.is_empty() {
+            let _removed = std::fs::remove_file(self.snapshot_path(file));
+        }
+        eyre::bail!("group {} was removed: no snapshot is built", self.group)
     }
 
     /// Record a snapshot this node built as the one the group serves, and
@@ -527,6 +848,7 @@ impl<M: Machine> StateMachine<M> {
         let group = self.group;
         let db = Arc::clone(&self.db);
         let file = std::fs::File::open(&path)?;
+        let mut digest = StateDigest::default();
         let read = read_frames(
             &db.snapshot_sealer,
             group,
@@ -534,6 +856,7 @@ impl<M: Machine> StateMachine<M> {
             file,
             |key, sealed| {
                 let plain = db.open_state(group, key, sealed)?;
+                digest = digest.plus(StateDigest::of_row(key, &plain));
                 db.stage_state(&mut batch, group, next, key, Some(&plain))?;
                 pending += key.len() + plain.len();
                 if pending >= INSTALL_BATCH_BYTES {
@@ -569,8 +892,23 @@ impl<M: Machine> StateMachine<M> {
                     membership: meta.last_membership.clone(),
                 },
             )?;
+            let at = DigestAt {
+                index: meta.last_log_id.map_or(0, |l| l.index),
+                digest,
+            };
+            if !M::IN_MEMORY {
+                db.stage_meta(&mut switch, group, DIGEST_META, &at)?;
+            }
             db.commit(&switch, true)?;
             self.state.generation.store(next, Ordering::Release);
+            // A state that came by snapshot, not by the entries recorded before.
+            st.recorded.clear();
+            if !M::IN_MEMORY {
+                st.digest = digest;
+                if at.index.is_multiple_of(DIGEST_EVERY) {
+                    record(&mut st.recorded, at);
+                }
+            }
             if M::IN_MEMORY {
                 let data = self.state.get(CHECKPOINT_KEY).unwrap_or_default();
                 st.machine.restore(&data)?;
@@ -589,6 +927,40 @@ impl<M: Machine> StateMachine<M> {
     }
 }
 
+/// Delete the files in the snapshot directory that no group serves: a
+/// snapshot being received (`g<group>-recv-*.snap`) or built when the node
+/// stopped, one whose record a crash kept from being replaced or deleted, and
+/// those of a group whose rows are gone. Runs as the engine opens, before any
+/// group starts, so no receive or build is under way. A file whose group's
+/// record cannot be read is kept, and anything not named like a snapshot is
+/// left alone.
+pub(crate) fn clean_snapshot_dir(db: &Db) -> eyre::Result<()> {
+    for entry in std::fs::read_dir(&db.snapshot_dir)?.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(group) = name
+            .strip_suffix(".snap")
+            .and_then(|n| n.strip_prefix('g'))
+            .and_then(|n| n.split_once('-'))
+            .and_then(|(g, _)| g.parse::<GroupId>().ok())
+        else {
+            continue;
+        };
+        let served = match db.get_meta::<SnapshotRecord>(group, "snapshot") {
+            Ok(record) => record.is_some_and(|r| r.file == name),
+            Err(e) => {
+                tracing::warn!(group, file = %name, error = %e,
+                    "the group's snapshot record does not read: its file is kept");
+                continue;
+            }
+        };
+        if !served {
+            tracing::info!(group, file = %name, "deleting a snapshot file no group serves");
+            let _removed = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
+}
+
 fn hex_id() -> String {
     use ring::rand::SecureRandom;
     let mut b = [0_u8; 6];
@@ -603,7 +975,11 @@ pub struct Builder<M: Machine> {
 
 impl<M: Machine> RaftSnapshotBuilder<TypeConfig> for Builder<M> {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError> {
-        self.inner.build().map_err(io)
+        // The file is written on the blocking pool, not on an async worker.
+        let mut inner = self.inner.clone();
+        let (built, inner) = off_workers(move || Ok((inner.build().map_err(io), inner))).await?;
+        self.inner = inner;
+        built
     }
 }
 
@@ -611,8 +987,13 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
     type SnapshotBuilder = Builder<M>;
 
     async fn applied_state(&mut self) -> Result<(Option<LogId>, StoredMembership), StorageError> {
-        let st = self.shared.read().map_err(io)?;
-        Ok((st.last_applied, st.membership.clone()))
+        // A std lock: never waited for on an async worker.
+        let shared = Arc::clone(&self.shared);
+        off_workers(move || {
+            let st = shared.read().map_err(io)?;
+            Ok((st.last_applied, st.membership.clone()))
+        })
+        .await
     }
 
     async fn apply<I>(&mut self, entries: I) -> Result<Vec<Bytes>, StorageError>
@@ -624,49 +1005,25 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
         while self.db.apply_held(self.group) {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        let mut out = Vec::new();
-        let mut last = 0;
-        {
-            let mut st = self.shared.write().map_err(io)?;
-            let mut tx = StateTx::new(&self.state);
-            for entry in entries {
-                st.last_applied = Some(entry.log_id);
-                last = entry.log_id.index;
-                match entry.payload {
-                    EntryPayload::Blank => out.push(Bytes::default()),
-                    EntryPayload::Normal(cmd) => {
-                        let r = st.machine.apply(entry.log_id.index, &cmd.0, &mut tx);
-                        out.push(Bytes(r));
-                    }
-                    EntryPayload::Membership(m) => {
-                        st.membership = StoredMembership::new(Some(entry.log_id), m);
-                        out.push(Bytes::default());
-                    }
+        // On the blocking pool: the write lock waits for readers (a proposal
+        // built under the read lock may run a WASM call), and the machine and
+        // the commit may take long; neither may hold an async worker.
+        let entries: Vec<Entry> = entries.into_iter().collect();
+        let sm = self.clone();
+        let (out, last) = off_workers(move || {
+            let mut st = sm.shared.write().map_err(io)?;
+            sm.apply_batch(&mut st, entries).inspect_err(|e| {
+                // The core stops on this error ([`crate::Group`] restarts
+                // it); until then nothing may read what never committed.
+                tracing::error!(group = sm.group, error = %e,
+                    "a batch did not apply: this group's Raft core stops, and restarts from the disk");
+                if let Err(r) = reload(&sm.db, &sm.state, &mut st, &sm.applied_tx) {
+                    tracing::error!(group = sm.group, error = %r,
+                        "the group's state could not be read again from the disk");
                 }
-            }
-            // The batch's writes and the index they bring the state to land
-            // together; readers, held off by the lock, see neither until then.
-            let mut batch = Transaction::default();
-            tx.into_batch(&mut batch).map_err(io)?;
-            if !M::IN_MEMORY && last > 0 {
-                self.db
-                    .stage_meta(
-                        &mut batch,
-                        self.group,
-                        "applied",
-                        &AppliedMeta {
-                            last_applied: st.last_applied,
-                            membership: st.membership.clone(),
-                        },
-                    )
-                    .map_err(io)?;
-            }
-            // Not synced: the entries are in the synced log, so a lost batch is
-            // re-applied from there.
-            if !self.db.losing_unsynced(self.group) {
-                self.db.commit(&batch, false).map_err(io)?;
-            }
-        }
+            })
+        })
+        .await?;
         if last > 0 {
             let _ = self.applied_tx.send(last);
         }
@@ -713,7 +1070,11 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
             file.flush().await.map_err(io)?;
             file.sync_all().await.map_err(io)?;
         }
-        self.install(meta).map_err(io)?;
+        // Reads the file and writes the next generation on the blocking pool.
+        let mut sm = self.clone();
+        self.receiving = None;
+        let owned = meta.clone();
+        off_workers(move || sm.install(&owned).map_err(io)).await?;
         let _ = self
             .applied_tx
             .send(meta.last_log_id.map_or(0, |l| l.index));
@@ -766,6 +1127,7 @@ pub(crate) fn replace_state<M: Machine>(
     let mut batch = Transaction::default();
     let mut pending = 0_usize;
     let mut rows = 0_u64;
+    let mut digest = StateDigest::default();
     let read = read_frames(
         &db.snapshot_sealer,
         from,
@@ -774,6 +1136,7 @@ pub(crate) fn replace_state<M: Machine>(
         |key, sealed| {
             let plain = db.open_state(from, key, sealed)?;
             let key = rehide(db, from, group, key, &plain);
+            digest = digest.plus(StateDigest::of_row(&key, &plain));
             db.stage_state(&mut batch, group, next, &key, Some(&plain))?;
             pending += key.len() + plain.len();
             rows += 1;
@@ -796,9 +1159,17 @@ pub(crate) fn replace_state<M: Machine>(
         let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
         let mut switch = Transaction::default();
         db.stage_meta(&mut switch, group, "generation", &next)?;
+        let at = DigestAt {
+            index: st.applied_index(),
+            digest,
+        };
+        db.stage_meta(&mut switch, group, DIGEST_META, &at)?;
         db.commit(&switch, true)?;
         state.generation.store(next, Ordering::Release);
         st.machine.restore(&[])?;
+        // Another state at the same index: what was recorded before no longer holds.
+        st.digest = digest;
+        st.recorded.clear();
     }
     db.drop_generation(group, old)?;
     if let Some(served) = db.get_meta::<SnapshotRecord>(group, "snapshot")? {
@@ -950,6 +1321,7 @@ pub(crate) fn replace_state_rows<M: Machine>(
     let mut batch = Transaction::default();
     let mut pending = 0_usize;
     let mut count = 0_u64;
+    let mut digest = StateDigest::default();
     let mut stage = |row: PortableRow| -> eyre::Result<()> {
         let (key, value) = match row {
             PortableRow::Plain { key, value } => (key, value),
@@ -957,6 +1329,7 @@ pub(crate) fn replace_state_rows<M: Machine>(
                 (hide(&db.hider, group, tag, &key), wrap_hidden(&key, &value))
             }
         };
+        digest = digest.plus(StateDigest::of_row(&key, &value));
         db.stage_state(&mut batch, group, next, &key, Some(&value))?;
         pending += key.len() + value.len();
         count += 1;
@@ -979,9 +1352,17 @@ pub(crate) fn replace_state_rows<M: Machine>(
         let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
         let mut switch = Transaction::default();
         db.stage_meta(&mut switch, group, "generation", &next)?;
+        let at = DigestAt {
+            index: st.applied_index(),
+            digest,
+        };
+        db.stage_meta(&mut switch, group, DIGEST_META, &at)?;
         db.commit(&switch, true)?;
         state.generation.store(next, Ordering::Release);
         st.machine.restore(&[])?;
+        // Another state at the same index: what was recorded before no longer holds.
+        st.digest = digest;
+        st.recorded.clear();
     }
     db.drop_generation(group, old)?;
     if let Some(served) = db.get_meta::<SnapshotRecord>(group, "snapshot")? {
@@ -1035,12 +1416,12 @@ mod snapshot_format {
     fn a_snapshot_from_a_later_release_is_refused_by_its_format() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("g1-x.snap");
-        std::fs::write(&path, b"CALIMERO-SNAPSHOT-2\n\x01\x00\x00\x00\x00").unwrap();
+        std::fs::write(&path, b"CALIMERO-SNAPSHOT-3\n\x01\x00\x00\x00\x00").unwrap();
         let e = read_snapshot_file(&[0; 32], 1, "x", &path, |_, _| Ok(()))
             .unwrap_err()
             .to_string();
         assert!(
-            e.contains("format 2") && e.contains("snapshot format 1"),
+            e.contains("format 3") && e.contains("snapshot format 2"),
             "{e}"
         );
     }
@@ -1076,7 +1457,11 @@ mod snapshot_errors {
         }
 
         fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
-            self.n = std::str::from_utf8(data)?.parse()?;
+            self.n = if data.is_empty() {
+                0
+            } else {
+                std::str::from_utf8(data)?.parse()?
+            };
             Ok(())
         }
     }
@@ -1112,5 +1497,136 @@ mod snapshot_errors {
             Some(b"2".to_vec()),
             "the last good checkpoint stays; no empty one replaces it"
         );
+    }
+}
+
+#[cfg(test)]
+mod large_rows {
+    use openraft::CommittedLeaderId;
+    use tokio::io::AsyncWriteExt;
+
+    use super::*;
+
+    /// An in-memory machine whose whole state is `len` bytes (a system state that grew).
+    struct Blob(Vec<u8>);
+
+    impl Machine for Blob {
+        const IN_MEMORY: bool = true;
+
+        fn apply(&mut self, _index: u64, command: &[u8], _state: &mut StateTx<'_>) -> Vec<u8> {
+            let len: usize = std::str::from_utf8(command).unwrap().parse().unwrap();
+            self.0 = (0..len).map(|i| (i % 251) as u8).collect();
+            Vec::new()
+        }
+
+        fn snapshot(&self) -> eyre::Result<Vec<u8>> {
+            Ok(self.0.clone())
+        }
+
+        fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
+            self.0 = data.to_vec();
+            Ok(())
+        }
+    }
+
+    fn open(dir: &std::path::Path) -> StateMachine<Blob> {
+        let db = Db::open(dir, &[5; 32]).unwrap();
+        StateMachine::open(1, db, Blob(Vec::new()), Arc::new(watch::channel(0).0)).unwrap()
+    }
+
+    /// Build a snapshot of a state of `len` bytes on one node, send it to a new one and
+    /// install it there: the file's format, and the state the new node holds.
+    async fn send(len: usize) -> eyre::Result<(u32, Vec<u8>)> {
+        let a = tempfile::tempdir().unwrap();
+        let mut leader = open(a.path());
+        let entry = Entry {
+            log_id: LogId::new(CommittedLeaderId::new(1, 1), 1),
+            payload: EntryPayload::Normal(Bytes(len.to_string().into_bytes())),
+        };
+        let _ = leader.apply(vec![entry]).await.unwrap();
+        let built = leader.build().unwrap();
+        let record: SnapshotRecord = leader.db.get_meta(1, "snapshot").unwrap().unwrap();
+        let bytes = std::fs::read(leader.snapshot_path(&record.file)).unwrap();
+        let format = read_format(&mut &bytes[..]).unwrap();
+
+        let b = tempfile::tempdir().unwrap();
+        let mut joining = open(b.path());
+        let mut file = joining.begin_receiving_snapshot().await.unwrap();
+        file.write_all(&bytes).await.unwrap();
+        joining
+            .install_snapshot(&built.meta, file)
+            .await
+            .map_err(|e| eyre::eyre!("{e}"))?;
+        let held = joining.shared.read().unwrap().machine.0.clone();
+        Ok((format, held))
+    }
+
+    /// Review finding B1: an in-memory machine's state is one row, and its snapshot wrote
+    /// that row into one frame, which every reader refuses past `MAX_FRAME_BYTES`: once the
+    /// system state grew past it, no new or lagging node could install the system snapshot,
+    /// and no system backup could be restored. Such a row now spans frames.
+    #[tokio::test]
+    async fn a_state_larger_than_a_frame_installs_on_a_new_node() {
+        let len = MAX_FRAME_BYTES + 3 * FRAME_BYTES + 17;
+        let (_, held) = send(len).await.unwrap();
+        assert_eq!(held.len(), len);
+        assert!(held.iter().enumerate().all(|(i, b)| *b == (i % 251) as u8));
+    }
+
+    /// A state whose rows each fit a frame is written as format 1, byte for byte as before
+    /// rows could span frames: the release before reads it, so a rollout needs no gate. Only
+    /// a file with a split row says format 2, and a format 1 file of that row was refused by
+    /// every reader anyway.
+    #[tokio::test]
+    async fn only_a_file_with_a_split_row_says_format_2() {
+        let (format, held) = send(FRAME_BYTES * 2).await.unwrap();
+        assert_eq!((format, held.len()), (1, FRAME_BYTES * 2));
+        let whole = MAX_WHOLE_ROW_BYTES - 64;
+        let (format, held) = send(whole).await.unwrap();
+        assert_eq!((format, held.len()), (1, whole));
+        let (format, held) = send(MAX_FRAME_BYTES + 1).await.unwrap();
+        assert_eq!((format, held.len()), (2, MAX_FRAME_BYTES + 1));
+    }
+
+    /// A snapshot file as the release before wrote it (format 1, built here byte by byte,
+    /// not with this release's writer) reads back row for row.
+    #[test]
+    fn a_format_1_file_from_the_release_before_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path(), &[7; 32]).unwrap();
+        let rows: [(&[u8], &[u8]); 3] = [(b"a", b"1"), (CHECKPOINT_KEY, b"{\"n\":2}"), (b"z", b"")];
+        let mut plain = 3_u32.to_be_bytes().to_vec();
+        for (k, v) in rows {
+            let sealed = db.seal_state(4, k, v).unwrap();
+            plain.extend_from_slice(&u32::try_from(k.len()).unwrap().to_be_bytes());
+            plain.extend_from_slice(k);
+            plain.extend_from_slice(&u32::try_from(sealed.len()).unwrap().to_be_bytes());
+            plain.extend_from_slice(&sealed);
+        }
+        let frame = db
+            .snapshot_sealer
+            .seal(&frame_aad(4, "old", 0, true), &plain)
+            .unwrap();
+        let mut file = b"CALIMERO-SNAPSHOT-1\n\x01".to_vec();
+        file.extend_from_slice(&u32::try_from(frame.len()).unwrap().to_be_bytes());
+        file.extend_from_slice(&frame);
+        let path = dir.path().join("old.snap");
+        std::fs::write(&path, file).unwrap();
+
+        let mut read = Vec::new();
+        read_frames(
+            &db.snapshot_sealer,
+            4,
+            "old",
+            std::fs::File::open(&path).unwrap(),
+            |k, sealed| {
+                read.push((k.to_vec(), db.open_state(4, k, sealed)?));
+                Ok(())
+            },
+        )
+        .unwrap();
+        let want: Vec<(Vec<u8>, Vec<u8>)> =
+            rows.iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect();
+        assert_eq!(read, want);
     }
 }

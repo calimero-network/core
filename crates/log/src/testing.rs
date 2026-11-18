@@ -24,12 +24,39 @@ pub fn release_apply(dir: &Path, group: GroupId) {
     }
 }
 
+/// Make the next `n` applied batches of `group` on the node at `dir` fail to
+/// commit, as a disk that answers EIO or ENOSPC would: each stops the group's
+/// Raft core on that batch.
+pub fn fail_applies(dir: &Path, group: GroupId, n: u32) {
+    if n == 0 {
+        return;
+    }
+    if let Ok(mut f) = crate::store::FAILING.lock() {
+        f.push((dir.to_owned(), group, n));
+    }
+}
+
 /// Make closing the store of the node at `dir` wait `delay` before RocksDB
 /// closes, as a thread descheduled in the middle of dropping the last handle
 /// would.
 pub fn slow_close(dir: &Path, delay: std::time::Duration) {
     if let Ok(mut d) = crate::store::CLOSE_DELAYS.lock() {
         d.push((dir.to_owned(), delay));
+    }
+}
+
+/// Make every read of `group`'s state rows on the node at `dir` fail, as a
+/// disk answering EIO would, until [`heal_state_reads`].
+pub fn fail_state_reads(dir: &Path, group: GroupId) {
+    if let Ok(mut f) = crate::store::FAILING_READS.lock() {
+        f.push((dir.to_owned(), group));
+    }
+}
+
+/// Let `group`'s state reads on the node at `dir` succeed again.
+pub fn heal_state_reads(dir: &Path, group: GroupId) {
+    if let Ok(mut f) = crate::store::FAILING_READS.lock() {
+        f.retain(|(d, g)| !(*g == group && d == dir));
     }
 }
 
@@ -84,5 +111,21 @@ pub fn build_waiting(dir: &Path, group: GroupId) -> bool {
 pub fn release_build(dir: &Path, group: GroupId) {
     if let Ok(mut h) = crate::store::HELD_BUILDS.lock() {
         h.retain(|b| !(b.group == group && b.dir == dir));
+    }
+}
+
+/// Make every synced write of `group` on the node at `dir` (a log append, a
+/// vote, a purge) take `delay` longer, as a slow or contended disk's fsync
+/// would, until [`heal_synced_writes`]. The write blocks the thread it runs on.
+pub fn slow_synced_writes(dir: &Path, group: GroupId, delay: std::time::Duration) {
+    if let Ok(mut s) = crate::store::SLOW_SYNCS.lock() {
+        s.push((dir.to_owned(), group, delay));
+    }
+}
+
+/// Let `group`'s synced writes on the node at `dir` run at the disk's speed again.
+pub fn heal_synced_writes(dir: &Path, group: GroupId) {
+    if let Ok(mut s) = crate::store::SLOW_SYNCS.lock() {
+        s.retain(|(d, g, _)| !(*g == group && d == dir));
     }
 }

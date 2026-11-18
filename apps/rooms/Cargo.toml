@@ -3,7 +3,7 @@ name = "rooms"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Rooms: the first reference app on the v2 app SDK (spec section 12)"
+description = "Room booking: the reference app (unique slots, timers, a step-up, per-audience events)"
 
 [lib]
 crate-type = ["cdylib"]

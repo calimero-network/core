@@ -440,6 +440,25 @@ impl xcall::Host for StoreData {
     ) -> Result<std::result::Result<Vec<u8>, String>> {
         self.host.xcall_view(&app, &method, &args).map_err(denied)
     }
+
+    fn batch(
+        &mut self,
+        requests: Vec<xcall::Request>,
+    ) -> Result<Vec<std::result::Result<Vec<u8>, String>>> {
+        let requests: Vec<host::XcallRequest> = requests
+            .into_iter()
+            .map(|r| host::XcallRequest {
+                kind: match r.kind {
+                    xcall::RequestKind::Call => host::XcallKind::Call,
+                    xcall::RequestKind::View => host::XcallKind::View,
+                },
+                app: r.app,
+                method: r.method,
+                args: r.args,
+            })
+            .collect();
+        self.host.xcall_batch(&requests).map_err(denied)
+    }
 }
 
 impl action::Host for StoreData {
