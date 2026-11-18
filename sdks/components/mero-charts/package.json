@@ -1,0 +1,53 @@
+{
+  "name": "@calimero-network/mero-charts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "version": "1.0.0-rc.30",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/calimero-network/core.git",
+    "directory": "sdks/components/mero-charts"
+  },
+  "description": "Chart components for Calimero design system",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@calimero-network/mero-ui": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "eslint": "^10.1.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.12"
+  },
+  "peerDependencies": {
+    "react": ">=18 <20"
+  },
+  "license": "MIT"
+}

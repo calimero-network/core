@@ -1,0 +1,23 @@
+{
+  "name": "mero-charts",
+  "kind": "component",
+  "language": "typescript",
+  "published": [
+    {
+      "registry": "npm",
+      "name": "@calimero-network/mero-charts"
+    }
+  ],
+  "version_files": [
+    {
+      "path": "package.json",
+      "format": "json",
+      "key": "version"
+    }
+  ],
+  "depends_on": [
+    "mero-ui"
+  ],
+  "inputs": [],
+  "workflow": ".github/workflows/sdk-mero-charts.yml"
+}
