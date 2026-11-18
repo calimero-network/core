@@ -13,7 +13,7 @@
 //! }
 //! // src/lib.rs
 //! app::uses!();
-//! // .. uses::calendar()?.add_event(&title, &at, None)?;
+//! // .. uses::calendar()?.add_event(&title, &at, None).await?;
 //! ```
 //!
 //! `meroctl app uses update` writes the lock and the vendored ABI ([`vendor`]), after checking

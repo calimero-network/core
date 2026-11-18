@@ -1954,8 +1954,12 @@ API and system group:
   checks the boundary again and runs it as `xcall-deliver`, so it reaches no further); a
   view through `Node::view` (strong). The run's thread waits at most `SYNC_XCALL_WAIT`
   (3 s) while the runtime runs it; two apps calling each other at once both time out.
-  Test: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
-  (`apps/fixture-captcha`).
+  A batch (`xcall.batch`, `NodeXcall::batch`) prepares each request as the same call or
+  view would (`prepare_call`, `prepare_view`), spawns them all on the runtime and waits for
+  them with one `SYNC_XCALL_WAIT` deadline (`wait_all`), so a run holds its own proposal lock
+  for the slowest request, not their sum; requests to one target take turns on its lock.
+  Tests: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
+  (`apps/fixture-captcha`), `joined_sync_calls_run_at_once_and_a_rerun_replays_them`.
 - **Files** (`node/component/files.rs`; tests `component_files.rs`): a file is a sealed blob.
   It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
   A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key (`backup::file_key`, not the TEE key) and the app's blob records.

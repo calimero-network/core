@@ -1,7 +1,7 @@
 //! The Rust clients an app calls the apps it `uses` through: for each reference, a module with
 //! the target's types and error enum and a `Client` whose methods are the target's methods an
-//! app may call, over the SDK's cross-app calls (`env::xcall_call`, `env::xcall_view`,
-//! `env::xcall`). `calimero-app-build`'s `uses` writes it from the app's `calimero.lock` and
+//! app may call, over the SDK's cross-app calls (`xcall::Pending` futures, which the SDK's
+//! executor batches, and `env::xcall` for messages). `calimero-app-build`'s `uses` writes it from the app's `calimero.lock` and
 //! vendored ABIs, for the app's `build.rs`.
 //!
 //! The JSON is the SDK's (D20): `u64`/`i64` as decimal strings and `bytes` as base64url at the
@@ -607,29 +607,34 @@ impl<'a> Module<'a> {
             };
             let view = m.kind == Kind::View;
             let what = if view {
-                format!("A view of `{name}` on the linked instance's latest committed state.")
+                format!(
+                    "A view of `{name}` on the linked instance's latest committed state, as a\n        \
+                     /// future: awaited together with others (`app::join!`), they run at once."
+                )
             } else {
                 format!(
-                    "A call of `{name}`: it runs and commits in the linked app's log before this run\n        \
-                     /// continues, and is not rolled back if this run fails afterwards."
+                    "A call of `{name}`, as a future: it runs and commits in the linked app's log\n        \
+                     /// before this run continues, and is not rolled back if this run fails afterwards.\n        \
+                     /// Awaited together with others (`app::join!`), they run at once."
                 )
             };
             let ret = self.ty(&m.returns, false)?;
-            let transport = if view { "xcall_view" } else { "xcall_call" };
-            let call = match d20_module(&m.returns) {
+            let start = if view { "view" } else { "call" };
+            let decode = match d20_module(&m.returns) {
                 Some(module) => format!(
                     "            #[derive({SERDE}::Deserialize)]\n            #[serde(crate = \"{SERDE}\")]\n            \
                      struct Out(#[serde(with = \"{SDK}::json::{module}\")] {ret});\n            \
-                     {SDK}::env::{transport}::<Out, _>(&self.app, {name:?}, &args)\n                \
-                     .map(|Out(out)| out)\n                .map_err(Error::from)\n"
+                     {SDK}::xcall::Pending::{start}(&self.app, {name:?}, &args, |answer| {{\n                \
+                     {SDK}::xcall::decode::<Out>(answer).map(|Out(out)| out).map_err(Error::from)\n            }})\n"
                 ),
                 None => format!(
-                    "            {SDK}::env::{transport}::<{ret}, _>(&self.app, {name:?}, &args).map_err(Error::from)\n"
+                    "            {SDK}::xcall::Pending::{start}(&self.app, {name:?}, &args, |answer| {{\n                \
+                     {SDK}::xcall::decode::<{ret}>(answer).map_err(Error::from)\n            }})\n"
                 ),
             };
             let _ = write!(
                 calls,
-                "\n{doc}        /// {what}\n        pub fn {fname}({sig}) -> Result<{ret}, Error> {{\n{args}{call}        }}\n"
+                "\n{doc}        /// {what}\n        pub fn {fname}({sig}) -> {SDK}::xcall::Pending<Result<{ret}, Error>> {{\n{args}{decode}        }}\n"
             );
             if m.kind == Kind::Call {
                 let _ = write!(
@@ -645,9 +650,10 @@ impl<'a> Module<'a> {
         let mut s = String::new();
         let _ = write!(
             s,
-            "\n    /// The linked instance. Each method is a synchronous cross-app call: a view reads its\n    \
-             /// latest committed state; a call commits in its own log before this run continues and is\n    \
-             /// not rolled back if this run fails afterwards (it is not atomic with this run).\n    \
+            "\n    /// The linked instance. Each method is a cross-app call this run waits for, as a future to\n    \
+             /// `.await` in an `async fn` method: a view reads its latest committed state; a call commits\n    \
+             /// in its own log before this run continues and is not rolled back if this run fails\n    \
+             /// afterwards (it is not atomic with this run). Futures awaited together run at once.\n    \
              #[derive(Clone, Debug, PartialEq, Eq)]\n    pub struct Client {{\n        app: String,\n    }}\n\n    \
              impl Client {{\n        \
              /// The instance linked under [`NAME`] (`env::linked`), read now: an owner may attach another\n        \
@@ -864,13 +870,13 @@ mod tests {
         let code = uses_module(&[(reference(&[]), &abi)]).unwrap();
         assert!(
             code.contains(
-                "pub fn get(&self, bucket: &str, key: &str) -> Result<Option<Entry>, Error>"
+                "pub fn get(&self, bucket: &str, key: &str) -> ::calimero_sdk::xcall::Pending<Result<Option<Entry>, Error>>"
             ),
             "{code}"
         );
         assert!(
             code.contains(
-                "pub fn set(&self, key: &str, ttl_ms: Option<u64>) -> Result<u64, Error>"
+                "pub fn set(&self, key: &str, ttl_ms: Option<u64>) -> ::calimero_sdk::xcall::Pending<Result<u64, Error>>"
             ),
             "{code}"
         );

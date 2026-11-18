@@ -296,9 +296,10 @@ pub mod sink {
 
     impl ::core::error::Error for Error {}
 
-    /// The linked instance. Each method is a synchronous cross-app call: a view reads its
-    /// latest committed state; a call commits in its own log before this run continues and is
-    /// not rolled back if this run fails afterwards (it is not atomic with this run).
+    /// The linked instance. Each method is a cross-app call this run waits for, as a future to
+    /// `.await` in an `async fn` method: a view reads its latest committed state; a call commits
+    /// in its own log before this run continues and is not rolled back if this run fails
+    /// afterwards (it is not atomic with this run). Futures awaited together run at once.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Client {
         app: String,
@@ -327,8 +328,9 @@ pub mod sink {
             Sender { app: &self.app }
         }
 
-        /// A view of `blobOf` on the linked instance's latest committed state.
-        pub fn blob_of(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
+        /// A view of `blobOf` on the linked instance's latest committed state, as a
+        /// future: awaited together with others (`app::join!`), they run at once.
+        pub fn blob_of(&self, key: &str) -> ::calimero_sdk::xcall::Pending<Result<Option<Vec<u8>>, Error>> {
             #[derive(::calimero_sdk::__private::serde::Serialize)]
             #[serde(crate = "::calimero_sdk::__private::serde")]
             struct Args<'a> {
@@ -339,13 +341,14 @@ pub mod sink {
             #[derive(::calimero_sdk::__private::serde::Deserialize)]
             #[serde(crate = "::calimero_sdk::__private::serde")]
             struct Out(#[serde(with = "::calimero_sdk::json::opt_bytes_b64url")] Option<Vec<u8>>);
-            ::calimero_sdk::env::xcall_view::<Out, _>(&self.app, "blobOf", &args)
-                .map(|Out(out)| out)
-                .map_err(Error::from)
+            ::calimero_sdk::xcall::Pending::view(&self.app, "blobOf", &args, |answer| {
+                ::calimero_sdk::xcall::decode::<Out>(answer).map(|Out(out)| out).map_err(Error::from)
+            })
         }
 
-        /// A view of `count` on the linked instance's latest committed state.
-        pub fn count(&self, stale: bool) -> Result<u64, Error> {
+        /// A view of `count` on the linked instance's latest committed state, as a
+        /// future: awaited together with others (`app::join!`), they run at once.
+        pub fn count(&self, stale: bool) -> ::calimero_sdk::xcall::Pending<Result<u64, Error>> {
             #[derive(::calimero_sdk::__private::serde::Serialize)]
             #[serde(crate = "::calimero_sdk::__private::serde")]
             struct Args {
@@ -356,14 +359,15 @@ pub mod sink {
             #[derive(::calimero_sdk::__private::serde::Deserialize)]
             #[serde(crate = "::calimero_sdk::__private::serde")]
             struct Out(#[serde(with = "::calimero_sdk::json::u64_str")] u64);
-            ::calimero_sdk::env::xcall_view::<Out, _>(&self.app, "count", &args)
-                .map(|Out(out)| out)
-                .map_err(Error::from)
+            ::calimero_sdk::xcall::Pending::view(&self.app, "count", &args, |answer| {
+                ::calimero_sdk::xcall::decode::<Out>(answer).map(|Out(out)| out).map_err(Error::from)
+            })
         }
 
-        /// A call of `events`: it runs and commits in the linked app's log before this run
-        /// continues, and is not rolled back if this run fails afterwards.
-        pub fn events(&self, r#in: &str, default: Option<&[u8]>, when: Option<i64>) -> Result<(u32, String), Error> {
+        /// A call of `events`, as a future: it runs and commits in the linked app's log
+        /// before this run continues, and is not rolled back if this run fails afterwards.
+        /// Awaited together with others (`app::join!`), they run at once.
+        pub fn events(&self, r#in: &str, default: Option<&[u8]>, when: Option<i64>) -> ::calimero_sdk::xcall::Pending<Result<(u32, String), Error>> {
             #[derive(::calimero_sdk::__private::serde::Serialize)]
             #[serde(crate = "::calimero_sdk::__private::serde")]
             struct Args<'a> {
@@ -375,12 +379,15 @@ pub mod sink {
                 when: Option<i64>,
             }
             let args = Args { r#in, default, when };
-            ::calimero_sdk::env::xcall_call::<(u32, String), _>(&self.app, "events", &args).map_err(Error::from)
+            ::calimero_sdk::xcall::Pending::call(&self.app, "events", &args, |answer| {
+                ::calimero_sdk::xcall::decode::<(u32, String)>(answer).map_err(Error::from)
+            })
         }
 
-        /// A call of `everything`: it runs and commits in the linked app's log before this run
-        /// continues, and is not rolled back if this run fails afterwards.
-        pub fn everything(&self, flag: bool, small: u8, medium: u16, count: u32, big: u64, huge: u128, size: usize, delta: i8, offset: i32, balance: i64, ratio: f32, precise: f64, letter: char, title: &str, blob: &[u8], maybe: Option<u64>, names: &[String], pair: &(u32, String), digest: &[u8; 32], scores: &::std::collections::BTreeMap<String, u32>, by_id: &::std::collections::BTreeMap<u32, String>, unique: &::std::collections::BTreeSet<String>, item: &Item, page: &Page<Item>, nested: Option<&Vec<Option<Item>>>) -> Result<Vec<Item>, Error> {
+        /// A call of `everything`, as a future: it runs and commits in the linked app's log
+        /// before this run continues, and is not rolled back if this run fails afterwards.
+        /// Awaited together with others (`app::join!`), they run at once.
+        pub fn everything(&self, flag: bool, small: u8, medium: u16, count: u32, big: u64, huge: u128, size: usize, delta: i8, offset: i32, balance: i64, ratio: f32, precise: f64, letter: char, title: &str, blob: &[u8], maybe: Option<u64>, names: &[String], pair: &(u32, String), digest: &[u8; 32], scores: &::std::collections::BTreeMap<String, u32>, by_id: &::std::collections::BTreeMap<u32, String>, unique: &::std::collections::BTreeSet<String>, item: &Item, page: &Page<Item>, nested: Option<&Vec<Option<Item>>>) -> ::calimero_sdk::xcall::Pending<Result<Vec<Item>, Error>> {
             #[derive(::calimero_sdk::__private::serde::Serialize)]
             #[serde(crate = "::calimero_sdk::__private::serde")]
             struct Args<'a> {
@@ -436,12 +443,15 @@ pub mod sink {
                 nested: Option<&'a Vec<Option<Item>>>,
             }
             let args = Args { flag, small, medium, count, big, huge, size, delta, offset, balance, ratio, precise, letter, title, blob, maybe, names, pair, digest, scores, by_id, unique, item, page, nested };
-            ::calimero_sdk::env::xcall_call::<Vec<Item>, _>(&self.app, "everything", &args).map_err(Error::from)
+            ::calimero_sdk::xcall::Pending::call(&self.app, "everything", &args, |answer| {
+                ::calimero_sdk::xcall::decode::<Vec<Item>>(answer).map_err(Error::from)
+            })
         }
 
-        /// A call of `fromPeer`: it runs and commits in the linked app's log before this run
-        /// continues, and is not rolled back if this run fails afterwards.
-        pub fn from_peer(&self, note: &str) -> Result<(), Error> {
+        /// A call of `fromPeer`, as a future: it runs and commits in the linked app's log
+        /// before this run continues, and is not rolled back if this run fails afterwards.
+        /// Awaited together with others (`app::join!`), they run at once.
+        pub fn from_peer(&self, note: &str) -> ::calimero_sdk::xcall::Pending<Result<(), Error>> {
             #[derive(::calimero_sdk::__private::serde::Serialize)]
             #[serde(crate = "::calimero_sdk::__private::serde")]
             struct Args<'a> {
@@ -449,11 +459,14 @@ pub mod sink {
                 note: &'a str,
             }
             let args = Args { note };
-            ::calimero_sdk::env::xcall_call::<(), _>(&self.app, "fromPeer", &args).map_err(Error::from)
+            ::calimero_sdk::xcall::Pending::call(&self.app, "fromPeer", &args, |answer| {
+                ::calimero_sdk::xcall::decode::<()>(answer).map_err(Error::from)
+            })
         }
 
-        /// A view of `lookup` on the linked instance's latest committed state.
-        pub fn lookup(&self, id: u64) -> Result<Option<Item>, Error> {
+        /// A view of `lookup` on the linked instance's latest committed state, as a
+        /// future: awaited together with others (`app::join!`), they run at once.
+        pub fn lookup(&self, id: u64) -> ::calimero_sdk::xcall::Pending<Result<Option<Item>, Error>> {
             #[derive(::calimero_sdk::__private::serde::Serialize)]
             #[serde(crate = "::calimero_sdk::__private::serde")]
             struct Args {
@@ -461,12 +474,15 @@ pub mod sink {
                 id: u64,
             }
             let args = Args { id };
-            ::calimero_sdk::env::xcall_view::<Option<Item>, _>(&self.app, "lookup", &args).map_err(Error::from)
+            ::calimero_sdk::xcall::Pending::view(&self.app, "lookup", &args, |answer| {
+                ::calimero_sdk::xcall::decode::<Option<Item>>(answer).map_err(Error::from)
+            })
         }
 
-        /// A call of `plain`: it runs and commits in the linked app's log before this run
-        /// continues, and is not rolled back if this run fails afterwards.
-        pub fn plain(&self, stats: &Stats, counts: &[u64], pixels: &[u8], limit: Option<i64>, extra: &Opaque) -> Result<Stats, Error> {
+        /// A call of `plain`, as a future: it runs and commits in the linked app's log
+        /// before this run continues, and is not rolled back if this run fails afterwards.
+        /// Awaited together with others (`app::join!`), they run at once.
+        pub fn plain(&self, stats: &Stats, counts: &[u64], pixels: &[u8], limit: Option<i64>, extra: &Opaque) -> ::calimero_sdk::xcall::Pending<Result<Stats, Error>> {
             #[derive(::calimero_sdk::__private::serde::Serialize)]
             #[serde(crate = "::calimero_sdk::__private::serde")]
             struct Args<'a> {
@@ -482,11 +498,14 @@ pub mod sink {
                 extra: &'a Opaque,
             }
             let args = Args { stats, counts, pixels, limit, extra };
-            ::calimero_sdk::env::xcall_call::<Stats, _>(&self.app, "plain", &args).map_err(Error::from)
+            ::calimero_sdk::xcall::Pending::call(&self.app, "plain", &args, |answer| {
+                ::calimero_sdk::xcall::decode::<Stats>(answer).map_err(Error::from)
+            })
         }
 
-        /// A view of `shapes` on the linked instance's latest committed state.
-        pub fn shapes(&self, status: &Status, tagged: &Tagged, adjacent: &Adjacent, either: &Either, id: &Id, point: &Point, marker: &Marker, tree: &Tree, expr: &Expr, choice: &Choice<Item>) -> Result<Tree, Error> {
+        /// A view of `shapes` on the linked instance's latest committed state, as a
+        /// future: awaited together with others (`app::join!`), they run at once.
+        pub fn shapes(&self, status: &Status, tagged: &Tagged, adjacent: &Adjacent, either: &Either, id: &Id, point: &Point, marker: &Marker, tree: &Tree, expr: &Expr, choice: &Choice<Item>) -> ::calimero_sdk::xcall::Pending<Result<Tree, Error>> {
             #[derive(::calimero_sdk::__private::serde::Serialize)]
             #[serde(crate = "::calimero_sdk::__private::serde")]
             struct Args<'a> {
@@ -512,7 +531,9 @@ pub mod sink {
                 choice: &'a Choice<Item>,
             }
             let args = Args { status, tagged, adjacent, either, id, point, marker, tree, expr, choice };
-            ::calimero_sdk::env::xcall_view::<Tree, _>(&self.app, "shapes", &args).map_err(Error::from)
+            ::calimero_sdk::xcall::Pending::view(&self.app, "shapes", &args, |answer| {
+                ::calimero_sdk::xcall::decode::<Tree>(answer).map_err(Error::from)
+            })
         }
     }
 

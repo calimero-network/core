@@ -6203,6 +6203,113 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
     );
 }
 
+/// `xcall.batch`: two calls a run awaits together (`app::join!`) run at once. `bumpBoth`
+/// calls `slowBump` (host-made randomness, then a count) on two apps; to two different apps it takes
+/// about one call's time, where the same two calls to one app take turns on that app's
+/// proposal lock, which is what a host running a batch one after another would take for any
+/// two. Each target applies its call once, and a re-run of the caller (the same key after
+/// a timeout, which is not logged, D23) replays both answers instead of counting again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let mut apps = Vec::new();
+    for name in ["source", "left", "right"] {
+        let created = alice
+            .apps()
+            .create(typed(json!({ "name": name, "bundle": &bundle })))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+        apps.push(created);
+    }
+    let (source, left, right) = (&apps[0], &apps[1], &apps[2]);
+    // Calibrate: how many spins make one `slowBump` take about 300 ms on this machine (and
+    // build), so the same target's two calls in turn stay within the caller's 2 s budget.
+    let direct = |spins: u32| {
+        let (alice, left) = (&alice, apps[1].clone());
+        async move {
+            let started = std::time::Instant::now();
+            let _r = alice
+                .apps()
+                .call(
+                    &left,
+                    "slowBump",
+                    Some(json!({ "key": "calibrate", "spins": spins })),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            started.elapsed()
+        }
+    };
+    let _warm = direct(1).await;
+    let probe = direct(10).await.min(direct(10).await);
+    let spins = u32::try_from(300 * 10 / probe.as_millis().max(1))
+        .unwrap_or(u32::MAX)
+        .clamp(10, 2_000);
+    let both = |a: &str, b: &str, key: &str, stall: bool, idem: Option<String>| {
+        let args = json!({ "a": a, "b": b, "key": key, "spins": spins, "stall": stall });
+        let (alice, source) = (&alice, source.clone());
+        async move {
+            let started = std::time::Instant::now();
+            let answer = alice
+                .apps()
+                .call(&source, "bumpBoth", Some(args), idem.as_deref(), None)
+                .await;
+            (answer, started.elapsed())
+        }
+    };
+    let count = |app: &str, key: &str| {
+        let (alice, app, key) = (&alice, app.to_owned(), key.to_owned());
+        async move { strong_view(alice, &app, "get", json!({ "key": key })).await }
+    };
+
+    // Warm: every node has prepared the component and each app's group has a leader.
+    let (warm, _) = both(left, right, "warm", false, None).await;
+    assert_eq!(warm.unwrap().result, json!([1, 1]));
+
+    // The fastest of three runs each way: two apps at once, then one app twice in turn.
+    let mut apart = Duration::MAX;
+    let mut together = Duration::MAX;
+    for round in 0..3 {
+        let (r, took) = both(left, right, &format!("apart{round}"), false, None).await;
+        assert_eq!(r.unwrap().result, json!([1, 1]));
+        apart = apart.min(took);
+        // Both start at once, so which takes the target's lock first varies.
+        let (r, took) = both(left, left, &format!("same{round}"), false, None).await;
+        let mut counts: Vec<u64> = serde_json::from_value(r.unwrap().result).unwrap();
+        counts.sort_unstable();
+        assert_eq!(counts, [1, 2], "one app, its two calls in turn");
+        together = together.min(took);
+    }
+    eprintln!("{spins} spins; two apps at once: {apart:?}; one app twice: {together:?}");
+    assert!(
+        apart.as_secs_f64() < together.as_secs_f64() * 0.75,
+        "two apps took {apart:?}, as long as one app twice ({together:?}): not at once"
+    );
+
+    // A run that times out after both calls: each target applied its call once.
+    let key = "replay".to_owned();
+    let (stalled, _) = both(left, right, &key, true, Some(key.clone())).await;
+    let e = stalled.unwrap_err();
+    assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
+    assert_eq!(count(left, &key).await, json!("1"));
+    assert_eq!(count(right, &key).await, json!("1"));
+    // The retry under the same key runs the caller again: both calls replay their answers.
+    let (retried, _) = both(left, right, &key, false, Some(key.clone())).await;
+    assert_eq!(retried.unwrap().result, json!([1, 1]));
+    assert_eq!(count(left, &key).await, json!("1"));
+    assert_eq!(count(right, &key).await, json!("1"));
+}
+
 /// D76: a call makes an outbound request itself. The forms app (kv) asks the captcha
 /// service (a signed release declaring Turnstile's siteverify) inside its call; the
 /// service checks the token with Turnstile from its own call, through the outbound gate

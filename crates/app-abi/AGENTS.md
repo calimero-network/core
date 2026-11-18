@@ -63,7 +63,7 @@
   app's `build.rs`): `pub mod uses { pub mod <name> { .. } pub fn <name>() .. }`. A `Client`
   (`linked()`, `at(id)`, `send()`) has one method per method `codegen::rust::callable` admits: a
   call or view (`client_callable`) with no `confirm` and a non-empty `allowApps`, and one of the
-  reference's `methods` when it lists any; calls use `env::xcall_call`, views `env::xcall_view`,
+  reference's `methods` when it lists any; calls and views answer `calimero_sdk::xcall::Pending` futures (awaited in `async fn` methods, batched by the SDK's executor),
   `Sender` (`send()`) `env::xcall`. Arguments are borrowed in the signature and serialized by a
   local `Args` struct; the module declares every described type (serde derives through
   `calimero_sdk::__private::serde`, boxing a field that holds its own type inline), a type the
