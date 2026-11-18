@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calimero | mero-react — Components &amp; storage</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta name="description" content="ConnectButton, LoginModal, theming and storage">
+<meta name="theme-color" content="#0d1117">
+</head>
+<body>
+<div class="main">
+<div class="content prose">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Components &amp; storage</span></div>
+<h1>Components &amp; storage</h1>
+<p class="page-subtitle">ConnectButton, LoginModal, theming and storage</p>
+<ul><li><span class="code">&lt;ConnectButton appName? allowSignUp? initialTab? theme? logoOnly? label? /&gt;</span>. Signed out, it shows "Sign in" and opens <span class="code">LoginModal</span>. Signed in, it shows the account, with a menu for Sign out and Sign out everywhere.</li><li><span class="code">&lt;LoginModal isOpen onClose onSignedIn? initialTab? allowSignUp? appName? theme? /&gt;</span>. Sign in with a passkey, or create an account, which asks for a name. Off a node-served page it asks first for the node URL or a cluster name.</li></ul>
+<h3>Theming</h3>
+<p>Pass a partial <span class="code">MeroTheme</span> (<span class="code">primary</span>, <span class="code">primaryHover</span>, <span class="code">primaryText</span>, <span class="code">background</span>, <span class="code">backgroundSecondary</span>, <span class="code">backgroundTertiary</span>, <span class="code">border</span>, <span class="code">text</span>, <span class="code">textSecondary</span>, <span class="code">error</span>, <span class="code">overlay</span>, <span class="code">radius</span>), or set the <span class="code">--mero-*</span> CSS variables globally:</p>
+<pre class="typedef">:root {
+  --mero-accent: #ff4081;
+  --mero-accent-hover: #e91e63;
+}</pre>
+<p>The dialog's classes are <span class="code">mero-dialog-overlay</span>, <span class="code">mero-dialog-panel</span>, <span class="code">mero-dialog-title</span>, <span class="code">mero-dialog-body</span>, <span class="code">mero-dialog-field</span>, <span class="code">mero-dialog-input</span>, <span class="code">mero-dialog-button</span>, <span class="code">mero-dialog-primary</span>, <span class="code">mero-dialog-secondary</span> and <span class="code">mero-dialog-link</span>. The button's classes are <span class="code">mero-connect-button</span>, <span class="code">mero-dropdown</span> and <span class="code">mero-dropdown-item</span>.</p>
+<h2>Storage</h2>
+<ul><li><span class="code">localStorageSessionStore</span> and <span class="code">memorySessionStore()</span>: session stores.</li><li><span class="code">getNodeUrl</span> / <span class="code">setNodeUrl</span> / <span class="code">clearNodeUrl</span>, <span class="code">getCluster</span> / <span class="code">setCluster</span> / <span class="code">clearCluster</span> and <span class="code">getAppId</span> / <span class="code">setAppId</span> / <span class="code">clearAppId</span>.</li><li><span class="code">clearAllStorage()</span> clears all of the above.</li><li>Keys: <span class="code">mero:session</span>, <span class="code">mero:nodeUrl</span>, <span class="code">mero:cluster</span>, <span class="code">mero:appId</span>. 10.x tokens are not read.</li></ul>
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

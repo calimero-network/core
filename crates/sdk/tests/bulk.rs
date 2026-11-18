@@ -42,8 +42,9 @@ fn retain_reads_each_record_once_and_keeps_indexes_right() {
     store.reset_calls();
     assert_eq!(t.retain(|m| m.team == "red").unwrap(), 50);
     // Open, one batch of 100, the empty batch; then per removed record its record, index
-    // and unique deletes and its count add: no get anywhere.
-    assert_eq!(store.calls(), 3 + 50 * 4);
+    // and unique deletes and its count add, no get of a record; then the length once (a get
+    // of its mark and one add).
+    assert_eq!(store.calls(), 3 + 50 * 4 + 2);
     assert_eq!(team(&t, "blue"), 0);
     assert_eq!(team(&t, "red"), 50);
     assert_eq!(

@@ -1,22 +1,23 @@
 name: SDK mero-swift
 
-# mero-swift (sdks/clients/mero-swift): the Swift SDK, its package and pod
-# named mero-swift, its modules MeroKit, MeroAPI, MeroKitUI and
+# mero-swift (sdks/clients/mero-swift): the Swift SDK, its package named
+# mero-swift, its modules MeroKit, MeroAPI, MeroKitUI and
 # MeroKitTestSupport. sdks.yml calls this to test it (when scripts/sdks.py
 # scope says a change reaches it); a release calls it with `publish: true`.
 #
 # Test: build and unit tests, SwiftLint and swift-format, and the sample app
 # built for the iOS Simulator; with `ui-tests`, its XCUITest suite too. The
 # live-node e2e suite (MeroKitE2ETests) is not run here: it needs a
-# `merod local` cluster and is run by hand (the SDK's TESTING.md). The
+# `merod local` cluster, so e2e.yml's `clients-swift` job runs it. The
 # generated layer's drift against docs/public/openapi.json is sdks.yml's
 # `SDK codegen drift` job.
 #
 # Publish: SwiftPM needs Package.swift at a repository's root, so
 # calimero-network/swift-sdk is a read-only mirror of this directory. The
 # publish job splits it out (`git subtree split`), fast-forwards the mirror's
-# master to it and tags it with VERSION, as the organization's GitHub App;
-# then, with `cocoapods`, it pushes mero-swift.podspec to the CocoaPods trunk.
+# master to it and tags it with VERSION, as the organization's GitHub App.
+# There is no CocoaPods pod: its trunk turns read-only on 2026-12-02, and
+# MeroKit's dependencies (swift-openapi-runtime, swift-http-types) are not on it.
 # `dry-run` (the default) prints what it would push and pushes nothing.
 
 on:
@@ -34,17 +35,8 @@ on:
         description: Also run the sample app's XCUITest suite in the iOS Simulator
         type: boolean
         default: false
-      cocoapods:
-        description: >-
-          With publish, also `pod trunk push mero-swift.podspec`. Off by default:
-          the pod cannot build while swift-openapi-runtime and swift-http-types
-          are not on the CocoaPods trunk.
-        type: boolean
-        default: false
     secrets:
       ACTIONS_APP_PRIVATE_KEY:
-        required: false
-      COCOAPODS_TRUNK_TOKEN:
         required: false
 
 permissions:
@@ -241,32 +233,3 @@ jobs:
           # Core's own tag of the same name is this checkout's: push the commit, not a local tag.
           git -c http.extraheader="$auth" push "$url" "$SPLIT:refs/heads/master" "$SPLIT:refs/tags/$VERSION"
           echo "pushed $SPLIT to $MIRROR master and $VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
-
-  # The pod's source is the mirror's tag, so it goes after the mirror.
-  cocoapods:
-    name: mero-swift CocoaPods
-    needs: mirror
-    if: inputs.publish && inputs.cocoapods
-    runs-on: macos-15
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: sdks/clients/mero-swift
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Push mero-swift.podspec to the trunk
-        env:
-          DRY_RUN: ${{ inputs.dry-run }}
-          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
-        run: |
-          set -euo pipefail
-          pod --version
-          if [ "$DRY_RUN" = "true" ]; then
-            echo "dry run: would run pod trunk push mero-swift.podspec ($(sed -n "s/^ *spec.version *= *'\(.*\)'/\1/p" mero-swift.podspec))"
-            exit 0
-          fi
-          pod trunk push mero-swift.podspec --allow-warnings

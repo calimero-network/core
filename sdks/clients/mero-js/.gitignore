@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+lib/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temporary files
+*.tmp
+*.temp
+
+# OS files
+Thumbs.db
+data/
+
+# local agent scratch
+.superpowers/
+
+# scripts/download-released-merod.sh output
+/merod
+/kv_store.wasm
+
+# Node compile cache (NODE_COMPILE_CACHE)
+node-compile-cache/
