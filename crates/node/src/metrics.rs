@@ -150,6 +150,8 @@ struct Registry {
     raft_misaddressed: BTreeMap<&'static str, u64>,
     /// Log entries this node could not decode (its group stopped on each), by [`LogKind`].
     undecodable: [u64; LogKind::ALL.len()],
+    /// The system state's serialized size when it was last checkpointed or restored.
+    system_state_bytes: u64,
     /// `(group, peer)` → the index at which this leader last found that
     /// replica's state digest different from its own ([`digest_compared`]).
     diverged: BTreeMap<(u64, u64), u64>,
@@ -252,6 +254,12 @@ pub fn undecodable_entry(log: LogKind) -> u64 {
     let n = &mut r.undecodable[log as usize];
     *n += 1;
     *n
+}
+
+/// Note the system state's serialized size: what its checkpoint row and its
+/// snapshot hold, as last checkpointed or restored here.
+pub fn system_state_bytes(bytes: usize) {
+    registry().system_state_bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
 }
 
 /// Note how a group's state digest compared with a replica's
@@ -498,6 +506,11 @@ pub fn render(out: &mut String) {
             log.label()
         );
     }
+    let _w = writeln!(
+        out,
+        "# HELP calimero_system_state_bytes The system state's serialized size (one checkpoint row, carried by every system snapshot and backup), as last checkpointed or restored here; 0 before either.\n# TYPE calimero_system_state_bytes gauge\ncalimero_system_state_bytes {}",
+        r.system_state_bytes
+    );
     let _w = writeln!(
         out,
         "# HELP calimero_group_diverged The index at which this node, leading the group, last found the replica's state different from its own at the same index; present only while the latest comparison differs. Anything here is a bug or a disk fault: see the runbook.\n# TYPE calimero_group_diverged gauge"

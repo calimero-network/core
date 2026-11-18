@@ -1582,6 +1582,91 @@ fn a_sign_ins_refresh_token_needs_its_passkeys_assertion() {
     assert_eq!(m.state.refresh[&hash].account, "alice");
 }
 
+/// Review finding B1: every sign-in's proof stayed in `used_proofs` for good, so
+/// the system state (one snapshot row) only grew. From the `ExpireProofs` mark
+/// on, a sign-in's proof is forgotten once the session it opened expires (at an
+/// entry's own time, never a clock), and a sign-in whose session expired by
+/// then is refused instead: the forgotten proof cannot be logged again. Proofs
+/// from before the mark are kept, as the releases that logged them kept them.
+#[test]
+fn sign_in_proofs_are_forgotten_once_their_session_expires() {
+    let (mut m, mut alice, _bob, _carol) = proven_cluster();
+    let mut sign_in = |m: &mut SystemMachine, session: &str, expires_at: u64| {
+        let (_token, hash, mut record) = refresh_token("alice", &alice.credential_id(), session);
+        record.expires_at = expires_at;
+        let c = consent(
+            &mut alice,
+            "session",
+            "__sign_in",
+            &super::sign_in_args(&hash, &record),
+        );
+        let cmd = SystemCmd::CreateRefresh {
+            hash,
+            record,
+            consent: c,
+        };
+        let used = super::authorize(&m.state, &cmd).unwrap().unwrap();
+        let _ok = m.run(cmd.clone()).unwrap();
+        (cmd, used)
+    };
+    let revoke = |m: &mut SystemMachine, session: &str, now: u64| {
+        let _ok = m
+            .run(SystemCmd::RevokeSession {
+                session: session.into(),
+                actor: "alice".into(),
+                now,
+            })
+            .unwrap();
+    };
+
+    let (_, before_mark) = sign_in(&mut m, "s0", 10);
+    let _ok = m.run(SystemCmd::ExpireProofs).unwrap();
+    assert!(m.run(SystemCmd::ExpireProofs).is_err(), "written once");
+    let (expiring, used) = sign_in(&mut m, "s1", 20);
+    let (_, later) = sign_in(&mut m, "s2", 40);
+    assert_eq!(m.state.proof_expiry[&20], [used.clone()].into());
+    assert_eq!(m.state.proof_expiry[&40], [later.clone()].into());
+
+    // Before its session expires, the proof is kept and a replay is refused by it.
+    revoke(&mut m, "s1", 15);
+    assert!(m.state.used_proofs.contains(&used));
+    assert_eq!(
+        m.run(expiring.clone()).unwrap_err(),
+        "that consent was used already"
+    );
+
+    // Once it expired (an entry's `now`), it is forgotten; the one from before the
+    // mark stays, and so does the one whose session has not expired.
+    revoke(&mut m, "s1", 30);
+    assert!(!m.state.used_proofs.contains(&used));
+    assert!(m.state.used_proofs.contains(&before_mark));
+    assert!(m.state.used_proofs.contains(&later));
+    assert!(!m.state.proof_expiry.contains_key(&20));
+    assert_eq!(m.state.proofs_forgotten_through, 20);
+
+    // Logged again, the forgotten proof is refused by its signed expiry.
+    let state = serde_json::to_value(&m.state).unwrap();
+    assert_eq!(
+        m.run(expiring).unwrap_err(),
+        "that sign-in's session has expired: sign in again"
+    );
+    assert_eq!(serde_json::to_value(&m.state).unwrap(), state);
+    // A sign-in whose session is still to come applies as before.
+    let (_, fresh) = sign_in(&mut m, "s3", 50);
+    assert!(m.state.used_proofs.contains(&fresh));
+}
+
+/// State from before the mark reads and writes as it did: none of the new fields
+/// is written until `ExpireProofs` applies.
+#[test]
+fn proofs_from_before_the_expiry_mark_read_and_write_as_they_did() {
+    let (m, _alice, _bob, _carol) = proven_cluster();
+    let v = serde_json::to_value(&m.state).unwrap();
+    for field in ["expiresProofs", "proofExpiry", "proofsForgottenThrough"] {
+        assert!(v.get(field).is_none(), "{field}");
+    }
+}
+
 /// A refresh token is exchanged only with its own key's signature, for
 /// the session it already belongs to.
 #[test]

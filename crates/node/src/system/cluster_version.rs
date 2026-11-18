@@ -120,10 +120,14 @@ pub enum Feature {
     /// (`AppRecord::attached`): an earlier release cannot decode it, so its replicas would
     /// list the instance without the app and its runs would read no link.
     AttachApp,
+    /// `ExpireProofs`: an earlier release cannot read it, so its replicas
+    /// would keep every sign-in's proof and accept a sign-in this release
+    /// refuses as expired.
+    ExpireProofs,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 30] = [
+pub const FEATURES: [Feature; 31] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -154,6 +158,7 @@ pub const FEATURES: [Feature; 30] = [
     Feature::UnitUpgrade,
     Feature::Delegation,
     Feature::AttachApp,
+    Feature::ExpireProofs,
 ];
 
 impl Feature {
@@ -191,6 +196,7 @@ impl Feature {
             Self::UnitUpgrade => "unitUpgrade",
             Self::Delegation => "delegation",
             Self::AttachApp => "attachApp",
+            Self::ExpireProofs => "expireProofs",
         }
     }
 
@@ -225,7 +231,8 @@ impl Feature {
             | Self::AppLinks
             | Self::UnitUpgrade
             | Self::Delegation
-            | Self::AttachApp => "1.0.0-rc.31",
+            | Self::AttachApp
+            | Self::ExpireProofs => "1.0.0-rc.31",
         }
     }
 }
@@ -497,6 +504,7 @@ impl SystemCmd {
             Self::RenameOrg { .. } => vec![Feature::RenameOrg],
             Self::AttributeByRelease => vec![Feature::AttributeByRelease],
             Self::RequireCurrentRules => vec![Feature::CurrentRules],
+            Self::ExpireProofs => vec![Feature::ExpireProofs],
             Self::SetBackupKey { .. } | Self::ImportHolder { .. } => vec![Feature::BackupKeys],
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
@@ -857,6 +865,7 @@ mod tests {
             },
             Feature::AttributeByRelease => SystemCmd::AttributeByRelease,
             Feature::CurrentRules => SystemCmd::RequireCurrentRules,
+            Feature::ExpireProofs => SystemCmd::ExpireProofs,
             Feature::RestoreApp => SystemCmd::FinishRestore {
                 app_id: "app".into(),
                 group: 2,
