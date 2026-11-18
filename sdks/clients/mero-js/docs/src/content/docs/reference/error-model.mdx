@@ -1,0 +1,129 @@
+---
+title: Error model
+description: The typed errors CalimeroClient throws — CalimeroError and its subclasses — how the node's refusals map to them, and when a call may have committed.
+sidebar:
+  order: 2
+---
+
+The node answers a refusal as `{ error: CODE, message, details }` with an HTTP
+status. `errorFrom(status, body)` is the one place that becomes an error, and
+it matches the status and the code together, never the status alone. Every
+typed error extends `CalimeroError`, so `instanceof CalimeroError` and its
+`status`, `code` and `details` work for all of them.
+
+| Error | Status and code | Meaning |
+| --- | --- | --- |
+| `LoginRequired` | `401 UNAUTHENTICATED` | The client's own refresh did not help (or there is no refresh token): sign in again, then repeat. See [Restarts and other nodes](#restarts-and-other-nodes). |
+| `PasskeyUnknownHere` | `401 PASSKEY_UNKNOWN_HERE` | A sign-in (or confirmation) with a passkey no account of this cluster has: one made on another cluster under the same rp-id, or a removed one. Not refreshed for; offer sign-up here or the app link for the person's own cluster. See [Passkeys are per cluster](/get-started/authentication/#passkeys-are-per-cluster). |
+| `WrongNode` | `421 WRONG_NODE` | This node's release may not serve the account, and the client knows no other node that took the request: use another node of the cluster. |
+| `NotFound` | `404 NOT_FOUND` | Does not exist for this caller: a missing app and one you may not reach answer alike. |
+| `ConfirmRequired` | `412 CONFIRM_REQUIRED` | The request needs a passkey over the challenge in `details`; only reaches you from a method given no passkey. |
+| `ConfirmCancelled` | (not from the node) | The user dismissed the passkey prompt. Nothing was sent. |
+| `ConfirmPromptBlocked` | (not from the node) | The browser or a password manager refused to show the passkey prompt (the page was not focused, or another prompt was still open). The user did not decline and nothing was sent: offer to try again from a click. `cause` is the browser's error. |
+| `IdempotencyMismatch` | `409 IDEMPOTENCY_MISMATCH` | The key was used before with other arguments. |
+| `RuntimeTooOld` | `409 RUNTIME_TOO_OLD` | A node that would run the app (a replica, for an upgrade) runs an older runtime than the release's `minRuntimeVersion`: `minRuntimeVersion` and `nodes` name them. Nothing ran; the report's `latestReachable` is the newest release it can move to. |
+| `ReleaseDeadlineError` | `409 RELEASE_DEADLINE` | A release's deadline passed unapproved: no new apps, installs or upgrades until `release` (or newer) is approved. Running apps keep running. |
+| `ConsentStale` | `409 CONSENT_STALE` | What a consent page showed changed before the approval; ask for a new request. |
+| `OriginNotRegistered` | `403 ORIGIN_NOT_REGISTERED` | A sign-up or sign-in from a web origin nobody registered: "this site (`origin`) is not registered for `package`". |
+| `BadOrigin` | `400 BAD_ORIGIN`, `400 BAD_RP_ID` | `packageOrigins.add` was given an origin, or a relying-party id for it, the node does not accept. |
+| `OriginTaken` | `409 ORIGIN_TAKEN` | The origin is registered already (or with the other `served`), or is one of the cluster's own. |
+| `NotServing` | `400 NOT_SERVING` | A served origin (`served: true`) on a cluster that serves no frontends. |
+| `ClusterNotUpgraded` | `409 CLUSTER_NOT_UPGRADED` | The change (a served origin, say) needs every node of the cluster on the node's release; one is older. |
+| `FeatureNotActive` | `409 FEATURE_NOT_ACTIVE` | The command (or a field of it) needs a cluster version not every node supports yet: a rollout from an older release is under way, and nothing was done. `feature`, `needs` (the release it needs) and `active` (the cluster's now, `''` when not every node said) come from `details`. It works once the old nodes have left: `client.apps.move` on a cluster still holding a node from before 1.0.0-rc.15, say. |
+| `QuotaExceeded` | `429 QUOTA_EXCEEDED` | The caller holds as many of something (registered origins, a component app's blobs, …) as it may. |
+| `ArgsTooLarge` | `413 ARGS_TOO_LARGE` | The call's arguments are over the node's limit (512 KiB); it did not run. |
+| `AppError` | `422 APP_ERROR` | The app refused the call: `appCode` (its declared error) and `fields`. The call was logged; its key is spent. |
+| `TrapError` | `422 TRAP` | The run trapped: `kind` (`OutOfFuel`, `OutOfMemory`, …). Logged. |
+| `UnavailableError` | any `503`, or no answer | After the client's retries, on every node it knows: `reason` (`timeout`, `migrating`, `unavailable`, `network`, …), `committed`, `retryAfter`. |
+| `CalimeroError` | anything else | `status` and the node's `code`: `FORBIDDEN`, `CONFLICT`, `NOT_INSTALLED`, `NO_REGISTRY`, `BAD_PACKAGE`, `UPGRADE_FAILED`, `INIT_FAILED`, `TOO_LARGE`, … |
+
+```ts
+import { AppError, CalimeroError, UnavailableError } from '@calimero-network/mero-js';
+
+try {
+  await client.apps.call({ app, method: 'book', args: { slot }, idempotencyKey: `book-${slot}` });
+} catch (e) {
+  if (e instanceof AppError && e.appCode === 'Taken') showTaken(e.fields);
+  else if (e instanceof UnavailableError && e.committed === 'unknown') retryLaterWithSameKey();
+  else if (e instanceof CalimeroError && e.code === 'FORBIDDEN') showNoAccess();
+  else throw e;
+}
+```
+
+## Restarts and other nodes
+
+A session token is signed by the node that issued it. Other nodes take it only
+while they can vouch for that node's signing key, so when the issuer is
+replaced, removed or out of reach (a rolling deploy, an image rollout), they
+answer `401` — not because the user signed out. The client answers that
+itself:
+
+- **`401 UNAUTHENTICATED`** to a request sent with a session: the client
+  refreshes once (`POST auth/refresh`, which any node of the cluster takes) and
+  repeats the request once. Requests refused at the same time share that one
+  refresh: a refresh token is used once, and a second use would revoke the
+  session. Only when the refresh is refused, or the repeated request is refused
+  again, does `LoginRequired` reach you. A request made with an API key is not
+  refreshed.
+- **`421 WRONG_NODE`**: the node runs a mero-tee release the account's owners
+  have not approved, so it neither issues nor takes the account's sessions. The
+  client moves to the next node given in `nodes` (`new CalimeroClient({ baseUrl,
+  nodes, policy })`, each attested under the same policy) and repeats the
+  request there once; `client.nodeUrl` names the node in use. With no other
+  node, or when the next one refuses too, `WrongNode` (with the node's
+  `details`) reaches you: connect to another node of the cluster.
+
+Repeating is safe for any request, a call too: the node answers `401` and `421`
+while judging the credential, before it runs anything, and a call keeps its
+idempotency key. A node answers `421` to the ceremonies that mint a session
+before it spends their challenge or refresh token, and:
+
+- a sign-in or sign-up that answers `421` is not repeated, since it needs the
+  passkey again: the client moves to the next node and throws `WrongNode`; call
+  `signIn` again.
+- a refresh that answers `421` is sent, with the same refresh token, to each
+  next node in turn, at most once per node. Only when every node refuses does
+  `WrongNode` reach you.
+
+A call or a view whose node stays unavailable (`503`, or no answer) through
+all its retries fails over to the next node, where its retries start again
+with the same idempotency key: the key is kept in the app's replicated log, so
+the cluster answers it once whichever node it reaches. Each node is tried once
+per request, and `UnavailableError` reaches you only when every node has
+failed. A client made by `CalimeroClient.connect` reads the node directory
+again after a failover. The confirmed attempt of `callConfirmed` is sent once,
+to one node: its challenge is single-use.
+
+## Did it commit?
+
+`UnavailableError.committed` is never a plain boolean:
+
+- `false`: the node says the call did not run (`TIMEOUT`, `MIGRATING`). Its key
+  is not spent.
+- `'unknown'`: it may have run (a leader change, or a connection that dropped
+  before the answer, reason `network`). Send it again with the **same**
+  idempotency key: a call that committed is answered from its record.
+
+## The node directory
+
+`CalimeroClient.connect` throws `DirectoryError` (not a `CalimeroError`: no
+node answered yet) when the directory names no node to try. Its `reason` is
+`unreachable` (no answer, or an error status), `not-found` (an unknown
+cluster, `404`), `bad-response` (not a listing) or `empty` (no usable node);
+`cluster` names the cluster asked for. A later read of the directory, after a
+failover, never throws: it keeps the list the client has.
+
+## Transport errors
+
+Errors of the sealed channel itself are not `CalimeroError`s:
+
+- a policy refusal rejects with a plain `Error` saying which check failed
+  (`mock quote refused`, `mero-tee release … is older than the minimum …`, a
+  signature or measurement mismatch); nothing is sent to that node;
+- `SealedTransportError` (`status`, `code`): the node refused the envelope;
+- `StaleTransportKeyError`: from `createSealedFetch` given fixed key bytes,
+  when the node restarted.
+
+A body past the sealed cap (64 MiB) is refused in the clear with `413`; the
+client reports it as a `CalimeroError` with code `TOO_LARGE`, as the node's own
+refusal of a large blob.

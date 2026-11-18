@@ -1,0 +1,13 @@
+{
+  // tsconfig.json excludes test files (they must not reach dist), so without
+  // this the unit, cluster and support tests are never type-checked.
+  // `pnpm typecheck:tests` runs it in CI. tests/consumer has its own strict
+  // config (tsconfig.consumer.json) against the built dist.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*", "tests/**/*.ts", "*.config.ts"],
+  "exclude": ["node_modules", "dist", "tests/consumer"]
+}

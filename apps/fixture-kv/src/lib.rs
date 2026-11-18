@@ -449,9 +449,12 @@ impl Kv {
 
     /// Draws 1 MiB of randomness from the host `spins` times, then counts one more under
     /// `key` and answers the count: a slow target for `bumpBoth`. The host fills the bytes,
-    /// so the call takes wall time without spending its fuel.
+    /// so the call takes wall time without spending its fuel. Also stores the run's time
+    /// (the entry's, stamped as the run starts) under `<key>@<count>`, so a test tells calls
+    /// that started together from calls that took turns.
     #[app::allow(app = "*")]
     pub fn slow_bump(&mut self, key: String, spins: u32) -> app::Result<u32> {
+        let started = env::time_now();
         for _ in 0..spins {
             let _ = std::hint::black_box(env::random_bytes(1 << 20));
         }
@@ -462,6 +465,7 @@ impl Kv {
             .unwrap_or(0)
             + 1;
         let _event = self.upsert(&key, &count.to_string())?;
+        let _event = self.upsert(&format!("{key}@{count}"), &started.to_string())?;
         Ok(count)
     }
 

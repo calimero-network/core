@@ -10,7 +10,8 @@
 //!   which no lookup by name reaches);
 //! * `listByLabel`: labels are a list, so each label of an issue is a row of its own in the
 //!   `labels` table, keyed `(issueId, label)` and indexed `byLabel`;
-//! * `statusCounts`: the table's maintained `byStatus` count, no issue loaded.
+//! * `statusCounts`: the table's maintained `byStatus` count, no issue loaded;
+//! * `issueCount`: the table's maintained length (`Table::len`), one read.
 //!
 //! Every change goes through `Table::update`, which keeps each index and count in step. The
 //! indexes live in the app's state like the issues, so a replica never rebuilds them.
@@ -249,11 +250,11 @@ impl IssueTracker {
         Ok(out)
     }
 
-    /// Every issue filed.
+    /// Every issue filed: the table's maintained length, one read.
     #[app::view]
     pub fn issue_count(&self) -> app::Result<u64> {
         guards::require_member()?;
-        Ok(self.issues.count("byStatus", &[])?)
+        Ok(self.issues.len()?)
     }
 
     /// The issue with its labels.

@@ -1,0 +1,84 @@
+{
+  "name": "@calimero-network/mero-react",
+  "version": "1.0.0-rc.30",
+  "description": "React bindings for the Calimero 1.0 client (mero-js CalimeroClient)",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./node-shield": {
+      "types": "./dist/node-shield.d.ts",
+      "import": "./dist/node-shield.js",
+      "require": "./dist/node-shield.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "build:examples": "tsc -p examples/kv-store/tsconfig.json && vite build --config examples/kv-store/vite.config.js",
+    "dev:example": "vite --config examples/kv-store/vite.config.js",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build",
+    "prepublishOnly": "pnpm build && pnpm typecheck"
+  },
+  "dependencies": {
+    "@calimero-network/mero-js": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "devDependencies": {
+    "@storybook/addon-essentials": "^8.6.14",
+    "@storybook/react": "^8.6.18",
+    "@storybook/react-vite": "^8.6.18",
+    "@storybook/test": "^8.6.18",
+    "@testing-library/react": "^14.0.0",
+    "@types/node": "^26.0.1",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "eslint": "^10.1.0",
+    "jsdom": "^29.0.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "storybook": "^8.6.19",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vite": "^6.4.5",
+    "vitest": "^4.1.12"
+  },
+  "keywords": [
+    "calimero",
+    "mero",
+    "react",
+    "passkeys",
+    "confidential-cloud",
+    "sdk"
+  ],
+  "license": "MIT",
+  "author": "Calimero Ltd",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/calimero-network/mero-react.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

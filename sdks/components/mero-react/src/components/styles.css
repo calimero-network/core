@@ -1,0 +1,412 @@
+/**
+ * Default styles for mero-react components.
+ *
+ * Palette matches the greenish theme used across Calimero apps
+ * (admin-dashboard, tauri-app, app-registry). Every value is a CSS variable so
+ * consumers can override either globally (`:root { --mero-accent: ... }`) or
+ * per-component (via the `theme` prop on ConnectButton / LoginModal).
+ */
+
+:root {
+  --mero-bg: #0d1117;
+  --mero-bg-secondary: #161b22;
+  --mero-bg-tertiary: #1c2128;
+  --mero-text: #e6edf3;
+  --mero-text-secondary: #8b949e;
+  --mero-accent: #a5ff11;
+  --mero-accent-hover: #8ed40d;
+  --mero-on-primary: #0d1117;
+  --mero-error: #ff6b6b;
+  --mero-border: #30363d;
+  --mero-disabled: #555555;
+  --mero-shadow: rgba(0, 0, 0, 0.5);
+  --mero-overlay: rgba(0, 0, 0, 0.75);
+  --mero-radius: 8px;
+}
+
+/* Connect Button */
+.mero-connect-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 20px;
+  /* Disconnected default: filled with the accent color so the theme reads
+     loud at a glance. Override per-button via `theme={{ primary }}` or
+     globally via `:root { --mero-accent }`. */
+  background-color: var(--mero-accent);
+  border: 1px solid var(--mero-accent);
+  border-radius: var(--mero-radius);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--mero-on-primary);
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    box-shadow 0.15s ease, transform 0.1s ease;
+  min-width: 140px;
+  box-sizing: border-box;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    Oxygen, Ubuntu, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1;
+}
+
+.mero-connect-button:hover:not(.mero-connected):not(.mero-reconnecting) {
+  background-color: var(--mero-accent-hover);
+  border-color: var(--mero-accent-hover);
+  /* Subtle glow on hover. rgba fallback for browsers without color-mix()
+     (Safari < 16.2, Firefox < 113, Chrome < 111). */
+  box-shadow: 0 0 0 4px rgba(165, 255, 17, 0.18);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--mero-accent) 18%, transparent);
+}
+
+.mero-connect-button:active:not(.mero-connected):not(.mero-reconnecting) {
+  transform: translateY(1px);
+}
+
+.mero-connect-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(165, 255, 17, 0.45);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mero-accent) 45%, transparent);
+}
+
+/* logoOnly variant: square button, single SVG, no text */
+.mero-connect-button.mero-logo-only {
+  min-width: 0;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  gap: 0;
+}
+
+/* Connected state: same filled-accent look as disconnected so the theme
+   colour stays visible. The button label and dropdown disambiguate the
+   state — visual styling stays consistent. */
+.mero-connect-button.mero-connected {
+  background-color: var(--mero-accent);
+  color: var(--mero-on-primary);
+  border-color: var(--mero-accent);
+}
+
+.mero-connect-button.mero-connected:hover {
+  background-color: var(--mero-accent-hover);
+  border-color: var(--mero-accent-hover);
+}
+
+.mero-connect-button.mero-reconnecting {
+  background-color: var(--mero-bg-secondary);
+  color: var(--mero-text-secondary);
+  border-color: var(--mero-border);
+  cursor: not-allowed;
+}
+
+.mero-connect-container {
+  position: relative;
+  display: inline-block;
+}
+
+/* Dropdown */
+.mero-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background-color: var(--mero-bg-secondary);
+  border: 1px solid var(--mero-border);
+  border-radius: var(--mero-radius);
+  margin-top: 6px;
+  padding: 0;
+  z-index: 1001;
+  width: 100%;
+  min-width: 180px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px var(--mero-shadow);
+}
+
+.mero-dropdown-info {
+  padding: 10px 16px;
+  color: var(--mero-text-secondary);
+  font-size: 13px;
+  border-bottom: 1px solid var(--mero-border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+.mero-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  color: var(--mero-text);
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+  text-decoration: none;
+  font-family: inherit;
+}
+
+.mero-dropdown-item:hover {
+  background-color: var(--mero-accent);
+  color: var(--mero-on-primary);
+}
+
+/* Logo */
+.mero-logo {
+  width: 24px;
+  height: 24px;
+  color: currentColor;
+}
+
+/* Animations */
+@keyframes meroFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes meroSlideIn {
+  from {
+    transform: translateY(-12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes meroSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* Invitation dialog (InvitationDialog) */
+.mero-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  /* Above anything an app stacks itself: the question comes first, and apps
+     use full-screen overlays as high as 99999 (mero-chat's pickers), which at
+     10000 swallowed the Join click. One below the 32-bit maximum, so an app
+     that truly must cover it still can. */
+  z-index: 2147483646;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--mero-overlay);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    Oxygen, Ubuntu, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mero-dialog-panel {
+  box-sizing: border-box;
+  width: min(420px, 100%);
+  padding: 24px;
+  border: 1px solid var(--mero-border);
+  border-radius: calc(var(--mero-radius) * 1.5);
+  background: var(--mero-bg-secondary);
+  color: var(--mero-text);
+  box-shadow: 0 16px 48px var(--mero-shadow);
+  outline: none;
+  animation: mero-dialog-in 0.16s ease-out;
+}
+
+.mero-dialog-app {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--mero-text-secondary);
+}
+
+.mero-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mero-dialog-title {
+  margin: 0;
+  min-width: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.mero-dialog-body {
+  margin: 12px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--mero-text-secondary);
+}
+
+.mero-dialog-body-error {
+  color: var(--mero-error);
+}
+
+.mero-dialog-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--mero-bg-tertiary);
+  color: var(--mero-accent);
+}
+
+.mero-dialog-icon-error {
+  color: var(--mero-error);
+}
+
+.mero-dialog-spinner {
+  box-sizing: border-box;
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--mero-bg-tertiary);
+  border-top-color: var(--mero-accent);
+  background: none;
+  animation: mero-dialog-spin 0.8s linear infinite;
+}
+
+.mero-dialog-progress {
+  position: relative;
+  height: 3px;
+  margin-top: 16px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--mero-bg-tertiary);
+}
+
+.mero-dialog-progress-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  border-radius: 2px;
+  background: var(--mero-accent);
+  animation: mero-dialog-progress 1.4s ease-in-out infinite;
+}
+
+.mero-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.mero-dialog-actions:empty {
+  display: none;
+}
+
+.mero-dialog-button {
+  padding: 9px 16px;
+  border-radius: var(--mero-radius);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.mero-dialog-button:focus-visible {
+  outline: 2px solid var(--mero-accent);
+  outline-offset: 2px;
+}
+
+.mero-dialog-primary {
+  border: 1px solid var(--mero-accent);
+  background: var(--mero-accent);
+  color: var(--mero-on-primary);
+}
+
+.mero-dialog-primary:hover {
+  border-color: var(--mero-accent-hover);
+  background: var(--mero-accent-hover);
+}
+
+.mero-dialog-secondary {
+  border: 1px solid var(--mero-border);
+  background: transparent;
+  color: var(--mero-text);
+}
+
+.mero-dialog-secondary:hover {
+  background: var(--mero-bg-tertiary);
+}
+
+@keyframes mero-dialog-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes mero-dialog-progress {
+  from {
+    left: -40%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+@keyframes mero-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mero-dialog-panel,
+  .mero-dialog-spinner,
+  .mero-dialog-progress-bar {
+    animation: none;
+  }
+}
+
+.mero-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 16px 0 0;
+  font-size: 13px;
+  color: var(--mero-text-secondary);
+}
+
+.mero-dialog-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--mero-border);
+  border-radius: var(--mero-radius);
+  background: var(--mero-bg);
+  color: var(--mero-text);
+  font: inherit;
+  font-size: 14px;
+}
+
+.mero-dialog-input:focus-visible {
+  outline: 2px solid var(--mero-accent);
+  outline-offset: 1px;
+}
+
+.mero-dialog-link {
+  margin: 14px 0 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mero-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}

@@ -1,0 +1,111 @@
+:root,
+html {
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  color: #ffffff;
+  background-color: #111111;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', sans-serif;
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-style: normal;
+  font-variation-settings: 'slnt' 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.modal-content {
+  background-color: transparent !important;
+}
+
+/* Additional responsive improvements */
+@media (max-width: 768px) {
+  .main-content {
+    padding: 1rem !important;
+  }
+
+  .card-container {
+    margin: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .button-group {
+    flex-direction: column !important;
+  }
+
+  .button-group button {
+    flex: none !important;
+    width: 100% !important;
+  }
+}
+
+/* Enhanced card styling */
+.card-enhanced {
+  box-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+    0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  transition: box-shadow 0.2s ease-in-out;
+}
+
+.card-enhanced:hover {
+  box-shadow:
+    0 10px 15px -3px rgba(0, 0, 0, 0.1),
+    0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+/* Better button styling */
+.button-enhanced {
+  transition: all 0.2s ease-in-out;
+  font-weight: 500;
+}
+
+.button-enhanced:hover {
+  transform: translateY(-1px);
+}
+
+/* Improved table styling */
+.table-enhanced {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.table-enhanced th {
+  background: linear-gradient(135deg, #374151 0%, #4b5563 100%);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.75rem;
+}
+
+/* Better input styling */
+.input-enhanced {
+  transition: all 0.2s ease-in-out;
+  border: 2px solid transparent;
+}
+
+.input-enhanced:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  transform: translateY(-1px);
+}

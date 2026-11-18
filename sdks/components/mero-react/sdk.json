@@ -1,0 +1,23 @@
+{
+  "name": "mero-react",
+  "kind": "component",
+  "language": "typescript",
+  "published": [
+    {
+      "registry": "npm",
+      "name": "@calimero-network/mero-react"
+    }
+  ],
+  "version_files": [
+    {
+      "path": "package.json",
+      "format": "json",
+      "key": "version"
+    }
+  ],
+  "depends_on": [
+    "mero-js"
+  ],
+  "inputs": [],
+  "workflow": ".github/workflows/sdk-mero-react.yml"
+}
