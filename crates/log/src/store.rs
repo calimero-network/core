@@ -983,6 +983,10 @@ pub struct GroupState {
     /// install or a replace switches the generation and records (or drops)
     /// it: see [`GroupState::lock_snapshot_record`].
     pub(crate) snapshot_record: Arc<Mutex<()>>,
+    /// Set (under the snapshot-record lock and the applied-state write lock)
+    /// when the engine removes the group: a snapshot build still running then
+    /// writes and records nothing more for it.
+    pub(crate) removed: Arc<AtomicBool>,
 }
 
 impl GroupState {
@@ -992,6 +996,7 @@ impl GroupState {
             group,
             generation: Arc::new(AtomicU32::new(generation)),
             snapshot_record: Arc::default(),
+            removed: Arc::default(),
         }
     }
 

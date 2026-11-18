@@ -34,6 +34,7 @@ pub mod json;
 pub mod search;
 pub mod store;
 pub mod table;
+pub mod xcall;
 
 #[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
 pub mod testing;

@@ -964,9 +964,15 @@ is its command line.
   leader hands them the app's bundle and the blobs its state marks
   (`Node::hand_over_bytes`, over `internal/blob`): a bundle or blob stored while
   the cluster was one node is held by that node alone ("a majority" of one).
+  Every replica set a move records keeps the current replicas first, in their
+  order, then the new ones (`move_replicas`): `replicas[0]` is the node that
+  initializes the group (`Node::ensure_app_group`), and a sorted union made a
+  newcomer with a lower id form an empty group of its own, which a majority of
+  newcomers elected and which then overwrote the real group's log (B8).
   Regressions: `replica_moves_are_idempotent_and_one_at_a_time`,
   `a_cluster_started_on_one_node_grows_and_survives_losing_it` (node 1 stops
-  after the move; the app still runs and its blob downloads).
+  after the move; the app still runs and its blob downloads),
+  `a_replica_move_onto_lower_id_nodes_never_forms_a_second_group`.
 - **Placement read** (`GET /ops/placement`, `meroctl ops placement`, for mdma's
   rebalancer): each app's id, group and replicas, each node's id, zone,
   attested release (`Node::release_of_node`, at most `PLACEMENT_RELEASE_WAIT`)
@@ -1505,7 +1511,9 @@ is its command line.
   sealed snapshot file with a sealed manifest beside it (`backup::Manifest`: app,
   group, index, SHA-256, `backup::FORMAT`, the `merod` and release that wrote it,
   bound to the app and file name under `HMAC(K_c, "calimero.backup.manifest.v1")`);
-  `backup::find` checks one, `backup::latest` opens one with K_c.
+  `backup::find` checks one, `backup::latest` opens one with K_c. The file and its
+  manifest are synced before the rename that lists the backup, and the directory
+  after it (likewise kept code and the kept cluster key).
 - **Restore** (`node/restore.rs`, `api/restore.rs`, `POST /ops/apps/{app}/restore`):
   operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before the
   signature (`backup::find`, `Found::check_release`, the bundle the backup's head
@@ -1730,9 +1738,12 @@ API and system group:
 - **State** (`component::ComponentState`, D46): the component's stored keys
   (generation prefix included, D39) are hidden rows of the group (`rows::CKV`, sealed
   and HMAC-keyed), and each replica keeps them in memory too as an
-  ordered `Arc<BTreeMap>`: a run gets the current version as its `StateView` (ordered
-  `range` scans, which hidden rows cannot answer); `apply` copies it only while a run
-  still holds the previous one; `restore` (a restart, a snapshot install) reads it
+  ordered persistent map (`component::Kv`, an `imbl::OrdMap`): a run gets the current
+  version as its `StateView` (ordered `range` scans, which hidden rows cannot answer),
+  an O(1) clone; `apply` writes the next version sharing all it does not change, so a
+  write while a run holds the previous one copies O(log n) nodes, never the whole state
+  (B7; `a_write_under_a_view_does_not_copy_the_whole_state`,
+  `the_state_reads_as_the_ordered_map_it_replaced`); `restore` (a restart, a snapshot install) reads it
   back from the rows. Host records (`ComponentHead`: `last_ts_ms`, `last_id`,
   `install_ts_ms`, `timers`, the idempotency rings) live in the group's `Head`.
   `last_write_ms` is the entry timestamp of the newest call that applied with a
@@ -1943,8 +1954,12 @@ API and system group:
   checks the boundary again and runs it as `xcall-deliver`, so it reaches no further); a
   view through `Node::view` (strong). The run's thread waits at most `SYNC_XCALL_WAIT`
   (3 s) while the runtime runs it; two apps calling each other at once both time out.
-  Test: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
-  (`apps/fixture-captcha`).
+  A batch (`xcall.batch`, `NodeXcall::batch`) prepares each request as the same call or
+  view would (`prepare_call`, `prepare_view`), spawns them all on the runtime and waits for
+  them with one `SYNC_XCALL_WAIT` deadline (`wait_all`), so a run holds its own proposal lock
+  for the slowest request, not their sum; requests to one target take turns on its lock.
+  Tests: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
+  (`apps/fixture-captcha`), `joined_sync_calls_run_at_once_and_a_rerun_replays_them`.
 - **Files** (`node/component/files.rs`; tests `component_files.rs`): a file is a sealed blob.
   It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
   A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key (`backup::file_key`, not the TEE key) and the app's blob records.

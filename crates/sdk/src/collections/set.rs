@@ -162,13 +162,14 @@ impl<T: ToKey + FromKey, S: Store> Set<T, S> {
         Ok(Page { items, next })
     }
 
-    /// Every element under `under` (the set's base plus whole key parts), through one cursor.
-    fn iter_under(&self, under: &[KeyPart], opts: FindOpts) -> Iter<'_, T> {
+    /// Every element under `under` (encoded key bytes after the set's base), through one
+    /// cursor.
+    fn iter_under(&self, under: &[u8], opts: FindOpts) -> Iter<'_, T> {
         let set_base = match self.base() {
             Ok(b) => b,
             Err(e) => return Iter::failed(e),
         };
-        let base = [set_base.as_slice(), &key::encode(under)].concat();
+        let base = [set_base.as_slice(), under].concat();
         iter_entries(&self.store, &base, &opts, move |e| {
             Self::decode(&set_base, e)
         })
@@ -218,7 +219,20 @@ impl<T: ToKey + FromKey, S: Store> Set<T, S> {
 
     /// [`Set::prefix`] over every page.
     pub fn prefix_iter(&self, prefix: &[KeyPart], opts: FindOpts) -> Iter<'_, T> {
-        self.iter_under(prefix, opts)
+        self.iter_under(&key::encode(prefix), opts)
+    }
+
+    /// [`Set::starts_with`] over every page, through one cursor as the loop reaches it:
+    /// one range open, then one host call per batch of `opts.limit` (1,000 unset), never
+    /// more than walking its pages by `next` (each page opens a range of its own), and
+    /// nothing read ahead of the batch. `from` and `to` do not apply.
+    pub fn starts_with_iter(&self, prefix: &[KeyPart], opts: FindOpts) -> Iter<'_, T> {
+        let opts = FindOpts {
+            from: None,
+            to: None,
+            ..opts
+        };
+        self.iter_under(&key::encode_prefix(prefix), opts)
     }
 
     /// Keep only the elements `keep` accepts; returns how many were removed. It reads every

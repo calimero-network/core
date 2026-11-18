@@ -300,7 +300,7 @@
     "deletePost": {
       "allowSystem": false,
       "confirm": false,
-      "doc": "Deletes the caller's post with its votes and comments, so a post later filed at the\nsame id starts with none.",
+      "doc": "Deletes the caller's post with its tags, votes and comments, so a post later filed at\nthe same id starts with none, and answers whether it is gone. One call removes at most\n250 of those rows and the post only once none is left: `false` means rows remain, so\ncall again.",
       "kind": "call",
       "params": [
         [
@@ -309,7 +309,7 @@
         ]
       ],
       "public": false,
-      "returns": null
+      "returns": "bool"
     },
     "editComment": {
       "allowSystem": false,
@@ -400,7 +400,7 @@
     "moderatePost": {
       "allowSystem": false,
       "confirm": false,
-      "doc": "Removes the post at `id`, whoever wrote it, with its votes and comments. Moderators\nonly.",
+      "doc": "Removes the post at `id`, whoever wrote it, with its tags, votes and comments, and\nanswers whether it is gone. One call removes at most 250 of those rows and the post\nonly once none is left: `false` means rows remain, so call again. Moderators only.",
       "kind": "call",
       "params": [
         [
@@ -409,7 +409,7 @@
         ]
       ],
       "public": false,
-      "returns": null
+      "returns": "bool"
     },
     "moderators": {
       "allowSystem": false,
@@ -576,5 +576,5 @@
     },
     "version": 1
   },
-  "world": "calimero:app@0.5.3"
+  "world": "calimero:app@0.5.4"
 }

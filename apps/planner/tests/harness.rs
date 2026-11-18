@@ -32,7 +32,7 @@ fn the_planner_schedules_on_the_calendar_it_was_created_with() {
         .as_("ann")
         .call("schedule", json!({ "title": "retro", "at": "Fri 16:00" }));
     assert!(
-        matches!(&no_calendar, Err(Failure::App { code, .. }) if code == "NoCalendar"),
+        matches!(&no_calendar, Err(Failure::App { code, .. }) if code == "NotLinked"),
         "{no_calendar:?}"
     );
 

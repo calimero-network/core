@@ -2982,7 +2982,9 @@ pub const SYNC_XCALL_WAIT: Duration = Duration::from_secs(3);
 /// What a component run reaches in other apps (`xcall.call`, `xcall.view`): views and
 /// calls of a component app in the same organization (`same_boundary`), as
 /// `Caller::App(source)`, run on the async runtime while the run's thread waits at most
-/// [`SYNC_XCALL_WAIT`]. The target runs a call as a delivery, so it reaches no further.
+/// [`SYNC_XCALL_WAIT`]; a batch (`xcall.batch`) runs its requests at once and waits for
+/// all of them within one [`SYNC_XCALL_WAIT`]. The target runs a call as a delivery, so it
+/// reaches no further.
 ///
 /// Two apps calling each other at the same moment each hold their own call while they
 /// wait for the other's: both wait out [`SYNC_XCALL_WAIT`] and are told it timed out.
@@ -3015,6 +3017,10 @@ fn xcall_failure(message: &str) -> String {
     json!({ "message": message }).to_string()
 }
 
+/// A synchronous xcall's work, ready to run on the async runtime.
+type XcallFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send>>;
+
 impl NodeXcall {
     /// The target's canonical id, if this run may reach it: another component app, in the
     /// caller's boundary (`same_boundary`).
@@ -3036,30 +3042,14 @@ impl NodeXcall {
         Ok(target)
     }
 
-    /// Run `fut` on the runtime and wait for it on this (blocking) thread.
-    fn wait<T: Send + 'static>(
+    /// The call of `method` of `app` under `key`, checked, as work for the runtime.
+    fn prepare_call(
         &self,
-        fut: impl std::future::Future<Output = T> + Send + 'static,
-    ) -> Result<T, String> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        drop(self.handle.spawn(async move {
-            let _sent = tx.send(fut.await);
-        }));
-        rx.recv_timeout(SYNC_XCALL_WAIT).map_err(|e| match e {
-            std::sync::mpsc::RecvTimeoutError::Timeout => xcall_failure("the xcall timed out"),
-            std::sync::mpsc::RecvTimeoutError::Disconnected => {
-                xcall_failure("the node is shutting down")
-            }
-        })
-    }
-}
-
-impl calimero_app_host::XcallHost for NodeXcall {
-    fn key(&self) -> String {
-        self.key.clone()
-    }
-
-    fn call(&self, app: &str, method: &str, args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        app: &str,
+        method: &str,
+        args: &[u8],
+        key: &str,
+    ) -> Result<XcallFuture, String> {
         if self.read_only {
             return Err(xcall_failure(READ_ONLY_SYNC_CALL));
         }
@@ -3075,15 +3065,18 @@ impl calimero_app_host::XcallHost for NodeXcall {
             ..CallRequest::new(target, method.to_owned(), args, caller)
         };
         let node = Arc::clone(&self.node);
-        match self.wait(async move { node.call_component(&req).await })? {
-            Ok(a) if a.timeout => Err(xcall_failure("the call timed out")),
-            Ok(a) if a.conflict => Err(xcall_failure("the call raced a leader change")),
-            Ok(a) => answer_bytes(&a.status, &a.result, &a.error),
-            Err(e) => Err(refusal_text(&e)),
-        }
+        Ok(Box::pin(async move {
+            match node.call_component(&req).await {
+                Ok(a) if a.timeout => Err(xcall_failure("the call timed out")),
+                Ok(a) if a.conflict => Err(xcall_failure("the call raced a leader change")),
+                Ok(a) => answer_bytes(&a.status, &a.result, &a.error),
+                Err(e) => Err(refusal_text(&e)),
+            }
+        }))
     }
 
-    fn view(&self, app: &str, method: &str, args: &[u8]) -> Result<Vec<u8>, String> {
+    /// The view `method` of `app`, checked, as work for the runtime.
+    fn prepare_view(&self, app: &str, method: &str, args: &[u8]) -> Result<XcallFuture, String> {
         let target = self.target(app)?;
         let args = parse_args(args).map_err(|e| xcall_failure(&e))?;
         let (caller, via) =
@@ -3099,11 +3092,80 @@ impl calimero_app_host::XcallHost for NodeXcall {
             via,
         };
         let node = Arc::clone(&self.node);
-        match self.wait(async move { node.view(&req).await })? {
-            Ok(a) if a.timeout => Err(xcall_failure("the view timed out")),
-            Ok(a) => answer_bytes(&a.status, &a.result, &a.error),
-            Err(e) => Err(refusal_text(&e)),
-        }
+        Ok(Box::pin(async move {
+            match node.view(&req).await {
+                Ok(a) if a.timeout => Err(xcall_failure("the view timed out")),
+                Ok(a) => answer_bytes(&a.status, &a.result, &a.error),
+                Err(e) => Err(refusal_text(&e)),
+            }
+        }))
+    }
+
+    /// Run every one of `work` on the runtime at once and wait for them on this (blocking)
+    /// thread, all within one [`SYNC_XCALL_WAIT`] from now: the run waits for the slowest,
+    /// not for their sum. Each answers in order; one not done by then is told it timed out
+    /// (it may still commit in its target, and the run's retry replays it).
+    fn wait_all(&self, work: Vec<Result<XcallFuture, String>>) -> Vec<Result<Vec<u8>, String>> {
+        let deadline = std::time::Instant::now() + SYNC_XCALL_WAIT;
+        let waiting: Vec<Result<std::sync::mpsc::Receiver<_>, String>> = work
+            .into_iter()
+            .map(|w| {
+                let fut = w?;
+                let (tx, rx) = std::sync::mpsc::channel();
+                drop(self.handle.spawn(async move {
+                    let _sent = tx.send(fut.await);
+                }));
+                Ok(rx)
+            })
+            .collect();
+        waiting
+            .into_iter()
+            .map(|rx| {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                rx?.recv_timeout(left).unwrap_or_else(|e| match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => {
+                        Err(xcall_failure("the xcall timed out"))
+                    }
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                        Err(xcall_failure("the node is shutting down"))
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// One piece of work, waited for as [`Self::wait_all`] does.
+    fn wait_one(&self, work: Result<XcallFuture, String>) -> Result<Vec<u8>, String> {
+        self.wait_all(vec![work])
+            .pop()
+            .unwrap_or_else(|| Err(xcall_failure("the xcall timed out")))
+    }
+}
+
+impl calimero_app_host::XcallHost for NodeXcall {
+    fn key(&self) -> String {
+        self.key.clone()
+    }
+
+    fn call(&self, app: &str, method: &str, args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        self.wait_one(self.prepare_call(app, method, args, key))
+    }
+
+    fn view(&self, app: &str, method: &str, args: &[u8]) -> Result<Vec<u8>, String> {
+        self.wait_one(self.prepare_view(app, method, args))
+    }
+
+    /// Every request at once, under one deadline. Requests to the same target take turns
+    /// on its proposal lock, as two callers' would.
+    fn batch(&self, requests: &[calimero_app_host::SyncXcall<'_>]) -> Vec<Result<Vec<u8>, String>> {
+        let work = requests
+            .iter()
+            .map(|r| match r.key {
+                Some(key) => self.prepare_call(r.app, r.method, r.args, key),
+                None => self.prepare_view(r.app, r.method, r.args),
+            })
+            .collect();
+        self.wait_all(work)
     }
 }
 

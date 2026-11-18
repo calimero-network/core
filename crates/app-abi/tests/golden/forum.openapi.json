@@ -1484,7 +1484,7 @@
             "$ref": "#/components/schemas/Receipt"
           },
           "result": {
-            "type": "null"
+            "type": "boolean"
           }
         },
         "required": [
@@ -2041,7 +2041,7 @@
             "$ref": "#/components/schemas/Receipt"
           },
           "result": {
-            "type": "null"
+            "type": "boolean"
           }
         },
         "required": [
@@ -3751,7 +3751,7 @@
           "kind": "call",
           "public": false
         },
-        "x-calimero-publisher-description": "Deletes the caller's post with its votes and comments, so a post later filed at the\nsame id starts with none."
+        "x-calimero-publisher-description": "Deletes the caller's post with its tags, votes and comments, so a post later filed at\nthe same id starts with none, and answers whether it is gone. One call removes at most\n250 of those rows and the post only once none is left: `false` means rows remain, so\ncall again."
       }
     },
     "/apps/{app}/methods/editComment": {
@@ -4153,7 +4153,7 @@
           "kind": "call",
           "public": false
         },
-        "x-calimero-publisher-description": "Removes the post at `id`, whoever wrote it, with its votes and comments. Moderators\nonly."
+        "x-calimero-publisher-description": "Removes the post at `id`, whoever wrote it, with its tags, votes and comments, and\nanswers whether it is gone. One call removes at most 250 of those rows and the post\nonly once none is left: `false` means rows remain, so call again. Moderators only."
       }
     },
     "/apps/{app}/methods/moderators": {
@@ -4782,6 +4782,6 @@
   "x-calimero": {
     "abiVersion": 1,
     "stateVersion": 1,
-    "world": "calimero:app@0.5.3"
+    "world": "calimero:app@0.5.4"
   }
 }

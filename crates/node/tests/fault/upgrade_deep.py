@@ -91,6 +91,12 @@ NOT_COVERED = [
      "(`Feature::AttachApp`); `an_owner_attaches_an_app_and_the_instance_reads_it_with_linked` "
      "(`component_cluster.rs`) covers it on one build, and a record without it reads as before "
      "(`serde(default)`)"),
+    ("Apps", "A run's synchronous xcalls sent together (`xcall.batch`, `app::join!`)",
+     "nothing new is stored: each call of a batch is an ordinary logged call of its target under the key "
+     "the same call alone would have, and the caller's entry is unchanged; the deep cases deploy the "
+     "release's own kv component, which has no method that batches. "
+     "`joined_sync_calls_run_at_once_and_a_rerun_replays_them` (`component_cluster.rs`) covers concurrency, "
+     "apply-once and replay on one build, and components built before 0.5.4 keep `xcall.call`/`view`"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "

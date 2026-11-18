@@ -121,14 +121,49 @@ it, so every replica keeps the row alike.
 `env::xcall_call(app, method, &args)` runs the target's method as one call in
 its own log, as `Caller::App(<source>)`, before the sending run continues, and
 answers its result; `env::xcall_view` runs a view on the target's latest
-committed state. Both pass the same checks, and the target must be a component
-app other than the sender. They are not atomic: the target's call commits
-whatever the sender does next, so a target method should be safe to have run (a
-captcha's `verify` spends the challenge either way). A re-run of the sending
-call replays the target's answer: the target's idempotency key is derived from
-the sender's, the target, the method, the arguments and how many identical
-calls came before in the run. A read-only member's run may make a synchronous
-view, never a synchronous call. A delivered xcall makes no synchronous call.
+committed state. Both are futures, awaited in an `async fn` app method (or a
+generated client's methods, which are the same futures, typed). Both pass the
+same checks, and the target must be a component app other than the sender.
+They are not atomic: the target's call commits whatever the sender does next,
+so a target method should be safe to have run (a captcha's `verify` spends the
+challenge either way). A re-run of the sending call replays the target's
+answer: the target's idempotency key is derived from the sender's, the target,
+the method, the arguments and how many identical calls came before in the run.
+A read-only member's run may make a synchronous view, never a synchronous
+call. A delivered xcall makes no synchronous call.
+
+**Concurrency.** The SDK runs an `async fn` method with a small executor of its
+own: it polls the method until every future it awaits waits on an xcall, then
+sends those xcalls to the node in one `xcall.batch` (WIT `calimero:app@0.5.4`)
+and polls again with the answers. Futures awaited one after another make one
+batch each; futures awaited together (`app::join!(a, b)`, `app::join_all(v)`)
+are in one batch, which the node runs at once:
+
+```rust
+let cal = uses::calendar()?;
+let (events, count) = app::join!(cal.my_events(), cal.event_count());
+```
+
+The sending run holds its own app's proposal lock while it waits, so a batch
+holds it for the slowest request rather than the sum of them. Requests to the
+same target take turns on the target's lock, as two callers' would. Each
+request of a batch is checked, counted and keyed exactly as the same call or
+view made on its own, in list order: the occurrence counter runs across the
+run's batches, so a batch of two identical calls gets two keys and a re-run
+makes the same batches with the same keys. A batch is answered in order, a
+refused request in its place.
+
+| Limit | Value |
+| --- | --- |
+| Synchronous xcalls one run makes, batched or not (`MAX_SYNC_XCALLS`); a batch that would pass it is refused whole | 16 |
+| Arguments of one (`MAX_SYNC_XCALL_ARGS_BYTES`) | 512 KiB |
+| Answer handed back for one (`MAX_SYNC_XCALL_RESULT_BYTES`) | 1 MiB |
+| How long a run waits (`SYNC_XCALL_WAIT`): for one call, or for a whole batch (one deadline) | 3 s |
+
+A request still running at the deadline is told it timed out; a call may still
+commit in its target, and the sender's retry replays it. A component built
+before 0.5.4 makes its xcalls one at a time with `xcall.call` and
+`xcall.view`, which nodes keep serving.
 
 ## Deduplication
 

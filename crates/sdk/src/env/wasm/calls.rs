@@ -136,12 +136,22 @@ pub fn xcall(app: &str, method: &str, args: &[u8]) -> std::result::Result<(), St
     xcall::send(app, method, args)
 }
 
-pub fn xcall_call(app: &str, method: &str, args: &[u8]) -> std::result::Result<Vec<u8>, String> {
-    xcall::call(app, method, args)
-}
-
-pub fn xcall_view(app: &str, method: &str, args: &[u8]) -> std::result::Result<Vec<u8>, String> {
-    xcall::view(app, method, args)
+pub fn xcall_batch(
+    requests: &[crate::xcall::Request],
+) -> Vec<std::result::Result<Vec<u8>, String>> {
+    let requests: Vec<xcall::Request> = requests
+        .iter()
+        .map(|r| xcall::Request {
+            kind: match r.kind {
+                crate::xcall::Kind::Call => xcall::RequestKind::Call,
+                crate::xcall::Kind::View => xcall::RequestKind::View,
+            },
+            app: r.app.clone(),
+            method: r.method.clone(),
+            args: r.args.clone(),
+        })
+        .collect();
+    xcall::batch(&requests)
 }
 
 pub fn start_action(method: &str, args: &[u8]) -> std::result::Result<String, String> {

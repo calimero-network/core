@@ -520,7 +520,7 @@ fn context_comes_from_the_invocation_and_directory() {
 fn abi_reads_method_attributes() {
     let abi = Abi::from_json(&json!({
         "abiVersion": 1,
-        "world": "calimero:app@0.5.3",
+        "world": "calimero:app@0.5.4",
         "methods": {
             "init": { "kind": "init", "params": [], "returns": null },
             "book": { "kind": "call", "params": [["roomId", "string"]], "returns": "string" },
@@ -1546,6 +1546,8 @@ fn started_actions_leave_only_with_an_ok_run() {
 #[derive(Default)]
 struct OtherApps {
     calls: std::sync::Mutex<Vec<(String, String, String)>>,
+    /// Each batch it was handed, by the length of the list.
+    batches: std::sync::Mutex<Vec<usize>>,
 }
 
 impl calimero_app_host::XcallHost for OtherApps {
@@ -1568,6 +1570,156 @@ impl calimero_app_host::XcallHost for OtherApps {
     fn view(&self, app: &str, method: &str, _args: &[u8]) -> Result<Vec<u8>, String> {
         Ok(format!("\"{app}.{method}\"").into_bytes())
     }
+    fn batch(&self, requests: &[calimero_app_host::SyncXcall<'_>]) -> Vec<Result<Vec<u8>, String>> {
+        self.batches.lock().unwrap().push(requests.len());
+        requests
+            .iter()
+            .map(|r| match r.key {
+                Some(key) => self.call(r.app, r.method, r.args, key),
+                None => self.view(r.app, r.method, r.args),
+            })
+            .collect()
+    }
+}
+
+fn request(
+    kind: calimero_app_host::XcallKind,
+    app: &str,
+    method: &str,
+) -> calimero_app_host::XcallRequest {
+    calimero_app_host::XcallRequest {
+        kind,
+        app: app.to_owned(),
+        method: method.to_owned(),
+        args: b"{}".to_vec(),
+    }
+}
+
+#[test]
+fn a_batch_is_checked_counted_and_keyed_as_the_same_xcalls_in_sequence() {
+    use calimero_app_host::XcallKind::{Call, View};
+    use calimero_app_host::{
+        sync_xcall_key, MAX_SYNC_XCALLS, XCALL_BAD_TARGET, XCALL_SYNC_SELF, XCALL_SYNC_TOO_MANY,
+        XCALL_SYNC_UNAVAILABLE,
+    };
+    let state = base(&[]);
+    let apps = Arc::new(OtherApps::default());
+    let with = |kind| {
+        core_for(&state, &inv(kind))
+            .with_xcall_host(Arc::clone(&apps) as Arc<dyn calimero_app_host::XcallHost>)
+    };
+
+    // One call before the batch, then a batch of two identical calls, a view, the app
+    // itself and a reserved method: answers in order, refusals in place.
+    let mut run = with(InvocationKind::Call);
+    run.xcall_call("captcha", "verify", b"{}").unwrap().unwrap();
+    let answers = run
+        .xcall_batch(&[
+            request(Call, "captcha", "verify"),
+            request(View, "captcha", "status"),
+            request(Call, "captcha", "verify"),
+            request(Call, "app", "verify"),
+            request(Call, "captcha", "__upgrade"),
+        ])
+        .unwrap();
+    assert_eq!(
+        answers,
+        vec![
+            Ok(b"true".to_vec()),
+            Ok(b"\"captcha.status\"".to_vec()),
+            Ok(b"true".to_vec()),
+            Err(XCALL_SYNC_SELF.to_owned()),
+            Err(XCALL_BAD_TARGET.to_owned()),
+        ]
+    );
+    // The node got the three that passed in one batch; the calls' keys are the ones the
+    // same calls made one after another would have had (occurrences 1 and 2).
+    assert_eq!(*apps.batches.lock().unwrap(), vec![3]);
+    let keys: Vec<String> = apps
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|c| c.2.clone())
+        .collect();
+    assert_eq!(
+        keys,
+        (0..3)
+            .map(|n| sync_xcall_key("run-key", "captcha", "verify", b"{}", n))
+            .collect::<Vec<_>>()
+    );
+    // A call after the batch carries on the count.
+    run.xcall_call("captcha", "verify", b"{}").unwrap().unwrap();
+    assert_eq!(
+        apps.calls.lock().unwrap()[3].2,
+        sync_xcall_key("run-key", "captcha", "verify", b"{}", 3)
+    );
+
+    // Each request counts: 2 + 13 made, so a batch of two would pass 16 and is refused
+    // whole, nothing counted; one more still fits, then nothing does.
+    let mut busy = with(InvocationKind::Call);
+    for _ in 0..MAX_SYNC_XCALLS - 3 {
+        busy.xcall_view("captcha", "status", b"{}")
+            .unwrap()
+            .unwrap();
+    }
+    let two = [
+        request(View, "captcha", "status"),
+        request(View, "other", "status"),
+    ];
+    busy.xcall_batch(&two)
+        .unwrap()
+        .into_iter()
+        .for_each(|a| drop(a.unwrap()));
+    let refused = busy
+        .xcall_batch(&[two[0].clone(), two[1].clone(), request(Call, "app", "x")])
+        .unwrap();
+    assert_eq!(
+        refused,
+        vec![
+            Err(XCALL_SYNC_TOO_MANY.to_owned()),
+            Err(XCALL_SYNC_TOO_MANY.to_owned()),
+            Err(XCALL_SYNC_SELF.to_owned()),
+        ]
+    );
+    busy.xcall_batch(&two[..1]).unwrap()[0].clone().unwrap();
+    assert_eq!(
+        busy.xcall_batch(&two[..1]).unwrap(),
+        vec![Err(XCALL_SYNC_TOO_MANY.to_owned())]
+    );
+
+    // An empty batch answers nothing and reaches nothing.
+    let before = apps.batches.lock().unwrap().len();
+    assert_eq!(with(InvocationKind::Call).xcall_batch(&[]), Ok(Vec::new()));
+    assert_eq!(apps.batches.lock().unwrap().len(), before);
+
+    // Views batch views only; a call in a view's batch, or any batch where synchronous
+    // xcalls are not made, is refused outright.
+    assert!(with(InvocationKind::View)
+        .xcall_batch(&[request(View, "captcha", "status")])
+        .is_ok());
+    assert!(with(InvocationKind::View)
+        .xcall_batch(&[
+            request(View, "captcha", "status"),
+            request(Call, "captcha", "verify")
+        ])
+        .is_err());
+    for kind in [InvocationKind::XcallDeliver, InvocationKind::Init] {
+        assert!(with(kind)
+            .xcall_batch(&[request(View, "captcha", "status")])
+            .is_err());
+    }
+    // Without the node's host, each request is told so.
+    assert_eq!(
+        core_for(&state, &inv(InvocationKind::Call)).xcall_batch(&[
+            request(View, "captcha", "status"),
+            request(View, "app", "x")
+        ]),
+        Ok(vec![
+            Err(XCALL_SYNC_UNAVAILABLE.to_owned()),
+            Err(XCALL_SYNC_SELF.to_owned()),
+        ])
+    );
 }
 
 #[test]

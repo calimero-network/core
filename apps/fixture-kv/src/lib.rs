@@ -126,6 +126,13 @@ struct IdArg<'a> {
     id: &'a str,
 }
 
+/// `slowBump`'s arguments.
+#[derive(serde::Serialize)]
+struct BumpArgs<'a> {
+    key: &'a str,
+    spins: u32,
+}
+
 /// `verify`'s arguments in the captcha service (`apps/fixture-captcha`).
 #[derive(serde::Serialize)]
 struct Verify<'a> {
@@ -185,7 +192,7 @@ impl Kv {
     /// Sets `key` as `set` does, once the captcha service `captcha` (another app of the
     /// organization) accepted `answer` to its challenge `challenge`: a synchronous xcall,
     /// in this same call, before anything is written.
-    pub fn set_human(
+    pub async fn set_human(
         &mut self,
         key: String,
         value: String,
@@ -200,7 +207,8 @@ impl Kv {
                 id: &challenge,
                 answer: &answer,
             },
-        )?;
+        )
+        .await?;
         if !solved {
             app::bail!(Error::CaptchaFailed);
         }
@@ -210,7 +218,7 @@ impl Kv {
     /// Sets `key` as `set` does, once the captcha service `captcha` accepted Cloudflare
     /// Turnstile token `token`: the service checks it with Turnstile from its own call
     /// (D76), all inside this one.
-    pub fn set_human_turnstile(
+    pub async fn set_human_turnstile(
         &mut self,
         key: String,
         value: String,
@@ -218,7 +226,7 @@ impl Kv {
         token: String,
     ) -> app::Result<()> {
         let solved: bool =
-            env::xcall_call(&captcha, "verifyTurnstile", &TokenArg { token: &token })?;
+            env::xcall_call(&captcha, "verifyTurnstile", &TokenArg { token: &token }).await?;
         if !solved {
             app::bail!(Error::CaptchaFailed);
         }
@@ -228,8 +236,8 @@ impl Kv {
     /// The state of challenge `challenge` in the captcha service `captcha`, read through
     /// a synchronous `xcall.view`.
     #[app::view]
-    pub fn captcha_status(&self, captcha: String, challenge: String) -> app::Result<String> {
-        env::xcall_view(&captcha, "status", &IdArg { id: &challenge })
+    pub async fn captcha_status(&self, captcha: String, challenge: String) -> app::Result<String> {
+        env::xcall_view(&captcha, "status", &IdArg { id: &challenge }).await
     }
 
     /// Sets `key` without an event (for values over the 16 KiB event limit).
@@ -403,14 +411,58 @@ impl Kv {
     }
 
     /// Calls `recordWho { key }` on app `app` synchronously.
-    pub fn call_who(&mut self, app: String, key: String) -> app::Result<()> {
-        let _done: Option<()> = env::xcall_call(&app, "recordWho", &KeyArg { key: &key })?;
+    pub async fn call_who(&mut self, app: String, key: String) -> app::Result<()> {
+        let _done: Option<()> = env::xcall_call(&app, "recordWho", &KeyArg { key: &key }).await?;
         Ok(())
     }
 
     /// Asks app `app`'s `whoView` synchronously: whom it saw this run serve.
-    pub fn ask_who(&mut self, app: String) -> app::Result<String> {
-        env::xcall_view(&app, "whoView", &NoArgs {})
+    pub async fn ask_who(&mut self, app: String) -> app::Result<String> {
+        env::xcall_view(&app, "whoView", &NoArgs {}).await
+    }
+
+    /// Calls `slowBump { key, spins }` on apps `a` and `b` together (`app::join!`): one
+    /// batch, which the node runs at once, so this run waits for the slower of the two, not
+    /// for both. Answers their counts; with `stall`, then runs until the node's deadline
+    /// stops it (a timeout is not logged, so a retry with the same key runs this again, and
+    /// the two calls replay their answers instead of counting twice).
+    pub async fn bump_both(
+        &mut self,
+        a: String,
+        b: String,
+        key: String,
+        spins: u32,
+        stall: Option<bool>,
+    ) -> app::Result<Vec<u32>> {
+        let args = BumpArgs { key: &key, spins };
+        let (x, y) = app::join!(
+            env::xcall_call::<u32, _>(&a, "slowBump", &args),
+            env::xcall_call::<u32, _>(&b, "slowBump", &args),
+        );
+        let counts = vec![x?, y?];
+        // Host calls, not a busy loop: the wall clock stops the run before its fuel does.
+        while stall == Some(true) {
+            let _ = std::hint::black_box(env::random_bytes(1 << 20));
+        }
+        Ok(counts)
+    }
+
+    /// Draws 1 MiB of randomness from the host `spins` times, then counts one more under
+    /// `key` and answers the count: a slow target for `bumpBoth`. The host fills the bytes,
+    /// so the call takes wall time without spending its fuel.
+    #[app::allow(app = "*")]
+    pub fn slow_bump(&mut self, key: String, spins: u32) -> app::Result<u32> {
+        for _ in 0..spins {
+            let _ = std::hint::black_box(env::random_bytes(1 << 20));
+        }
+        let count = self
+            .entries
+            .get(&key)?
+            .and_then(|e| e.value.parse::<u32>().ok())
+            .unwrap_or(0)
+            + 1;
+        let _event = self.upsert(&key, &count.to_string())?;
+        Ok(count)
     }
 
     /// Stores under `key` who called and through which app (`env::caller`, `env::via`).
