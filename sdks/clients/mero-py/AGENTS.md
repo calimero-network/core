@@ -110,7 +110,7 @@ instead of the OS's picks, for a machine that runs other clusters. From core's r
 
 ```bash
 cargo build --release -p merod -p meroctl
-target/release/meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
+target/release/meroctl app build apps/fixture-kv --out target/app-components/kv.wasm
 cd sdks/clients/mero-py && . .venv/bin/activate && pip install -e ".[dev]"
 MEROD_BINARY=$PWD/../../../target/release/merod \
 KV_STORE_WASM=$PWD/../../../target/app-components/kv.wasm \

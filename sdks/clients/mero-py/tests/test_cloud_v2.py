@@ -5,7 +5,7 @@ Needs `merod` and the kv component from the core this SDK lives in, built as
 e2e.yml builds them (from core's root):
 
     cargo build --release -p merod -p meroctl
-    target/release/meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
+    target/release/meroctl app build apps/fixture-kv --out target/app-components/kv.wasm
 
 Paths default to the core tree this SDK sits in (sdks/clients/mero-py);
 override with MEROD_BINARY (or MEROD_V2_BINARY) and KV_STORE_WASM. Skipped when the binary is missing.
@@ -32,8 +32,8 @@ BINARY = (
     or os.environ.get("MEROD_V2_BINARY")
     or str(CORE / "target/debug/merod")
 )
-# The kv component (apps/v2-fixtures/kv), where e2e.yml builds it:
-# `meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm`.
+# The kv component (apps/fixture-kv), where e2e.yml builds it:
+# `meroctl app build apps/fixture-kv --out target/app-components/kv.wasm`.
 KV_STORE_WASM = os.environ.get(
     "KV_STORE_WASM",
     str(CORE / "target/app-components/kv.wasm"),
