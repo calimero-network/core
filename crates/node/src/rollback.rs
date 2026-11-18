@@ -247,7 +247,7 @@ impl Checkpoints {
             let s = self.state.lock().map_err(|e| eyre::eyre!("{e}"))?;
             (s.entry.next(), s.epoch)
         };
-        self.engine.put_node_meta(
+        crate::node::disk::Disk::of(&self.engine).put_node_meta(
             ROW,
             &Record {
                 node: self.node,

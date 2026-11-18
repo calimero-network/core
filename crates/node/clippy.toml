@@ -1,0 +1,11 @@
+# The store's writes wait for the disk (a synced write, or one queued behind
+# another's fsync), and every Raft group of the node shares the async workers:
+# the node writes only through `node::disk::Disk`, which runs each off them
+# (crates/node/AGENTS.md, "Disk work leaves the async workers").
+disallowed-methods = [
+    { path = "calimero_log::Engine::put_blob", reason = "write through node::disk::Disk, off the async workers" },
+    { path = "calimero_log::Engine::delete_blob", reason = "write through node::disk::Disk, off the async workers" },
+    { path = "calimero_log::Engine::put_segment", reason = "write through node::disk::Disk, off the async workers" },
+    { path = "calimero_log::Engine::delete_segment", reason = "write through node::disk::Disk, off the async workers" },
+    { path = "calimero_log::Engine::put_node_meta", reason = "write through node::disk::Disk, off the async workers" },
+]
