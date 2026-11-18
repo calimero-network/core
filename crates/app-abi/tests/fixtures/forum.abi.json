@@ -1,0 +1,580 @@
+{
+  "abiVersion": 1,
+  "errors": {
+    "Exists": {
+      "id": "string"
+    },
+    "HasSeparator": {
+      "value": "string"
+    },
+    "NoComment": {
+      "key": "string"
+    },
+    "NoPost": {
+      "id": "string"
+    },
+    "NotAuthor": {
+      "id": "string"
+    },
+    "NotModerator": {
+      "id": "string"
+    }
+  },
+  "events": {
+    "Announced": {
+      "id": "string"
+    },
+    "AnnouncementRemoved": {
+      "id": "string"
+    },
+    "Commented": {
+      "key": "string",
+      "post": "string"
+    },
+    "MessagePosted": {
+      "key": "string"
+    },
+    "PostChanged": {
+      "id": "string"
+    },
+    "PostDeleted": {
+      "id": "string"
+    },
+    "Posted": {
+      "board": "string",
+      "id": "string"
+    },
+    "Voted": {
+      "post": "string"
+    }
+  },
+  "methods": {
+    "addModerator": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Appoints `account` a moderator. Moderators only.",
+      "kind": "call",
+      "params": [
+        [
+          "account",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "announce": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Announces `text` under `id`. The caller's announcement at `id` is never edited:\nannouncing there again is `Exists`. Another account's announcement at `id` is a row\nof its own.",
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "text",
+          "string"
+        ],
+        [
+          "sentAt",
+          "u64"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "announcements": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Every announcement by id, one row per author holding the id.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "list<MessageView>"
+    },
+    "authorFeed": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Someone's posts across every board, newest first.",
+      "kind": "view",
+      "params": [
+        [
+          "author",
+          "string"
+        ],
+        [
+          "limit",
+          "u32"
+        ]
+      ],
+      "public": false,
+      "returns": "list<PostView>"
+    },
+    "boardFeed": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "One page of a board, newest first.",
+      "kind": "view",
+      "params": [
+        [
+          "board",
+          "string"
+        ],
+        [
+          "offset",
+          "u32"
+        ],
+        [
+          "limit",
+          "u32"
+        ]
+      ],
+      "public": false,
+      "returns": "list<PostView>"
+    },
+    "boardSince": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "A board's posts created after `after`, oldest first: what a client polls.",
+      "kind": "view",
+      "params": [
+        [
+          "board",
+          "string"
+        ],
+        [
+          "after",
+          "u64"
+        ]
+      ],
+      "public": false,
+      "returns": "list<PostView>"
+    },
+    "boardStats": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "A board's post and pin counts, from maintained counts.",
+      "kind": "view",
+      "params": [
+        [
+          "board",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "BoardStats"
+    },
+    "boardTagFeed": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "One page of a board's posts carrying `tag`, newest first: one range of the tag\nindex, so other boards' posts with the tag are never read.",
+      "kind": "view",
+      "params": [
+        [
+          "board",
+          "string"
+        ],
+        [
+          "tag",
+          "string"
+        ],
+        [
+          "offset",
+          "u32"
+        ],
+        [
+          "limit",
+          "u32"
+        ]
+      ],
+      "public": false,
+      "returns": "list<PostView>"
+    },
+    "charter": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "What the forum was founded with. There is no setter.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "Charter"
+    },
+    "comment": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Comments on a post and returns the comment's key. `id` is the caller's to\nchoose: the key carries their account, so it only collides with their own.",
+      "kind": "call",
+      "params": [
+        [
+          "post",
+          "string"
+        ],
+        [
+          "id",
+          "string"
+        ],
+        [
+          "body",
+          "string"
+        ],
+        [
+          "createdAt",
+          "u64"
+        ]
+      ],
+      "public": false,
+      "returns": "string"
+    },
+    "comments": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "One page of a post's thread, oldest first: one range of the thread index.",
+      "kind": "view",
+      "params": [
+        [
+          "post",
+          "string"
+        ],
+        [
+          "offset",
+          "u32"
+        ],
+        [
+          "limit",
+          "u32"
+        ]
+      ],
+      "public": false,
+      "returns": "list<CommentView>"
+    },
+    "createPost": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Files a post and returns its id, `\"<caller>-<id>\"`: `id` is the caller's to\nchoose and only ever collides with their own posts.",
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "board",
+          "string"
+        ],
+        [
+          "title",
+          "string"
+        ],
+        [
+          "body",
+          "string"
+        ],
+        [
+          "tags",
+          "list<string>"
+        ],
+        [
+          "createdAt",
+          "u64"
+        ]
+      ],
+      "public": false,
+      "returns": "string"
+    },
+    "deleteComment": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Takes the caller's comment at `key` back; anyone else's is `NoComment`.",
+      "kind": "call",
+      "params": [
+        [
+          "key",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "deletePost": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Deletes the caller's post with its tags, votes and comments, so a post later filed at\nthe same id starts with none, and answers whether it is gone. One call removes at most\n250 of those rows and the post only once none is left: `false` means rows remain, so\ncall again.",
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "bool"
+    },
+    "editComment": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Replaces the caller's comment at `key`. Another account's comment is not the\ncaller's to address: `NoComment`.",
+      "kind": "call",
+      "params": [
+        [
+          "key",
+          "string"
+        ],
+        [
+          "body",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "editPost": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Replaces the title and body of the caller's post.",
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "title",
+          "string"
+        ],
+        [
+          "body",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "getPost": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The post at `id`, or `null`.",
+      "kind": "view",
+      "params": [
+        [
+          "id",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "option<PostView>"
+    },
+    "init": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Writes the charter and makes the app owner the first moderator.",
+      "kind": "init",
+      "params": [],
+      "public": false,
+      "returns": null
+    },
+    "me": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The caller's own account, as the app sees it.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "string"
+    },
+    "messages": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "A board's chat in `sentAt` order: one range of the `chat` index.",
+      "kind": "view",
+      "params": [
+        [
+          "board",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "list<MessageView>"
+    },
+    "moderatePost": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Removes the post at `id`, whoever wrote it, with its tags, votes and comments, and\nanswers whether it is gone. One call removes at most 250 of those rows and the post\nonly once none is left: `false` means rows remain, so call again. Moderators only.",
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "bool"
+    },
+    "moderators": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Who may remove any post or announcement.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "list<string>"
+    },
+    "pin": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Pins the caller's post to the top of its board, ordered by `at`.",
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "at",
+          "u64"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "pinned": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "A board's pinned posts, most recently pinned first.",
+      "kind": "view",
+      "params": [
+        [
+          "board",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "list<PostView>"
+    },
+    "postMessage": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Posts a message to a board's chat and returns its key, `\"<board>/<id>\"`. A message\nis final: posting again where the caller wrote is `Exists`, and no method edits or\nremoves one. Another account's message at the key is a row of its own.",
+      "kind": "call",
+      "params": [
+        [
+          "board",
+          "string"
+        ],
+        [
+          "id",
+          "string"
+        ],
+        [
+          "text",
+          "string"
+        ],
+        [
+          "sentAt",
+          "u64"
+        ]
+      ],
+      "public": false,
+      "returns": "string"
+    },
+    "removeAnnouncement": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Takes down every account's announcement at `id`. Moderators only, not even the\nannouncement's author. `false` if nobody holds `id`.",
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "bool"
+    },
+    "retag": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Replaces the tags of the caller's post: it leaves the old tags' feeds and joins\nthe new ones.",
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "tags",
+          "list<string>"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "unpin": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Unpins the caller's post.",
+      "kind": "call",
+      "params": [
+        [
+          "id",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "unvote": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Takes the caller's vote back (nobody else's) and returns the post's score.",
+      "kind": "call",
+      "params": [
+        [
+          "post",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "u64"
+    },
+    "vote": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Upvotes a post and returns its score. Voting twice is one vote: the vote is the\nrow `(post, caller)`.",
+      "kind": "call",
+      "params": [
+        [
+          "post",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "u64"
+    }
+  },
+  "state": {
+    "fields": {
+      "announcements": "table",
+      "charter": "unorderedMap",
+      "comments": "table",
+      "messages": "table",
+      "moderators": "table",
+      "postTags": "table",
+      "posts": "table",
+      "votes": "table"
+    },
+    "search": {
+      "announcements": [],
+      "charter": [],
+      "comments": [],
+      "messages": [],
+      "moderators": [],
+      "postTags": [],
+      "posts": [],
+      "votes": []
+    },
+    "version": 1
+  },
+  "world": "calimero:app@0.5.4"
+}

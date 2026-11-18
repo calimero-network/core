@@ -148,8 +148,15 @@ struct Registry {
     response_bytes: BTreeMap<&'static str, u64>,
     /// Raft messages whose addressee did not check out, by [`RaftAddressee`].
     raft_misaddressed: BTreeMap<&'static str, u64>,
-    /// Log entries this node could not decode and skipped, by [`LogKind`].
+    /// Log entries this node could not decode (its group stopped on each), by [`LogKind`].
     undecodable: [u64; LogKind::ALL.len()],
+    /// The system state's serialized size when it was last checkpointed or restored.
+    system_state_bytes: u64,
+    /// `(group, peer)` → the index at which this leader last found that
+    /// replica's state digest different from its own ([`digest_compared`]).
+    diverged: BTreeMap<(u64, u64), u64>,
+    /// Times a comparison found a replica newly different.
+    divergences: u64,
 }
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
@@ -240,13 +247,38 @@ impl LogKind {
     }
 }
 
-/// Count one log entry this node could not decode and skipped (its state now
-/// differs from the nodes that applied it); returns the count so far for `log`.
+/// Count one log entry this node could not decode, on which its group stopped
+/// rather than skip it; returns the count so far for `log`.
 pub fn undecodable_entry(log: LogKind) -> u64 {
     let mut r = registry();
     let n = &mut r.undecodable[log as usize];
     *n += 1;
     *n
+}
+
+/// Note the system state's serialized size: what its checkpoint row and its
+/// snapshot hold, as last checkpointed or restored here.
+pub fn system_state_bytes(bytes: usize) {
+    registry().system_state_bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+}
+
+/// Note how a group's state digest compared with a replica's
+/// (`Node::compare_digests`); answers whether that changed what is recorded
+/// for the pair (it differs now and did not, or agrees now and did not). A
+/// comparison that could not tell leaves it as it was.
+pub fn digest_compared(group: u64, peer: u64, outcome: calimero_log::Comparison) -> bool {
+    let mut r = registry();
+    match outcome {
+        calimero_log::Comparison::Differ { index, .. } => {
+            let first = r.diverged.insert((group, peer), index).is_none();
+            if first {
+                r.divergences += 1;
+            }
+            first
+        }
+        calimero_log::Comparison::Agree { .. } => r.diverged.remove(&(group, peer)).is_some(),
+        calimero_log::Comparison::Unknown => false,
+    }
 }
 
 /// Note one WASM run's wall time on this node, whatever became of its result.
@@ -464,7 +496,7 @@ pub fn render(out: &mut String) {
     }
     let _w = writeln!(
         out,
-        "# HELP calimero_log_undecodable_entries_total Log entries this node could not decode and skipped, by log (system, app): its state differs from the nodes that applied them. Feature gates keep it at zero; anything else is a bug.\n# TYPE calimero_log_undecodable_entries_total counter"
+        "# HELP calimero_log_undecodable_entries_total Log entries this node could not decode, by log (system, app): the group stopped on each rather than skip it. Feature gates keep it at zero; anything else is a node on an older release than the log.\n# TYPE calimero_log_undecodable_entries_total counter"
     );
     for log in LogKind::ALL {
         let n = r.undecodable[log as usize];
@@ -474,6 +506,26 @@ pub fn render(out: &mut String) {
             log.label()
         );
     }
+    let _w = writeln!(
+        out,
+        "# HELP calimero_system_state_bytes The system state's serialized size (one checkpoint row, carried by every system snapshot and backup), as last checkpointed or restored here; 0 before either.\n# TYPE calimero_system_state_bytes gauge\ncalimero_system_state_bytes {}",
+        r.system_state_bytes
+    );
+    let _w = writeln!(
+        out,
+        "# HELP calimero_group_diverged The index at which this node, leading the group, last found the replica's state different from its own at the same index; present only while the latest comparison differs. Anything here is a bug or a disk fault: see the runbook.\n# TYPE calimero_group_diverged gauge"
+    );
+    for ((group, peer), index) in &r.diverged {
+        let _w = writeln!(
+            out,
+            "calimero_group_diverged{{group=\"{group}\",peer=\"{peer}\"}} {index}"
+        );
+    }
+    let _w = writeln!(
+        out,
+        "# HELP calimero_group_divergences_total Times a leader found a replica's state newly different from its own at the same index.\n# TYPE calimero_group_divergences_total counter\ncalimero_group_divergences_total {}",
+        r.divergences
+    );
     let _w = writeln!(
         out,
         "# HELP calimero_raft_misaddressed_total Raft messages from peers whose addressee did not check out: not_addressee (refused, 421 NOT_ADDRESSEE), no_target (accepted with a warning this release).\n# TYPE calimero_raft_misaddressed_total counter"
@@ -572,6 +624,11 @@ pub struct RaftSample {
     pub follower_lag: Vec<(u64, u64)>,
     /// The index this node's latest snapshot covers.
     pub snapshot: Option<u64>,
+    /// Whether this node's Raft core of the group has stopped (it restarts
+    /// from the disk on its own; `calimero_log::RESTART_FIRST`).
+    pub stopped: bool,
+    /// How many times this node tried to restart the group's core.
+    pub restarts: u64,
 }
 
 /// Read `g`'s Raft metrics.
@@ -602,6 +659,8 @@ pub fn raft_sample<M: calimero_log::Machine>(
         },
         follower_lag,
         snapshot: m.snapshot.map(|l| l.index),
+        stopped: status.stopped.is_some(),
+        restarts: status.restarts,
     }
 }
 
@@ -675,6 +734,30 @@ pub fn render_raft(out: &mut String, samples: &[RaftSample]) {
                 ms as f64 / 1000.0
             );
         }
+    }
+    family(
+        out,
+        "calimero_group_stopped",
+        "1 while this node's Raft core of the group is stopped (a write the disk refused, a machine that panicked, an entry it could not apply): it restarts from the disk, waiting longer each time it stops again.",
+    );
+    for s in samples {
+        let _w = writeln!(
+            out,
+            "calimero_group_stopped{{group=\"{}\"}} {}",
+            s.group,
+            u8::from(s.stopped)
+        );
+    }
+    let _w = writeln!(
+        out,
+        "# HELP calimero_group_restarts_total Times this node restarted its Raft core of the group after it stopped, since the group started here.\n# TYPE calimero_group_restarts_total counter"
+    );
+    for s in samples {
+        let _w = writeln!(
+            out,
+            "calimero_group_restarts_total{{group=\"{}\"}} {}",
+            s.group, s.restarts
+        );
     }
     family(
         out,

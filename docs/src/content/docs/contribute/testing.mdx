@@ -34,8 +34,8 @@ frozen leader behaves, and a green scenario does not localize a logic bug.
 The cluster and CLI tests build the components they load on first use
 (`calimero_app_build::build_component_cached`, cached under
 `$CARGO_TARGET_DIR/app-components`; the `wasm32-wasip2` target, which
-`rust-toolchain.toml` lists): the kv fixture `apps/v2-fixtures/kv`, the other
-`apps/v2-fixtures/*`, `apps/kv-store-with-shared-storage` and `apps/rooms`. No
+`rust-toolchain.toml` lists): the kv fixture `apps/fixture-kv`, the other
+`apps/fixture-*`, `apps/team-space` and `apps/rooms`. No
 build step comes first. `KV_STORE_WASM` points `meroctl`'s tests at another
 component.
 
@@ -79,6 +79,32 @@ behaviour crosses the API: start the cluster, sign up, do the thing, assert on
 what the client sees. Name it for the behaviour
 (`teams_work_like_v1_subgroups`,
 `a_node_added_to_a_running_cluster_hosts_replicas`).
+
+### Seeded faults (`calimero-log`)
+
+`crates/log/tests/sim.rs` runs one group on three engines over the in-memory
+transport and, for each seed, a plan of 30 steps drawn from it: writes,
+crashes (half of them losing the writes not yet synced, as power loss would),
+restarts, a node partitioned off, messages dropped or delayed, and snapshot
+builds with log purges that make a lagging or restarted node install a
+snapshot. It then heals everything and checks that no write a leader
+acknowledged is missing on any replica, that a strong read right after each
+acknowledged write saw it, and that every replica's state digest is the same
+at the same index ([State digests](/protocol/replication/#state-digests)).
+
+```bash
+cargo test -p calimero-log --features testing --test sim               # the seeds CI runs (ci_seeds!), a test each
+SIM_RUNS=50 cargo test -p calimero-log --features testing --test sim seeds_from_the_environment -- --nocapture   # 50 more, each printed
+SIM_SEED=1234 SIM_TRACE=1 cargo test -p calimero-log --features testing --test sim seeds_from_the_environment -- --nocapture # one seed again, with its trace
+```
+
+A failure names its seed and the trace of the steps it took. The seed fixes the
+plan and every fault decision in the order messages are sent; thread
+scheduling and openraft's own randomized election timeouts are not under its
+control, so a replay runs the same faults and may take a few runs to meet the
+same interleaving. A seed that found a bug joins `ci_seeds!` with the fix, as
+`seed_8609365135234708664` did when it found the simulator itself comparing
+replicas that stood at different indexes.
 
 ## App logic: `TestApp`
 
@@ -207,7 +233,7 @@ It is merobox's cloud-v2 workflow format as JSON ([where the format comes
 from](#where-the-format-comes-from)); `scripts/workflow-to-scenario.py FILE.yml
 [--delete]` converts a YAML workflow, dropping `base_port` and `binary` and
 refusing what it cannot carry over, naming why. Today
-`apps/org-gated/scenarios/cluster/` and `workflows/fuzzy-tests/` hold them.
+`apps/team-space/scenarios/cluster/` and `workflows/fuzzy-tests/` hold them.
 `cluster.settings` is the TOML every node starts with (its `[outbound]` table;
 the test build has `outbound-testing`). Every account in `accounts` is signed
 up with its own soft passkey on node 1 and talks to node `index % nodes` (an
@@ -304,7 +330,7 @@ confirmations (`orgs-and-keys`); signed packages from a registry on loopback
 ```bash
 cargo build --release -p merod -p meroctl
 export PATH=$PWD/target/release:$PATH
-meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
+meroctl app build apps/fixture-kv --out target/app-components/kv.wasm
 for v in 1.0.0 1.1.0; do
   meroctl app pack --wasm target/app-components/kv.wasm \
     --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
@@ -315,7 +341,7 @@ python3 -I crates/node/tests/fault/suite.py --only kv-failover,frozen-leader
 python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 ```
 
-The kv fixture is the component `apps/v2-fixtures/kv`; the two signed
+The kv fixture is the component `apps/fixture-kv`; the two signed
 releases (package `com.calimero.kv-store`, dev key) are for `packages` and land
 in `dist/`. A node behaviour that only shows across processes (the bounded forward
 to a frozen leader is the example) gets its regression test here.
@@ -578,6 +604,7 @@ a case is never skipped.
 | Apps | An instance created with the apps its release creates (`AppRecord::links`, `init`'s `links`) | - | - | no: the deep fixtures are packed by the old release's meroctl, which writes no `uses`, and a record with `links` is written only once every node runs this release (`Feature::AppLinks`); `creating_an_instance_creates_the_apps_its_release_uses` (`component_cluster.rs`) covers it on one build, and a record without it reads as before (`serde(default)`) |
 | Apps | A person's grant letting an app call another as them (`SetDelegation`, `env::via`) | - | - | no: the deep fixtures are packed by the old release's meroctl, which writes no `uses` with `methods`, and a grant is written only once every node runs this release (`Feature::Delegation`); `an_app_calls_another_as_the_person_only_with_their_grant` (`component_cluster.rs`) covers message, call and view on one build, and state without grants reads as before (`serde(default)`) |
 | Apps | An app attached to an instance's `attach` reference (`AppRecord::attached`, `env::linked`) | - | - | no: the deep fixtures are packed by the old release's meroctl, which writes no `uses`, so no instance has a reference to attach to, and a `LinkApp` is written only once every node runs this release (`Feature::AttachApp`); `an_owner_attaches_an_app_and_the_instance_reads_it_with_linked` (`component_cluster.rs`) covers it on one build, and a record without it reads as before (`serde(default)`) |
+| Apps | A run's synchronous xcalls sent together (`xcall.batch`, `app::join!`) | - | - | no: nothing new is stored: each call of a batch is an ordinary logged call of its target under the key the same call alone would have, and the caller's entry is unchanged; the deep cases deploy the release's own kv component, which has no method that batches. `joined_sync_calls_run_at_once_and_a_rerun_replays_them` (`component_cluster.rs`) covers concurrency, apply-once and replay on one build, and components built before 0.5.4 keep `xcall.call`/`view` |
 | Accounts | Account recovery started and finished with a new passkey | - | - | no: the start takes a WebAuthn registration made outside a session, which neither meroctl nor the suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The recovery code (`account-recovery-code`) is covered |
 | Accounts | Sign-up through a cluster sign-up invite, and issuing one | - | - | no: meroctl's login takes no invite and has no command to issue one (an operator-signed request); the policy and the invite list are read back (`ops-state`) |
 | Accounts | Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, `setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, `deleteOrg`, `setCapabilities`, `setAllApps`) and the page's verifier link | - | - | no: a consent request is approved in a browser on the node's consent page; the cluster test `consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as the API's route, which the organization and team cases cover; a `createOrg` asked from an app's frontend also makes that app's team in the same `CreateOrg`, the organization and team `ScopeApps` makes, which `app-teams` covers. The verifier link is a startup setting (`--attestation-verifier-url`) that stores nothing |
@@ -591,6 +618,7 @@ a case is never skipped.
 | Pipelines | Live pipeline events (`meroctl cloud compute pipeline watch`) | - | - | no: the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal is covered, the stream itself by the cluster tests |
 | Ops | Restoring a backup onto the new release | - | - | no: `POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, not a rollout |
 | Ops | A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`) | - | - | no: a read that stores nothing, so there is no data to carry across a roll; it needs a registered job node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable |
+| Ops | Replicas' state digests compared by each app's leader (`calimero_group_diverged`) | - | - | no: nothing a rollout carries: each replica takes its digest from its own rows (kept with the applied index, taken again from the rows when it is missing), and a peer on a release before answers `/internal/digests` with `404` and is not compared; `a_replica_whose_state_differs_from_its_leaders_is_reported` (`cluster.rs`) covers it on one build |
 {/* upgrade-matrix:end */}
 
 ### Replaying a release's data directory
@@ -821,9 +849,9 @@ every node in the process suite (its rolling upgrade moves to a copy of the
 same binary unless `--upgrade-merod` names another), so neither tests data
 written by an older version. The [upgrade path](#upgrade-path) does, for the
 data its cases write, from the last release only. A change to an on-disk or
-wire format also needs its own migration test, as `calimero-log`'s
-`migration_tests.rs` does for the `log.redb` store, and a case in the upgrade
-path when it stores a kind of data none of its cases writes. What else tests
+wire format also needs its own test that reads the old shape (or refuses it,
+as `calimero-log`'s `format::tests` do for a store of another format), and a
+case in the upgrade path when it stores a kind of data none of its cases writes. What else tests
 across releases, and what a change that breaks one declares, is in
 [Compatibility](/operate/compatibility/): ci-checks' `Compatibility` job (no
 route, field, WIT or ABI version dropped) and `Rust tests (2/4)`'s
@@ -836,8 +864,8 @@ older node skips. **A new command or field ships with a feature gate**
 give it a case in `uses` in `crates/node/src/system/cluster_version.rs`'s
 tests. There, `a_feature_is_never_proposed_while_an_older_node_holds_the_log`
 replays every feature through the proposal gate on a cluster holding an older
-node (modelled as a release that skips what it cannot decode, as
-`SystemMachine::apply` does) and checks that nothing is proposed and every
+node (modelled as a release that skips what it cannot decode, as earlier releases
+did; this one stops the group instead) and checks that nothing is proposed and every
 replica keeps the same state, then that each feature works once the older
 node leaves and the leader raises the cluster version.
 

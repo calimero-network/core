@@ -13,6 +13,12 @@ struct Inner {
     map: BTreeMap<Vec<u8>, Vec<u8>>,
     pulled: usize,
     writes: usize,
+    /// Bytes written, counted as the host charges a run (`MAX_RUN_BYTES`).
+    written: usize,
+    /// Bytes read: every value a `get` returns and every key and value a cursor returns.
+    read: usize,
+    /// Every call the host would serve: get, put, delete, add, range open, cursor batch.
+    calls: usize,
     /// Per key: how many `put`s and how many `add`s it has seen.
     ops: BTreeMap<Vec<u8>, (usize, usize)>,
 }
@@ -55,9 +61,42 @@ impl MemStore {
         self.inner.borrow_mut().pulled = 0;
     }
 
+    /// How many host calls this store has served: `get`, `put`, `delete`, `add`, opening a
+    /// range and each cursor batch, the unit a guest pays per crossing into the host.
+    pub fn calls(&self) -> usize {
+        self.inner.borrow().calls
+    }
+
+    /// Reset the host-call counter.
+    pub fn reset_calls(&self) {
+        self.inner.borrow_mut().calls = 0;
+    }
+
     /// How many writes (`put`, `delete`, `add`) this store has seen.
     pub fn writes(&self) -> usize {
         self.inner.borrow().writes
+    }
+
+    /// How many bytes this store has been written, as the host charges a run against its
+    /// `MAX_RUN_BYTES`: key and value of every `put` and `add`, the key of every `delete`.
+    pub fn written_bytes(&self) -> usize {
+        self.inner.borrow().written
+    }
+
+    /// How many bytes reads have returned: the value of every `get`, the key and value of
+    /// every entry a cursor returns.
+    pub fn read_bytes(&self) -> usize {
+        self.inner.borrow().read
+    }
+
+    /// Reset every cost counter: calls, writes, pulled entries and bytes.
+    pub fn reset_costs(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.calls = 0;
+        inner.writes = 0;
+        inner.pulled = 0;
+        inner.written = 0;
+        inner.read = 0;
     }
 
     /// How many `put`s and `add`s `k` has seen.
@@ -88,13 +127,19 @@ impl Store for MemStore {
 
     fn get(&self, k: &[u8]) -> Option<Vec<u8>> {
         host_limit(k);
-        self.inner.borrow().map.get(k).cloned()
+        let mut inner = self.inner.borrow_mut();
+        inner.calls += 1;
+        let found = inner.map.get(k).cloned();
+        inner.read += found.as_ref().map_or(0, Vec::len);
+        found
     }
 
     fn put(&mut self, k: &[u8], v: &[u8]) {
         host_limit(k);
         let mut inner = self.inner.borrow_mut();
+        inner.calls += 1;
         inner.writes += 1;
+        inner.written += k.len() + v.len();
         inner.ops.entry(k.to_vec()).or_default().0 += 1;
         inner.map.insert(k.to_vec(), v.to_vec());
     }
@@ -102,13 +147,16 @@ impl Store for MemStore {
     fn delete(&mut self, k: &[u8]) {
         host_limit(k);
         let mut inner = self.inner.borrow_mut();
+        inner.calls += 1;
         inner.writes += 1;
+        inner.written += k.len();
         inner.map.remove(k);
     }
 
     fn add(&mut self, k: &[u8], delta: i64) {
         host_limit(k);
         let mut inner = self.inner.borrow_mut();
+        inner.calls += 1;
         inner.writes += 1;
         inner.ops.entry(k.to_vec()).or_default().1 += 1;
         let current = match inner.map.get(k) {
@@ -119,12 +167,14 @@ impl Store for MemStore {
         // SAFETY: the sum of an i128 CBOR integer and an i64 stays in range unless the host
         // would trap too.
         let sum = value::int_to_vec(current + i128::from(delta)).expect("sum out of range");
+        inner.written += k.len() + sum.len();
         inner.map.insert(k.to_vec(), sum);
     }
 
     fn range(&self, start: &[u8], end: &[u8], reverse: bool) -> MemCursor {
         host_limit(start);
         host_limit(end);
+        self.inner.borrow_mut().calls += 1;
         MemCursor {
             inner: Rc::clone(&self.inner),
             start: start.to_vec(),
@@ -148,6 +198,7 @@ impl RangeCursor for MemCursor {
     fn next(&mut self, max: u32) -> Vec<(Vec<u8>, Vec<u8>)> {
         let max = max.min(MAX_RANGE_BATCH) as usize;
         let mut inner = self.inner.borrow_mut();
+        inner.calls += 1;
         if max == 0 || self.start >= self.end {
             return Vec::new();
         }
@@ -179,6 +230,7 @@ impl RangeCursor for MemCursor {
                 .collect()
         };
         inner.pulled += batch.len();
+        inner.read += batch.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>();
         if let Some((k, _)) = batch.last() {
             self.last = Some(k.clone());
         }

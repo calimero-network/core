@@ -6,7 +6,7 @@
 //! that belongs to another app, that a newer release wrote or that is in a
 //! format this release does not read is refused before anything changes.
 //!
-//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
 
 #![allow(

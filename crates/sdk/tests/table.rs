@@ -505,3 +505,42 @@ fn count_keys_are_only_ever_added() {
     assert_eq!(store.op_counts(&key("lead")), (0, 2));
     assert_eq!(store.op_counts(&key("won")), (0, 2));
 }
+
+#[test]
+fn a_table_per_key_keeps_its_indexes_and_counts() {
+    let store = MemStore::new();
+    let mut by_team: UnorderedMap<String, Table<Contact, MemStore>, MemStore> =
+        UnorderedMap::with_store("crm", store.clone());
+    let mut red = by_team.get(&"red".into()).unwrap();
+    let mut blue = by_team.get(&"blue".into()).unwrap();
+    red.insert(contact("1", "a@x", "ada", "a", "lead")).unwrap();
+    red.insert(contact("2", "b@x", "ada", "b", "won")).unwrap();
+    // The same key and email in another team's table: each table is its own.
+    blue.insert(contact("1", "a@x", "bo", "a", "lead")).unwrap();
+    assert_eq!(red.count("byStage", &[s("lead")]).unwrap(), 1);
+    assert_eq!(blue.count("byStage", &[s("lead")]).unwrap(), 1);
+    let ada: Vec<String> = red
+        .find_iter("byOwnerName", &[s("ada")], FindOpts::default())
+        .map(|c| c.map(|c| c.id))
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(ada, ["1", "2"]);
+    // The host indexes the state's own tables by name, not a nested one.
+    assert!(matches!(
+        red.search("ada", calimero_sdk::SearchOpts::default()),
+        Err(StorageError::Search(_))
+    ));
+    assert!(by_team.remove(&"red".into()).unwrap() > 0);
+    assert!(by_team
+        .get(&"red".into())
+        .unwrap()
+        .get("1")
+        .unwrap()
+        .is_none());
+    assert!(by_team
+        .get(&"blue".into())
+        .unwrap()
+        .get("1")
+        .unwrap()
+        .is_some());
+}

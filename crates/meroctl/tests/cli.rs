@@ -1,7 +1,7 @@
 //! `meroctl` against a local cluster (`merod local`'s launcher, in process):
 //! every command group, through the binary, as a user and as the operator.
 //!
-//! Builds the kv component `apps/v2-fixtures/kv` from this checkout (cached under
+//! Builds the kv component `apps/fixture-kv` from this checkout (cached under
 //! `$CARGO_TARGET_DIR/app-components`), or reads `KV_STORE_WASM`.
 
 use std::path::{Path, PathBuf};
@@ -18,7 +18,7 @@ fn kv_wasm() -> Vec<u8> {
     let target =
         std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
     calimero_app_build::build_component_cached(
-        &root.join("apps/v2-fixtures/kv"),
+        &root.join("apps/fixture-kv"),
         &[
             &root.join("crates/sdk"),
             &root.join("crates/sdk-macros"),
@@ -27,7 +27,7 @@ fn kv_wasm() -> Vec<u8> {
         ],
         &target.join("app-components"),
     )
-    .unwrap_or_else(|e| panic!("build apps/v2-fixtures/kv: {e}"))
+    .unwrap_or_else(|e| panic!("build apps/fixture-kv: {e}"))
 }
 
 /// How many nodes the test cluster runs, on `base + 1 ..= base + NODES`.
