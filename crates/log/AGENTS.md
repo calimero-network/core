@@ -55,24 +55,30 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `release_build` hold a snapshot build before it reads the applied state or
   before it records its file (`machine::build_races`);
   `testing::slow_synced_writes(dir, group, delay)` / `heal_synced_writes` make
-  a group's synced writes (appends, votes, purges) block for `delay` longer, as a
-  slow disk's fsync would (a heal lets one waiting now go on), and
-  `synced_write_waiting` names the write waiting there, so a test holds one and
-  checks what finishes meanwhile (`tests/slow_disk.rs`).
+  a group's synced writes (appends, votes, purges) block for `delay` longer
+  holding the node's write path, as a slow fsync holds RocksDB's write group
+  (every other write of that node waits meanwhile; a heal lets one waiting now
+  go on), and `synced_write_waiting` names the write waiting there, so a test
+  holds one and checks what runs meanwhile (`tests/slow_disk.rs`).
 - Disk work never runs on an async worker: every group of a node shares them, so
   a slow fsync or a long apply there would hold up the other groups' heartbeats
   and start elections across the cluster. `RaftLogStorage`'s append, `save_vote`,
-  `truncate` and `purge`, and the state machine's `apply` (the machine, its
-  commit, the `shared` write lock that waits for a proposal's build), snapshot
-  build and install, `applied_state`, `StateMachine::open` in `start_group` and a
-  restart's `reload` run on tokio's blocking pool (`store::off_workers`); each is
-  still awaited, so an append is durable before its callback and a vote before
-  the reply. Log reads, `save_committed` (unsynced) and the small snapshot file
-  opens stay inline. Regression: `a_slow_disk_under_one_group_does_not_stall_the_others`
-  (one worker thread; a group's synced writes slowed 250 ms stalled it 750 ms before;
-  then, with one synced write of the slow group held on each node in turn, the
-  other group's writes reach every node while it still waits: told by order, not
-  latency, since a write's own fsync on a loaded CI disk can take 300 ms).
+  `truncate`, `purge` and `save_committed`, and the state machine's `apply` (the
+  machine, its commit, the `shared` write lock that waits for a proposal's build),
+  snapshot build and install, `applied_state`, `StateMachine::open` in
+  `start_group` and a restart's `reload` run on tokio's blocking pool
+  (`store::off_workers`); each is still awaited, so an append is durable before
+  its callback, a vote before the reply, and the commit index saved before the
+  entries apply. An unsynced write waits for the disk too: RocksDB writes in
+  groups, and one that arrives while another group's synced write is in its
+  fsync joins or queues behind it (`save_committed` left inline stalled CI's
+  one worker 357 ms). Log reads and the small snapshot file opens stay inline
+  (a read takes no part in the write path). Regression:
+  `a_slow_disk_under_one_group_does_not_stall_the_others` (one worker thread; a
+  group's synced writes slowed 250 ms stalled it 750 ms before; then the healthy
+  group's commit reaches a node while a synced write of the slow group holds that
+  node's write path, and the worker must run while the same write still waits:
+  told by order, not latency, since a loaded runner's own fsync can take 300 ms).
 - `Engine::store_watch` reports the store open until RocksDB has closed and
   released its lock (`Db::closed`, the last field), not merely until the last
   `Arc<Db>` starts dropping.

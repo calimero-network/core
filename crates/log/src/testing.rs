@@ -116,9 +116,11 @@ pub fn release_build(dir: &Path, group: GroupId) {
 
 /// Make every synced write of `group` on the node at `dir` (a log append, a
 /// vote, a purge) take `delay` longer, as a slow or contended disk's fsync
-/// would, until [`heal_synced_writes`]. The write blocks the thread it runs on,
-/// before it reaches RocksDB, and [`synced_write_waiting`] names it
-/// meanwhile; a long `delay` holds each write until the heal.
+/// would, until [`heal_synced_writes`]. The write blocks the thread it runs on
+/// and holds the node's write path meanwhile, as an fsync holds RocksDB's
+/// write group: every other write of that node, of any group, synced or not,
+/// waits for it. [`synced_write_waiting`] names it meanwhile; a long `delay`
+/// holds each write until the heal.
 pub fn slow_synced_writes(dir: &Path, group: GroupId, delay: std::time::Duration) {
     if let Ok(mut s) = crate::store::SLOW_SYNCS.lock() {
         s.push((dir.to_owned(), group, delay));

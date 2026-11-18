@@ -321,6 +321,13 @@ pub struct Db {
     /// The directory it was opened in, which names it to [`crate::testing`].
     #[cfg(feature = "testing")]
     pub(crate) dir: PathBuf,
+    /// RocksDB's write path, as a write waits for it (feature `testing`):
+    /// every write holds it shared, and a synced write slowed by
+    /// [`crate::testing::slow_synced_writes`] holds it alone for its delay,
+    /// as a slow fsync holds RocksDB's write group, which every later write
+    /// of the node (synced or not) joins or queues behind.
+    #[cfg(feature = "testing")]
+    write_path: std::sync::RwLock<()>,
     /// Last field, so it is set after RocksDB has closed and released its lock.
     pub(crate) closed: Closed,
 }
@@ -432,6 +439,8 @@ impl Db {
             losing: std::sync::RwLock::default(),
             #[cfg(feature = "testing")]
             dir: dir.to_owned(),
+            #[cfg(feature = "testing")]
+            write_path: std::sync::RwLock::default(),
             closed: Closed(Arc::default()),
         }))
     }
@@ -484,11 +493,12 @@ impl Db {
         }
     }
 
-    /// Wait as long as [`crate::testing::slow_synced_writes`] slows `group`'s
-    /// synced writes on this node, or until they are healed (feature
-    /// `testing`). Blocks the calling thread, as a slow fsync does, and shows
-    /// in [`crate::testing::synced_write_waiting`] meanwhile.
-    fn slow_sync(&self, group: GroupId) {
+    /// A synced write of `group`: durable when it returns. One slowed by
+    /// [`crate::testing::slow_synced_writes`] (feature `testing`) first waits
+    /// its delay, or until healed, holding the node's write path as a slow
+    /// fsync would, and shows in [`crate::testing::synced_write_waiting`]
+    /// meanwhile. Blocks the calling thread.
+    fn synced_write(&self, group: GroupId, tx: &Transaction) -> eyre::Result<()> {
         #[cfg(feature = "testing")]
         {
             let slowed = || {
@@ -498,27 +508,32 @@ impl Db {
                         .map(|(_, _, delay)| *delay)
                 })
             };
-            let Some(delay) = slowed() else {
-                return;
-            };
-            let started = std::time::Instant::now();
-            let n = NEXT_SLOWED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if let Ok(mut w) = SYNCS_WAITING.lock() {
-                w.push((self.dir.clone(), group, n));
-            }
-            while slowed().is_some() {
-                let left = delay.saturating_sub(started.elapsed());
-                if left.is_zero() {
-                    break;
+            if let Some(delay) = slowed() {
+                let _path = self
+                    .write_path
+                    .write()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let started = std::time::Instant::now();
+                let n = NEXT_SLOWED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Ok(mut w) = SYNCS_WAITING.lock() {
+                    w.push((self.dir.clone(), group, n));
                 }
-                std::thread::sleep(left.min(std::time::Duration::from_millis(1)));
-            }
-            if let Ok(mut w) = SYNCS_WAITING.lock() {
-                w.retain(|(_, _, m)| *m != n);
+                while slowed().is_some() {
+                    let left = delay.saturating_sub(started.elapsed());
+                    if left.is_zero() {
+                        break;
+                    }
+                    std::thread::sleep(left.min(std::time::Duration::from_millis(1)));
+                }
+                if let Ok(mut w) = SYNCS_WAITING.lock() {
+                    w.retain(|(_, _, m)| *m != n);
+                }
+                return self.write_batch(tx, true);
             }
         }
         #[cfg(not(feature = "testing"))]
         let _ = group;
+        self.write(tx, true)
     }
 
     /// Whether `group`'s unsynced writes are being dropped (feature `testing`).
@@ -552,6 +567,15 @@ impl Db {
     }
 
     fn write(&self, tx: &Transaction, synced: bool) -> eyre::Result<()> {
+        #[cfg(feature = "testing")]
+        let _path = self
+            .write_path
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.write_batch(tx, synced)
+    }
+
+    fn write_batch(&self, tx: &Transaction, synced: bool) -> eyre::Result<()> {
         let mut batch = WriteBatch::default();
         for (col, key, value) in &tx.ops {
             let cf = self.cf(*col)?;
@@ -570,6 +594,11 @@ impl Db {
     fn delete_range(&self, col: Column, lo: &[u8], hi: &[u8]) -> eyre::Result<()> {
         let mut batch = WriteBatch::default();
         batch.delete_range_cf(&self.cf(col)?, lo, hi);
+        #[cfg(feature = "testing")]
+        let _path = self
+            .write_path
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
         self.db.write(batch)?;
         Ok(())
     }
@@ -623,8 +652,7 @@ impl Db {
     ) -> eyre::Result<()> {
         let mut tx = Transaction::default();
         self.stage_meta(&mut tx, group, name, value)?;
-        self.slow_sync(group);
-        self.write(&tx, true)
+        self.synced_write(group, &tx)
     }
 
     pub fn get_meta<T: DeserializeOwned>(
@@ -711,8 +739,7 @@ impl Db {
                 serde_json::to_vec(e)?,
             );
         }
-        self.slow_sync(group);
-        self.write(&tx, true)
+        self.synced_write(group, &tx)
     }
 
     fn range(&self, group: GroupId, lo: u64, hi_incl: u64) -> eyre::Result<Vec<Entry>> {
@@ -1371,14 +1398,22 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         // replays the log up to one above it; the leader sends the rest.
         // Tests: `a_lost_or_older_commit_index_is_learned_again`,
         // `an_in_memory_machine_applies_each_entry_once_after_losing_its_commit_index`.
+        //
+        // Unsynced, it still waits for RocksDB's write path: a write that
+        // arrives while another group's synced write is in its fsync joins
+        // that write group or queues behind it, so it too runs off the workers.
+        // Regression: `a_slow_disk_under_one_group_does_not_stall_the_others`.
         if self.db.losing_unsynced(self.group) {
             return Ok(());
         }
-        let mut tx = Transaction::default();
-        self.db
-            .stage_meta(&mut tx, self.group, "committed", &committed)
-            .and_then(|()| self.db.commit(&tx, false))
-            .map_err(io)
+        let (db, group) = (Arc::clone(&self.db), self.group);
+        off_workers(move || {
+            let mut tx = Transaction::default();
+            db.stage_meta(&mut tx, group, "committed", &committed)
+                .and_then(|()| db.commit(&tx, false))
+                .map_err(io)
+        })
+        .await
     }
 
     async fn read_committed(&mut self) -> Result<Option<LogId>, StorageError> {
