@@ -6296,9 +6296,21 @@ async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
         "two apps took {apart:?}, as long as one app twice ({together:?}): not at once"
     );
 
-    // A run that times out after both calls: each target applied its call once.
+    // A run that times out after both calls: each target applied its call once. Sent
+    // once, raw: `apps().call` sends a call again while the node answers `503` (D70), and
+    // a timeout is one, so through it the stalled run would run seven times, about 20 s.
     let key = "replay".to_owned();
-    let (stalled, _) = both(left, right, &key, true, Some(key.clone())).await;
+    let stalled = alice
+        .transport()
+        .json(
+            // App ids are base64url: nothing in one needs escaping in a path.
+            Request::new(Method::POST, format!("apps/{source}/intents")).json(json!({
+                "method": "bumpBoth",
+                "args": { "a": left, "b": right, "key": &key, "spins": spins, "stall": true },
+                "idempotencyKey": &key,
+            })),
+        )
+        .await;
     let e = stalled.unwrap_err();
     assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
     assert_eq!(count(left, &key).await, json!("1"));
