@@ -176,6 +176,17 @@ def test_app_directory_access_and_upgrade(cluster, wasm):
     assert (
         carol.json.apps.view(app=app, method="get", args={"key": "k"})["result"] == "v"
     )
+    # Access is a list of grants: the deprecated mode reads back as the grants it
+    # stands for, and grants set it directly (the organization, which carol is in).
+    carol_id = carol.json.auth.me()["accountId"]
+    assert alice.json.apps.get(app=app)["grants"] == [
+        {"kind": "account", "account": carol_id}
+    ]
+    alice.json.apps.access(app=app, grants=[{"kind": "org"}])
+    assert alice.json.apps.get(app=app)["grants"] == [{"kind": "org"}]
+    assert (
+        carol.json.apps.view(app=app, method="get", args={"key": "k"})["result"] == "v"
+    )
 
     # The owner approves an upgrade with their passkey; without it the node asks.
     with pytest.raises(CloudError) as asked:

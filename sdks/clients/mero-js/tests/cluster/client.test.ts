@@ -196,6 +196,12 @@ describe('Calimero 1.0 cluster', () => {
     await alice.apps.access({ app, access: { kind: 'accounts', accounts: [bobId] } });
     await new Promise((r) => setTimeout(r, 300));
     await bob.apps.call({ app, method: 'set', args: { key: 'x', value: 'y' } });
+    // Access is a list of grants: the deprecated mode reads back as the grants it stands for,
+    // and grants set it directly (here the organization, which bob is in).
+    expect((await alice.apps.get({ app })).grants).toEqual([{ kind: 'account', account: bobId }]);
+    await alice.apps.access({ app, grants: [{ kind: 'org' }] });
+    expect((await alice.apps.get({ app })).grants).toEqual([{ kind: 'org' }]);
+    await bob.apps.call({ app, method: 'set', args: { key: 'x', value: 'z' } });
 
     const org = await (await alice.orgs.create({ name: 'Initech' })).orgId;
     await alice.orgs.setMember({ org, account: bobId, role: 'member' }, { confirm: passkeyConfirm(pk) });
