@@ -18,6 +18,7 @@ pub struct Org {
     pub(crate) teams: BTreeMap<String, BTreeSet<String>>,
     pub(crate) links: BTreeMap<String, String>,
     pub(crate) unit_of: Option<String>,
+    pub(crate) scopes: BTreeMap<String, String>,
 }
 
 impl Org {
@@ -83,6 +84,14 @@ impl Org {
     #[must_use]
     pub fn link(mut self, name: impl Into<String>, app: impl Into<String>) -> Self {
         self.links.insert(name.into(), app.into());
+        self
+    }
+
+    /// Names `account` on the instance with `scope` (JSON text), as an instance invite or its
+    /// managers do: `env::grant_scope()` answers it to that caller.
+    #[must_use]
+    pub fn scope(mut self, account: impl Into<String>, scope: impl Into<String>) -> Self {
+        self.scopes.insert(account.into(), scope.into());
         self
     }
 
@@ -168,5 +177,9 @@ impl Directory for HarnessDir {
 
     fn unit_of(&self) -> Option<String> {
         self.0.unit_of.clone()
+    }
+
+    fn grant_scope(&self, account: &str) -> Option<String> {
+        self.0.scopes.get(account).cloned()
     }
 }

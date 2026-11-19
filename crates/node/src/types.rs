@@ -31,7 +31,7 @@ pub enum Caller {
     /// methods whose ABI says `allowSystem`. Never from a client.
     System,
     /// An anonymous visitor through one of the instance's public links
-    /// (`SystemState::public_links`): the link's key and the visitor's Ed25519 public key
+    /// (a [`Grant::Link`] of the instance): the link's key and the visitor's Ed25519 public key
     /// (hex), which it proved it holds. It reaches only `#[app::public]` methods of that
     /// instance. Written in an app's log only from the cluster version that brings
     /// `Feature::PublicLinks`, so every replica decodes it.
@@ -147,6 +147,53 @@ pub enum Grant {
     /// Anyone, signed in or not: the access `public` was. Not a public link, which admits
     /// only the holders of its token and only to public methods.
     Anyone,
+    /// A public link (`Feature::PublicLinks`): the holders of its token call the instance's
+    /// `#[app::public]` methods as anonymous visitors (`Caller::Visitor`), nothing else. It
+    /// admits no account ([`crate::system::SystemState::may_reach`]); visitors are judged by
+    /// [`crate::system::SystemState::public_link_admits`]. Made and revoked only with their
+    /// own consent (`CreatePublicLink`, `RevokePublicLink`), never by `SetAccess`, which keeps
+    /// the instance's links as they are.
+    Link(LinkGrant),
+}
+
+/// A public link of an instance, as its grant list keeps it ([`Grant::Link`]): under the
+/// token's Ed25519 public key ([`crate::proof::public_link_key`]), so a node that only saw the
+/// log cannot use it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LinkGrant {
+    /// The token's public key, hex.
+    pub link: String,
+    /// A name its managers know it by (at most `MAX_PUBLIC_LINK_LABEL_CHARS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// When it stops admitting visitors (Unix seconds); none: until revoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    /// Calls one visitor may make through it a minute, counted on each node
+    /// (`api::VisitorLimits`).
+    pub rate_per_minute: u32,
+    /// Who made it.
+    #[serde(default)]
+    pub created_by: AccountId,
+    /// When it was made (Unix seconds, the creating node's clock).
+    #[serde(default)]
+    pub created_at: u64,
+}
+
+impl LinkGrant {
+    /// The grant `link`, made under `key`, is kept as on its instance.
+    #[must_use]
+    pub fn of(key: &str, link: PublicLink) -> Self {
+        Self {
+            link: key.to_owned(),
+            label: link.label,
+            expires_at: link.expires_at,
+            rate_per_minute: link.rate_per_minute,
+            created_by: link.created_by,
+            created_at: link.created_at,
+        }
+    }
 }
 
 /// The largest scope a grant or an instance invite carries ([`Grant::Account`]), as compact
@@ -345,6 +392,87 @@ impl Access {
             grants: grants
                 .iter()
                 .filter(|g| !matches!(g, Grant::Team { team } if gone.contains(team)))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Its public links ([`Grant::Link`]).
+    #[must_use]
+    pub fn links(&self) -> Vec<&LinkGrant> {
+        let Self::Grants { grants } = self else {
+            return Vec::new();
+        };
+        grants
+            .iter()
+            .filter_map(|g| match g {
+                Grant::Link(l) => Some(l),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Its public link under `key`.
+    #[must_use]
+    pub fn link(&self, key: &str) -> Option<&LinkGrant> {
+        self.links().into_iter().find(|l| l.link == key)
+    }
+
+    /// This access with `link` added, as grants.
+    #[must_use]
+    pub fn with_link(&self, link: LinkGrant) -> Self {
+        let mut grants = self.grants();
+        grants.push(Grant::Link(link));
+        Self::Grants { grants }
+    }
+
+    /// This access without the public link under `key`.
+    #[must_use]
+    pub fn without_link(&self, key: &str) -> Self {
+        let Self::Grants { grants } = self else {
+            return self.clone();
+        };
+        Self::Grants {
+            grants: grants
+                .iter()
+                .filter(|g| !matches!(g, Grant::Link(l) if l.link == key))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// `to`, the access a `SetAccess` names, with this access's public links kept: a single
+    /// mode stays one where there are none. `None` when `to` names a link this access does not
+    /// hold (links are made only with their own consent).
+    #[must_use]
+    pub fn keeping_links(&self, to: Self) -> Option<Self> {
+        let kept = self.links();
+        let named = to.links();
+        if named.iter().any(|l| !kept.contains(l)) {
+            return None;
+        }
+        if kept.is_empty() {
+            return Some(to);
+        }
+        let mut grants: Vec<Grant> = to
+            .grants()
+            .into_iter()
+            .filter(|g| !matches!(g, Grant::Link(_)))
+            .collect();
+        grants.extend(kept.into_iter().map(|l| Grant::Link(l.clone())));
+        Some(Self::Grants { grants })
+    }
+
+    /// This access without its public links: what anyone but its managers sees.
+    #[must_use]
+    pub fn without_links(&self) -> Self {
+        let Self::Grants { grants } = self else {
+            return self.clone();
+        };
+        Self::Grants {
+            grants: grants
+                .iter()
+                .filter(|g| !matches!(g, Grant::Link(_)))
                 .cloned()
                 .collect(),
         }
@@ -1042,10 +1170,10 @@ const fn is_allowed(b: &bool) -> bool {
     *b
 }
 
-/// A public link of one instance ([`crate::system::SystemCmd::CreatePublicLink`]): whoever
-/// holds its token calls the instance's `#[app::public]` methods as an anonymous visitor
-/// (`Caller::Visitor`), whatever the instance's access. Kept under the token's Ed25519 public
-/// key ([`crate::proof::public_link_key`]), so a node that only saw the log cannot use it.
+/// A public link a `CreatePublicLink` makes ([`crate::system::SystemCmd::CreatePublicLink`]):
+/// its instance and terms. Applied, it is a [`LinkGrant`] in the instance's grant list:
+/// whoever holds its token calls the instance's `#[app::public]` methods as an anonymous
+/// visitor (`Caller::Visitor`), whatever its other grants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PublicLink {

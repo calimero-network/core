@@ -399,7 +399,7 @@ pub enum Access {
     Grants { grants: Vec<Grant> },
 }
 
-/// One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link). At most 16 teams and 1000 accounts.
+/// One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link); `link`: a public link, whose token's holders call the instance's public methods as anonymous visitors (its key, never a token; made and revoked on `/apps/{app}/public-links` only, shown to whoever may change the instance's access, and kept as they are by `POST /apps/{app}/access`). At most 16 teams and 1000 accounts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Grant {
@@ -420,6 +420,21 @@ pub enum Grant {
     },
     #[serde(rename = "anyone")]
     Anyone,
+    #[serde(rename = "link")]
+    Link {
+        #[serde(rename = "createdAt")]
+        created_at: u64,
+        link: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(rename = "expiresAt")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<u64>,
+        #[serde(rename = "ratePerMinute")]
+        rate_per_minute: u64,
+        #[serde(rename = "createdBy")]
+        created_by: String,
+    },
 }
 
 /// A member's role in an organization.

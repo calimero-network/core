@@ -21,6 +21,8 @@ pub struct MockState {
     pub links: HashMap<String, String>,
     /// The instance whose unit this app is a member of (`env::unit_of`).
     pub unit_of: Option<String>,
+    /// The scope of the caller's grant, JSON text (`env::grant_scope`).
+    pub grant_scope: Option<String>,
     /// The app owner's account.
     pub owner: String,
     /// The app's org.
@@ -64,6 +66,7 @@ impl Default for MockState {
             app_id: "app".into(),
             links: HashMap::new(),
             unit_of: None,
+            grant_scope: None,
             owner: "owner".into(),
             org: None,
             roles: HashMap::new(),
@@ -118,6 +121,10 @@ pub fn linked(name: &str) -> Option<String> {
 
 pub fn unit_of() -> Option<String> {
     read(|s| s.unit_of.clone())
+}
+
+pub fn grant_scope() -> Option<String> {
+    read(|s| s.grant_scope.clone())
 }
 
 pub fn app_owner() -> String {

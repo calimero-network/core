@@ -269,6 +269,11 @@ pub trait Directory: Send + Sync {
     fn unit_of(&self) -> Option<String> {
         None
     }
+    /// The scope (JSON text) of `account`'s grant on the app: what its managers set on the
+    /// person's grant for the app to read. None by default.
+    fn grant_scope(&self, _account: &str) -> Option<String> {
+        None
+    }
 }
 
 /// A host call the policy refuses. The engine turns it into `Trap(HostDenied)`.

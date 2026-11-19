@@ -13,7 +13,7 @@ use std::time::Instant;
 )]
 use super::*;
 use crate::system::cluster_version::Feature;
-use crate::types::PublicLink;
+use crate::types::{LinkGrant, PublicLink};
 
 /// What starts a visitor's bearer credential: `vis1.<link token>.<visitor key>.<at>.<sig>`.
 pub(super) const VISITOR_PREFIX: &str = "vis1.";
@@ -89,7 +89,7 @@ pub(super) fn visitor(
     let link = crate::proof::public_link_key(token);
     crate::proof::verify_visitor(&link, key, at, signature, now_secs())
         .map_err(ApiError::unauthenticated)?;
-    if !node.sys(|s| s.public_links.contains_key(&link)) {
+    if !node.sys(|s| s.public_link(&link).is_some()) {
         return Err(ApiError::unauthenticated(crate::system::PUBLIC_LINK_GONE));
     }
     Ok(Principal {
@@ -127,13 +127,16 @@ pub(super) async fn visitor_gate(
         ));
     }
     node.require_features(&[Feature::PublicLinks]).await?;
-    let admitted = node.sys(|s| s.public_link_admits(link, now_secs()).cloned());
-    let Some(l) = admitted else {
+    let admitted = node.sys(|s| {
+        s.public_link_admits(link, now_secs())
+            .map(|(a, l)| (a.app_id.clone(), l.clone()))
+    });
+    let Some((of, l)) = admitted else {
         return Err(ApiError::unauthenticated(
             "this public link no longer admits visitors",
         ));
     };
-    if l.app != app.app_id {
+    if of != app.app_id {
         return Err(ApiError::not_found("no such app"));
     }
     if !node.visitor_limits.take(link, key, l.rate_per_minute) {
@@ -163,9 +166,9 @@ pub(super) struct PublicLinkBody {
 }
 
 /// A link as its list shows it: its key and terms, never a token.
-fn link_json(key: &str, l: &PublicLink, now: u64) -> Value {
+fn link_json(l: &LinkGrant, now: u64) -> Value {
     json!({
-        "link": key,
+        "link": l.link,
         "label": l.label,
         "expiresAt": l.expires_at,
         "expired": l.expires_at.is_some_and(|at| at <= now),
@@ -295,11 +298,11 @@ async fn public_link_list(
         if !s.may_reach(&app, Some(&actor)) || !s.manages_grants(&app, &actor) {
             return Err(ApiError::not_found("no such app"));
         }
-        let links: Vec<Value> = s
-            .public_links
-            .iter()
-            .filter(|(_, l)| l.app == app_id)
-            .map(|(k, l)| link_json(k, l, now))
+        let links: Vec<Value> = app
+            .access
+            .links()
+            .into_iter()
+            .map(|l| link_json(l, now))
             .collect();
         Ok(Json(json!({ "links": links })))
     })
@@ -319,9 +322,9 @@ async fn public_link_revoke(
     node.sys_fresh_from(p.sys_index).await;
     let app = node.app(&app_id).await?;
     let visible = node.sys(|s| {
-        s.public_links.get(&link).is_some_and(|l| {
-            l.app == app_id && (l.created_by == actor || s.manages_grants(&app, &actor))
-        })
+        app.access
+            .link(&link)
+            .is_some_and(|l| l.created_by == actor || s.manages_grants(&app, &actor))
     });
     if !visible {
         return Err(ApiError::not_found(crate::system::PUBLIC_LINK_GONE));

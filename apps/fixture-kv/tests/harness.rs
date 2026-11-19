@@ -489,6 +489,27 @@ fn unit_of_names_the_instance_that_created_the_app() {
     );
 }
 
+/// `env::grant_scope`: a person named with a scope sees it, so the app tells a guest kept to
+/// one channel from a member who reaches all of it.
+#[test]
+fn a_scoped_grant_is_told_apart_by_the_app() {
+    let mut t = TestApp::new(
+        component(),
+        Org::new()
+            .members(["member", "partner"])
+            .scope("partner", r#"{"channel":"partners"}"#),
+        1_700_000_000_000,
+    );
+    assert_eq!(
+        t.as_("partner").view("grantScope", json!({})).unwrap(),
+        json!(r#"{"channel":"partners"}"#)
+    );
+    assert_eq!(
+        t.as_("member").view("grantScope", json!({})).unwrap(),
+        json!(null)
+    );
+}
+
 #[test]
 fn joined_calls_go_to_the_node_in_one_batch() {
     use std::sync::{Arc, Mutex};
@@ -554,7 +575,9 @@ fn a_visitor_calls_only_the_public_methods_and_is_named() {
         .unwrap();
     assert_eq!(who, json!(format!("visitor:link1:{key}")));
     assert_eq!(
-        t.visitor("link1", &key).view("whoamiPublic", json!({})).unwrap(),
+        t.visitor("link1", &key)
+            .view("whoamiPublic", json!({}))
+            .unwrap(),
         json!(format!("visitor:link1:{key}"))
     );
     let refused = t

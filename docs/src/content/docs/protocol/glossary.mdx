@@ -231,8 +231,9 @@ team's default lets its members make private channels, `CREATE_CHILD_TEAM`). See
 
 **Access grants** — Who reaches an app instance, as a list of grants: the
 organization (`org`), teams of it (`team`), named people (`account`: a member, or
-a **guest**, each with an optional app-defined `scope`) and `anyone`. No grant
-is the owner alone. Not a blob **grant**. See
+a **guest**, each with an optional app-defined `scope`), `anyone`, and public
+links (`link`, whose token's holders call its public methods as visitors). No
+grant is the owner alone. Not a blob **grant**. See
 [App access](/protocol/organizations/#app-access).
 
 **Access rule** — The single mode an instance had before **access grants**

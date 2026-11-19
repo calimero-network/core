@@ -56,6 +56,12 @@ interface context {
   // granted it this method; `caller` is that person): set by the node, never by an
   // argument; none for any other run. 0.5.2.
   via: func() -> option<string>;
+  // The scope of the caller's grant on this instance: small opaque JSON the instance's managers
+  // set on the person's grant (or the invite that made it), in the app's own terms, such as
+  // `{"channel":"partners"}`; the node never reads it. None when the caller is no account, is
+  // named with no scope, or reaches the instance another way, and in a compute run. The platform
+  // admits; the app scopes. 0.5.6.
+  grant-scope: func() -> option<string>;
   app-id: func() -> string;
   // The app this instance's release references under `name` (its signed manifest's `uses`):
   // a member its creation made, or an app its owner attached. None when nothing is linked

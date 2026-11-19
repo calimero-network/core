@@ -2078,6 +2078,13 @@ impl host::Directory for SysDirectory {
                 .map(|p| p.app_id.clone())
         })
     }
+
+    /// The scope of `account`'s grant ([`crate::system::SystemState::grant_scope`]), as JSON
+    /// text, as the system state stands.
+    fn grant_scope(&self, account: &str) -> Option<String> {
+        self.with(|s, a| s.grant_scope(a, account))
+            .map(|v| v.to_string())
+    }
 }
 
 /// The ABI JSON a component embeds (its top-level `calimero:abi` section), as the

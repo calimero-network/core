@@ -190,6 +190,14 @@ impl Kv {
         Ok(env::unit_of())
     }
 
+    /// The scope of the caller's grant (`env::grant_scope`): what the instance's managers set
+    /// on the person's grant, which the app would use to keep a guest to part of it; none for
+    /// a caller reaching the app another way.
+    #[app::view]
+    pub fn grant_scope(&self) -> app::Result<Option<String>> {
+        Ok(env::grant_scope())
+    }
+
     /// Sets `key`; emits `Inserted` for a new key, `Updated` for an existing one.
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
         let event = self.upsert(&key, &value)?;

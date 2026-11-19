@@ -1520,7 +1520,7 @@ impl Node {
         let visitor_out = match &req.caller {
             Caller::Visitor { link, .. } => !self.sys(|s| {
                 s.public_link_admits(link, crate::types::now_secs())
-                    .is_some_and(|l| l.app == req.app_id)
+                    .is_some_and(|(app, _)| app.app_id == req.app_id)
             }),
             _ => false,
         };

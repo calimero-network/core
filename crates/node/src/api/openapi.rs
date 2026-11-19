@@ -723,8 +723,8 @@ fn components() -> Vec<Component> {
         .of::<crate::types::Access>(),
         component(
             "Grant",
-            "One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link). At most 16 teams and 1000 accounts.",
-            r#"{ kind: "org" } | { kind: "team", team: string } | { kind: "account", account: string, scope?: any } | { kind: "anyone" }"#,
+            "One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link); `link`: a public link, whose token's holders call the instance's public methods as anonymous visitors (its key, never a token; made and revoked on `/apps/{app}/public-links` only, shown to whoever may change the instance's access, and kept as they are by `POST /apps/{app}/access`). At most 16 teams and 1000 accounts.",
+            r#"{ kind: "org" } | { kind: "team", team: string } | { kind: "account", account: string, scope?: any } | { kind: "anyone" } | { kind: "link", link: string, label?: string, expiresAt?: uint, ratePerMinute: uint, createdBy: string, createdAt: uint }"#,
         )
         .of::<crate::types::Grant>(),
         component(

@@ -19,6 +19,7 @@ tests they read a thread-local stand-in (`env::mock`). Source:
 | --- | --- |
 | `env::caller()` | `Caller`: `Account(id)`, `ApiKey { key_id, account }`, `Public` (not signed in), `Visitor { link, key }` (an anonymous visitor through a public link: the link's key and the visitor's Ed25519 public key, hex; WIT `context.visitor`, 0.5.6), `System` (the node: timers) or `App(id)` (a delivered cross-app call). |
 | `env::via()` | For a call another app made as the person it serves, with their grant (the caller is that person): the app it came through; `None` otherwise. Read it to give a call through an app less than the person's own ([As the person](/protocol/xcall/#as-the-person)). |
+| `env::grant_scope()` | The scope of the caller's grant on this instance, as JSON text: what its managers set on the person's grant (or the invite that made it), in the app's own terms, such as `{"channel":"partners"}`. `None` for a caller who is no person, is named without a scope, or reaches the instance as a member or anyone; and in a compute run. The platform admits; the app scopes: keep a guest invited to one channel to that channel ([The platform admits, the app scopes](/protocol/organizations/#the-platform-admits-the-app-scopes)). WIT `context.grant-scope`, 0.5.6. |
 | `env::unit_of()` | The instance whose unit this app is a member of: the app whose release created this one with it (`uses` with `mode = "create"`). `None` for an app created on its own, once that instance is deleted, and in a compute run. An app that serves others treats `app:<unit_of()>` as its admin, so the instance that created it uses it with no grant step. |
 | `env::linked(name)` | The app linked under `name`, a reference of the release the app runs (`uses`): the member created with the instance, or the app its owner attached since. `None` when nothing is linked there, and in a compute run. |
 | `env::app_id()` | This app instance's id. |
@@ -128,7 +129,7 @@ system, a socket or the network except through these.
 | --- | --- |
 | `storage` (`get`, `put`, `delete`, `add`, `range`) | Every table and collection; `add` keeps counts and lengths without a read |
 | `rebuild` | Nothing: it is for state migrations, which this version does not run |
-| `context` | `env::caller` (with `visitor`), `via`, `app_id`, `linked`, `unit_of`, `app_owner`, `org`, `org_role`, `in_team`, `applied_index`, `unique_id`, `start_action` (`org-role-strict` and `orgs-of` have no SDK wrapper) |
+| `context` | `env::caller` (with `visitor`), `via`, `grant_scope`, `app_id`, `linked`, `unit_of`, `app_owner`, `org`, `org_role`, `in_team`, `applied_index`, `unique_id`, `start_action` (`org-role-strict` and `orgs-of` have no SDK wrapper) |
 | `events` | `env::emit`, `env::emit_raw` |
 | `blobs` | `BlobRef::info`, `BlobRef::grant` (`env::blob_info`, `env::blob_grant`) |
 | `search` | `Table::search` (`env::search_query`), views only |

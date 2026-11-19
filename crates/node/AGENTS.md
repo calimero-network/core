@@ -1053,14 +1053,21 @@ is its command line.
   `guests::a_guest_reaches_one_instance_only_while_both_switches_allow`,
   `guests::an_instance_invite_makes_its_redeemer_a_guest`.
 - **Public links and visitors** (`Feature::PublicLinks`, rc.32; `api/public_links.rs`,
-  `SystemState::public_links`, `types::PublicLink`, `public_link_admits`; docs: protocol
-  organizations "Public links"): whoever may change an instance's access makes a link with a
-  passkey (`CreatePublicLink`, consent `<app> / __create_public_link / public_link_args`,
+  `types::Grant::Link`, `types::LinkGrant`, `SystemState::public_link`, `public_link_admits`,
+  `public_link_count`; docs: protocol organizations "Public links"): a link is a grant of the
+  instance (`Grant::Link`, in `Access::Grants`; a single mode becomes the grants it is plus
+  the link, `Access::with_link`), which admits no account in `may_reach`, only its visitors;
+  `public_link` finds it by key among the instances that have grants (a visitor's request and
+  making one are the only callers). `SetAccess` keeps an instance's links as they are
+  (`Access::keeping_links`) and refuses one it does not hold, and `check_grants` refuses any
+  in a list, so a link is made only with its consent; `GET /apps/{app}` shows link grants only
+  to whoever may change the access (`Access::without_links`). Whoever may change an instance's
+  access makes a link with a passkey (`CreatePublicLink`, consent `<app> / __create_public_link / public_link_args`,
   `POST /apps/{app}/public-links { label?, expiresAt?, ratePerMinute? }` → `{ link, token }`
   once; the log keeps `proof::public_link_key(token)`), lists them (`GET`, no token) and
   revokes them (`RevokePublicLink`, `__revoke_public_link`); bounds `MAX_PUBLIC_LINKS_PER_APP`,
   `MAX_PUBLIC_LINKS`, `MAX_PUBLIC_LINK_LABEL_CHARS`, `MAX_PUBLIC_LINK_RATE`; no forced expiry;
-  `remove_app` drops them; the organization's `allowPublicLinks` (`SetOrgSettings`) off refuses
+  they go with their instance; the organization's `allowPublicLinks` (`SetOrgSettings`) off refuses
   new links and admits nobody. A visitor sends `Bearer vis1.<token>.<key>.<at>.<sig>`, its own
   Ed25519 key over `proof::visitor_message` within `VISITOR_PROOF_WINDOW_SECS`
   (`proof::verify_visitor`); nothing about it is logged. `api::credential` makes it
@@ -1071,7 +1078,11 @@ is its command line.
   link and visitor key, the link's `ratePerMinute`, `MAX_TRACKED_VISITORS`, `429
   TOO_MANY_VISITS`). `abi_check` refuses a method that is not `public` (`403`), and the app's
   leader judges the link again before the call (`NOT_REACHED`). The component sees `public`
-  through the WIT `caller` and the visitor through `context.visitor` (0.5.6). Regressions:
+  through the WIT `caller` and the visitor through `context.visitor` (0.5.6). The caller's grant
+  scope reaches the component through `context.grant-scope` (0.5.6, `Directory::grant_scope`,
+  `SystemState::grant_scope`: the person's `account` grant on the instance or on the instance
+  whose unit made it; regressions `guests::a_team_and_two_partners_reach_one_instance_by_their_grants`
+  and fixture-kv's `a_scoped_grant_is_told_apart_by_the_app`). Regressions:
   `system::tests::a_public_link_admits_visitors_while_it_and_its_organization_allow`,
   `a_visitors_proof_names_its_link_key_and_time`, `public_links.rs`.
 - **An org app's owner, while a member** (`SystemState::owner_acts`): an organization's app gives its owner the owner's powers (access, metadata, transfer, delete, upgrade, upgrade keys, files, blob deletes, usage) only while they are a member (`member` or above) of its organization; its admins keep transfer and delete (`manages_app`). Judged at apply; `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` carry `owner_in_org`, which the API always sets; absent in an entry an earlier release logged, which replays judging ownership alone. Regressions: `an_owner_removed_from_the_organization_no_longer_manages_its_app`, `a_member_owner_and_a_personal_owner_still_manage_their_apps`, `system::tests` (`an_org_apps_owner_manages_it_only_while_a_member`, `an_org_admin_transfers_or_deletes_an_app_whose_owner_left`, `app_commands_logged_before_the_membership_rule_replay_as_they_did`).

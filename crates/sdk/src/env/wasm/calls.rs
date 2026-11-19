@@ -51,6 +51,10 @@ pub fn unit_of() -> Option<String> {
     context::unit_of()
 }
 
+pub fn grant_scope() -> Option<String> {
+    context::grant_scope()
+}
+
 pub fn app_owner() -> String {
     context::app_owner()
 }

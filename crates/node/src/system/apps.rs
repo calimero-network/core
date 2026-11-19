@@ -822,7 +822,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     return Err("no such team in the app's organization");
                 }
             }
-            if let Access::Grants { grants } = &access {
+            // The instance's public links stay as they are: made and revoked with their own
+            // consent, never here.
+            let access = app.access.keeping_links(access).ok_or(
+                "a public link is made with its own consent, not by setting the instance's access",
+            )?;
+            if let Access::Grants { grants } = &access.without_links() {
                 s.check_grants(&app.org, grants)?;
             }
             let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
@@ -946,23 +951,26 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }) {
                 return Err("a public link's label is one line of at most 64 characters");
             }
-            if s.public_links.contains_key(&link_key) {
+            if s.public_link(&link_key).is_some() {
                 return Err("public link exists");
             }
-            if s.public_links
-                .values()
-                .filter(|l| l.app == link.app)
-                .count()
-                >= super::MAX_PUBLIC_LINKS_PER_APP
-                || s.public_links.len() >= super::MAX_PUBLIC_LINKS
+            if app.access.links().len() >= super::MAX_PUBLIC_LINKS_PER_APP
+                || s.public_link_count() >= super::MAX_PUBLIC_LINKS
             {
                 return Err("quota exceeded: public links");
             }
-            let link = crate::types::PublicLink {
-                created_by: actor,
-                ..link
-            };
-            let _prev = s.public_links.insert(link_key, link);
+            // One more grant of the instance: a single mode becomes the grants it is.
+            let app_id = link.app.clone();
+            let grant = crate::types::LinkGrant::of(
+                &link_key,
+                crate::types::PublicLink {
+                    created_by: actor,
+                    ..link
+                },
+            );
+            if let Some(app) = s.apps.get_mut(&app_id) {
+                app.access = app.access.with_link(grant);
+            }
             Ok(Value::Null)
         }
         SystemCmd::RevokePublicLink {
@@ -971,16 +979,15 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             actor,
             ..
         } => {
-            let link = s
-                .public_links
-                .get(&link_key)
-                .filter(|l| l.app == app_id)
-                .ok_or(super::PUBLIC_LINK_GONE)?;
-            let app = s.apps.get(&app_id).ok_or("no such app")?;
+            let app = s.apps.get(&app_id).ok_or(super::PUBLIC_LINK_GONE)?;
+            let link = app.access.link(&link_key).ok_or(super::PUBLIC_LINK_GONE)?;
             if link.created_by != actor && !s.manages_grants(app, &actor) {
                 return Err("only the link's creator or whoever may change the instance's access revokes it");
             }
-            let _gone = s.public_links.remove(&link_key);
+            let access = app.access.without_link(&link_key);
+            if let Some(app) = s.apps.get_mut(&app_id) {
+                app.access = access;
+            }
             Ok(Value::Null)
         }
         SystemCmd::RevokeAppInvite {

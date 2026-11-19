@@ -214,6 +214,10 @@ impl context::Host for StoreData {
         Ok(self.host.unit_of())
     }
 
+    fn grant_scope(&mut self) -> Result<Option<String>> {
+        Ok(self.host.grant_scope())
+    }
+
     fn visitor(&mut self) -> Result<Option<types::VisitorCaller>> {
         Ok(match self.host.caller() {
             host::Caller::Visitor { link, key } => Some(types::VisitorCaller {

@@ -627,19 +627,28 @@ The node decides only who reaches an instance. Anything finer, such as which
 channel of a chat a partner may read, is the app's own rule, but the platform
 carries it for the app: an invite, and the `account` grant it makes, may carry a
 small opaque JSON `scope` the app defines (`{"channel":"partners"}`), which the
-node stores, shows to the instance's managers and never reads. To let a partner
-into one channel of a chat, its managers invite them with that scope; the chat
-reads the caller's scope and keeps them to that channel. A grant without a scope
-is the app's whole. Changing the scope is changing the grant (`POST
-/apps/{app}/access`).
+node stores, shows to the instance's managers and never reads. The app reads the
+caller's scope with `env::grant_scope()` (WIT `context.grant-scope`, 0.5.6: the
+grant on the instance, or on the instance whose unit made it; none for anyone
+not named, and in a compute run). To let a partner into one channel of a chat,
+its managers invite them with that scope; the chat reads it and keeps them to
+that channel. A grant without a scope is the app's whole. Changing the scope is
+changing the grant (`POST /apps/{app}/access`). A component built before 0.5.6
+cannot read a scope, so it admits the person to all of it.
 
 ## Public links
 
 A **public link** lets anyone holding its token call one instance's
 `#[app::public]` methods as an anonymous **visitor**, without an account and
-whatever the instance's access (from cluster version 1.0.0-rc.32,
-`Feature::PublicLinks`). Whoever may change the instance's access makes one with
-a passkey: `POST /apps/{app}/public-links { label?, expiresAt?, ratePerMinute? }`
+whatever the instance's other grants (from cluster version 1.0.0-rc.32,
+`Feature::PublicLinks`). It is the third kind of grant beside member and named
+grants: a `link` grant in the instance's list (`Grant::Link`: its key, label,
+expiry, rate, creator), which admits no account, only its visitors. It is made
+and revoked only on its own routes, each with a passkey; `POST
+/apps/{app}/access` keeps an instance's links as they are (setting one mode or a
+grant list), and refuses one it does not already hold. `GET /apps/{app}` shows
+link grants only to whoever may change the instance's access. Whoever may change
+the instance's access makes one with a passkey: `POST /apps/{app}/public-links { label?, expiresAt?, ratePerMinute? }`
 (`412 CONFIRM_REQUIRED` first; the consent is `<app> / __create_public_link /
 { linkKey, label, expiresAt, ratePerMinute }`) answers `{ link, token }` once;
 only the token's Ed25519 public key (`link`) is logged, so a node that saw the

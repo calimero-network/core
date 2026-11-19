@@ -512,6 +512,22 @@ impl HostCore {
         self.dir.unit_of()
     }
 
+    /// The scope of the caller's grant on this app (`context.grant-scope`): the person's (an
+    /// account or an API key's), as the directory holds it; none for any other caller and in
+    /// a compute run.
+    #[must_use]
+    pub fn grant_scope(&self) -> Option<String> {
+        if self.is_compute() {
+            return None;
+        }
+        match &self.inv.caller {
+            Caller::Account(account) | Caller::ApiKey { account, .. } => {
+                self.dir.grant_scope(account)
+            }
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn org(&self) -> Option<String> {
         if self.is_compute() {

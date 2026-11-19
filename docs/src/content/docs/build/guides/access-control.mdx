@@ -82,6 +82,38 @@ The node also limits each visitor's calls through a link (its `ratePerMinute`),
 besides a method's own `rate`. A component built before WIT 0.5.6 sees a
 visitor as `Caller::Public`.
 
+## Scoped guests: the platform admits, the app scopes
+
+The node decides who reaches an instance at all (its [grants](/protocol/organizations/#app-access)).
+Anything finer is the app's own, but the node carries it for the app: an
+instance invite, and the grant it makes, may carry a small JSON `scope` the app
+defines, and `env::grant_scope()` answers the caller's as JSON text. A chat whose
+managers invite a partner with `{"channel":"partners"}` keeps them to that
+channel, while members (no scope) reach all of it:
+
+```rust
+#[derive(serde::Deserialize)]
+struct Scope {
+    channel: String,
+}
+
+pub fn post(&mut self, channel: String, text: String) -> app::Result<()> {
+    if let Some(scope) = env::grant_scope() {
+        let scope: Scope = serde_json::from_str(&scope).map_err(|_| AppError::forbidden())?;
+        if scope.channel != channel {
+            return Err(AppError::forbidden());
+        }
+    }
+    // ...
+    Ok(())
+}
+```
+
+`None` means the caller reaches the instance as a member, a team, anyone, or is
+named without a scope. The scope is the managers' setting, not the caller's
+claim: it comes from the instance's grants, never from an argument. A component
+built before WIT 0.5.6 cannot read it.
+
 ## Write rules as data shapes
 
 Each rule below is a key layout plus a check, all from the component apps in

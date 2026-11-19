@@ -2771,7 +2771,7 @@ fn a_public_link_admits_visitors_while_it_and_its_organization_allow() {
     };
     assert_eq!(
         create(&key, "alice", Value::Null, None).features(),
-        [Feature::PublicLinks]
+        [Feature::AccessGrants, Feature::PublicLinks]
     );
     // A member who may not change the instance's access makes none.
     assert!(m
@@ -2785,7 +2785,39 @@ fn a_public_link_admits_visitors_while_it_and_its_organization_allow() {
         &json!({ "linkKey": key, "label": null, "expiresAt": null, "ratePerMinute": 30 }),
         |c| create(&key, "alice", c, None),
     );
-    assert_eq!(m.state.public_links[&key].created_by, "alice");
+    // The link is one more grant of the instance: its `org` mode became the grants it is,
+    // beside the link, which admits no account.
+    let forms = &m.state.apps["forms"];
+    assert_eq!(forms.access.link(&key).unwrap().created_by, "alice");
+    assert_eq!(forms.access.grants()[0], crate::types::Grant::Org);
+    assert!(m.state.may_reach(forms, Some("bob")));
+    assert!(!m.state.may_reach(forms, None));
+    // Setting the access keeps the link as it is, in either form; a link it does not hold
+    // is never made that way.
+    let set = |access: Value| SystemCmd::SetAccess {
+        app_id: "forms".into(),
+        access: serde_json::from_value(access).unwrap(),
+        actor: "alice".into(),
+        owner_in_org: true,
+        owner_in_team: true,
+    };
+    let _ok = m.run_unproven(set(json!({ "kind": "owner" }))).unwrap();
+    assert!(m.state.apps["forms"].access.link(&key).is_some());
+    let forged = json!({ "kind": "grants", "grants": [{ "kind": "link", "link": "forged",
+        "ratePerMinute": 600, "createdBy": "alice", "createdAt": 0 }] });
+    assert_eq!(
+        m.run_unproven(set(forged)),
+        Err(
+            "a public link is made with its own consent, not by setting the instance's access"
+                .to_owned()
+        )
+    );
+    let _ok = m
+        .run_unproven(set(
+            json!({ "kind": "grants", "grants": [{ "kind": "org" }] }),
+        ))
+        .unwrap();
+    assert_eq!(m.state.apps["forms"].access.links().len(), 1);
     // Below the version it admits nobody (no visitor is ever written below it).
     assert!(m.state.public_link_admits(&key, 20).is_none());
     let rc32 = "1.0.0-rc.32";
@@ -2846,7 +2878,7 @@ fn a_public_link_admits_visitors_while_it_and_its_organization_allow() {
     );
     // Dropped with its instance.
     m.state.remove_app("forms");
-    assert!(m.state.public_links.is_empty());
+    assert_eq!(m.state.public_link_count(), 0);
     let st = serde_json::to_value(&m.state).unwrap();
     assert!(st.get("publicLinks").is_none());
     let o = serde_json::to_value(&m.state.orgs["org"]).unwrap();

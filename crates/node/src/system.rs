@@ -631,11 +631,6 @@ pub struct SystemState {
     /// state from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub app_invites: BTreeMap<String, crate::types::AppInvite>,
-    /// Public links ([`crate::types::PublicLink`]), by the token's Ed25519 public key
-    /// (`proof::public_link_key`). Left out when empty, so a state from before reads and
-    /// writes as it did.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub public_links: BTreeMap<String, crate::types::PublicLink>,
     #[serde(default)]
     pub quotas: Quotas,
     /// Installed packages by name.
@@ -1663,7 +1658,6 @@ impl SystemState {
         }
         let _ring = self.released_runs.remove(app_id);
         self.app_invites.retain(|_, i| i.app != app_id);
-        self.public_links.retain(|_, l| l.app != app_id);
         if self.compute.remove(app_id).is_some() {
             self.grant_runs();
         }
@@ -2806,27 +2800,56 @@ impl SystemState {
             && self.guest_reaches(app, account)
     }
 
-    /// The public link under `link_key` while it admits visitors at `now`: it exists, has not
-    /// expired, its instance is there, the logged version brings public links and the
-    /// instance's organization allows them ([`crate::types::Org::allow_public_links`]).
+    /// The scope of `account`'s grant on `app` ([`crate::types::Grant::Account`]): on `app`
+    /// itself, else on the instance whose unit made it ([`Self::guest_holder`]), as a guest's
+    /// reach is judged. The app reads it (`env::grant_scope`); the node never does.
+    #[must_use]
+    pub fn grant_scope(&self, app: &AppRecord, account: &str) -> Option<Value> {
+        app.access
+            .scope_of(account)
+            .or_else(|| self.guest_holder(app).access.scope_of(account))
+            .cloned()
+    }
+
+    /// The public link under `link_key` and the instance whose grants hold it
+    /// ([`crate::types::Grant::Link`]). Links live in their instances' grant lists, so this
+    /// looks through the instances that have grants: a visitor's request, and making a link,
+    /// are its only callers.
+    #[must_use]
+    pub fn public_link(&self, link_key: &str) -> Option<(&AppRecord, &crate::types::LinkGrant)> {
+        self.apps
+            .values()
+            .filter(|a| matches!(a.access, Access::Grants { .. }))
+            .find_map(|a| a.access.link(link_key).map(|l| (a, l)))
+    }
+
+    /// Public links the cluster holds ([`MAX_PUBLIC_LINKS`]).
+    #[must_use]
+    pub fn public_link_count(&self) -> usize {
+        self.apps.values().map(|a| a.access.links().len()).sum()
+    }
+
+    /// The public link under `link_key`, with its instance, while it admits visitors at
+    /// `now`: its instance holds it, it has not expired, the logged version brings public
+    /// links and the instance's organization allows them
+    /// ([`crate::types::Org::allow_public_links`]).
     #[must_use]
     pub fn public_link_admits(
         &self,
         link_key: &str,
         now: u64,
-    ) -> Option<&crate::types::PublicLink> {
+    ) -> Option<(&AppRecord, &crate::types::LinkGrant)> {
         if !self.cluster_brings(cluster_version::Feature::PublicLinks) {
             return None;
         }
-        let link = self.public_links.get(link_key)?;
+        let (app, link) = self.public_link(link_key)?;
         if link.expires_at.is_some_and(|at| at <= now) {
             return None;
         }
-        let app = self.apps.get(&link.app)?;
         self.orgs
             .get(&app.org)
             .is_some_and(|o| o.allow_public_links)
-            .then_some(link)
+            .then_some((app, link))
     }
 
     /// Whether `actor` may change `app`'s grants (who it names, its invites): whoever may
@@ -4452,6 +4475,9 @@ impl SystemState {
             let fresh = match g {
                 Grant::Org => !std::mem::replace(&mut whole, true),
                 Grant::Anyone => !std::mem::replace(&mut anyone, true),
+                Grant::Link(_) => {
+                    return Err("a public link is made with its own consent, not as a grant");
+                }
                 Grant::Team { team } => {
                     if !o.teams.contains_key(team) {
                         return Err("no such team in the app's organization");
@@ -4521,6 +4547,8 @@ impl SystemState {
             Grant::Team { team } => o.in_team(a, team),
             Grant::Account { account, .. } => account == a && in_app_team(),
             Grant::Anyone => true,
+            // A link admits its visitors, never an account.
+            Grant::Link(_) => false,
         })
     }
 

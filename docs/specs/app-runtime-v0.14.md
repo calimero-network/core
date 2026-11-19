@@ -5,6 +5,7 @@ Oct 27, 2026 · @Xabi
 Changes proposed after v0.14, in this repository (for @Xabi to fold into the current spec; D76 is a placeholder number, after the D53–D75 that later versions use):
 
 - D76: calls, timers and xcall deliveries may make outbound HTTP, recorded in their log entry so followers and retries never fetch again; S9 reworded, D12 narrowed. This reverses v0.6's "`Outcome` loses its `outbound` field".
+- Section 4: `context` gains `grant-scope` (0.5.6): the scope (JSON text) of the caller's grant on the instance, which its managers set for the app; the SDK table gains `env::grant_scope`.
 - Section 4: `types` gains `visitor-caller` and `context` gains `visitor` (0.5.6): the anonymous visitor a public link let in, when `caller` is `public` because of one (a component built before sees `public`); the SDK's `Caller` gains `Visitor { link, key }`.
 - Section 4: `context` gains `unit-of` (0.5.5): the app whose unit this one is a member of (the instance whose release created it), none otherwise; the SDK table gains `env::unit_of`.
 - Section 4: `xcall` gains `batch` (0.5.4): a run's synchronous calls and views sent together and run at once, each checked, counted and keyed as alone; the SDK's synchronous xcalls become futures, awaited in `async fn` methods and joined with `app::join!` / `app::join_all`, all through `batch`.

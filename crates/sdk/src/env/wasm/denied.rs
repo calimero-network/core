@@ -28,6 +28,10 @@ pub fn unit_of() -> Option<String> {
     denied()
 }
 
+pub fn grant_scope() -> Option<String> {
+    denied()
+}
+
 pub fn app_owner() -> String {
     denied()
 }
