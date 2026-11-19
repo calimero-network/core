@@ -319,8 +319,8 @@ async fn internal_blob_put(
     if mode == crate::node::PeerBlobs::Refuse {
         return Err(ApiError::unavailable("blob puts are refused"));
     }
-    node.blob_guards
-        .put(&body.hash, || node.engine.put_blob(&body.hash, &wasm.0))
+    node.disk()
+        .put_guarded_blob(&node.blob_guards, &body.hash, &wasm.0)
         .map_err(|e| ApiError::internal(&e.to_string()))?;
     #[cfg(feature = "testing")]
     if mode == crate::node::PeerBlobs::StoreThenFail {
@@ -626,7 +626,7 @@ async fn internal_blob_delete(
     #[cfg(feature = "testing")]
     node.deletion_checkpoint().await;
     if !node.is_code_blob(&hash) {
-        let deleted = deletion.delete(|| node.engine.delete_blob(&hash));
+        let deleted = node.disk().delete_blob(&deletion, &hash);
         deleted
             .ok_or_else(|| ApiError::conflict("the blob was stored again"))?
             .map_err(|e| ApiError::internal(&e.to_string()))?;

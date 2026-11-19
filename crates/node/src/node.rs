@@ -28,6 +28,7 @@ pub(crate) mod blob_guards;
 mod cluster_version;
 mod component;
 pub mod digests;
+pub(crate) mod disk;
 mod job;
 pub(crate) mod recovery_disk;
 pub(crate) mod restore;
@@ -2445,7 +2446,7 @@ impl Node {
     /// system log records it. Succeeds once a majority holds it; a node that
     /// missed it fetches it from a peer on first use.
     pub async fn replicate_bundle(&self, hash: &str, wasm: &[u8]) -> Result<(), ApiError> {
-        self.engine
+        self.disk()
             .put_blob(hash, wasm)
             .map_err(|e| ApiError::internal(&e.to_string()))?;
         let peers: Vec<String> = self.sys(|s| {
@@ -2508,7 +2509,7 @@ impl Node {
                 continue;
             };
             if hex::encode(calimero_identity::sha256(&wasm.0)) == hash {
-                self.engine
+                self.disk()
                     .put_blob(hash, &wasm.0)
                     .map_err(|e| ApiError::internal(&e.to_string()))?;
                 return Ok(wasm.0);
@@ -2592,8 +2593,8 @@ impl Node {
             return Err(blob_too_large());
         }
         let id = hex::encode(calimero_identity::sha256(bytes));
-        self.blob_guards
-            .put(&id, || self.engine.put_blob(&id, bytes))
+        self.disk()
+            .put_guarded_blob(&self.blob_guards, &id, bytes)
             .map_err(|e| ApiError::internal(&e.to_string()))?;
         self.spread_blob(&id, bytes, app).await?;
         #[cfg(feature = "testing")]
@@ -2660,11 +2661,10 @@ impl Node {
                 .flat_map(|f| f.segments.clone())
                 .collect()
         });
-        for hash in &segments {
-            if let Err(e) = self.engine.delete_segment(hash) {
+        self.disk()
+            .delete_segments(segments.iter().map(String::as_str), |hash, e| {
                 warn!(segment = %hash, error = %e, "file bytes not deleted");
-            }
-        }
+            });
     }
 
     /// Whether `hash` is code (a bundle, a package release): any node may fetch it, and it is
@@ -2773,7 +2773,7 @@ impl Node {
             }
             Ok(Some(_)) => {
                 warn!(segment = %hash, "a stored segment is not its hash; dropping it");
-                let _dropped = self.engine.delete_segment(hash);
+                let _dropped = self.disk().delete_segment(hash);
                 None
             }
             _ => None,
@@ -2811,13 +2811,10 @@ impl Node {
     where
         B: AsRef<[u8]> + Send + 'static,
     {
-        let (engine, hash) = (Arc::clone(&self.engine), hash.to_owned());
-        tokio::task::spawn_blocking(move || {
-            engine.put_segment(&hash, bytes.as_ref()).map(|()| bytes)
-        })
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .map_err(|e| ApiError::internal(&e.to_string()))
+        self.disk()
+            .put_segment(hash, bytes.as_ref())
+            .map(|()| bytes)
+            .map_err(|e| ApiError::internal(&e.to_string()))
     }
 
     /// Store segment `hash` on the node at `addr`, raw.
@@ -2856,7 +2853,7 @@ impl Node {
                 continue;
             };
             if hex::encode(calimero_identity::sha256(&bytes.0)) == id {
-                self.engine
+                self.disk()
                     .put_blob(id, &bytes.0)
                     .map_err(|e| ApiError::internal(&e.to_string()))?;
                 return Ok(bytes.0);
@@ -2963,7 +2960,7 @@ impl Node {
         }
         #[cfg(feature = "testing")]
         self.deletion_checkpoint().await;
-        match deletion.delete(|| self.engine.delete_blob(&hex_id)) {
+        match self.disk().delete_blob(&deletion, &hex_id) {
             None => return,
             Some(Err(e)) => warn!(blob = %hex_id, error = %e, "blob not deleted"),
             Some(Ok(_)) => {}

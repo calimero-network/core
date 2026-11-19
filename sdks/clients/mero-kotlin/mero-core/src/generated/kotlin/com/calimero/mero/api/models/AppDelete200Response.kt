@@ -33,6 +33,7 @@ import kotlinx.serialization.Contextual
  *
  * @param appId 
  * @param deleted 
+ * @param members 
  */
 @Serializable
 
@@ -42,7 +43,10 @@ data class AppDelete200Response (
     val appId: kotlin.String,
 
     @SerialName(value = "deleted")
-    val deleted: kotlin.Boolean
+    val deleted: kotlin.Boolean,
+
+    @SerialName(value = "members")
+    val members: kotlin.collections.List<kotlin.String>? = null
 
 ) {
 

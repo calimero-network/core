@@ -92,6 +92,19 @@ async fn ops_at(c: &Cluster, i: usize) -> Client {
     cl
 }
 
+/// Waits until node `i` of `c` has applied `FinishRestore` for `app`: the
+/// restore commits it on the system log, which a follower applies on its own time.
+async fn restore_finished_on(c: &Cluster, i: usize, app: &str, group: u64) {
+    let node = &c.nodes[i].as_ref().unwrap().node;
+    for _ in 0..200 {
+        if node.sys(|s| s.apps[app].restore.is_none() && s.apps[app].group == group) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("node {i} never applied the end of {app}'s restore");
+}
+
 /// The node of `c` leading `app`, once one does.
 async fn leader_of(c: &Cluster, app: &str) -> usize {
     for _ in 0..200 {
@@ -194,9 +207,7 @@ async fn an_app_is_restored_from_its_backup_on_every_replica_and_takes_writes() 
     // The app takes writes again, and every replica holds the restored state.
     let index = set(&alice, &kv, "d", "4").await;
     for i in 0..3 {
-        let node = &c.nodes[i].as_ref().unwrap().node;
-        assert!(node.sys(|s| s.apps[&kv].restore.is_none()));
-        assert_eq!(node.sys(|s| s.apps[&kv].group), group);
+        restore_finished_on(&c, i, &kv, group).await;
         assert_eq!(
             on_replica(&c, i, &alice, &kv, "a", index).await,
             json!("1"),

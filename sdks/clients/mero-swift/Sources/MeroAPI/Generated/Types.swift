@@ -44,7 +44,7 @@ public protocol APIProtocol: Sendable {
     func appGet(_ input: Operations.AppGet.Input) async throws -> Operations.AppGet.Output
     /// Delete an app
     ///
-    /// The owner or an organization admin.
+    /// The owner or an organization admin. An instance whose release created apps with it (`uses` with `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -1580,7 +1580,7 @@ extension APIProtocol {
     }
     /// Delete an app
     ///
-    /// The owner or an organization admin.
+    /// The owner or an organization admin. An instance whose release created apps with it (`uses` with `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -10738,7 +10738,7 @@ public enum Operations {
     }
     /// Delete an app
     ///
-    /// The owner or an organization admin.
+    /// The owner or an organization admin. An instance whose release created apps with it (`uses` with `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -10795,21 +10795,27 @@ public enum Operations {
                         public var appId: Swift.String
                         /// - Remark: Generated from `#/paths/apps/{app}/DELETE/responses/200/content/json/deleted`.
                         public var deleted: Swift.Bool
+                        /// - Remark: Generated from `#/paths/apps/{app}/DELETE/responses/200/content/json/members`.
+                        public var members: [Swift.String]?
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
                         ///   - appId:
                         ///   - deleted:
+                        ///   - members:
                         public init(
                             appId: Swift.String,
-                            deleted: Swift.Bool
+                            deleted: Swift.Bool,
+                            members: [Swift.String]? = nil
                         ) {
                             self.appId = appId
                             self.deleted = deleted
+                            self.members = members
                         }
                         public enum CodingKeys: String, CodingKey {
                             case appId
                             case deleted
+                            case members
                         }
                     }
                     /// - Remark: Generated from `#/paths/apps/{app}/DELETE/responses/200/content/application\/json`.

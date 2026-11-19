@@ -44,6 +44,11 @@ def _parse_response(
 
         return response_403
 
+    if response.status_code == 409:
+        response_409 = Error.from_dict(response.json())
+
+        return response_409
+
     if response.status_code == 421:
         response_421 = Error.from_dict(response.json())
 
@@ -73,7 +78,10 @@ def sync_detailed(
 ) -> Response[Union[AppDeleteResponse200, Error]]:
     """Delete an app
 
-     The owner or an organization admin.
+     The owner or an organization admin. An instance whose release created apps with it (`uses` with
+    `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in
+    `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an
+    instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
 
     **Who:** a passkey session (an API key is refused).
 
@@ -106,7 +114,10 @@ def sync(
 ) -> Optional[Union[AppDeleteResponse200, Error]]:
     """Delete an app
 
-     The owner or an organization admin.
+     The owner or an organization admin. An instance whose release created apps with it (`uses` with
+    `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in
+    `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an
+    instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
 
     **Who:** a passkey session (an API key is refused).
 
@@ -134,7 +145,10 @@ async def asyncio_detailed(
 ) -> Response[Union[AppDeleteResponse200, Error]]:
     """Delete an app
 
-     The owner or an organization admin.
+     The owner or an organization admin. An instance whose release created apps with it (`uses` with
+    `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in
+    `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an
+    instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
 
     **Who:** a passkey session (an API key is refused).
 
@@ -165,7 +179,10 @@ async def asyncio(
 ) -> Optional[Union[AppDeleteResponse200, Error]]:
     """Delete an app
 
-     The owner or an organization admin.
+     The owner or an organization admin. An instance whose release created apps with it (`uses` with
+    `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in
+    `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an
+    instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
 
     **Who:** a passkey session (an API key is refused).
 

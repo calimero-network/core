@@ -130,6 +130,11 @@ pub enum Feature {
     /// an instance whose leader is on it would send the operator's value, or none, where
     /// another leader sends the deployment's.
     DeploymentSecrets,
+    /// A unit is one: `CreateApp` of a unit's member carrying its instance's deployment
+    /// (`unit_offer`, the offer that covers it), and `DeleteApp` taking an instance's unit
+    /// with it (`members`): an earlier release ignores both fields, so its replicas would
+    /// refuse the member as not offered and keep the members of a deleted instance.
+    WholeUnits,
     /// `UpgradeApp` with `in_deployment`: an instance from a deployment moves only to the
     /// release its deployment offers. An earlier release ignores the field and would move
     /// it where a later one refuses.
@@ -137,7 +142,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 33] = [
+pub const FEATURES: [Feature; 34] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -170,6 +175,7 @@ pub const FEATURES: [Feature; 33] = [
     Feature::AttachApp,
     Feature::ExpireProofs,
     Feature::DeploymentSecrets,
+    Feature::WholeUnits,
     Feature::UpgradeInDeployment,
 ];
 
@@ -210,6 +216,7 @@ impl Feature {
             Self::AttachApp => "attachApp",
             Self::ExpireProofs => "expireProofs",
             Self::DeploymentSecrets => "deploymentSecrets",
+            Self::WholeUnits => "wholeUnits",
             Self::UpgradeInDeployment => "upgradeInDeployment",
         }
     }
@@ -247,7 +254,7 @@ impl Feature {
             | Self::Delegation
             | Self::AttachApp
             | Self::ExpireProofs => "1.0.0-rc.31",
-            Self::DeploymentSecrets | Self::UpgradeInDeployment => "1.0.0-rc.32",
+            Self::DeploymentSecrets | Self::WholeUnits | Self::UpgradeInDeployment => "1.0.0-rc.32",
         }
     }
 }
@@ -560,7 +567,7 @@ impl SystemCmd {
                 }
                 f
             }
-            Self::CreateApp { app } => {
+            Self::CreateApp { app, unit_offer } => {
                 let mut f = Vec::new();
                 if !app.components.is_app() {
                     f.push(Feature::ComputeOnly);
@@ -568,8 +575,14 @@ impl SystemCmd {
                 if !app.links.is_empty() {
                     f.push(Feature::AppLinks);
                 }
+                if unit_offer.is_some() {
+                    f.push(Feature::WholeUnits);
+                }
                 f
             }
+            Self::DeleteApp {
+                members: Some(_), ..
+            } => vec![Feature::WholeUnits],
             Self::AcquireRun { pool: Some(_), .. } => vec![Feature::NamedPool],
             Self::CreateOrg {
                 app_team,
@@ -591,7 +604,7 @@ impl SystemCmd {
             | Self::UninstallPackage { .. }
             | Self::UpgradeApp { .. }
             | Self::TransferApp { .. }
-            | Self::DeleteApp { .. }
+            | Self::DeleteApp { members: None, .. }
             | Self::ChargeFileBytes { .. }
             | Self::AcquireRun { .. }
             | Self::ReleaseRun { .. }
@@ -940,6 +953,8 @@ mod tests {
             } })),
             Feature::AttachApp => entry(json!({ "op": "linkApp", "app_id": "app", "name": "kv",
                 "target": "kv-app", "actor": "a" })),
+            Feature::WholeUnits => entry(json!({ "op": "deleteApp", "app_id": "app",
+                "actor": "a", "members": [] })),
             Feature::DeploymentSecrets => entry(json!({ "op": "setDeploymentSecret",
                 "deployment": "d", "name": "API_KEY", "value": "v", "actor": "a", "at": 1 })),
             Feature::UpgradeInDeployment => entry(json!({ "op": "upgradeApp",
@@ -1363,11 +1378,15 @@ mod tests {
         for &feature in &rc30 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.32's (a deployment's secrets, an upgrade kept on its deployment's
-        // offer) wait for every node on rc.32.
+        // rc.32's (a deployment's secrets, whole units, an upgrade kept on its
+        // deployment's offer) wait for every node on rc.32.
         assert_eq!(
             rc32,
-            [Feature::DeploymentSecrets, Feature::UpgradeInDeployment]
+            [
+                Feature::DeploymentSecrets,
+                Feature::WholeUnits,
+                Feature::UpgradeInDeployment
+            ]
         );
         for &feature in &rc32 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();

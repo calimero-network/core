@@ -582,7 +582,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * DELETE /apps/{app}
      * Delete an app
-     * The owner or an organization admin.  **Who:** a passkey session (an API key is refused).
+     * The owner or an organization admin. An instance whose release created apps with it (&#x60;uses&#x60; with &#x60;mode: create&#x60;, its &#x60;links&#x60;) is deleted with every one of them, theirs included, listed in &#x60;members&#x60;; a member is not deleted alone while its instance stands (&#x60;409 UNIT_MEMBER&#x60;), and an instance with members waits for every node to run 1.0.0-rc.32 (&#x60;409 FEATURE_NOT_ACTIVE&#x60;).  **Who:** a passkey session (an API key is refused).
      * @param app 
      * @return AppDelete200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -614,7 +614,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * DELETE /apps/{app}
      * Delete an app
-     * The owner or an organization admin.  **Who:** a passkey session (an API key is refused).
+     * The owner or an organization admin. An instance whose release created apps with it (&#x60;uses&#x60; with &#x60;mode: create&#x60;, its &#x60;links&#x60;) is deleted with every one of them, theirs included, listed in &#x60;members&#x60;; a member is not deleted alone while its instance stands (&#x60;409 UNIT_MEMBER&#x60;), and an instance with members waits for every node to run 1.0.0-rc.32 (&#x60;409 FEATURE_NOT_ACTIVE&#x60;).  **Who:** a passkey session (an API key is refused).
      * @param app 
      * @return ApiResponse<AppDelete200Response?>
      * @throws IllegalStateException If the request is not correctly configured

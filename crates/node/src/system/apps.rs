@@ -243,7 +243,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
     let index = m.index;
     let s = &mut m.state;
     match cmd {
-        SystemCmd::CreateApp { app } => {
+        SystemCmd::CreateApp { app, unit_offer } => {
             let mut app = *app;
             if !s.bundles.contains_key(&app.bundle) {
                 return Err("unknown bundle");
@@ -273,14 +273,24 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             if let Some(id) = &app.deployment {
                 let d = s.deployments.get(id).ok_or("no such deployment")?;
-                let offers_release = app.release.as_ref().is_none_or(|r| {
+                let offered = |r: &PackageRef| {
                     d.apps
                         .values()
                         .any(|o| o.package == r.package && o.version == r.version)
-                });
-                if !s.offers_bundle(d, &app.bundle) || !offers_release {
+                };
+                let covered = match &unit_offer {
+                    // A unit's member runs a release of its own: the deployment's offer of
+                    // its instance's release covers it.
+                    Some(offer) => app.release.is_some() && offered(offer),
+                    None => {
+                        s.offers_bundle(d, &app.bundle) && app.release.as_ref().is_none_or(offered)
+                    }
+                };
+                if !covered {
                     return Err("the deployment does not offer the release this app would run");
                 }
+            } else if unit_offer.is_some() {
+                return Err("a unit's offer comes with the deployment that makes it");
             }
             {
                 let o = s.orgs.get(&app.org);
@@ -631,13 +641,40 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             actor,
             owner_in_org,
             owner_in_team,
+            members,
         } => {
+            let rule = OwnerRule::logged(owner_in_org, owner_in_team);
+            let may_delete = |s: &SystemState, a: &AppRecord| {
+                s.owner_acts_as_logged(a, &actor, rule) || s.is_org_admin(&a.org, &actor)
+            };
             let app = s.apps.get(&app_id).ok_or("no such app")?;
-            let admin = s.is_org_admin(&app.org, &actor);
-            if !s.owner_acts_as_logged(app, &actor, OwnerRule::logged(owner_in_org, owner_in_team))
-                && !admin
-            {
+            if !may_delete(s, app) {
                 return Err("only the owner or an org admin may delete");
+            }
+            // An entry from before the whole-unit rule deletes the app alone.
+            let unit = match members {
+                None => Vec::new(),
+                Some(named) => {
+                    if s.unit_parent(&app_id).is_some() {
+                        return Err(UNIT_MEMBER);
+                    }
+                    let unit = s.unit_of(&app_id);
+                    let named: BTreeSet<AppId> = named.into_iter().collect();
+                    if named.len() != unit.len() || !unit.iter().all(|m| named.contains(m)) {
+                        return Err(UNIT_NOT_AS_NAMED);
+                    }
+                    if unit
+                        .iter()
+                        .filter_map(|m| s.apps.get(m))
+                        .any(|m| !may_delete(s, m))
+                    {
+                        return Err("deleting a unit takes whoever may delete each of its apps");
+                    }
+                    unit
+                }
+            };
+            for m in &unit {
+                s.remove_app(m);
             }
             s.remove_app(&app_id);
             Ok(Value::Null)

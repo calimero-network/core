@@ -32,6 +32,17 @@ const MANAGE_APPLICATION: u32 = 1 << 4;
 /// A signed single-service `.mpk` shipping `frontend` files (paths under
 /// `frontend/`, the first is the entry).
 fn mpk(package: &str, version: &str, wasm: &[u8], frontend: &[(&str, &[u8])]) -> Vec<u8> {
+    mpk_using(package, version, wasm, frontend, Value::Null)
+}
+
+/// [`mpk`], also declaring `uses` (the manifest's JSON for it) in the signed manifest.
+fn mpk_using(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    frontend: &[(&str, &[u8])],
+    uses: Value,
+) -> Vec<u8> {
     use sha2::Digest;
     let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
     let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
@@ -63,7 +74,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], frontend: &[(&str, &[u8])]) ->
         upgrades: None,
         outbound: Vec::new(),
         secrets: None,
-        uses: None,
+        uses: serde_json::from_value(uses).unwrap(),
         services: None,
         pipelines: Vec::new(),
         signature: None,
@@ -1523,6 +1534,265 @@ async fn an_instances_usage_is_billed_to_its_deployments_developer() {
         // The customer is never the developer of either.
         assert!(!t.contains(&format!("developer=\"{globex}\"")), "{t}");
     }
+}
+
+/// A unit from a deployment is the developer's whole: a customer creating an instance of a
+/// release that creates the apps it uses (`uses`, `mode: create`) gets each member with the
+/// instance's deployment, though the deployment offers only the instance's release (the
+/// offer covers its unit), so every `calimero_app_*` series of a member names the
+/// deployment's owner as `developer`, as the instance's do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_units_members_are_billed_to_its_deployments_developer() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.metrics_listen = Some("127.0.0.1:0".parse().unwrap());
+    })
+    .await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let (carol, _carol_pk) = signed_up(&c, 2, "carol").await;
+
+    // The developer installs the member's release and the instance's, which creates it.
+    let _ok = alice
+        .packages()
+        .upload(release("com.test.unit-kv", "0.1.0"))
+        .await
+        .unwrap();
+    let uses = json!({
+        "kv": { "package": "com.test.unit-kv", "range": "^0.1", "version": "0.1.0" },
+    });
+    let _ok = alice
+        .packages()
+        .upload(mpk_using(
+            "com.test.unit-notes",
+            "1.0.0",
+            &variant(&kv_wasm(), "com.test.unit-notes@1.0.0"),
+            &[],
+            uses,
+        ))
+        .await
+        .unwrap();
+    let da = deploy(
+        &alice,
+        &mut alice_pk,
+        "alpha",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &da,
+        "notes",
+        "com.test.unit-notes",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
+
+    // The customer creates the unit from the offer.
+    let globex = org(&carol, "Globex").await;
+    let body = AppCreateRequest {
+        name: Some("notes".to_owned()),
+        deployment: Some(da.clone()),
+        package: Some("com.test.unit-notes".to_owned()),
+        org: Some(globex.clone()),
+        ..AppCreateRequest::default()
+    };
+    let made = carol.apps().create(body).await.map(wire).unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+    let member = carol.apps().get(&kv).await.map(wire).unwrap();
+    assert_eq!(member["deployment"], json!(da), "{member}");
+    assert_eq!(member["org"], json!(globex), "{member}");
+    assert_eq!(
+        member["release"]["package"],
+        json!("com.test.unit-kv"),
+        "{member}"
+    );
+
+    let _ = carol
+        .apps()
+        .call(
+            &kv,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    for r in c.nodes.iter().flatten() {
+        r.node.sample_usage();
+    }
+    let http = reqwest::Client::new();
+    let mut texts = Vec::new();
+    for r in c.nodes.iter().flatten() {
+        let addr = r.metrics_addr.unwrap();
+        let text = http
+            .get(format!("http://{addr}/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        texts.push(text);
+    }
+    let developer = format!("developer=\"account:{alice_id}\"");
+    for app in [&notes, &kv] {
+        let labels = format!("app=\"{app}\",org=\"{globex}\",{developer}");
+        let calls: f64 = texts
+            .iter()
+            .filter_map(|t| {
+                sample(
+                    t,
+                    "calimero_app_calls_total",
+                    &format!("{labels},kind=\"mutation\""),
+                )
+            })
+            .sum();
+        assert!(
+            calls >= 1.0,
+            "{app} not billed to the developer: {texts:#?}"
+        );
+        for line in texts.iter().flat_map(|t| t.lines()) {
+            if line.starts_with("calimero_app_") && line.contains(&format!("app=\"{app}\"")) {
+                assert!(line.contains(&developer), "billed elsewhere: {line}");
+            }
+        }
+    }
+}
+
+/// A unit from a deployment moves only where its developer's offer takes it: its member,
+/// which runs a package the deployment does not offer, is never moved alone (`409
+/// OUTSIDE_DEPLOYMENT`, before any step-up), a unit upgrade to a release the deployment
+/// does not offer moves nothing, and once the developer offers it the customer's unit
+/// upgrade moves the instance and its member together.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_from_a_deployment_moves_only_to_its_offer() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let (carol, mut carol_pk) = signed_up(&c, 2, "carol").await;
+
+    let uses = |kv: &str| json!({ "kv": { "package": "com.test.dunit-kv", "range": "^0.1", "version": kv } });
+    for version in ["0.1.0", "0.1.1"] {
+        let _ok = alice
+            .packages()
+            .upload(release("com.test.dunit-kv", version))
+            .await
+            .unwrap();
+    }
+    for (version, kv) in [("1.0.0", "0.1.0"), ("1.1.0", "0.1.1")] {
+        let _ok = alice
+            .packages()
+            .upload(mpk_using(
+                "com.test.dunit-notes",
+                version,
+                &variant(&kv_wasm(), &format!("com.test.dunit-notes@{version}")),
+                &[],
+                uses(kv),
+            ))
+            .await
+            .unwrap();
+    }
+    let da = deploy(
+        &alice,
+        &mut alice_pk,
+        "alpha",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &da,
+        "notes",
+        "com.test.dunit-notes",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
+
+    let globex = org(&carol, "Globex").await;
+    let body = AppCreateRequest {
+        name: Some("notes".to_owned()),
+        deployment: Some(da.clone()),
+        package: Some("com.test.dunit-notes".to_owned()),
+        org: Some(globex.clone()),
+        ..AppCreateRequest::default()
+    };
+    let made = carol.apps().create(body).await.map(wire).unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+
+    // The member alone: refused before any passkey is asked for.
+    let e = carol
+        .apps()
+        .upgrade(&kv, typed(json!({ "version": "0.1.1" })), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OUTSIDE_DEPLOYMENT"), "{e}");
+
+    // The unit to a release the deployment does not offer: nothing moves.
+    let refused = carol
+        .apps()
+        .upgrade_unit(&notes, "1.1.0", Some(&mut carol_pk))
+        .await;
+    if let Ok(run) = refused.map(wire) {
+        let run_id = run["runId"].as_str().unwrap().to_owned();
+        let status = finished(&carol, &globex, &run_id).await;
+        assert_ne!(status["failed"], json!({}), "{status}");
+    }
+    for (app, version) in [(&notes, "1.0.0"), (&kv, "0.1.0")] {
+        let record = carol.apps().get(app).await.map(wire).unwrap();
+        assert_eq!(record["release"]["version"], json!(version), "{record}");
+    }
+
+    // The developer offers 1.1.0: the customer's unit upgrade moves both.
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &da,
+        "notes",
+        "com.test.dunit-notes",
+        "1.1.0",
+    )
+    .await
+    .unwrap();
+    let run = carol
+        .apps()
+        .upgrade_unit(&notes, "1.1.0", Some(&mut carol_pk))
+        .await
+        .map(wire)
+        .unwrap();
+    let run_id = run["runId"].as_str().unwrap().to_owned();
+    let status = finished(&carol, &globex, &run_id).await;
+    assert_eq!(status["failed"], json!({}), "{status}");
+    for (app, version) in [(&notes, "1.1.0"), (&kv, "0.1.1")] {
+        let record = carol.apps().get(app).await.map(wire).unwrap();
+        assert_eq!(record["release"]["version"], json!(version), "{record}");
+        assert_eq!(record["deployment"], json!(da), "{record}");
+    }
+}
+
+/// An organization's upgrade run, once it finished.
+async fn finished(client: &Client, org: &str, run: &str) -> Value {
+    let mut status = Value::Null;
+    for _ in 0..100 {
+        status = client
+            .orgs()
+            .upgrade_status(org, run)
+            .await
+            .map(wire)
+            .unwrap();
+        if status["finished"] == json!(true) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(status["finished"], json!(true), "{status}");
+    status
 }
 
 /// D78 (Xabi, 11-09): the daily fuel cap follows the developer, the identity an

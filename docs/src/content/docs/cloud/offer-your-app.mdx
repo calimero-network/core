@@ -206,7 +206,10 @@ Each instance's usage series carries two labels
   owner's app quota.
 - **`developer`**: who Calimero Cloud bills, the deployment's owner (your
   organization's id, or `account:<id>`). An instance created without a
-  deployment has its organization as developer.
+  deployment has its organization as developer. When your release creates
+  other apps with each instance (`uses` with `mode = "create"`), each of them
+  is created from your deployment too and billed to you the same way, and
+  deleting the instance deletes them.
 
 A cluster may cap a developer's fuel per day (`maxFuelPerDeveloperPerDay`),
 summed over every instance of your deployments: past it, client calls to

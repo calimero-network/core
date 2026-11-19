@@ -6,6 +6,10 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
+from typing import cast
+from typing import Union
+
 T = TypeVar("T", bound="AppDeleteResponse200")
 
 
@@ -15,16 +19,22 @@ class AppDeleteResponse200:
     Attributes:
         app_id (str):
         deleted (bool):
+        members (Union[Unset, list[str]]):
     """
 
     app_id: str
     deleted: bool
+    members: Union[Unset, list[str]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         app_id = self.app_id
 
         deleted = self.deleted
+
+        members: Union[Unset, list[str]] = UNSET
+        if not isinstance(self.members, Unset):
+            members = self.members
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -34,6 +44,8 @@ class AppDeleteResponse200:
                 "deleted": deleted,
             }
         )
+        if members is not UNSET:
+            field_dict["members"] = members
 
         return field_dict
 
@@ -44,9 +56,12 @@ class AppDeleteResponse200:
 
         deleted = d.pop("deleted")
 
+        members = cast(list[str], d.pop("members", UNSET))
+
         app_delete_response_200 = cls(
             app_id=app_id,
             deleted=deleted,
+            members=members,
         )
 
         app_delete_response_200.additional_properties = d
