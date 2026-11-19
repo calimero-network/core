@@ -170,6 +170,14 @@ The value goes from your passkey into the system log once; after that it is
 read only by the outbound gate, for a run whose release declares the name, and
 leaves the node only toward that secret's declared hosts.
 
+Your values reach only the code you offer: the node fills one only for a run
+of a release of a package your deployment offers, or one a release you offer
+uses (any version: only its publisher signs releases of it), and an instance
+cannot be moved onto any other code (see
+[Shipping a new version](#shipping-a-new-version)). Otherwise
+a customer could install a package of their own declaring the same name for a
+host they control and upgrade their instance to it.
+
 ## 4. Share the frontend
 
 The release's frontend opens at your deployment's release on two addresses:
@@ -261,15 +269,21 @@ admins) show today's `developerFuelToday` and `developerWritesToday`.
 ## Shipping a new version
 
 Offering a newer release (step 3 again) changes what **new** instances get.
-Existing ones move by an upgrade, and who upgrades them is what the release's
-manifest declares:
+You decide which release your customers' instances run: an instance created
+from your deployment moves only to the release the deployment offers for its
+app, and only once you offer it. Its owner accepts that upgrade or not (it is
+their data), but cannot pick another version, another package or a raw bundle
+(`409 OUTSIDE_DEPLOYMENT`). Existing ones move by an upgrade, and who upgrades
+them is what the release's manifest declares:
 
 - **`upgrades: owner`** (the default): each customer upgrades their own.
 - **`upgrades: publisher`**: your organization, once it has bound the
   package's key, upgrades every customer's instance at once with a
   [publisher run](/protocol/upgrades/#upgrade-runs):
   `POST /orgs/{org}/packages/chat/upgrade { version }`, with one passkey
-  step-up, then `GET /orgs/{org}/upgrades/{run}` to follow it.
+  step-up, then `GET /orgs/{org}/upgrades/{run}` to follow it. Offer the
+  version first: the run moves an instance from your deployment only to the
+  release it offers, and notes any other as failed (`OUTSIDE_DEPLOYMENT`).
 
 ## Withdrawing an offer
 

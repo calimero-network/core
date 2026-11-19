@@ -1033,7 +1033,7 @@ export interface paths {
         put?: never;
         /**
          * Upgrade an app instance
-         * @description To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. Whoever the package's manifest names (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own.
+         * @description To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. Whoever the package's manifest names (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
          *
          *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -8879,7 +8879,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `CONFLICT`: the state does not allow it now; `OUTSIDE_UNIT_RANGE`; `RELEASE_DEADLINE`; `RUNTIME_TOO_OLD`. `details` of `RELEASE_DEADLINE`: a `ReleaseDeadline`, `RUNTIME_TOO_OLD`: a `RuntimeTooOld`. */
+            /** @description `CONFLICT`: the state does not allow it now; `OUTSIDE_DEPLOYMENT`; `OUTSIDE_UNIT_RANGE`; `RELEASE_DEADLINE`; `RUNTIME_TOO_OLD`. `details` of `RELEASE_DEADLINE`: a `ReleaseDeadline`, `RUNTIME_TOO_OLD`: a `RuntimeTooOld`. */
             409: {
                 headers: {
                     [name: string]: unknown;

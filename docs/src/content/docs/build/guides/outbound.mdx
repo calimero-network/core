@@ -86,7 +86,8 @@ declares, or a release one of those references in its `uses` declares (for the
 apps an instance creates with it). It is kept in the system group's state and read by the outbound gate
 on the node that runs the request. A request is filled with the instance's own
 value, else its deployment's, else the operator's, each only for a name the
-release declares and only to its declared hosts; an instance's
+release declares and only to its declared hosts, and the deployment's only for
+a release of a package the deployment offers; an instance's
 `GET /apps/{app}/secrets` then says `source: deployment`, nothing more of it.
 See [Deployments](/protocol/governance/#deployments).
 
