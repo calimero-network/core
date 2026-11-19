@@ -172,9 +172,11 @@ jobs:
           args=(--surface "$SURFACE" --version "$VERSION" --dir consumer)
           if [ "$SURFACE" = npm ]; then
             # The SDKs core publishes from sdks/, all at the release's version. A
-            # consumer still on an SDK's old major (mero-js 36, mero-react 11, mero-ui 1) is
+            # consumer still on an SDK's old major (mero-js 36, mero-react 11) is
             # left for a deliberate migration: bump-fleet.sh skips a major crossing.
-            for pkg in mero-js mero-react mero-ui mero-icons mero-tokens mero-charts; do
+            # mero-design was @calimero-network/mero-ui up to 1.5.2; a consumer moves
+            # to it by hand.
+            for pkg in mero-js mero-react mero-design mero-icons mero-tokens mero-charts; do
               args+=(--pkg "@calimero-network/$pkg=$VERSION")
             done
           fi

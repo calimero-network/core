@@ -905,7 +905,8 @@ pub fn unknown_capabilities() -> ApiError {
     )
 }
 
-/// `404 UNDECLARED_SECRET`: no release the deployment offers declares the secret.
+/// `404 UNDECLARED_SECRET`: no release the deployment offers, nor one they reference (`uses`),
+/// declares the secret.
 #[must_use]
 pub fn undeclared_secret() -> ApiError {
     ApiError::new(404, "UNDECLARED_SECRET", crate::system::UNDECLARED_SECRET)

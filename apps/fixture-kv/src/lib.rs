@@ -182,6 +182,13 @@ impl Kv {
         Ok(env::linked(&name))
     }
 
+    /// The instance whose unit this app is a member of (`env::unit_of`): the one whose
+    /// release created it; none for an app created on its own.
+    #[app::view]
+    pub fn unit_of(&self) -> app::Result<Option<String>> {
+        Ok(env::unit_of())
+    }
+
     /// Sets `key`; emits `Inserted` for a new key, `Updated` for an existing one.
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
         let event = self.upsert(&key, &value)?;

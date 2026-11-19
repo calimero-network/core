@@ -78,11 +78,12 @@ def sync_detailed(
 ) -> Response[Union[DeploymentSecretsResponse200, Error]]:
     """A deployment's secrets
 
-     For its managers, on fresh state: every secret a release the deployment offers declares, and every
-    one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`,
-    empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds
-    its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and
-    `setAt` (Unix seconds). Never a value.
+     For its managers, on fresh state: every secret a release the deployment offers declares, or a
+    release one of those references (`uses`, for the apps it creates), and every one it holds a value
+    of. Each row names the deployment's apps whose release declares it or references one that does
+    (`apps`, empty when none does any more: the value is kept, unused, until cleared), the releases that
+    declare it (`declaredBy`) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of
+    the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
 
     **Who:** signed in (a session or an API key).
 
@@ -115,11 +116,12 @@ def sync(
 ) -> Optional[Union[DeploymentSecretsResponse200, Error]]:
     """A deployment's secrets
 
-     For its managers, on fresh state: every secret a release the deployment offers declares, and every
-    one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`,
-    empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds
-    its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and
-    `setAt` (Unix seconds). Never a value.
+     For its managers, on fresh state: every secret a release the deployment offers declares, or a
+    release one of those references (`uses`, for the apps it creates), and every one it holds a value
+    of. Each row names the deployment's apps whose release declares it or references one that does
+    (`apps`, empty when none does any more: the value is kept, unused, until cleared), the releases that
+    declare it (`declaredBy`) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of
+    the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
 
     **Who:** signed in (a session or an API key).
 
@@ -147,11 +149,12 @@ async def asyncio_detailed(
 ) -> Response[Union[DeploymentSecretsResponse200, Error]]:
     """A deployment's secrets
 
-     For its managers, on fresh state: every secret a release the deployment offers declares, and every
-    one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`,
-    empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds
-    its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and
-    `setAt` (Unix seconds). Never a value.
+     For its managers, on fresh state: every secret a release the deployment offers declares, or a
+    release one of those references (`uses`, for the apps it creates), and every one it holds a value
+    of. Each row names the deployment's apps whose release declares it or references one that does
+    (`apps`, empty when none does any more: the value is kept, unused, until cleared), the releases that
+    declare it (`declaredBy`) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of
+    the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
 
     **Who:** signed in (a session or an API key).
 
@@ -182,11 +185,12 @@ async def asyncio(
 ) -> Optional[Union[DeploymentSecretsResponse200, Error]]:
     """A deployment's secrets
 
-     For its managers, on fresh state: every secret a release the deployment offers declares, and every
-    one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`,
-    empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds
-    its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and
-    `setAt` (Unix seconds). Never a value.
+     For its managers, on fresh state: every secret a release the deployment offers declares, or a
+    release one of those references (`uses`, for the apps it creates), and every one it holds a value
+    of. Each row names the deployment's apps whose release declares it or references one that does
+    (`apps`, empty when none does any more: the value is kept, unused, until cleared), the releases that
+    declare it (`declaredBy`) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of
+    the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
 
     **Who:** signed in (a session or an API key).
 

@@ -81,7 +81,8 @@ A deployment's managers may supply one value for every instance created from
 it (`PUT /deployments/{id}/secrets/{name} { value }`, a passkey step-up over
 `deployment:{id} / __set_secret / { name, fingerprint }`; `GET` answers
 fingerprints, `DELETE` clears it), for a name a release the deployment offers
-declares. It is kept in the system group's state and read by the outbound gate
+declares, or a release one of those references in its `uses` declares (for the
+apps an instance creates with it). It is kept in the system group's state and read by the outbound gate
 on the node that runs the request. A request is filled with the instance's own
 value, else its deployment's, else the operator's, each only for a name the
 release declares and only to its declared hosts, and the deployment's only for

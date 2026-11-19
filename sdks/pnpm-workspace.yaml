@@ -4,8 +4,8 @@
 packages:
   - "clients/mero-js"
   - "components/mero-react"
-  - "components/mero-ui"
-  - "components/mero-ui/examples/storybook"
+  - "components/mero-design"
+  - "components/mero-design/examples/storybook"
   - "components/mero-icons"
   - "components/mero-tokens"
   - "components/mero-charts"

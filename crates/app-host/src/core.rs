@@ -503,6 +503,15 @@ impl HostCore {
         self.dir.linked(name)
     }
 
+    /// The app whose unit this one is a member of (`context.unit-of`); none in a compute run.
+    #[must_use]
+    pub fn unit_of(&self) -> Option<String> {
+        if self.is_compute() {
+            return None;
+        }
+        self.dir.unit_of()
+    }
+
     #[must_use]
     pub fn org(&self) -> Option<String> {
         if self.is_compute() {

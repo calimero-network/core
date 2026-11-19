@@ -208,6 +208,10 @@ impl context::Host for StoreData {
         Ok(self.host.linked(&name))
     }
 
+    fn unit_of(&mut self) -> Result<Option<String>> {
+        Ok(self.host.unit_of())
+    }
+
     fn app_owner(&mut self) -> Result<String> {
         Ok(self.host.app_owner())
     }

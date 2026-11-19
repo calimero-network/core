@@ -13,10 +13,10 @@ sdks/
 │   └── mero-kotlin/         # Kotlin      Maven network.calimero:mero-kotlin(-*)
 ├── components/              # UI built on a client
 │   ├── mero-react/          # React       npm  @calimero-network/mero-react (on mero-js)
-│   ├── mero-ui/             # React       npm  @calimero-network/mero-ui (design system; on mero-icons, mero-tokens)
+│   ├── mero-design/             # React       npm  @calimero-network/mero-design (design system; on mero-icons, mero-tokens)
 │   ├── mero-icons/          # React       npm  @calimero-network/mero-icons
 │   ├── mero-tokens/         # TypeScript  npm  @calimero-network/mero-tokens
-│   └── mero-charts/         # React       npm  @calimero-network/mero-charts (on mero-ui)
+│   └── mero-charts/         # React       npm  @calimero-network/mero-charts (on mero-design)
 ├── package.json             # the pnpm workspace of the JS SDKs (private)
 └── pnpm-workspace.yaml
 ```
@@ -34,8 +34,8 @@ sdks/
   into VERSION and every SDK; the `SDK scope` job (and release.yml) fail while
   any of them differs. Never bump one SDK on its own: SDKs release only with
   core.
-- **Inside the workspace** mero-react depends on mero-js, mero-ui on mero-icons
-  and mero-tokens, and mero-charts on mero-ui, through `workspace:*`; pnpm
+- **Inside the workspace** mero-react depends on mero-js, mero-design on mero-icons
+  and mero-tokens, and mero-charts on mero-design, through `workspace:*`; pnpm
   publishes that as the exact version.
 - **Generated vs written**: each client's generated layer (types, transport,
   the method list) comes from the node's API document,
@@ -80,7 +80,7 @@ repository; new entries go in core's release notes.
 A release cut (RELEASING.md) releases everything from the same commit:
 `release.yml` checks that `VERSION` is the release, and once core's binaries
 are released publishes each SDK through its workflow's `publish` path (npm:
-mero-js then mero-react, and mero-icons and mero-tokens, then mero-ui, then
+mero-js then mero-react, and mero-icons and mero-tokens, then mero-design, then
 mero-charts; PyPI: mero-py; Maven Central: mero-kotlin; mero-swift needs nothing: SwiftPM
 installs it from core's tag, through the root `Package.swift`). Then
 `fleet-bump.yml` opens the downstream pull requests: cargo and tee as before,

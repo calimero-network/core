@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "declaration": true,
+    "declarationMap": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "baseUrl": ".",
+    "paths": {
+      "@calimero-network/mero-design": [
+        "../../src"
+      ],
+      "@calimero-network/mero-tokens": [
+        "../../../mero-tokens/src"
+      ],
+      "@calimero-network/mero-charts": [
+        "../../../mero-charts/src"
+      ],
+      "@calimero-network/mero-icons": [
+        "../../../mero-icons/src"
+      ]
+    }
+  },
+  "include": [
+    "src",
+    ".storybook"
+  ],
+  "references": []
+}

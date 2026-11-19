@@ -1,4 +1,4 @@
-package calimero:app@0.5.4;
+package calimero:app@0.5.5;
 
 interface types {
   type account-id = string;
@@ -52,6 +52,9 @@ interface context {
   // a member its creation made, or an app its owner attached. None when nothing is linked
   // under that name, and in a compute run. 0.5.3.
   linked: func(name: string) -> option<string>;
+  // The app whose unit this one is a member of: the instance whose release created it
+  // (`uses` with `mode: create`). None for any other app, and in a compute run. 0.5.5.
+  unit-of: func() -> option<string>;
   app-owner: func() -> account-id;
   org: func() -> option<org-id>;
   org-role: func(account: account-id) -> option<org-role-t>;

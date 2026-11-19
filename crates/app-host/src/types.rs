@@ -254,6 +254,11 @@ pub trait Directory: Send + Sync {
     fn linked(&self, _name: &str) -> Option<String> {
         None
     }
+    /// The app whose unit this one is a member of: the instance whose release created it
+    /// (`uses` with `mode: create`). None by default.
+    fn unit_of(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A host call the policy refuses. The engine turns it into `Trap(HostDenied)`.
