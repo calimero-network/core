@@ -344,6 +344,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             release,
             owner_in_org,
             owner_in_team,
+            in_deployment,
         } => {
             if !s.bundles.contains_key(&bundle) {
                 return Err("unknown bundle");
@@ -400,6 +401,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err(
                     "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
                 );
+            }
+            // Only a deployment's managers decide which release its instances
+            // run: an owner, an organization's or publisher's run and a unit's
+            // upgrade alike move one only to the release it offers. Judged
+            // from the flag, or a cluster version that brings the rule to
+            // every node, so an earlier release's entry replays as it applied.
+            if in_deployment || s.cluster_brings(cluster_version::Feature::UpgradeInDeployment) {
+                if let Some(a) = s.apps.get(&app_id) {
+                    s.within_deployment(a, release.as_ref(), run.as_deref())?;
+                }
             }
             // A run moves each app it names once, along its package and
             // never back: its consent covers that, not whatever an entry

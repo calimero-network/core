@@ -66,6 +66,14 @@ NOT_COVERED = [
      "`a_deployments_secret_reaches_its_instances_unless_they_set_their_own` (`component_cluster.rs`) covers it "
      "on one build, and a system state without one reads and writes as before "
      "(`state_from_before_deployment_secrets_reads_with_none_and_writes_as_before`)"),
+    ("Deployments", "An instance from a deployment upgraded only to the release its deployment offers "
+     "(`409 OUTSIDE_DEPLOYMENT`, `SystemState::within_deployment`, `UpgradeApp`'s `in_deployment`)",
+     "needs a deployment and an instance from it, which no case seeds yet (deployments are not seeded, above), "
+     "and the rule changes no stored shape: an `UpgradeApp` without `in_deployment` reads and replays as "
+     "before below cluster version 1.0.0-rc.32 (`Feature::UpgradeInDeployment`). "
+     "`a_deployments_secret_never_reaches_a_package_it_does_not_offer` (`component_cluster.rs`) covers it on "
+     "one build, and `an_instance_from_a_deployment_moves_only_to_what_it_offers` (`system::tests`) the "
+     "replay of an earlier entry"),
     ("Packages", "A release that declares its secrets (`secrets` in the signed manifest, `PackageVersion::secrets`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `secrets`, and a release that "
      "declares them installs only once every node runs this release (`Feature::DeclaredSecrets`); "

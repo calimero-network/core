@@ -435,7 +435,19 @@ is its command line.
   `POST /apps { deployment, package, version? }` creates from the offer
   (`api::offered_bundle`, no install, no grant, no `sees_release`) and records
   `AppRecord::deployment`; `CreateApp` checks the offer again
-  (`offers_bundle`). `UninstallPackage` refuses an offered release (`offered`);
+  (`offers_bundle`). The managers decide which release its instances run;
+  an owner only accepts it: `upgrade_app` resolves an instance's target from
+  the offer (`api::apps::offered_bundle`, the package it runs; naming no
+  version accepts the offer), and another version, another package or a raw
+  bundle is `409 OUTSIDE_DEPLOYMENT` (`node::outside_deployment`) before the
+  step-up; `run_upgrade` and an org, publisher or unit run judge the same
+  (`SystemState::within_deployment`), and `UpgradeApp` refuses it at apply
+  when its `in_deployment` flag is set (`Feature::UpgradeInDeployment`, rc.32,
+  `in_deployment_rule`) or the logged cluster version brings it
+  (`SystemState::cluster_brings`); earlier entries replay as they applied.
+  Regressions: `a_deployments_secret_never_reaches_a_package_it_does_not_offer`
+  (`component_cluster.rs`), `an_instance_from_a_deployment_moves_only_to_what_it_offers`.
+  `UninstallPackage` refuses an offered release (`offered`);
   `DeleteOrg` refuses an org that owns a deployment. Reads: `GET /deployments`
   (what the caller manages), `GET /deployments/{id}` (public, on fresh state:
   name, owner kind and name, offers), `GET /deployments/{id}/orgs` (managers, `sys_fresh`:
@@ -473,7 +485,13 @@ is its command line.
   through `uses` in `apps`. Lookup: `Node::outbound_for` -> `component::run_secrets`: the
   instance's own value, else its deployment's (`SystemState::deployment_secrets_of`,
   this node's system state at run time, not the app's log), else the operator's
-  in the gate; each only for a name the release declares. Never answered:
+  in the gate; each only for a name the release declares. The deployment's
+  only for a run of a release of a package it offers or an offered release
+  references (`SystemState::deployment_covers`, over `used_releases`; any
+  version: its signer is pinned): its
+  managers set values for the code they ship, and a record that somehow runs
+  other code (a customer's own package declaring the name for its own host)
+  gets none. Upgrades keep instances on the offer (Deployments above). Never answered:
   `GET /deployments/{id}/secrets` gives fingerprints, `setBy`, `setAt`; an
   instance's `GET /apps/{app}/secrets` only `source: deployment`;
   `SecretValue`'s `Debug` hides it; `apply`'s answers and refusals never carry
