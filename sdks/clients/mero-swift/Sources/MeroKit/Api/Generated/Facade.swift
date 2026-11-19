@@ -118,6 +118,45 @@ extension CalimeroClient {
             }
         }
 
+        /// Invite a guest to an instance: `POST /apps/{app}/invites` (`app_invite_create`).
+        ///
+        /// A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func inviteCreate(app: Swift.String, ttlSecs: Swift.Int64? = nil, uses: Swift.Int64? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.AppInviteCreate.Output.Ok.Body.JsonPayload {
+            let input = Operations.AppInviteCreate.Input(path: .init(app: app), body: .json(.init(ttlSecs: ttlSecs, uses: uses)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.appInviteCreate(input).ok.body.json
+            }
+        }
+
+        /// An instance's invites: `GET /apps/{app}/invites` (`app_invite_list`).
+        ///
+        /// For whoever manages its guests: keys and terms, never a token.
+        ///
+        /// **Who:** a passkey session (an API key is refused).
+        @discardableResult
+        public func inviteList(app: Swift.String) async throws -> Operations.AppInviteList.Output.Ok.Body.JsonPayload {
+            let input = Operations.AppInviteList.Input(path: .init(app: app))
+            return try await client.perform { api in
+                try await api.appInviteList(input).ok.body.json
+            }
+        }
+
+        /// Revoke an instance invite: `DELETE /apps/{app}/invites/{key}` (`app_invite_revoke`).
+        ///
+        /// Its creator, or whoever manages the instance's guests; `412` first.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func inviteRevoke(app: Swift.String, key: Swift.String, passkey: (any PasskeyProvider)? = nil) async throws -> OpenAPIRuntime.OpenAPIObjectContainer {
+            let input = Operations.AppInviteRevoke.Input(path: .init(app: app, key: key))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.appInviteRevoke(input).ok.body.json
+            }
+        }
+
         /// Attach an app to one of an app's references: `PUT /apps/{app}/links/{name}` (`app_link`).
         ///
         /// `name` is an `attach` reference of the release the app runs, and `app` an app of the same organization that runs its package; the caller manages both. One outside the reference's range is attached anyway and answered `inRange: false`, and the consent page warns about it on later upgrades: an attached app is never upgraded with the instance. `env::linked(name)` answers it from the next run on. Answers the link as `GET /apps/{app}/links` lists it.
@@ -1592,7 +1631,7 @@ extension CalimeroClient {
 
         /// Join with an invite: `POST /invites/{token}/redeem` (`invite_redeem`).
         ///
-        /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.
+        /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
         ///
         /// **Who:** a passkey session (an API key is refused).
         @discardableResult
@@ -1858,6 +1897,19 @@ extension CalimeroClient {
             let input = Operations.OrgSetMember.Input(path: .init(org: org), body: .json(.init(account: account, role: role)))
             return try await client.perform(passkey: passkey) { api in
                 try await api.orgSetMember(input).ok.body.json
+            }
+        }
+
+        /// Change the organization's settings: `POST /orgs/{org}/settings` (`org_settings`).
+        ///
+        /// `allowGuests` (default on): whether its instances take guests, accounts listed on one instance (its `accounts` access) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+        ///
+        /// **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func settings(org: Swift.String, allowGuests: Swift.Bool? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.OrgSettings.Output.Ok.Body.JsonPayload {
+            let input = Operations.OrgSettings.Input(path: .init(org: org), body: .json(.init(allowGuests: allowGuests)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.orgSettings(input).ok.body.json
             }
         }
 

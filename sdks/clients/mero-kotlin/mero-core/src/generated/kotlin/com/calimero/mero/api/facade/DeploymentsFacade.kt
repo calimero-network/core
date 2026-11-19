@@ -258,11 +258,11 @@ class DeploymentsFacade internal constructor(
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
     suspend fun signUpInviteCreate(
-        uses: kotlin.Long? = null,
         ttlSecs: kotlin.Long? = null,
+        uses: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
     ): SignUpInviteCreate200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.signUpInviteCreate(signUpInviteCreateRequest = SignUpInviteCreateRequest(uses = uses, ttlSecs = ttlSecs))
+        api(passkey, null, emptySet()).signUpAndDeployments.signUpInviteCreate(signUpInviteCreateRequest = SignUpInviteCreateRequest(ttlSecs = ttlSecs, uses = uses))
 
     /**
      * Cluster sign-up invites

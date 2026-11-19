@@ -746,6 +746,42 @@ pub struct Org {
     /// as it did.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub personal: bool,
+    /// Whether its instances may take guests ([`crate::system::SystemState::guest_reaches`]):
+    /// the organization's switch, beside each release's (`PackageVersion::guests`); the
+    /// stricter wins. Set by its owner or an admin (`SystemCmd::SetOrgSettings`). Left out
+    /// when `true` (the default), so an organization from before writes as it did.
+    #[serde(default = "allowed", skip_serializing_if = "is_allowed")]
+    pub allow_guests: bool,
+}
+
+/// [`Org::allow_guests`]' default.
+const fn allowed() -> bool {
+    true
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_allowed(b: &bool) -> bool {
+    *b
+}
+
+/// An instance invite ([`crate::system::SystemCmd::CreateAppInvite`]): whoever redeems it
+/// is added to the instance's guest list (its `accounts` access), never to its
+/// organization. Kept under the token's Ed25519 public key, as an organization invite.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppInvite {
+    pub app: AppId,
+    pub expires_at: u64,
+    pub uses_left: u32,
+    /// Who made it: the command's actor, set where it applies.
+    #[serde(default)]
+    pub created_by: AccountId,
+    /// When it was made (Unix seconds, the creating node's clock).
+    #[serde(default)]
+    pub created_at: u64,
 }
 
 /// An organization's recovery key: whoever holds its seed can hand the

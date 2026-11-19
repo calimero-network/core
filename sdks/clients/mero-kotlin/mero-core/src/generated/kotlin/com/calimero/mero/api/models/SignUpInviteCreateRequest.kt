@@ -32,19 +32,19 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param uses 
  * @param ttlSecs 
+ * @param uses 
  * @param confirm 
  */
 @Serializable
 
 data class SignUpInviteCreateRequest (
 
-    @SerialName(value = "uses")
-    val uses: kotlin.Long? = null,
-
     @SerialName(value = "ttlSecs")
     val ttlSecs: kotlin.Long? = null,
+
+    @SerialName(value = "uses")
+    val uses: kotlin.Long? = null,
 
     @SerialName(value = "confirm")
     val confirm: Confirm? = null

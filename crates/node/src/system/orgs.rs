@@ -217,6 +217,19 @@ pub(super) fn authorize(
             )?;
             Ok(Some(used))
         }
+        SystemCmd::SetOrgSettings {
+            org,
+            settings,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = serde_json::to_value(settings).unwrap_or_default();
+            proofs.states(&st, &format!("org:{org}"), "__set_org_settings", &|a| {
+                *a == args
+            })?;
+            Ok(Some(used))
+        }
         SystemCmd::RevokeInvite {
             org,
             invite_key,
@@ -942,6 +955,24 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             )?;
             Ok(json!({ "org": org }))
         }
+        SystemCmd::SetOrgSettings {
+            org,
+            settings,
+            actor,
+            ..
+        } => {
+            if !s.is_org_admin(&org, &actor) {
+                return Err("only the organization's owner or an admin changes its settings");
+            }
+            if settings.is_empty() {
+                return Err("no setting to change");
+            }
+            let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+            if let Some(allow) = settings.allow_guests {
+                o.allow_guests = allow;
+            }
+            Ok(json!({ "org": org, "allowGuests": o.allow_guests }))
+        }
         SystemCmd::RevokeInvite {
             org,
             invite_key,
@@ -1014,5 +1045,6 @@ pub(super) fn new_org(
         recovery: None,
         all_apps: BTreeSet::new(),
         personal,
+        allow_guests: true,
     }
 }

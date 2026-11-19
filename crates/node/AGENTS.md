@@ -995,6 +995,34 @@ is its command line.
   `instance_orgs::an_instance_goes_where_its_release_says`,
   `instance_orgs::an_app_is_transferred_only_to_a_member_of_its_organization`, the
   `personal-org` and `ordinary-orgs` upgrade cases.
+- **Guests** (`Feature::Guests`, rc.32; `SystemState::guest_reaches`, `guests_on`,
+  `guests_allowed`, `guest_holder`, `is_guest`, `manages_guests`; docs: protocol organizations
+  "Guests"): an account in an instance's `accounts` list that is not a member of its
+  organization reaches it (and its unit's members: `guest_holder` walks `unit_parent` up
+  at most `MAX_UNIT_LINKS_UP`) from the logged version on, while the release it runs says
+  `guests: allowed` (`calimero_bundle::GuestPolicy`, absent = forbidden; kept on
+  `PackageVersion::guests`, recorded only under the feature and filled in by a reinstall; a
+  release recorded without it, or a raw bundle, takes none) and its organization's
+  `Org::allow_guests` is on (default; `SetOrgSettings { settings: OrgSettings }`, owner or
+  admin, consent `org:<org> / __set_org_settings / settings`, `POST /orgs/{org}/settings`).
+  Judged in `may_reach` before the membership check, so every gated route and `receives`
+  follow it; a guest is no member, so org routes, `/files`, management and upgrades refuse
+  them; `GET /apps/{app}` shows a guest only themselves in the list. Guests are added and
+  removed with `SetAccess` by whoever may change the access, or by an instance invite
+  (`SystemState::app_invites`, `types::AppInvite` under the token's Ed25519 key):
+  `CreateAppInvite` (consent `<app> / __create_app_invite / app_invite_args`, refused unless
+  guests are allowed and the access is `accounts`; bounds `MAX_APP_INVITES_PER_APP`,
+  `MAX_APP_INVITES`, `MAX_APP_INVITE_USES`, `MAX_APP_INVITE_TTL_SECS`), `RevokeAppInvite`
+  (`__revoke_app_invite`), `RedeemAppInvite` (the token key's `sign_invite_redeem`; adds the
+  redeemer to the list up to `MAX_GUESTS_PER_APP`, free when listed already); `remove_app`
+  drops them. Routes `POST|GET /apps/{app}/invites`, `DELETE /apps/{app}/invites/{key}`; the
+  redemption is `POST /invites/{token}/redeem` (`api::orgs::redeem_invite` tells the kinds
+  apart), and the consent page's `acceptInvite` shows an instance invite as joining that app
+  as a guest (`consent_page::app_invite_model`). An organization flagged `personal` keeps its
+  `accounts` instances' reach whatever the switches say (legacy). Regressions:
+  `system::tests::a_guest_reaches_one_instance_while_its_release_and_its_organization_allow`,
+  `guests::a_guest_reaches_one_instance_only_while_both_switches_allow`,
+  `guests::an_instance_invite_makes_its_redeemer_a_guest`.
 - **An org app's owner, while a member** (`SystemState::owner_acts`): an organization's app gives its owner the owner's powers (access, metadata, transfer, delete, upgrade, upgrade keys, files, blob deletes, usage) only while they are a member (`member` or above) of its organization; its admins keep transfer and delete (`manages_app`). Judged at apply; `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` carry `owner_in_org`, which the API always sets; absent in an entry an earlier release logged, which replays judging ownership alone. Regressions: `an_owner_removed_from_the_organization_no_longer_manages_its_app`, `a_member_owner_and_a_personal_owner_still_manage_their_apps`, `system::tests` (`an_org_apps_owner_manages_it_only_while_a_member`, `an_org_admin_transfers_or_deletes_an_app_whose_owner_left`, `app_commands_logged_before_the_membership_rule_replay_as_they_did`).
 - **An app on a team, its owner while in the team** (`SystemState::owner_acts`, `may_reach`): an app with `team` access is reached and managed by its owner only while they are in that team (`Org::in_team`), so an owner kicked from, leaving, or closed out of an app's team (or a private channel) loses the channels they created there; admins transfer them. The six owner commands above and `ScopeApps` (which finds who reaches an instance) carry `owner_in_team`, which the API always sets; absent, an entry replays judging the owner without the team (`OwnerRule`). Regressions: `an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it`, `system::tests::an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it`.
 - **A stopped group** (`calimero-log` restarts it): a group whose Raft core stopped

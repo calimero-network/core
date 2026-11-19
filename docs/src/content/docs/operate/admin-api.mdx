@@ -252,7 +252,11 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/invites` | account holder | `{ role, teams, ttlSecs?, uses?, allApps?, confirm? }` → a token. `412` first; `allApps: true` (owner or admin, `403` below) also gives whoever redeems it every app added later | `org invite` |
 | `GET /orgs/{org}/invites` | session | `{ invites: [{ inviteKey, role, teams, usesLeft, expiresAt, expired, createdBy, createdAt, allApps }] }`: the invites the caller may see, never a token | |
 | `DELETE /orgs/{org}/invites/{key}` | session | Revoke an invite by its key; `412` first | |
-| `POST /invites/{token}/redeem` | account holder | Join (no passkey prompt: the node signs with the token's key) | `org join` |
+| `POST /orgs/{org}/settings` | account holder | `{ allowGuests?, confirm? }` → `{ org, allowGuests }`: the owner or an admin; `412` first ([Guests](/protocol/organizations/#guests)) | |
+| `POST /apps/{app}/invites` | account holder | `{ ttlSecs?, uses?, confirm? }` → a token whose redeemer becomes a guest of the instance; whoever may change its access; `409 GUESTS_NOT_ALLOWED`, `409 NOT_AN_ACCOUNTS_INSTANCE`; `412` first | |
+| `GET /apps/{app}/invites` | session | `{ invites: [{ inviteKey, usesLeft, expiresAt, expired, createdBy, createdAt }] }`, never a token | |
+| `DELETE /apps/{app}/invites/{key}` | account holder | Revoke an instance invite; `412` first | |
+| `POST /invites/{token}/redeem` | account holder | Join (no passkey prompt: the node signs with the token's key): an organization invite answers `{ org }`, an instance invite `{ app, org }` (a guest of that app) | `org join` |
 | `POST /orgs/{org}/recovery` | account holder | `{ publicKey, confirm? }`: set, rotate or (`null`) remove the recovery key (owner; `412` first); cancels a recovery under way | - |
 | `POST /orgs/{org}/recovery/start` | account holder | `{ nonce, signature }`: the seed's signature handing the org to the caller → `{ startedAt, readyAt }`. `403 WRONG_RECOVERY_KEY`, `409 RECOVERY_PENDING` | - |
 | `POST /orgs/{org}/recovery/cancel` | account holder | Cancel the recovery under way (owner; `412` first) | - |

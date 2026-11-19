@@ -32,7 +32,8 @@ class Org:
     `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id;
     `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later,
     `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version
-    it is an organization like any other).
+    it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets
+    it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.32).
 
         Attributes:
             org_id (str):
@@ -49,6 +50,7 @@ class Org:
             recovery (Union[Unset, OrgRecovery]):
             all_apps (Union[Unset, list[str]]):
             personal (Union[Unset, bool]):
+            allow_guests (Union[Unset, bool]):
             mode (Union[Unset, OrgMode]):
             release_approvers (Union[Unset, list[str]]):
             publishes (Union[Unset, list[str]]):
@@ -69,6 +71,7 @@ class Org:
     recovery: Union[Unset, "OrgRecovery"] = UNSET
     all_apps: Union[Unset, list[str]] = UNSET
     personal: Union[Unset, bool] = UNSET
+    allow_guests: Union[Unset, bool] = UNSET
     mode: Union[Unset, OrgMode] = UNSET
     release_approvers: Union[Unset, list[str]] = UNSET
     publishes: Union[Unset, list[str]] = UNSET
@@ -117,6 +120,8 @@ class Org:
 
         personal = self.personal
 
+        allow_guests = self.allow_guests
+
         mode: Union[Unset, str] = UNSET
         if not isinstance(self.mode, Unset):
             mode = self.mode.value
@@ -160,6 +165,8 @@ class Org:
             field_dict["allApps"] = all_apps
         if personal is not UNSET:
             field_dict["personal"] = personal
+        if allow_guests is not UNSET:
+            field_dict["allowGuests"] = allow_guests
         if mode is not UNSET:
             field_dict["mode"] = mode
         if release_approvers is not UNSET:
@@ -216,6 +223,8 @@ class Org:
 
         personal = d.pop("personal", UNSET)
 
+        allow_guests = d.pop("allowGuests", UNSET)
+
         _mode = d.pop("mode", UNSET)
         mode: Union[Unset, OrgMode]
         if isinstance(_mode, Unset):
@@ -261,6 +270,7 @@ class Org:
             recovery=recovery,
             all_apps=all_apps,
             personal=personal,
+            allow_guests=allow_guests,
             mode=mode,
             release_approvers=release_approvers,
             publishes=publishes,

@@ -57,6 +57,8 @@ import com.calimero.mero.api.models.OrgRename200Response
 import com.calimero.mero.api.models.OrgRenameRequest
 import com.calimero.mero.api.models.OrgSetBackupKeyRequest
 import com.calimero.mero.api.models.OrgSetMemberRequest
+import com.calimero.mero.api.models.OrgSettings200Response
+import com.calimero.mero.api.models.OrgSettingsRequest
 import com.calimero.mero.api.models.OrgUpgradeRequest
 import com.calimero.mero.api.models.OrgUpgradeRetryRequest
 import com.calimero.mero.api.models.OrgUsage200Response
@@ -405,7 +407,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /invites/{token}/redeem
      * Join with an invite
-     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined.  **Who:** a passkey session (an API key is refused).
+     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, joined as a guest (not a member). An instance invite is refused &#x60;409 GUESTS_NOT_ALLOWED&#x60; while its instance takes no guests.  **Who:** a passkey session (an API key is refused).
      * @param token 
      * @return InviteRedeem200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -437,7 +439,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /invites/{token}/redeem
      * Join with an invite
-     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined.  **Who:** a passkey session (an API key is refused).
+     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, joined as a guest (not a member). An instance invite is refused &#x60;409 GUESTS_NOT_ALLOWED&#x60; while its instance takes no guests.  **Who:** a passkey session (an API key is refused).
      * @param token 
      * @return ApiResponse<InviteRedeem200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -2042,6 +2044,83 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
         return RequestConfig(
             method = RequestMethod.POST,
             path = "/orgs/{org}/members".replace("{"+"org"+"}", encodeURIComponent(org.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /orgs/{org}/settings
+     * Change the organization&#39;s settings
+     * &#x60;allowGuests&#x60; (default on): whether its instances take guests, accounts listed on one instance (its &#x60;accounts&#x60; access) that are not members, where the instance&#39;s release allows them too (&#x60;guests: allowed&#x60; in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is &#x60;400&#x60;. The owner or an admin; &#x60;412&#x60; first. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.32.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param org 
+     * @param orgSettingsRequest 
+     * @return OrgSettings200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun orgSettings(org: kotlin.String, orgSettingsRequest: OrgSettingsRequest) : OrgSettings200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = orgSettingsWithHttpInfo(org = org, orgSettingsRequest = orgSettingsRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgSettings200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /orgs/{org}/settings
+     * Change the organization&#39;s settings
+     * &#x60;allowGuests&#x60; (default on): whether its instances take guests, accounts listed on one instance (its &#x60;accounts&#x60; access) that are not members, where the instance&#39;s release allows them too (&#x60;guests: allowed&#x60; in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is &#x60;400&#x60;. The owner or an admin; &#x60;412&#x60; first. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.32.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param org 
+     * @param orgSettingsRequest 
+     * @return ApiResponse<OrgSettings200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun orgSettingsWithHttpInfo(org: kotlin.String, orgSettingsRequest: OrgSettingsRequest) : ApiResponse<OrgSettings200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgSettingsRequestConfig(org = org, orgSettingsRequest = orgSettingsRequest)
+
+        return@withContext request<OrgSettingsRequest, OrgSettings200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation orgSettings
+     *
+     * @param org 
+     * @param orgSettingsRequest 
+     * @return RequestConfig
+     */
+    fun orgSettingsRequestConfig(org: kotlin.String, orgSettingsRequest: OrgSettingsRequest) : RequestConfig<OrgSettingsRequest> {
+        val localVariableBody = orgSettingsRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/orgs/{org}/settings".replace("{"+"org"+"}", encodeURIComponent(org.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

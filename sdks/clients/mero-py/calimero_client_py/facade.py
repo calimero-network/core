@@ -55,6 +55,9 @@ from .openapi.api.apps import app_delegate as _app_delegate
 from .openapi.api.apps import app_delegations as _app_delegations
 from .openapi.api.apps import app_delete as _app_delete
 from .openapi.api.apps import app_get as _app_get
+from .openapi.api.apps import app_invite_create as _app_invite_create
+from .openapi.api.apps import app_invite_list as _app_invite_list
+from .openapi.api.apps import app_invite_revoke as _app_invite_revoke
 from .openapi.api.apps import app_link as _app_link
 from .openapi.api.apps import app_links as _app_links
 from .openapi.api.apps import app_list as _app_list
@@ -182,6 +185,7 @@ from .openapi.api.organizations import org_remove_member as _org_remove_member
 from .openapi.api.organizations import org_rename as _org_rename
 from .openapi.api.organizations import org_set_backup_key as _org_set_backup_key
 from .openapi.api.organizations import org_set_member as _org_set_member
+from .openapi.api.organizations import org_settings as _org_settings
 from .openapi.api.organizations import org_upgrade as _org_upgrade
 from .openapi.api.organizations import org_upgrade_retry as _org_upgrade_retry
 from .openapi.api.organizations import org_upgrade_status as _org_upgrade_status
@@ -258,6 +262,7 @@ from .openapi.models import ApikeyCreateBody
 from .openapi.models import AppAccessBody
 from .openapi.models import AppCreateBody
 from .openapi.models import AppDelegateBody
+from .openapi.models import AppInviteCreateBody
 from .openapi.models import AppLinkBody
 from .openapi.models import AppMetadataBody
 from .openapi.models import AppMethodBody
@@ -328,6 +333,7 @@ from .openapi.models import OrgReleaseApprovalBody
 from .openapi.models import OrgRenameBody
 from .openapi.models import OrgSetBackupKeyBody
 from .openapi.models import OrgSetMemberBody
+from .openapi.models import OrgSettingsBody
 from .openapi.models import OrgUpgradeBody
 from .openapi.models import OrgUpgradeRetryBody
 from .openapi.models import OriginsAddBody
@@ -476,6 +482,26 @@ _APP_GET = Operation(
     "app_get",
     body="none",
     answer="json",
+)
+_APP_INVITE_CREATE = Operation(
+    _app_invite_create,
+    "app_invite_create",
+    body=AppInviteCreateBody,
+    answer="json",
+    confirm=True,
+)
+_APP_INVITE_LIST = Operation(
+    _app_invite_list,
+    "app_invite_list",
+    body="none",
+    answer="json",
+)
+_APP_INVITE_REVOKE = Operation(
+    _app_invite_revoke,
+    "app_invite_revoke",
+    body=ConfirmOnly,
+    answer="json",
+    confirm=True,
 )
 _APP_LINK = Operation(
     _app_link, "app_link", body=AppLinkBody, answer="json", confirm=True
@@ -1099,6 +1125,68 @@ class Apps(Group):
         Returns: App
         """
         return self._run(_APP_GET, (app,), {}, None)
+
+    def invite_create(self, *, app, ttl_secs=UNSET, uses=UNSET, confirm=None):
+        """Invite a guest to an instance (`POST /apps/{app}/invites`, `app_invite_create`).
+
+        A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            ttl_secs: body `ttlSecs`
+            uses: body `uses`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: AppInviteCreateResponse200
+        """
+        return self._run(
+            _APP_INVITE_CREATE,
+            (app,),
+            {},
+            {"ttlSecs": ttl_secs, "uses": uses},
+            confirm=confirm,
+        )
+
+    def invite_list(self, *, app):
+        """An instance's invites (`GET /apps/{app}/invites`, `app_invite_list`).
+
+        For whoever manages its guests: keys and terms, never a token.
+
+        **Who:** a passkey session (an API key is refused).
+
+        Args:
+            app: path
+
+        Returns: AppInviteListResponse200
+        """
+        return self._run(_APP_INVITE_LIST, (app,), {}, None)
+
+    def invite_revoke(self, *, app, key, confirm=None):
+        """Revoke an instance invite (`DELETE /apps/{app}/invites/{key}`, `app_invite_revoke`).
+
+        Its creator, or whoever manages the instance's guests; `412` first.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            key: path
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: AppInviteRevokeResponse200
+        """
+        return self._run(
+            _APP_INVITE_REVOKE,
+            (
+                app,
+                key,
+            ),
+            {},
+            {},
+            confirm=confirm,
+        )
 
     def link(self, *, app, name, body_app, confirm=None):
         """Attach an app to one of an app's references (`PUT /apps/{app}/links/{name}`, `app_link`).
@@ -4315,6 +4403,9 @@ _ORG_SET_MEMBER = Operation(
     answer="json",
     confirm=True,
 )
+_ORG_SETTINGS = Operation(
+    _org_settings, "org_settings", body=OrgSettingsBody, answer="json", confirm=True
+)
 _TEAM_CREATE = Operation(
     _team_create,
     "team_create",
@@ -4606,7 +4697,7 @@ class Orgs(Group):
     def invite_redeem(self, *, token):
         """Join with an invite (`POST /invites/{token}/redeem`, `invite_redeem`).
 
-        No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.
+        No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
 
         **Who:** a passkey session (an API key is refused).
 
@@ -4997,6 +5088,24 @@ class Orgs(Group):
             {},
             {"account": account, "role": role},
             confirm=confirm,
+        )
+
+    def settings(self, *, org, allow_guests=UNSET, confirm=None):
+        """Change the organization's settings (`POST /orgs/{org}/settings`, `org_settings`).
+
+        `allowGuests` (default on): whether its instances take guests, accounts listed on one instance (its `accounts` access) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+
+        **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            org: path
+            allow_guests: body `allowGuests`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: OrgSettingsResponse200
+        """
+        return self._run(
+            _ORG_SETTINGS, (org,), {}, {"allowGuests": allow_guests}, confirm=confirm
         )
 
     def team_create(self, *, org, name, parent=UNSET, join):

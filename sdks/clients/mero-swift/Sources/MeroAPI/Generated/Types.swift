@@ -259,6 +259,33 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /apps/{app}/intents`.
     /// - Remark: Generated from `#/paths//apps/{app}/intents/post(intents)`.
     func intents(_ input: Operations.Intents.Input) async throws -> Operations.Intents.Output
+    /// An instance's invites
+    ///
+    /// For whoever manages its guests: keys and terms, never a token.
+    ///
+    /// **Who:** a passkey session (an API key is refused).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/invites`.
+    /// - Remark: Generated from `#/paths//apps/{app}/invites/get(app_invite_list)`.
+    func appInviteList(_ input: Operations.AppInviteList.Input) async throws -> Operations.AppInviteList.Output
+    /// Invite a guest to an instance
+    ///
+    /// A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/invites`.
+    /// - Remark: Generated from `#/paths//apps/{app}/invites/post(app_invite_create)`.
+    func appInviteCreate(_ input: Operations.AppInviteCreate.Input) async throws -> Operations.AppInviteCreate.Output
+    /// Revoke an instance invite
+    ///
+    /// Its creator, or whoever manages the instance's guests; `412` first.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/invites/{key}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/invites/{key}/delete(app_invite_revoke)`.
+    func appInviteRevoke(_ input: Operations.AppInviteRevoke.Input) async throws -> Operations.AppInviteRevoke.Output
     /// List an app's links to the apps its release uses
     ///
     /// One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.
@@ -969,7 +996,7 @@ public protocol APIProtocol: Sendable {
     func health(_ input: Operations.Health.Input) async throws -> Operations.Health.Output
     /// Join with an invite
     ///
-    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.
+    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -1267,6 +1294,15 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /orgs/{org}/releases`.
     /// - Remark: Generated from `#/paths//orgs/{org}/releases/post(org_release_approval)`.
     func orgReleaseApproval(_ input: Operations.OrgReleaseApproval.Input) async throws -> Operations.OrgReleaseApproval.Output
+    /// Change the organization's settings
+    ///
+    /// `allowGuests` (default on): whether its instances take guests, accounts listed on one instance (its `accounts` access) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    ///
+    /// **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/settings`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/settings/post(org_settings)`.
+    func orgSettings(_ input: Operations.OrgSettings.Input) async throws -> Operations.OrgSettings.Output
     /// Create a team
     ///
     /// An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only). A package-bound session: only its own package's teams (its app team and the teams below it): `parent` one of them.
@@ -2014,6 +2050,61 @@ extension APIProtocol {
         body: Operations.Intents.Input.Body
     ) async throws -> Operations.Intents.Output {
         try await intents(Operations.Intents.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// An instance's invites
+    ///
+    /// For whoever manages its guests: keys and terms, never a token.
+    ///
+    /// **Who:** a passkey session (an API key is refused).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/invites`.
+    /// - Remark: Generated from `#/paths//apps/{app}/invites/get(app_invite_list)`.
+    public func appInviteList(
+        path: Operations.AppInviteList.Input.Path,
+        headers: Operations.AppInviteList.Input.Headers = .init()
+    ) async throws -> Operations.AppInviteList.Output {
+        try await appInviteList(Operations.AppInviteList.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Invite a guest to an instance
+    ///
+    /// A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/invites`.
+    /// - Remark: Generated from `#/paths//apps/{app}/invites/post(app_invite_create)`.
+    public func appInviteCreate(
+        path: Operations.AppInviteCreate.Input.Path,
+        headers: Operations.AppInviteCreate.Input.Headers = .init(),
+        body: Operations.AppInviteCreate.Input.Body
+    ) async throws -> Operations.AppInviteCreate.Output {
+        try await appInviteCreate(Operations.AppInviteCreate.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Revoke an instance invite
+    ///
+    /// Its creator, or whoever manages the instance's guests; `412` first.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/invites/{key}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/invites/{key}/delete(app_invite_revoke)`.
+    public func appInviteRevoke(
+        path: Operations.AppInviteRevoke.Input.Path,
+        headers: Operations.AppInviteRevoke.Input.Headers = .init(),
+        body: Operations.AppInviteRevoke.Input.Body? = nil
+    ) async throws -> Operations.AppInviteRevoke.Output {
+        try await appInviteRevoke(Operations.AppInviteRevoke.Input(
             path: path,
             headers: headers,
             body: body
@@ -3367,7 +3458,7 @@ extension APIProtocol {
     }
     /// Join with an invite
     ///
-    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.
+    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -3984,6 +4075,25 @@ extension APIProtocol {
         body: Operations.OrgReleaseApproval.Input.Body
     ) async throws -> Operations.OrgReleaseApproval.Output {
         try await orgReleaseApproval(Operations.OrgReleaseApproval.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Change the organization's settings
+    ///
+    /// `allowGuests` (default on): whether its instances take guests, accounts listed on one instance (its `accounts` access) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    ///
+    /// **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/settings`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/settings/post(org_settings)`.
+    public func orgSettings(
+        path: Operations.OrgSettings.Input.Path,
+        headers: Operations.OrgSettings.Input.Headers = .init(),
+        body: Operations.OrgSettings.Input.Body
+    ) async throws -> Operations.OrgSettings.Output {
+        try await orgSettings(Operations.OrgSettings.Input(
             path: path,
             headers: headers,
             body: body
@@ -6850,7 +6960,7 @@ public enum Components {
                 case upgrades
             }
         }
-        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other).
+        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.32).
         ///
         /// - Remark: Generated from `#/components/schemas/Org`.
         public struct Org: Codable, Hashable, Sendable {
@@ -7050,6 +7160,8 @@ public enum Components {
             public var allApps: [Swift.String]?
             /// - Remark: Generated from `#/components/schemas/Org/personal`.
             public var personal: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/Org/allowGuests`.
+            public var allowGuests: Swift.Bool?
             /// - Remark: Generated from `#/components/schemas/Org/mode`.
             @frozen public enum ModePayload: String, Codable, Hashable, Sendable, CaseIterable {
                 case legacy = "legacy"
@@ -7104,6 +7216,7 @@ public enum Components {
             ///   - recovery:
             ///   - allApps:
             ///   - personal:
+            ///   - allowGuests:
             ///   - mode:
             ///   - releaseApprovers:
             ///   - publishes:
@@ -7123,6 +7236,7 @@ public enum Components {
                 recovery: Components.Schemas.Org.RecoveryPayload? = nil,
                 allApps: [Swift.String]? = nil,
                 personal: Swift.Bool? = nil,
+                allowGuests: Swift.Bool? = nil,
                 mode: Components.Schemas.Org.ModePayload? = nil,
                 releaseApprovers: [Swift.String]? = nil,
                 publishes: [Swift.String]? = nil,
@@ -7142,6 +7256,7 @@ public enum Components {
                 self.recovery = recovery
                 self.allApps = allApps
                 self.personal = personal
+                self.allowGuests = allowGuests
                 self.mode = mode
                 self.releaseApprovers = releaseApprovers
                 self.publishes = publishes
@@ -7162,6 +7277,7 @@ public enum Components {
                 case recovery
                 case allApps
                 case personal
+                case allowGuests
                 case mode
                 case releaseApprovers
                 case publishes
@@ -15131,6 +15247,555 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.Intents.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// An instance's invites
+    ///
+    /// For whoever manages its guests: keys and terms, never a token.
+    ///
+    /// **Who:** a passkey session (an API key is refused).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/invites`.
+    /// - Remark: Generated from `#/paths//apps/{app}/invites/get(app_invite_list)`.
+    public enum AppInviteList {
+        public static let id: Swift.String = "app_invite_list"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppInviteList.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppInviteList.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppInviteList.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppInviteList.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.AppInviteList.Input.Path,
+                headers: Operations.AppInviteList.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload`.
+                        public struct InvitesPayloadPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/inviteKey`.
+                            public var inviteKey: Swift.String
+                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/usesLeft`.
+                            public var usesLeft: Swift.Int64
+                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/expiresAt`.
+                            public var expiresAt: Swift.Int64
+                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/expired`.
+                            public var expired: Swift.Bool
+                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/createdBy`.
+                            public var createdBy: Swift.String
+                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/createdAt`.
+                            public var createdAt: Swift.Int64
+                            /// Creates a new `InvitesPayloadPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - inviteKey:
+                            ///   - usesLeft:
+                            ///   - expiresAt:
+                            ///   - expired:
+                            ///   - createdBy:
+                            ///   - createdAt:
+                            public init(
+                                inviteKey: Swift.String,
+                                usesLeft: Swift.Int64,
+                                expiresAt: Swift.Int64,
+                                expired: Swift.Bool,
+                                createdBy: Swift.String,
+                                createdAt: Swift.Int64
+                            ) {
+                                self.inviteKey = inviteKey
+                                self.usesLeft = usesLeft
+                                self.expiresAt = expiresAt
+                                self.expired = expired
+                                self.createdBy = createdBy
+                                self.createdAt = createdAt
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case inviteKey
+                                case usesLeft
+                                case expiresAt
+                                case expired
+                                case createdBy
+                                case createdAt
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/invites`.
+                        public typealias InvitesPayload = [Operations.AppInviteList.Output.Ok.Body.JsonPayload.InvitesPayloadPayload]
+                        /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/invites`.
+                        public var invites: Operations.AppInviteList.Output.Ok.Body.JsonPayload.InvitesPayload
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - invites:
+                        public init(invites: Operations.AppInviteList.Output.Ok.Body.JsonPayload.InvitesPayload) {
+                            self.invites = invites
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case invites
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/application\/json`.
+                    case json(Operations.AppInviteList.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppInviteList.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppInviteList.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppInviteList.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/invites/get(app_invite_list)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppInviteList.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppInviteList.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Invite a guest to an instance
+    ///
+    /// A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/invites`.
+    /// - Remark: Generated from `#/paths//apps/{app}/invites/post(app_invite_create)`.
+    public enum AppInviteCreate {
+        public static let id: Swift.String = "app_invite_create"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppInviteCreate.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppInviteCreate.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppInviteCreate.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppInviteCreate.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/requestBody/json/ttlSecs`.
+                    public var ttlSecs: Swift.Int64?
+                    /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/requestBody/json/uses`.
+                    public var uses: Swift.Int64?
+                    /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - ttlSecs:
+                    ///   - uses:
+                    ///   - confirm:
+                    public init(
+                        ttlSecs: Swift.Int64? = nil,
+                        uses: Swift.Int64? = nil,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.ttlSecs = ttlSecs
+                        self.uses = uses
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case ttlSecs
+                        case uses
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.ttlSecs = try container.decodeIfPresent(
+                            Swift.Int64.self,
+                            forKey: .ttlSecs
+                        )
+                        self.uses = try container.decodeIfPresent(
+                            Swift.Int64.self,
+                            forKey: .uses
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "ttlSecs",
+                            "uses",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/requestBody/content/application\/json`.
+                case json(Operations.AppInviteCreate.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppInviteCreate.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppInviteCreate.Input.Path,
+                headers: Operations.AppInviteCreate.Input.Headers = .init(),
+                body: Operations.AppInviteCreate.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/responses/200/content/json/token`.
+                        public var token: Swift.String
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - token:
+                        public init(token: Swift.String) {
+                            self.token = token
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case token
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/responses/200/content/application\/json`.
+                    case json(Operations.AppInviteCreate.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppInviteCreate.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppInviteCreate.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppInviteCreate.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/invites/post(app_invite_create)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppInviteCreate.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppInviteCreate.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Revoke an instance invite
+    ///
+    /// Its creator, or whoever manages the instance's guests; `412` first.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/invites/{key}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/invites/{key}/delete(app_invite_revoke)`.
+    public enum AppInviteRevoke {
+        public static let id: Swift.String = "app_invite_revoke"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/invites/{key}/DELETE/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/invites/{key}/DELETE/path/app`.
+                public var app: Swift.String
+                /// - Remark: Generated from `#/paths/apps/{app}/invites/{key}/DELETE/path/key`.
+                public var key: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                ///   - key:
+                public init(
+                    app: Swift.String,
+                    key: Swift.String
+                ) {
+                    self.app = app
+                    self.key = key
+                }
+            }
+            public var path: Operations.AppInviteRevoke.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/invites/{key}/DELETE/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppInviteRevoke.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppInviteRevoke.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppInviteRevoke.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/invites/{key}/DELETE/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/invites/{key}/DELETE/requestBody/content/application\/json`.
+                case json(Components.Schemas.ConfirmOnly)
+            }
+            public var body: Operations.AppInviteRevoke.Input.Body?
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppInviteRevoke.Input.Path,
+                headers: Operations.AppInviteRevoke.Input.Headers = .init(),
+                body: Operations.AppInviteRevoke.Input.Body? = nil
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/invites/{key}/DELETE/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/invites/{key}/DELETE/responses/200/content/application\/json`.
+                    case json(OpenAPIRuntime.OpenAPIObjectContainer)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: OpenAPIRuntime.OpenAPIObjectContainer {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppInviteRevoke.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppInviteRevoke.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/invites/{key}/delete(app_invite_revoke)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppInviteRevoke.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppInviteRevoke.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):
@@ -29924,7 +30589,7 @@ public enum Operations {
     }
     /// Join with an invite
     ///
-    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.
+    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -29979,15 +30644,23 @@ public enum Operations {
                     public struct JsonPayload: Codable, Hashable, Sendable {
                         /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content/json/org`.
                         public var org: Swift.String
+                        /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content/json/app`.
+                        public var app: Swift.String?
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
                         ///   - org:
-                        public init(org: Swift.String) {
+                        ///   - app:
+                        public init(
+                            org: Swift.String,
+                            app: Swift.String? = nil
+                        ) {
                             self.org = org
+                            self.app = app
                         }
                         public enum CodingKeys: String, CodingKey {
                             case org
+                            case app
                         }
                     }
                     /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content/application\/json`.
@@ -36143,6 +36816,208 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.OrgReleaseApproval.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Change the organization's settings
+    ///
+    /// `allowGuests` (default on): whether its instances take guests, accounts listed on one instance (its `accounts` access) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    ///
+    /// **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/settings`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/settings/post(org_settings)`.
+    public enum OrgSettings {
+        public static let id: Swift.String = "org_settings"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/path/org`.
+                public var org: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - org:
+                public init(org: Swift.String) {
+                    self.org = org
+                }
+            }
+            public var path: Operations.OrgSettings.Input.Path
+            /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgSettings.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgSettings.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.OrgSettings.Input.Headers
+            /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/json/allowGuests`.
+                    public var allowGuests: Swift.Bool?
+                    /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - allowGuests:
+                    ///   - confirm:
+                    public init(
+                        allowGuests: Swift.Bool? = nil,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.allowGuests = allowGuests
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case allowGuests
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.allowGuests = try container.decodeIfPresent(
+                            Swift.Bool.self,
+                            forKey: .allowGuests
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "allowGuests",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/content/application\/json`.
+                case json(Operations.OrgSettings.Input.Body.JsonPayload)
+            }
+            public var body: Operations.OrgSettings.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.OrgSettings.Input.Path,
+                headers: Operations.OrgSettings.Input.Headers = .init(),
+                body: Operations.OrgSettings.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/json/org`.
+                        public var org: Swift.String
+                        /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/json/allowGuests`.
+                        public var allowGuests: Swift.Bool
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - org:
+                        ///   - allowGuests:
+                        public init(
+                            org: Swift.String,
+                            allowGuests: Swift.Bool
+                        ) {
+                            self.org = org
+                            self.allowGuests = allowGuests
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case org
+                            case allowGuests
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/application\/json`.
+                    case json(Operations.OrgSettings.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.OrgSettings.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.OrgSettings.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.OrgSettings.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//orgs/{org}/settings/post(org_settings)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.OrgSettings.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.OrgSettings.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):

@@ -152,10 +152,18 @@ pub enum Feature {
     /// (`SystemState::ordinary_orgs`), so an entry before it replays as it applied; an
     /// earlier release drops the recorded mode, so it is recorded only from this version.
     OrdinaryOrgs,
+    /// Guests: an instance's listed accounts reach it without joining its organization
+    /// where its release (`PackageVersion::guests`) and its organization (`allowGuests`)
+    /// allow; `SetOrgSettings { allow_guests }`, and instance invites (`CreateAppInvite`, `RevokeAppInvite`,
+    /// `RedeemAppInvite`); `InstallPackage` recording the release's `guests`. An earlier
+    /// release cannot decode the commands, drops the field, and would refuse a guest the
+    /// others admit. Apply reads the logged version for the reach rule
+    /// (`SystemState::guests_on`), so state before it reads as it did.
+    Guests,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 36] = [
+pub const FEATURES: [Feature; 37] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -192,6 +200,7 @@ pub const FEATURES: [Feature; 36] = [
     Feature::DeploymentUsedSecrets,
     Feature::UpgradeInDeployment,
     Feature::OrdinaryOrgs,
+    Feature::Guests,
 ];
 
 impl Feature {
@@ -235,6 +244,7 @@ impl Feature {
             Self::DeploymentUsedSecrets => "deploymentUsedSecrets",
             Self::UpgradeInDeployment => "upgradeInDeployment",
             Self::OrdinaryOrgs => "ordinaryOrgs",
+            Self::Guests => "guests",
         }
     }
 
@@ -275,7 +285,8 @@ impl Feature {
             | Self::WholeUnits
             | Self::DeploymentUsedSecrets
             | Self::UpgradeInDeployment
-            | Self::OrdinaryOrgs => "1.0.0-rc.32",
+            | Self::OrdinaryOrgs
+            | Self::Guests => "1.0.0-rc.32",
         }
     }
 }
@@ -524,6 +535,10 @@ impl SystemCmd {
                 f
             }
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
+            Self::SetOrgSettings { .. }
+            | Self::CreateAppInvite { .. }
+            | Self::RevokeAppInvite { .. }
+            | Self::RedeemAppInvite { .. } => vec![Feature::Guests],
             Self::SetDelegation { .. } => vec![Feature::Delegation],
             Self::LinkApp { .. } => vec![Feature::AttachApp],
             Self::SetDeploymentSecret { used: true, .. } => {
@@ -594,6 +609,9 @@ impl SystemCmd {
                 }
                 if release.instance_org.is_some() {
                     f.push(Feature::OrdinaryOrgs);
+                }
+                if release.guests.is_some() {
+                    f.push(Feature::Guests);
                 }
                 f
             }
@@ -993,6 +1011,8 @@ mod tests {
             Feature::UpgradeInDeployment => entry(json!({ "op": "upgradeApp",
                 "app_id": "app", "bundle": "b", "actor": "a", "in_deployment": true })),
             Feature::OrdinaryOrgs => install(json!({ "instanceOrg": "standalone" })),
+            Feature::Guests => entry(json!({ "op": "setOrgSettings", "org": "org",
+                "settings": { "allowGuests": false }, "actor": "alice" })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1413,7 +1433,7 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.32's (a deployment's secrets, whole units, secrets of used releases, an
-        // upgrade kept on its deployment's offer, a release's instance mode) wait for every node on rc.32.
+        // upgrade kept on its deployment's offer, a release's instance mode, guests) wait for every node on rc.32.
         assert_eq!(
             rc32,
             [
@@ -1421,7 +1441,8 @@ mod tests {
                 Feature::WholeUnits,
                 Feature::DeploymentUsedSecrets,
                 Feature::UpgradeInDeployment,
-                Feature::OrdinaryOrgs
+                Feature::OrdinaryOrgs,
+                Feature::Guests
             ]
         );
         for &feature in &rc32 {

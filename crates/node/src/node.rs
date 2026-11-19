@@ -935,6 +935,10 @@ pub fn rejected(reason: &str) -> ApiError {
         not_a_deployer()
     } else if reason == crate::system::PERSONAL_ORG_EXISTS {
         ApiError::new(409, PERSONAL_ORG_EXISTS, reason)
+    } else if reason == crate::system::GUESTS_NOT_ALLOWED {
+        ApiError::new(409, "GUESTS_NOT_ALLOWED", reason)
+    } else if reason == crate::system::NOT_AN_ACCOUNTS_INSTANCE {
+        ApiError::new(409, "NOT_AN_ACCOUNTS_INSTANCE", reason)
     } else if reason == crate::system::NO_PERSONAL_ORGS {
         ApiError::new(409, "PERSONAL_ORGS_ENDED", reason)
     } else if reason == crate::system::CANNOT_GRANT_UNHELD {

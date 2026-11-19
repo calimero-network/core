@@ -37,6 +37,9 @@ import com.calimero.mero.api.models.AppDelegate200Response
 import com.calimero.mero.api.models.AppDelegateRequest
 import com.calimero.mero.api.models.AppDelegations200Response
 import com.calimero.mero.api.models.AppDelete200Response
+import com.calimero.mero.api.models.AppInviteCreate200Response
+import com.calimero.mero.api.models.AppInviteCreateRequest
+import com.calimero.mero.api.models.AppInviteList200Response
 import com.calimero.mero.api.models.AppLink200Response
 import com.calimero.mero.api.models.AppLinkRequest
 import com.calimero.mero.api.models.AppLinks200Response
@@ -718,6 +721,236 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.GET,
             path = "/apps/{app}".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /apps/{app}/invites
+     * Invite a guest to an instance
+     * A token whose redeemer becomes a guest of this instance only (added to its &#x60;accounts&#x60; list), &#x60;uses&#x60; times (1 to 1000, default 1) within &#x60;ttlSecs&#x60; (at most 90 days, default 7). Whoever may change the instance&#39;s access; only while it takes guests (its release&#39;s manifest and its organization&#39;s &#x60;allowGuests&#x60;, &#x60;409 GUESTS_NOT_ALLOWED&#x60;) and its access is &#x60;accounts&#x60; (&#x60;409 NOT_AN_ACCOUNTS_INSTANCE&#x60;). At most 64 pending per instance. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appInviteCreateRequest 
+     * @return AppInviteCreate200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appInviteCreate(app: kotlin.String, appInviteCreateRequest: AppInviteCreateRequest) : AppInviteCreate200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appInviteCreateWithHttpInfo(app = app, appInviteCreateRequest = appInviteCreateRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppInviteCreate200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /apps/{app}/invites
+     * Invite a guest to an instance
+     * A token whose redeemer becomes a guest of this instance only (added to its &#x60;accounts&#x60; list), &#x60;uses&#x60; times (1 to 1000, default 1) within &#x60;ttlSecs&#x60; (at most 90 days, default 7). Whoever may change the instance&#39;s access; only while it takes guests (its release&#39;s manifest and its organization&#39;s &#x60;allowGuests&#x60;, &#x60;409 GUESTS_NOT_ALLOWED&#x60;) and its access is &#x60;accounts&#x60; (&#x60;409 NOT_AN_ACCOUNTS_INSTANCE&#x60;). At most 64 pending per instance. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appInviteCreateRequest 
+     * @return ApiResponse<AppInviteCreate200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appInviteCreateWithHttpInfo(app: kotlin.String, appInviteCreateRequest: AppInviteCreateRequest) : ApiResponse<AppInviteCreate200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appInviteCreateRequestConfig(app = app, appInviteCreateRequest = appInviteCreateRequest)
+
+        return@withContext request<AppInviteCreateRequest, AppInviteCreate200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appInviteCreate
+     *
+     * @param app 
+     * @param appInviteCreateRequest 
+     * @return RequestConfig
+     */
+    fun appInviteCreateRequestConfig(app: kotlin.String, appInviteCreateRequest: AppInviteCreateRequest) : RequestConfig<AppInviteCreateRequest> {
+        val localVariableBody = appInviteCreateRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/apps/{app}/invites".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /apps/{app}/invites
+     * An instance&#39;s invites
+     * For whoever manages its guests: keys and terms, never a token.  **Who:** a passkey session (an API key is refused).
+     * @param app 
+     * @return AppInviteList200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appInviteList(app: kotlin.String) : AppInviteList200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appInviteListWithHttpInfo(app = app)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppInviteList200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/invites
+     * An instance&#39;s invites
+     * For whoever manages its guests: keys and terms, never a token.  **Who:** a passkey session (an API key is refused).
+     * @param app 
+     * @return ApiResponse<AppInviteList200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appInviteListWithHttpInfo(app: kotlin.String) : ApiResponse<AppInviteList200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appInviteListRequestConfig(app = app)
+
+        return@withContext request<Unit, AppInviteList200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appInviteList
+     *
+     * @param app 
+     * @return RequestConfig
+     */
+    fun appInviteListRequestConfig(app: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/invites".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * DELETE /apps/{app}/invites/{key}
+     * Revoke an instance invite
+     * Its creator, or whoever manages the instance&#39;s guests; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param key 
+     * @param confirmOnly May be absent. (optional)
+     * @return kotlinx.serialization.json.JsonObject
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appInviteRevoke(app: kotlin.String, key: kotlin.String, confirmOnly: ConfirmOnly? = null) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = appInviteRevokeWithHttpInfo(app = app, key = key, confirmOnly = confirmOnly)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * DELETE /apps/{app}/invites/{key}
+     * Revoke an instance invite
+     * Its creator, or whoever manages the instance&#39;s guests; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param key 
+     * @param confirmOnly May be absent. (optional)
+     * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appInviteRevokeWithHttpInfo(app: kotlin.String, key: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appInviteRevokeRequestConfig(app = app, key = key, confirmOnly = confirmOnly)
+
+        return@withContext request<ConfirmOnly, kotlinx.serialization.json.JsonObject>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appInviteRevoke
+     *
+     * @param app 
+     * @param key 
+     * @param confirmOnly May be absent. (optional)
+     * @return RequestConfig
+     */
+    fun appInviteRevokeRequestConfig(app: kotlin.String, key: kotlin.String, confirmOnly: ConfirmOnly?) : RequestConfig<ConfirmOnly> {
+        val localVariableBody = confirmOnly
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.DELETE,
+            path = "/apps/{app}/invites/{key}".replace("{"+"app"+"}", encodeURIComponent(app.toString())).replace("{"+"key"+"}", encodeURIComponent(key.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

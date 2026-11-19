@@ -104,7 +104,10 @@ pub(crate) use upgrades::{refuse_stalled, unit_plan, upgrade_app, upgrade_unit, 
 #[cfg(test)]
 use {
     approvals::{OpsDeadlineBody, OpsOutboundBody, OpsReleaseBody},
-    apps::{AccessBody, AppAttestQuery, AppListQuery, CreateAppBody, MoveBody, TransferBody},
+    apps::{
+        AccessBody, AppAttestQuery, AppInviteBody, AppListQuery, CreateAppBody, MoveBody,
+        TransferBody,
+    },
     auth::{
         ActivityQuery, AddPasskeyFinish, AliasBody, ApiKeyBody, AssertionBody, LoginBegin,
         PasskeyLabelBody, RefreshBody, RegisterBegin, RegisterFinish,
@@ -117,8 +120,8 @@ use {
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
     ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
     orgs::{
-        AllAppsBody, MemberBody, MembersQuery, OrgBody, RenameOrgBody, ScopeAppsBody, TeamBody,
-        TeamIdsBody, TeamMemberBody, TeamRowsBody, TeamUpdateBody,
+        AllAppsBody, MemberBody, MembersQuery, OrgBody, OrgSettingsBody, RenameOrgBody,
+        ScopeAppsBody, TeamBody, TeamIdsBody, TeamMemberBody, TeamRowsBody, TeamUpdateBody,
     },
     packages::{InstallBody, PublisherBody},
     recovery::{RecoveryBegin, RecoveryFinish, RecoveryKeyBody, RecoveryStart, RecoveryStartBody},

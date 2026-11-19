@@ -85,6 +85,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         frontend_aliases: Vec::new(),
         upgrades: None,
         instance_org: None,
+        guests: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,

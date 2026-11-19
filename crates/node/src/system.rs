@@ -415,6 +415,13 @@ pub struct PackageVersion {
     /// reads and writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_org: Option<calimero_bundle::InstanceOrg>,
+    /// Whether an instance of it takes guests, from its signed manifest (`guests`,
+    /// [`calimero_bundle::GuestPolicy`]). Recorded only once every node keeps it
+    /// (`Feature::Guests`), filled in by an install of the same release after that; absent
+    /// in a release recorded before, whose switch the API reads from its `.mpk`
+    /// (`Node::release_guests`) and apply takes as `forbidden`. Left out when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guests: Option<calimero_bundle::GuestPolicy>,
 }
 
 impl PackageVersion {
@@ -618,6 +625,11 @@ pub struct SystemState {
     pub orgs: BTreeMap<OrgId, Org>,
     /// invite key (the token's Ed25519 public key, hex) -> invite
     pub invites: BTreeMap<String, Invite>,
+    /// Instance invites ([`crate::types::AppInvite`]), by the token's Ed25519 public key:
+    /// whoever redeems one becomes a guest of its instance. Left out when empty, so a
+    /// state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub app_invites: BTreeMap<String, crate::types::AppInvite>,
     #[serde(default)]
     pub quotas: Quotas,
     /// Installed packages by name.
@@ -998,6 +1010,59 @@ pub const PERSONAL_ORG_EXISTS: &str = "the account has a personal organization a
 /// organization is an ordinary one it creates.
 pub const NO_PERSONAL_ORGS: &str =
     "personal organizations are no longer made: create an ordinary organization";
+/// How far up a unit [`SystemState::guest_holder`] walks: a unit nests at most
+/// `api::apps::MAX_UNIT_DEPTH` deep, so this leaves room and bounds a cycle.
+pub const MAX_UNIT_LINKS_UP: usize = 8;
+
+/// An organization's settings, as `SetOrgSettings` changes them and its consent states them
+/// (camelCase, a setting left out kept as it is).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OrgSettings {
+    /// Whether its instances take guests ([`crate::types::Org::allow_guests`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_guests: Option<bool>,
+}
+
+impl OrgSettings {
+    /// Whether it changes nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.allow_guests.is_none()
+    }
+}
+
+/// The arguments an instance invite's consent states: its key and terms.
+#[must_use]
+pub fn app_invite_args(invite_key: &str, invite: &crate::types::AppInvite) -> Value {
+    json!({
+        "inviteKey": invite_key,
+        "expiresAt": invite.expires_at,
+        "uses": invite.uses_left,
+    })
+}
+
+/// Pending invites one instance holds at most ([`crate::types::AppInvite`]).
+pub const MAX_APP_INVITES_PER_APP: usize = 64;
+/// Pending instance invites the cluster holds at most: the system state is one checkpoint.
+pub const MAX_APP_INVITES: usize = 10_000;
+/// Uses one instance invite admits at most.
+pub const MAX_APP_INVITE_USES: u32 = 1_000;
+/// How long an instance invite lasts at most, from when it is made.
+pub const MAX_APP_INVITE_TTL_SECS: u64 = 90 * 24 * 3600;
+/// Accounts an instance's guest list (its `accounts` access) holds at most once an invite
+/// adds to it.
+pub const MAX_GUESTS_PER_APP: usize = 1_000;
+/// A refusal: the instance's release or its organization does not allow guests
+/// ([`SystemState::guests_allowed`]).
+pub const GUESTS_NOT_ALLOWED: &str =
+    "this instance takes no guests: its release or its organization does not allow them";
+/// A refusal: only an instance with `accounts` access has a guest list.
+pub const NOT_AN_ACCOUNTS_INSTANCE: &str =
+    "only an instance with accounts access lists guests: set its access to accounts first";
+/// A refusal: an instance invite gone, used up or never made.
+pub const APP_INVITE_GONE: &str = "this invite was used up, revoked or never existed";
+
 /// A refusal: an organization's app is handed only to a member of it.
 pub const NEW_OWNER_NOT_A_MEMBER: &str = "the new owner is not a member of the app's organization";
 /// The name a personal organization is made with when the request names
@@ -1562,6 +1627,7 @@ impl SystemState {
             a.attached.retain(|_, t| t != app_id);
         }
         let _ring = self.released_runs.remove(app_id);
+        self.app_invites.retain(|_, i| i.app != app_id);
         if self.compute.remove(app_id).is_some() {
             self.grant_runs();
         }
@@ -2640,6 +2706,84 @@ impl SystemState {
     #[must_use]
     pub fn ordinary_orgs(&self) -> bool {
         self.cluster_brings(cluster_version::Feature::OrdinaryOrgs)
+    }
+
+    /// Whether guests are on at this log position: the logged cluster version brings
+    /// [`cluster_version::Feature::Guests`]. Before it, an instance's listed accounts
+    /// reach it only as members (or in a personal organization), as they did.
+    #[must_use]
+    pub fn guests_on(&self) -> bool {
+        self.cluster_brings(cluster_version::Feature::Guests)
+    }
+
+    /// Whether `app` takes guests: the release it runs allows them (`guests: allowed` in
+    /// its signed manifest, recorded on the release; a release recorded without it, a raw
+    /// bundle, or none, does not) and its organization does not turn them off
+    /// ([`crate::types::Org::allow_guests`]). The stricter switch wins.
+    #[must_use]
+    pub fn guests_allowed(&self, app: &AppRecord) -> bool {
+        let release = app.release.as_ref().and_then(|r| {
+            self.packages
+                .get(&r.package)
+                .and_then(|p| p.versions.get(&r.version))
+        });
+        let developer =
+            release.and_then(|v| v.guests) == Some(calimero_bundle::GuestPolicy::Allowed);
+        developer && self.orgs.get(&app.org).is_some_and(|o| o.allow_guests)
+    }
+
+    /// The instance whose guest list judges `app`: the top of its unit (the app whose
+    /// `links` hold it, transitively, at most [`MAX_UNIT_LINKS_UP`] steps), else itself.
+    #[must_use]
+    pub fn guest_holder<'a>(&'a self, app: &'a AppRecord) -> &'a AppRecord {
+        let mut at = app;
+        for _ in 0..MAX_UNIT_LINKS_UP {
+            match self.unit_parent(&at.app_id).and_then(|p| self.apps.get(p)) {
+                Some(parent) => at = parent,
+                None => break,
+            }
+        }
+        at
+    }
+
+    /// Whether `account` reaches `app` as its guest ([`cluster_version::Feature::Guests`]):
+    /// listed on the instance that holds its guest list ([`Self::guest_holder`]: `app`, or
+    /// the instance whose unit created it) and that instance takes guests
+    /// ([`Self::guests_allowed`]). Judged on the state of the moment, so a guest taken off
+    /// the list, or a switch turned off, stops reaching it at once.
+    #[must_use]
+    pub fn guest_reaches(&self, app: &AppRecord, account: &str) -> bool {
+        if !self.guests_on() {
+            return false;
+        }
+        let holder = self.guest_holder(app);
+        matches!(&holder.access, Access::Accounts { accounts } if accounts.iter().any(|a| a == account))
+            && self.guests_allowed(holder)
+    }
+
+    /// Whether `account` is a guest of `app` and not a member of its organization: it
+    /// reaches the app only as a guest ([`Self::guest_reaches`]).
+    #[must_use]
+    pub fn is_guest(&self, app: &AppRecord, account: &str) -> bool {
+        self.orgs
+            .get(&app.org)
+            .and_then(|o| o.role(account))
+            .is_none()
+            && self.guest_reaches(app, account)
+    }
+
+    /// Whether `actor` may change `app`'s guests (its `accounts` access, its invites):
+    /// whoever may change its access to `accounts`.
+    #[must_use]
+    pub fn manages_guests(&self, app: &AppRecord, actor: &str) -> bool {
+        self.owner_acts(app, actor)
+            || self.may_set_access(
+                app,
+                &Access::Accounts {
+                    accounts: Vec::new(),
+                },
+                actor,
+            )
     }
 
     /// Whether `org` is kept apart as a personal organization: flagged so, and only
@@ -4187,6 +4331,11 @@ impl SystemState {
             // release that judges this, so every replica decides alike.
             let listed_in_personal =
                 o.is_some_and(|o| o.personal) && matches!(app.access, Access::Accounts { .. });
+            // A guest, not a member, reaches the instance (and its unit's members) by its
+            // list where both switches allow ([`Self::guest_reaches`]).
+            if !member && self.guest_reaches(app, a) {
+                return true;
+            }
             if !member && app.access != Access::Public && !listed_in_personal {
                 return false;
             }
@@ -4549,6 +4698,10 @@ impl SystemCmd {
             Self::CreateInvite { .. } => Area::Orgs,
             Self::RedeemInvite { .. } => Area::Orgs,
             Self::RevokeInvite { .. } => Area::Orgs,
+            Self::SetOrgSettings { .. } => Area::Orgs,
+            Self::CreateAppInvite { .. } => Area::Apps,
+            Self::RevokeAppInvite { .. } => Area::Apps,
+            Self::RedeemAppInvite { .. } => Area::Apps,
             Self::ScopeApps { .. } => Area::Orgs,
             Self::SetRecoveryKey { .. } => Area::Recovery,
             Self::StartRecovery { .. } => Area::Recovery,
@@ -6117,6 +6270,45 @@ pub enum SystemCmd {
         invite_key: String,
         actor: AccountId,
         consent: Value,
+    },
+    /// Change an organization's settings ([`OrgSettings`]: whether its instances take
+    /// guests, [`crate::types::Org::allow_guests`]): its owner or an admin, with passkey
+    /// consent (`org:<org> / __set_org_settings / settings`). A setting left out is kept.
+    SetOrgSettings {
+        org: OrgId,
+        settings: OrgSettings,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Mint an instance invite ([`crate::types::AppInvite`]): whoever manages the instance's
+    /// guests ([`SystemState::manages_guests`]), with passkey consent over
+    /// [`app_invite_args`] (`<app> / __create_app_invite`), while it takes guests and has
+    /// `accounts` access. Only the token's public key is logged.
+    CreateAppInvite {
+        invite_key: String,
+        invite: crate::types::AppInvite,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Withdraw an instance invite: its creator or whoever manages the instance's guests,
+    /// with passkey consent (`<app> / __revoke_app_invite / { inviteKey }`).
+    RevokeAppInvite {
+        app_id: AppId,
+        invite_key: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Redeem an instance invite: `account` joins the instance's guest list. Carries the
+    /// token key's signature over the redemption (`proof::sign_invite_redeem`), so a node
+    /// that only saw the log cannot redeem one. One already listed spends no use.
+    RedeemAppInvite {
+        invite_key: String,
+        account: AccountId,
+        now: u64,
+        signature: String,
     },
     /// Give apps their own access lists in one step (G3): for each package
     /// named (absent: every package with an organization-access instance

@@ -324,6 +324,62 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Invite a guest to an instance.
+    ///
+    /// `POST /apps/{app}/invites` (`app_invite_create`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn invite_create(
+        self,
+        app: &str,
+        ttl_secs: Option<u64>,
+        uses: Option<u64>,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<AppInviteCreateResponse> {
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "ttlSecs", ttl_secs)?;
+        route::put_some(&mut fields, "uses", uses)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("apps/{}/invites", route::segment(app)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// An instance's invites.
+    ///
+    /// `GET /apps/{app}/invites` (`app_invite_list`). Who: a passkey session (an API key is refused).
+    pub async fn invite_list(self, app: &str) -> Result<AppInviteListResponse> {
+        let req = Request::new(Method::GET, format!("apps/{}/invites", route::segment(app)));
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Revoke an instance invite.
+    ///
+    /// `DELETE /apps/{app}/invites/{key}` (`app_invite_revoke`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn invite_revoke(
+        self,
+        app: &str,
+        key: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<Map<String, Value>> {
+        let body = Value::Object(Map::new());
+        let req = Request::new(
+            Method::DELETE,
+            format!(
+                "apps/{}/invites/{}",
+                route::segment(app),
+                route::segment(key)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
     /// Attach an app to one of an app's references.
     ///
     /// `PUT /apps/{app}/links/{name}` (`app_link`). Who: an account holder (a passkey session not bound to an app's frontend).
@@ -3067,6 +3123,28 @@ impl Orgs<'_> {
         let req = Request::new(
             Method::POST,
             format!("orgs/{}/members", route::segment(org)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Change the organization's settings.
+    ///
+    /// `POST /orgs/{org}/settings` (`org_settings`). Who: a passkey session (an API key is refused).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn settings(
+        self,
+        org: &str,
+        allow_guests: Option<bool>,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<OrgSettingsResponse> {
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "allowGuests", allow_guests)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("orgs/{}/settings", route::segment(org)),
         )
         .json(body);
         route::json(self.client.transport(), req, passkey, None, false).await

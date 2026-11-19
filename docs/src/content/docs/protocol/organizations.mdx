@@ -38,7 +38,7 @@ any access but `team` needs `MANAGE_APPLICATION` organization-wide:
 | Rule | Who reaches the app |
 | --- | --- |
 | `owner` | The owner only |
-| `accounts { accounts }` | The owner and these accounts; for an instance of a package with an app team in its organization, only those of them in that app team |
+| `accounts { accounts }` | The owner and these accounts; for an instance of a package with an app team in its organization, only those of them in that app team. Listed accounts outside the organization are [guests](#guests): they reach it only where its release and its organization allow guests |
 | `org` (default inside an organization) | Every member of the app's organization; a guest only while the organization has no app team |
 | `team { team }` | The team's members (direct rows, and inheritance into an open team), its owner included: an owner not in the team does not reach it |
 | `public` | Anyone, signed in or not (as `Caller::Public` when not) |
@@ -155,8 +155,8 @@ creating one more is refused), an app there is transferred only to a member
 (as everywhere: `400 REJECTED`), a deployment's report names it, and a consent
 request with no scope (`"scope": "account"`) stands for the account's only
 organization. One thing stays: an instance there with `accounts` access still
-reaches its listed accounts without making them members, so nothing that worked
-stops.
+reaches its listed accounts without making them members, whatever its package's
+manifest says about [guests](#guests) (legacy), so nothing that worked stops.
 
 Apps outside any organization were removed in a hard cutover (1.0.0-rc.20):
 data holding one is not read.
@@ -529,6 +529,65 @@ way, a `CreateInvite`, `RemoveTeamMember` or `DeleteTeam` an earlier release
 logged replays without the rules above (the teams the inviter sees, the rows
 below, the passkey for apps); the API marks new ones (`teams_seen`, `subtree`,
 `apps_need_consent`).
+
+## Guests
+
+A **guest** of an instance is an account invited to that one instance (and the
+apps its unit created for it) without joining its organization. The guest list
+is the instance's `accounts` access list (`Access::Accounts`, the wire name
+kept): from cluster version 1.0.0-rc.32 (`Feature::Guests`) an account listed
+there that is not a member of the organization reaches the instance when both
+switches allow guests, the stricter winning:
+
+| Switch | Where | Default |
+| --- | --- | --- |
+| The developer's | the release's signed manifest, `guests: "allowed" \| "forbidden"` (`meroctl app pack --guests`; kept on `PackageVersion::guests`: a release recorded before the node kept it, a raw bundle, takes none until the same `.mpk` is installed again) | `forbidden` |
+| The organization's | `allowGuests`, set by its owner or an admin with a passkey: `POST /orgs/{org}/guests { allow }` (`org:<org> / __set_allow_guests / { allow }`, `SystemCmd::SetOrgGuests`); `GET /orgs/{org}` shows `allowGuests: false` when off | allowed |
+
+A listed account that is a member keeps the `accounts` rule's member semantics
+above (its app team included). Access is judged fresh on every request, so
+removing a guest from the list (`POST /apps/{app}/access`, by whoever may change
+the instance's access), turning the organization's switch off, or an upgrade to
+a release that forbids guests holds from the guest's next request. An instance
+in an organization made as a personal one before 1.0.0-rc.32 keeps its listed
+accounts' reach whatever the switches say ([Personal
+organizations](#personal-organizations)).
+
+What a guest may do: what any account that reaches the instance may (call its
+methods and views, receive its events, read and upload its blobs, as a listed
+member could), nothing more. They are not a member: they see none of the
+organization's members, teams, other apps, invites, settings, usage or reports
+(`404` as to a stranger), the app's code sees no role for them
+(`env::org_role` is `None`), and they never manage the instance, approve its
+upgrades, set its secrets, list or export its sealed files (`/files` is the
+organization's members' and its owner's), or delegate, link or move it.
+`GET /apps/{app}` shows a guest the access list with only themselves in it.
+Unit members: a guest of an instance reaches the apps its unit created for it
+(`AppRecord::links`, transitively), judged by the instance's list and switches;
+an attached app is not part of it.
+
+### Instance invites
+
+An instance's managers (whoever may change its access) invite guests with a
+link, like an organization invite but for one instance: `POST
+/apps/{app}/invites { ttlSecs?, uses? }` returns a token `inv_…` once (`412
+CONFIRM_REQUIRED` first; the consent is `<app> / __create_app_invite /
+{ inviteKey, expiresAt, uses }`; only the token's Ed25519 public key is logged,
+`SystemCmd::CreateAppInvite`). It is refused `409 GUESTS_NOT_ALLOWED` unless both
+switches allow guests, and `409 NOT_AN_ACCOUNTS_INSTANCE` unless the instance's
+access is `accounts` (the guest list). `POST /invites/{token}/redeem` (the same
+route as an organization invite; the node tells them apart) adds the redeemer to
+the instance's list (`RedeemAppInvite`, signed with the token's key) and answers
+`{ app, org }`; one already listed spends no use; it is refused while guests are
+not allowed. `GET /apps/{app}/invites` lists the pending ones (key, uses left,
+expiry, creator; never a token) and `DELETE /apps/{app}/invites/{inviteKey}`
+revokes one with a passkey (`__revoke_app_invite { inviteKey }`). Deleting the
+instance drops its invites. Bounds: `MAX_APP_INVITES_PER_APP` (64) pending per
+instance, `MAX_APP_INVITES` (10 000) in the cluster, `MAX_APP_INVITE_USES`
+(1 000) uses and `MAX_APP_INVITE_TTL_SECS` (90 days) each, and an instance lists
+at most `MAX_GUESTS_PER_APP` (1 000) accounts. The consent page's
+`acceptInvite` shows an instance invite as joining the app of a package in an
+organization as a guest.
 
 ## Recovery
 

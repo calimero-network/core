@@ -98,7 +98,7 @@ class OrgsFacade internal constructor(
     /**
      * Join with an invite
      *
-     * No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.
+     * No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
      *
      * **Who:** a passkey session (an API key is refused).
      *
@@ -498,6 +498,26 @@ class OrgsFacade internal constructor(
         passkey: PasskeyProvider? = null,
     ): kotlinx.serialization.json.JsonObject =
         api(passkey, null, emptySet()).organizations.orgSetMember(org = org, orgSetMemberRequest = OrgSetMemberRequest(account = account, role = role))
+
+    /**
+     * Change the organization's settings
+     *
+     * `allowGuests` (default on): whether its instances take guests, accounts listed on one instance (its `accounts` access) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+     *
+     * **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /orgs/{org}/settings` (`org_settings`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun settings(
+        org: kotlin.String,
+        allowGuests: kotlin.Boolean? = null,
+        passkey: PasskeyProvider? = null,
+    ): OrgSettings200Response =
+        api(passkey, null, emptySet()).organizations.orgSettings(org = org, orgSettingsRequest = OrgSettingsRequest(allowGuests = allowGuests))
 
     /**
      * Start an upgrade run

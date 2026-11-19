@@ -162,6 +162,63 @@ class AppsFacade internal constructor(
         api(null, null, emptySet()).apps.appGet(app = app)
 
     /**
+     * Invite a guest to an instance
+     *
+     * A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /apps/{app}/invites` (`app_invite_create`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun inviteCreate(
+        app: kotlin.String,
+        ttlSecs: kotlin.Long? = null,
+        uses: kotlin.Long? = null,
+        passkey: PasskeyProvider? = null,
+    ): AppInviteCreate200Response =
+        api(passkey, null, emptySet()).apps.appInviteCreate(app = app, appInviteCreateRequest = AppInviteCreateRequest(ttlSecs = ttlSecs, uses = uses))
+
+    /**
+     * An instance's invites
+     *
+     * For whoever manages its guests: keys and terms, never a token.
+     *
+     * **Who:** a passkey session (an API key is refused).
+     *
+     * `GET /apps/{app}/invites` (`app_invite_list`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun inviteList(
+        app: kotlin.String,
+    ): AppInviteList200Response =
+        api(null, null, emptySet()).apps.appInviteList(app = app)
+
+    /**
+     * Revoke an instance invite
+     *
+     * Its creator, or whoever manages the instance's guests; `412` first.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `DELETE /apps/{app}/invites/{key}` (`app_invite_revoke`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun inviteRevoke(
+        app: kotlin.String,
+        key: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): kotlinx.serialization.json.JsonObject =
+        api(passkey, null, emptySet()).apps.appInviteRevoke(app = app, key = key)
+
+    /**
      * Attach an app to one of an app's references
      *
      * `name` is an `attach` reference of the release the app runs, and `app` an app of the same organization that runs its package; the caller manages both. One outside the reference's range is attached anyway and answered `inRange: false`, and the consent page warns about it on later upgrades: an attached app is never upgraded with the instance. `env::linked(name)` answers it from the next run on. Answers the link as `GET /apps/{app}/links` lists it.

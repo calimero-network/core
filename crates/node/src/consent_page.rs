@@ -2492,6 +2492,15 @@ fn accept_invite_request(
     }
     let key = crate::proof::invite_key(&token);
     let now = now_secs();
+    if let Some(found) = app_invite_model(node, &key, now) {
+        let model = found?;
+        return Ok((
+            Action::AcceptInvite {
+                token: InviteToken(token),
+            },
+            model,
+        ));
+    }
     let (invite, org_name, current) = node
         .sys(|s| {
             let inv = s.invites.get(&key)?;
@@ -2551,6 +2560,61 @@ fn accept_invite_request(
         },
         model,
     ))
+}
+
+/// The page of an instance invite under `key`, if it is one: what is joined (the app, the
+/// package it runs, its organization), as a guest. `None` for a key no instance invite has.
+fn app_invite_model(node: &Node, key: &str, now: u64) -> Option<Result<Value, ApiError>> {
+    let found = node.sys(|s| {
+        let inv = s.app_invites.get(key)?.clone();
+        let app = s.apps.get(&inv.app)?;
+        let org_name = s.orgs.get(&app.org).map(|o| o.name.clone());
+        let allowed = s.guests_allowed(app);
+        Some((inv, app.clone(), org_name, allowed))
+    })?;
+    let (inv, app, org_name, allowed) = found;
+    if inv.expires_at <= now || inv.uses_left == 0 {
+        return Some(Err(ApiError::not_found(
+            "no such invite, or it expired or was used up",
+        )));
+    }
+    if !allowed {
+        return Some(Err(ApiError::new(
+            409,
+            crate::api::apps::GUESTS_NOT_ALLOWED,
+            crate::system::GUESTS_NOT_ALLOWED,
+        )));
+    }
+    let package = app.release.as_ref().map(|r| r.package.clone());
+    let org = org_name.unwrap_or_else(|| "an organization".to_owned());
+    let of = package
+        .as_deref()
+        .map_or_else(String::new, |p| format!(" (an instance of {p})"));
+    let joins = format!("{}{of} in {org}", app.name);
+    Some(Ok(json!({
+        "kind": "acceptInvite",
+        "scope": { "kind": "org", "org": app.org, "name": org },
+        "headline": format!("Join {joins} as a guest"),
+        "title": format!("Join {}", app.name),
+        "points": [
+            format!("You join {joins} as a guest: this app only, not the organization."),
+            format!("You do not see {org}'s members, teams or other apps, and its admins can take you off this app."),
+            "You can be removed from it at any time; nothing else of yours changes.".to_owned(),
+        ],
+        "attention": [],
+        "before": format!("Until you approve, you do not reach {}.", app.name),
+        "after": format!("Once you approve, you reach {} as a guest.", app.name),
+        "notes": [],
+        "invite": {
+            "app": app.app_id,
+            "appName": app.name,
+            "package": package,
+            "org": app.org,
+            "orgName": org,
+            "guest": true,
+            "expiresAt": inv.expires_at,
+        },
+    })))
 }
 
 // ---------------------------------------------------------------- results

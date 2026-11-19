@@ -960,6 +960,7 @@ fn mpk_full(
         frontend_aliases: Vec::new(),
         upgrades,
         instance_org: None,
+        guests: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         secrets: None,
         uses: None,

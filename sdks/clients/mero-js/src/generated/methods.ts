@@ -180,6 +180,32 @@ export function createRoutes(api: RouteClient) {
       get: (args: operations['app_get']['parameters']['path'], options?: MethodOptions): Promise<operations['app_get']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/apps/{app}","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_get']['responses'][200]['content']['application/json']>,
       /**
+       * Invite a guest to an instance.
+       *
+       * `POST /apps/{app}/invites` (`app_invite_create`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      inviteCreate: (args: operations['app_invite_create']['parameters']['path'] & operations['app_invite_create']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_invite_create']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/invites","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_invite_create']['responses'][200]['content']['application/json']>,
+      /**
+       * An instance's invites.
+       *
+       * `GET /apps/{app}/invites` (`app_invite_list`). **Who:** a passkey session (an API key is refused).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      inviteList: (args: operations['app_invite_list']['parameters']['path'], options?: MethodOptions): Promise<operations['app_invite_list']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/invites","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_invite_list']['responses'][200]['content']['application/json']>,
+      /**
+       * Revoke an instance invite.
+       *
+       * `DELETE /apps/{app}/invites/{key}` (`app_invite_revoke`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      inviteRevoke: (args: operations['app_invite_revoke']['parameters']['path'] & Partial<NonNullable<operations['app_invite_revoke']['requestBody']>['content']['application/json']>, options?: MethodOptions): Promise<operations['app_invite_revoke']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/apps/{app}/invites/{key}","pathParams":["app","key"],"query":[],"body":"fields","optionalBody":true,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_invite_revoke']['responses'][200]['content']['application/json']>,
+      /**
        * Attach an app to one of an app's references.
        *
        * `PUT /apps/{app}/links/{name}` (`app_link`). **Who:** an account holder (a passkey session not bound to an app's frontend).
@@ -1534,6 +1560,15 @@ export function createRoutes(api: RouteClient) {
        */
       setMember: (args: operations['org_set_member']['parameters']['path'] & operations['org_set_member']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['org_set_member']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/orgs/{org}/members","pathParams":["org"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_set_member']['responses'][200]['content']['application/json']>,
+      /**
+       * Change the organization's settings.
+       *
+       * `POST /orgs/{org}/settings` (`org_settings`). **Who:** a passkey session (an API key is refused).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      settings: (args: operations['org_settings']['parameters']['path'] & operations['org_settings']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['org_settings']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/orgs/{org}/settings","pathParams":["org"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_settings']['responses'][200]['content']['application/json']>,
       /**
        * Create a team.
        *

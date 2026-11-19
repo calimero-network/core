@@ -6,6 +6,9 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
+from typing import Union
+
 T = TypeVar("T", bound="InviteRedeemResponse200")
 
 
@@ -14,13 +17,17 @@ class InviteRedeemResponse200:
     """
     Attributes:
         org (str):
+        app (Union[Unset, str]):
     """
 
     org: str
+    app: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         org = self.org
+
+        app = self.app
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -29,6 +36,8 @@ class InviteRedeemResponse200:
                 "org": org,
             }
         )
+        if app is not UNSET:
+            field_dict["app"] = app
 
         return field_dict
 
@@ -37,8 +46,11 @@ class InviteRedeemResponse200:
         d = dict(src_dict)
         org = d.pop("org")
 
+        app = d.pop("app", UNSET)
+
         invite_redeem_response_200 = cls(
             org=org,
+            app=app,
         )
 
         invite_redeem_response_200.additional_properties = d
