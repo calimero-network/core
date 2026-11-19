@@ -4107,6 +4107,7 @@ async fn the_leader_checks_upgrade_authority_again() {
                     release: None,
                     owner_in_org: true,
                     owner_in_team: true,
+                    in_deployment: false,
                     owner_approves: false,
                 })
                 .await
@@ -6018,6 +6019,221 @@ async fn a_deployments_secret_reaches_its_instances_unless_they_set_their_own() 
         let text = answer.to_string();
         assert!(!text.contains(DEPLOYMENTS) && !text.contains(OWN), "{text}");
     }
+}
+
+/// `wasm` with a custom section `name` holding `payload` appended: another WASM (another
+/// hash) that runs the same.
+fn with_custom_section(wasm: &[u8], name: &str, payload: &[u8]) -> Vec<u8> {
+    fn leb(mut n: usize, out: &mut Vec<u8>) {
+        loop {
+            let byte = u8::try_from(n & 0x7f).unwrap();
+            n >>= 7;
+            if n == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+    let mut body = Vec::new();
+    leb(name.len(), &mut body);
+    body.extend_from_slice(name.as_bytes());
+    body.extend_from_slice(payload);
+    let mut out = wasm.to_vec();
+    out.push(0);
+    leb(body.len(), &mut out);
+    out.extend_from_slice(&body);
+    out
+}
+
+/// A deployment's secrets reach only the code it offers, because only its developer decides
+/// which release its instances run. A customer whose instance came from a deployment installs
+/// a package of their own (their own signer) declaring the same secret name for a host of its
+/// choosing, approves it in their own organization and tries to move the instance onto it:
+/// refused `409 OUTSIDE_DEPLOYMENT` before any passkey is asked for, as are a raw bundle and
+/// a release of the offered package the deployment does not offer. Once the developer offers
+/// a newer release, the owner moves to it, and the instance keeps sending the deployment's
+/// value from the code the developer shipped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_deployments_secret_never_reaches_a_package_it_does_not_offer() {
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const HOST: &str = "echo.outbound.test";
+    const PACKAGE: &str = "com.calimero.offered-echo";
+    const THEIRS: &str = "com.example.customers-echo";
+    const DEPLOYMENTS: &str = "the-developers-value";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
+    let customer_key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            turnstile: false,
+            secrets: std::collections::BTreeMap::new(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // The developer installs three releases of PACKAGE, each declaring ECHO_KEY, offers
+    // the first and sets the secret's value.
+    for version in ["0.1.0", "0.2.0", "0.3.0"] {
+        let _ = alice
+            .packages()
+            .upload(mpk_with_secrets(
+                PACKAGE,
+                version,
+                &kv_wasm(),
+                &publisher,
+                &[PREFIX],
+                Some(&[("ECHO_KEY", HOST)]),
+            ))
+            .await
+            .unwrap();
+    }
+    let d = alice
+        .deployments()
+        .create("labs", typed(json!({ "account": alice_id })), Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = alice
+        .deployments()
+        .offer(&d, "echo", PACKAGE, "0.1.0", Some(&mut pk))
+        .await
+        .unwrap();
+    let _ = alice
+        .deployments()
+        .secret_set(&d, "ECHO_KEY", DEPLOYMENTS, Some(&mut pk))
+        .await
+        .unwrap();
+
+    // The customer's instance from the deployment, its outbound approved in their org.
+    let bobs_org = bob.personal_org().await.unwrap();
+    let app = bob
+        .apps()
+        .create(AppCreateRequest {
+            name: Some("from-labs".to_owned()),
+            deployment: Some(d.clone()),
+            package: Some(PACKAGE.to_owned()),
+            ..AppCreateRequest::default()
+        })
+        .await
+        .unwrap()
+        .app_id;
+    for package in [PACKAGE, THEIRS] {
+        if package == THEIRS {
+            // The customer's own package, signed by their own key, declaring the same
+            // name (for a host of its choosing: the echo answers any `.test` host). Its
+            // WASM is their own (a WASM belongs to one signer): here the fixture with a
+            // custom section of theirs, which changes its hash and nothing it does.
+            let _ = bob
+                .packages()
+                .upload(mpk_with_secrets(
+                    THEIRS,
+                    "0.1.0",
+                    &with_custom_section(&kv_wasm(), "customer", b"theirs"),
+                    &customer_key,
+                    &[PREFIX],
+                    Some(&[("ECHO_KEY", HOST)]),
+                ))
+                .await
+                .unwrap();
+        }
+        let _ = bob
+            .orgs()
+            .outbound_approval(
+                &bobs_org,
+                package,
+                Some(typed(json!("manifest"))),
+                Some(false),
+                Some(&mut bob_pk),
+            )
+            .await
+            .unwrap();
+    }
+    let mut round = 0;
+    assert_eq!(
+        echoed_secret(&bob, &app, &mut round).await,
+        json!([DEPLOYMENTS.len()])
+    );
+
+    // Onto the customer's own package: refused, so the developer's value never reaches it.
+    match bob
+        .apps()
+        .upgrade(
+            &app,
+            typed(json!({ "package": THEIRS, "version": "0.1.0" })),
+            Some(&mut bob_pk),
+        )
+        .await
+    {
+        Err(e) => assert_eq!(e.code(), Some("OUTSIDE_DEPLOYMENT"), "{e}"),
+        Ok(up) => {
+            let sent = echoed_secret(&bob, &app, &mut round).await;
+            panic!(
+                "the instance moved to {THEIRS} ({up:?}), and its request carried the deployment's value: secretBytes {sent}"
+            );
+        }
+    }
+    // A raw bundle names no release the deployment offers.
+    let bundle = bob.apps().get(&app).await.map(wire).unwrap()["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let e = bob
+        .apps()
+        .upgrade(&app, typed(json!({ "bundle": bundle })), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OUTSIDE_DEPLOYMENT"), "{e}");
+    // Nor does a release of the offered package the developer has not offered.
+    let e = bob
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "0.2.0" })), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OUTSIDE_DEPLOYMENT"), "{e}");
+
+    // The developer offers 0.2.0: the owner accepts it, and 0.3.0 stays out of reach.
+    let _ = alice
+        .deployments()
+        .offer(&d, "echo", PACKAGE, "0.2.0", Some(&mut pk))
+        .await
+        .unwrap();
+    let up = bob
+        .apps()
+        .upgrade(
+            &app,
+            typed(json!({ "version": "0.2.0" })),
+            Some(&mut bob_pk),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(up["status"], "ok", "{up}");
+    let e = bob
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "0.3.0" })), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OUTSIDE_DEPLOYMENT"), "{e}");
+    let got = bob.apps().get(&app).await.map(wire).unwrap();
+    assert_eq!(got["release"]["version"], json!("0.2.0"), "{got}");
+    assert_eq!(
+        echoed_secret(&bob, &app, &mut round).await,
+        json!([DEPLOYMENTS.len()])
+    );
 }
 
 /// A deployment offering an app whose release references (`uses`) a package that declares a

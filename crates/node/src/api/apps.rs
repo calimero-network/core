@@ -74,7 +74,7 @@ type Services = BTreeMap<String, String>;
 /// release), service `service`. `404` for an unknown deployment; `400
 /// NOT_OFFERED` for a package or version it does not offer. `CreateApp`
 /// checks the offer again where it applies.
-async fn offered_bundle(
+pub(super) async fn offered_bundle(
     node: &Node,
     id: &str,
     package: &str,
@@ -1288,8 +1288,11 @@ async fn app_secrets(
         .result;
     // The names its deployment holds a value of: the instance's owner learns only that
     // one is set there, never its fingerprint nor who set it.
+    let package = node.release_of_app(&app).map(|r| r.at.package);
     let from_deployment: std::collections::BTreeSet<String> = node.sys(|s| {
-        s.deployment_secrets_of(&app.app_id)
+        package
+            .as_deref()
+            .and_then(|p| s.deployment_secrets_of(&app.app_id, p))
             .map(|h| h.keys().cloned().collect())
             .unwrap_or_default()
     });

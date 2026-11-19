@@ -373,6 +373,7 @@ fn manage_application_lets_a_member_upgrade_and_approve_outbound() {
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        in_deployment: false,
         owner_approves: false,
     };
     for (app, actor, may) in [
@@ -481,6 +482,7 @@ fn check(g: &Governance) {
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        in_deployment: false,
         owner_approves: false,
     };
     let by_operator = m.run_authorized(upgrade(true, "")).is_ok();
@@ -746,6 +748,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        in_deployment: false,
         owner_approves: false,
     };
     let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
@@ -1021,6 +1024,7 @@ fn an_upgrade_names_its_consent_or_its_run() {
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        in_deployment: false,
         owner_approves: false,
     };
     assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, None)).is_err());
@@ -1142,6 +1146,7 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
         }),
         owner_in_org: true,
         owner_in_team: true,
+        in_deployment: false,
         owner_approves: false,
     };
 
@@ -5756,6 +5761,7 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        in_deployment: false,
         owner_approves: false,
     };
     let install = |by: &str, version: &str, at: u64| SystemCmd::InstallPackage {
@@ -6215,6 +6221,7 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
             release: None,
             owner_in_org: true,
             owner_in_team: true,
+            in_deployment: false,
             owner_approves: false,
         }
     };
@@ -6316,6 +6323,7 @@ fn a_package_says_whether_its_publisher_or_each_owner_upgrades_it() {
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        in_deployment: false,
         owner_approves: false,
     };
     assert!(
@@ -6388,6 +6396,7 @@ fn upgrade_to(app: &str, actor: &str, bundle: &str, release: Option<(&str, &str)
         }),
         owner_in_org: true,
         owner_in_team: true,
+        in_deployment: false,
         owner_approves: false,
     }
 }
@@ -7924,7 +7933,7 @@ fn a_deployments_managers_set_secrets_its_offers_declare() {
         .unwrap();
     let of = |m: &SystemMachine, app: &str| {
         m.state
-            .deployment_secrets_of(app)
+            .deployment_secrets_of(app, "p")
             .and_then(|h| h.get("API_KEY"))
             .map(|s| s.value.0.clone())
     };
@@ -8230,7 +8239,7 @@ fn a_deployment_holds_secrets_the_releases_its_offers_use_declare() {
     let filled = |app: &str, package: &str| {
         crate::component::run_secrets(
             &BTreeMap::new(),
-            m.state.deployment_secrets_of(app),
+            m.state.deployment_secrets_of(app, package),
             &release(package),
         )
         .0
@@ -10548,5 +10557,204 @@ fn an_app_is_attached_with_its_managers_consent_and_detached_with_it() {
     assert_eq!(
         m.state.apps["oa"].links["kv"], "ob",
         "a member's link stays"
+    );
+}
+
+/// Only a deployment's managers decide which release its instances run: an
+/// `UpgradeApp` that says so (`in_deployment`), or any once the logged
+/// cluster version brings the rule, moves an instance from a deployment only
+/// to the release the deployment offers for its package; another package, a
+/// raw bundle and a version not offered are refused `OUTSIDE_DEPLOYMENT`, and
+/// once the managers offer a newer release the owner moves to it. An earlier
+/// release's entry, without the flag below that version, replays as it
+/// applied; a record it moved onto another package gets none of the
+/// deployment's secrets ([`super::SystemState::deployment_secrets_of`]).
+#[test]
+fn an_instance_from_a_deployment_moves_only_to_what_it_offers() {
+    use super::{cluster_version::Feature, Deployer, Deployments, OUTSIDE_DEPLOYMENT};
+    let mut m = deploying(Deployments::Open);
+    let _ok = m.run_unproven(install_declaring("alice", "1.0.0")).unwrap();
+    let _ok = m.run_unproven(install_declaring("alice", "2.0.0")).unwrap();
+    // Bob's own package, declaring the same secret, on WASM of his own.
+    let _ok = m
+        .run_unproven(SystemCmd::InstallPackage {
+            package: "q".into(),
+            signer_id: "did:key:bob".into(),
+            release: serde_json::from_value(json!({
+                "version": "1.0.0", "mpk": "q-1.0.0", "mpkSize": 1, "source": "upload",
+                "services": { "": "b-q" }, "installedBy": "bob", "installedAt": 5,
+                "outbound": ["https://attacker.example/"],
+                "secrets": { "API_KEY": { "hosts": ["attacker.example"] } },
+            }))
+            .unwrap(),
+        })
+        .unwrap();
+    let _ok = m
+        .run_unproven(create_deployment(
+            "a",
+            Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(offer_app("a", "notes", "1.0.0", "alice"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(set_secret("a", "API_KEY", "developers", "alice"))
+        .unwrap();
+    let d = m.state.deployments["a"].clone();
+    assert!(m.state.deployment_covers(&d, "p"));
+    assert!(!m.state.deployment_covers(&d, "q"));
+    for id in ["i1", "i2", "i3"] {
+        let _ok = m
+            .run_unproven(instance(id, "bob", "b-1.0.0", Some("a")))
+            .unwrap();
+        m.state.apps.get_mut(id).unwrap().release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.0.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let up = |app: &str, bundle: &str, release: Option<(&str, &str)>, flag: bool| {
+        let mut cmd = upgrade_to(app, "bob", bundle, release);
+        if let SystemCmd::UpgradeApp { in_deployment, .. } = &mut cmd {
+            *in_deployment = flag;
+        }
+        cmd
+    };
+    assert_eq!(
+        up("i1", "b-q", Some(("q", "1.0.0")), true).features(),
+        vec![Feature::UpgradeInDeployment]
+    );
+    assert!(up("i1", "b-q", Some(("q", "1.0.0")), false)
+        .features()
+        .is_empty());
+
+    // An earlier release's entry (no flag, no cluster version that brings the
+    // rule) replays as it applied: i2 moves onto bob's package. Its record now
+    // names code the deployment does not offer, and gets none of its values.
+    let _ok = m
+        .run_unproven(up("i2", "b-q", Some(("q", "1.0.0")), false))
+        .unwrap();
+    assert_eq!(m.state.apps["i2"].release.as_ref().unwrap().package, "q");
+    assert!(m.state.deployment_secrets_of("i2", "q").is_none());
+    assert!(m.state.deployment_secrets_of("i1", "p").is_some());
+    assert!(m.state.deployment_secrets_of("i1", "q").is_none());
+
+    // Flagged: another package, a raw bundle, a version not offered.
+    for (bundle, release) in [
+        ("b-q", Some(("q", "1.0.0"))),
+        ("b-2.0.0", None),
+        ("b-2.0.0", Some(("p", "2.0.0"))),
+    ] {
+        assert_eq!(
+            m.run_unproven(up("i1", bundle, release, true)).unwrap_err(),
+            OUTSIDE_DEPLOYMENT,
+            "{bundle}"
+        );
+    }
+    // Once the cluster version brings the rule, an entry without the flag too.
+    m.state.cluster_version = Some(Feature::UpgradeInDeployment.since().to_owned());
+    assert_eq!(
+        m.run_unproven(up("i3", "b-q", Some(("q", "1.0.0")), false))
+            .unwrap_err(),
+        OUTSIDE_DEPLOYMENT
+    );
+    assert_eq!(m.state.apps["i3"].release.as_ref().unwrap().package, "p");
+
+    // The managers offer 2.0.0: the owner accepts it.
+    let _ok = m
+        .run_unproven(offer_app("a", "notes", "2.0.0", "alice"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(up("i1", "b-2.0.0", Some(("p", "2.0.0")), true))
+        .unwrap();
+    assert_eq!(
+        m.state.apps["i1"].release.as_ref().unwrap().version,
+        "2.0.0"
+    );
+    assert!(m.state.deployment_secrets_of("i1", "p").is_some());
+
+    // A unit's member carries the deployment but runs a package it does not
+    // offer: it moves within its own package (with its unit), never onto
+    // another, and never as a standalone instance would.
+    let q = |version: &str| PackageRef {
+        package: "q".into(),
+        version: version.into(),
+        service: None,
+        compute: false,
+    };
+    let p2 = PackageRef {
+        package: "p".into(),
+        version: "2.0.0".into(),
+        service: None,
+        compute: false,
+    };
+    let mut member = m.state.apps["i1"].clone();
+    member.app_id = "m1".into();
+    member.release = Some(q("1.0.0"));
+    let _prev = m.state.apps.insert("m1".into(), member.clone());
+    assert_eq!(
+        m.state.within_deployment(&member, Some(&q("1.0.0")), None),
+        Err(OUTSIDE_DEPLOYMENT),
+        "not yet a member: the deployment offers no release of q"
+    );
+    let _prev = m
+        .state
+        .apps
+        .get_mut("i1")
+        .unwrap()
+        .links
+        .insert("store".into(), "m1".into());
+    // A unit's run to `p@version`, naming the member's target.
+    let unit_run = |id: &str, version: &str| crate::types::UpgradeRun {
+        run_id: id.into(),
+        package: "p".into(),
+        version: version.into(),
+        team: None,
+        cascade: false,
+        by: "bob".into(),
+        started_at: 9,
+        apps: vec!["m1".into(), "i1".into()],
+        done: Vec::new(),
+        failed: std::collections::BTreeMap::new(),
+        finished: false,
+        targets: std::iter::once((
+            "m1".to_owned(),
+            crate::types::RunTarget {
+                package: "q".into(),
+                version: "1.0.0".into(),
+            },
+        ))
+        .collect(),
+    };
+    let org = member.org.clone();
+    let runs = &mut m.state.orgs.get_mut(&org).unwrap().upgrade_runs;
+    let _prev = runs.insert("offered".into(), unit_run("offered", "2.0.0"));
+    let _prev = runs.insert("unoffered".into(), unit_run("unoffered", "1.0.0"));
+    // With its unit, to the release the deployment offers: it moves within q.
+    assert_eq!(
+        m.state
+            .within_deployment(&member, Some(&q("1.0.0")), Some("offered")),
+        Ok(())
+    );
+    // Alone, or in a run to a release the developer did not offer: never.
+    for run in [None, Some("unoffered"), Some("no-such-run")] {
+        assert_eq!(
+            m.state.within_deployment(&member, Some(&q("1.0.0")), run),
+            Err(OUTSIDE_DEPLOYMENT),
+            "{run:?}"
+        );
+    }
+    // Onto another package, or a raw bundle, even with its unit: never.
+    assert_eq!(
+        m.state
+            .within_deployment(&member, Some(&p2), Some("offered")),
+        Err(OUTSIDE_DEPLOYMENT)
+    );
+    assert_eq!(
+        m.state.within_deployment(&member, None, Some("offered")),
+        Err(OUTSIDE_DEPLOYMENT)
     );
 }

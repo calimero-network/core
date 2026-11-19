@@ -1106,6 +1106,11 @@ pub struct SecretDeclarers {
     pub declared_by: BTreeSet<(String, String)>,
 }
 
+/// Why an upgrade of an instance from a deployment is refused: it names a
+/// release other than the one the deployment offers for the instance's package
+/// (`SystemState::within_deployment`).
+pub const OUTSIDE_DEPLOYMENT: &str = "an instance from a deployment runs the release its deployment offers: its developer decides which, and its owner accepts it or not";
+
 /// Why clearing a deployment's secret is refused: it holds no value of it.
 pub const NO_DEPLOYMENT_SECRET: &str = "this deployment holds no value of that secret";
 
@@ -2508,16 +2513,110 @@ impl SystemState {
         out
     }
 
-    /// The secret values of the deployment `app_id` was created from, by name:
-    /// what fills `{{secret:NAME}}` for it where the instance set no value of
-    /// its own. Empty for an instance from no deployment, or one deleted since.
+    /// Whether `d` offers a release of `package`, any version, or a release it
+    /// offers references `package` ([`Self::used_releases`]: the apps of its
+    /// unit run it): the code its deployment's secrets may reach. A package's
+    /// signer is pinned, so only its publisher signs another release of it;
+    /// code of any other package (an instance's owner's own, say) never gets
+    /// the deployment's values.
+    #[must_use]
+    pub fn deployment_covers(&self, d: &Deployment, package: &str) -> bool {
+        d.apps.values().any(|o| {
+            o.package == package
+                || self
+                    .offered_release(o)
+                    .is_some_and(|v| self.used_releases(v).any(|(p, _)| p == package))
+        })
+    }
+
+    /// Whether moving `app` to `release` keeps it on its deployment's offer:
+    /// only the deployment's managers decide which release its instances run
+    /// (`OfferApp`), and the instance's owner accepts it or not. An instance
+    /// from no deployment may go anywhere; one from a deployment only to the
+    /// exact release the deployment offers for its package (the package it
+    /// runs), never a raw bundle, another version or another package.
+    ///
+    /// # Errors
+    /// [`OUTSIDE_DEPLOYMENT`] when the move leaves the offer.
+    pub fn within_deployment(
+        &self,
+        app: &AppRecord,
+        release: Option<&PackageRef>,
+        run: Option<&str>,
+    ) -> Result<(), &'static str> {
+        let Some(id) = app.deployment.as_deref() else {
+            return Ok(());
+        };
+        let d = self.deployments.get(id).ok_or(OUTSIDE_DEPLOYMENT)?;
+        let to = release.ok_or(OUTSIDE_DEPLOYMENT)?;
+        if app
+            .release
+            .as_ref()
+            .is_some_and(|r| r.package != to.package)
+        {
+            return Err(OUTSIDE_DEPLOYMENT);
+        }
+        // A unit's member carries its instance's deployment but runs a package
+        // the deployment does not offer: it moves only within its own package
+        // (checked above), and only with its unit, in a run that takes the
+        // unit's instance to the release the deployment offers (each member's
+        // target comes from that release's `uses`, `UpgradeRun::target_of`).
+        // Never alone, and never in a run to a release the developer did not
+        // offer, which would move the members though the instance stays.
+        if let Some(parent) = self.unit_parent(&app.app_id) {
+            let unit_run = run
+                .and_then(|id| self.orgs.values().find_map(|o| o.upgrade_runs.get(id)))
+                .filter(|r| {
+                    r.targets.contains_key(&app.app_id)
+                        && self
+                            .apps
+                            .get(parent)
+                            .and_then(|p| p.release.as_ref())
+                            .is_some_and(|p| p.package == r.package)
+                        && d.apps
+                            .values()
+                            .any(|o| o.package == r.package && o.version == r.version)
+                });
+            return unit_run.map(|_| ()).ok_or(OUTSIDE_DEPLOYMENT);
+        }
+        if !d
+            .apps
+            .values()
+            .any(|o| o.package == to.package && o.version == to.version)
+        {
+            return Err(OUTSIDE_DEPLOYMENT);
+        }
+        Ok(())
+    }
+
+    /// The secret values of the deployment `app_id` was created from, by name,
+    /// for a run of `package`: what fills `{{secret:NAME}}` for it where the
+    /// instance set no value of its own. `None` for an instance from no
+    /// deployment, one deleted since, or a run of a package the deployment does
+    /// not offer or reference ([`Self::deployment_covers`]): its managers set
+    /// the values for the code they ship, and no other code gets them, whatever the record
+    /// says it runs.
     #[must_use]
     pub fn deployment_secrets_of(
         &self,
         app_id: &str,
+        package: &str,
     ) -> Option<&crate::component::InstanceSecrets> {
-        let deployment = self.apps.get(app_id)?.deployment.as_deref()?;
-        self.deployment_secrets.get(deployment)
+        let id = self.apps.get(app_id)?.deployment.as_deref()?;
+        let d = self.deployments.get(id)?;
+        if !self.deployment_covers(d, package) {
+            return None;
+        }
+        self.deployment_secrets.get(id)
+    }
+
+    /// Whether the logged cluster version brings `feature` to every node: a
+    /// rule judged from state at this log position, so replicas agree.
+    #[must_use]
+    pub fn cluster_brings(&self, feature: cluster_version::Feature) -> bool {
+        self.cluster_version
+            .as_deref()
+            .is_some_and(|v| compare_versions(v, feature.since()) != std::cmp::Ordering::Less)
     }
 
     /// Whether `actor` may change `d`: [`Self::acts_for`] its owner.
@@ -2799,15 +2898,6 @@ impl SystemState {
     #[must_use]
     pub fn owner_approves(&self, flagged: bool) -> bool {
         flagged || self.cluster_brings(cluster_version::Feature::OwnerApprovedUpgrades)
-    }
-
-    /// Whether the logged cluster version brings `feature` to every node: a
-    /// rule judged from state at this log position, so replicas agree.
-    #[must_use]
-    pub fn cluster_brings(&self, feature: cluster_version::Feature) -> bool {
-        self.cluster_version
-            .as_deref()
-            .is_some_and(|v| compare_versions(v, feature.since()) != std::cmp::Ordering::Less)
     }
 
     /// [`Self::may_upgrade`], with the owner judged as the release that
@@ -4932,6 +5022,14 @@ pub enum SystemCmd {
         /// logged, which replays judging the owner without the team.
         #[serde(default)]
         owner_in_team: bool,
+        /// An instance from a deployment moves only to the release its
+        /// deployment offers ([`SystemState::within_deployment`]). The API
+        /// sets it once every node reads it
+        /// ([`cluster_version::Feature::UpgradeInDeployment`]); absent
+        /// (`false`) in an earlier release's entry, which replays as it
+        /// applied unless the logged cluster version brings the rule.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        in_deployment: bool,
         /// Only an owner or admin of the app's organization approves its upgrades
         /// ([`SystemState::approves_upgrades`]). The API sets it once every node reads it
         /// ([`cluster_version::Feature::OwnerApprovedUpgrades`]); absent (`false`) in an

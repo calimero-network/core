@@ -1663,6 +1663,136 @@ async fn a_units_members_are_billed_to_its_deployments_developer() {
     }
 }
 
+/// A unit from a deployment moves only where its developer's offer takes it: its member,
+/// which runs a package the deployment does not offer, is never moved alone (`409
+/// OUTSIDE_DEPLOYMENT`, before any step-up), a unit upgrade to a release the deployment
+/// does not offer moves nothing, and once the developer offers it the customer's unit
+/// upgrade moves the instance and its member together.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_from_a_deployment_moves_only_to_its_offer() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let (carol, mut carol_pk) = signed_up(&c, 2, "carol").await;
+
+    let uses = |kv: &str| json!({ "kv": { "package": "com.test.dunit-kv", "range": "^0.1", "version": kv } });
+    for version in ["0.1.0", "0.1.1"] {
+        let _ok = alice
+            .packages()
+            .upload(release("com.test.dunit-kv", version))
+            .await
+            .unwrap();
+    }
+    for (version, kv) in [("1.0.0", "0.1.0"), ("1.1.0", "0.1.1")] {
+        let _ok = alice
+            .packages()
+            .upload(mpk_using(
+                "com.test.dunit-notes",
+                version,
+                &variant(&kv_wasm(), &format!("com.test.dunit-notes@{version}")),
+                &[],
+                uses(kv),
+            ))
+            .await
+            .unwrap();
+    }
+    let da = deploy(
+        &alice,
+        &mut alice_pk,
+        "alpha",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &da,
+        "notes",
+        "com.test.dunit-notes",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
+
+    let globex = org(&carol, "Globex").await;
+    let body = AppCreateRequest {
+        name: Some("notes".to_owned()),
+        deployment: Some(da.clone()),
+        package: Some("com.test.dunit-notes".to_owned()),
+        org: Some(globex.clone()),
+        ..AppCreateRequest::default()
+    };
+    let made = carol.apps().create(body).await.map(wire).unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+
+    // The member alone: refused before any passkey is asked for.
+    let e = carol
+        .apps()
+        .upgrade(&kv, typed(json!({ "version": "0.1.1" })), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OUTSIDE_DEPLOYMENT"), "{e}");
+
+    // The unit to a release the deployment does not offer: refused before any passkey is
+    // asked for, and nothing moves, its member included.
+    let e = carol
+        .apps()
+        .upgrade_unit(&notes, "1.1.0", None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OUTSIDE_DEPLOYMENT"), "{e}");
+    for (app, version) in [(&notes, "1.0.0"), (&kv, "0.1.0")] {
+        let record = carol.apps().get(app).await.map(wire).unwrap();
+        assert_eq!(record["release"]["version"], json!(version), "{record}");
+    }
+
+    // The developer offers 1.1.0: the customer's unit upgrade moves both.
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &da,
+        "notes",
+        "com.test.dunit-notes",
+        "1.1.0",
+    )
+    .await
+    .unwrap();
+    let run = carol
+        .apps()
+        .upgrade_unit(&notes, "1.1.0", Some(&mut carol_pk))
+        .await
+        .map(wire)
+        .unwrap();
+    let run_id = run["runId"].as_str().unwrap().to_owned();
+    let status = finished(&carol, &globex, &run_id).await;
+    assert_eq!(status["failed"], json!({}), "{status}");
+    for (app, version) in [(&notes, "1.1.0"), (&kv, "0.1.1")] {
+        let record = carol.apps().get(app).await.map(wire).unwrap();
+        assert_eq!(record["release"]["version"], json!(version), "{record}");
+        assert_eq!(record["deployment"], json!(da), "{record}");
+    }
+}
+
+/// An organization's upgrade run, once it finished.
+async fn finished(client: &Client, org: &str, run: &str) -> Value {
+    let mut status = Value::Null;
+    for _ in 0..100 {
+        status = client
+            .orgs()
+            .upgrade_status(org, run)
+            .await
+            .map(wire)
+            .unwrap();
+        if status["finished"] == json!(true) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(status["finished"], json!(true), "{status}");
+    status
+}
+
 /// D78 (Xabi, 11-09): the daily fuel cap follows the developer, the identity an
 /// instance's usage is billed to (`usage::developer`). Two customers' instances of
 /// one developer's deployment are two payers, but one developer: their fuel adds up
@@ -1845,9 +1975,16 @@ async fn an_instance_shows_its_update_and_who_may_approve_it() {
         json!({ "account": alice_id }),
     )
     .await;
-    let _ok = offer(&alice, &mut alice_pk, &d, "notes", "com.test.notes", "1.0.0")
-        .await
-        .unwrap();
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &d,
+        "notes",
+        "com.test.notes",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
 
     // Carol's organization, with bob a member who may create apps and holds
     // MANAGE_APPLICATION there; bob creates the instance.
@@ -1878,9 +2015,16 @@ async fn an_instance_shows_its_update_and_who_may_approve_it() {
     assert_eq!(u["mayApprove"], json!(false), "{u}");
 
     // The developer offers 2.0.0: it is available, which neither customer installed.
-    let _ok = offer(&alice, &mut alice_pk, &d, "notes", "com.test.notes", "2.0.0")
-        .await
-        .unwrap();
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &d,
+        "notes",
+        "com.test.notes",
+        "2.0.0",
+    )
+    .await
+    .unwrap();
     for who in [&carol, &bob] {
         let u = update_of(who, &inst).await;
         assert_eq!(
@@ -1899,7 +2043,11 @@ async fn an_instance_shows_its_update_and_who_may_approve_it() {
     assert!(e.to_string().contains("owner or admin"), "{e}");
     let e = bob
         .apps()
-        .upgrade(&inst, typed(json!({ "version": "2.0.0" })), Some(&mut bob_pk))
+        .upgrade(
+            &inst,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut bob_pk),
+        )
         .await
         .unwrap_err();
     forbidden(&e);
@@ -1929,7 +2077,11 @@ async fn an_instance_shows_its_update_and_who_may_approve_it() {
     assert_eq!(u["mayApprove"], json!(true), "{u}");
     let _ok = alice
         .apps()
-        .upgrade(&own, typed(json!({ "version": "2.0.0" })), Some(&mut alice_pk))
+        .upgrade(
+            &own,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut alice_pk),
+        )
         .await
         .unwrap();
     let u = update_of(&alice, &own).await;

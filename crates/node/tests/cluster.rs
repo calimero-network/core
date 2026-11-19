@@ -5949,7 +5949,11 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
     // The publisher may not upgrade the customer's instance by itself either.
     let e = pam
         .apps()
-        .upgrade(&inst, typed(json!({ "version": "1.1.0" })), Some(&mut pam_pk))
+        .upgrade(
+            &inst,
+            typed(json!({ "version": "1.1.0" })),
+            Some(&mut pam_pk),
+        )
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
