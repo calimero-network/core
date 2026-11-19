@@ -4328,7 +4328,7 @@ export interface components {
             kind: "grants";
             grants: components["schemas"]["Grant"][];
         };
-        /** @description One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link). At most 16 teams and 1000 accounts. */
+        /** @description One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link); `link`: a public link, whose token's holders call the instance's public methods as anonymous visitors (its key, never a token; made and revoked on `/apps/{app}/public-links` only, shown to whoever may change the instance's access, and kept as they are by `POST /apps/{app}/access`). At most 16 teams and 1000 accounts. */
         Grant: {
             /** @enum {string} */
             kind: "org";
@@ -4345,6 +4345,18 @@ export interface components {
         } | {
             /** @enum {string} */
             kind: "anyone";
+        } | {
+            /** @enum {string} */
+            kind: "link";
+            link: string;
+            label?: string;
+            /** Format: int64 */
+            expiresAt?: number;
+            /** Format: int64 */
+            ratePerMinute: number;
+            createdBy: string;
+            /** Format: int64 */
+            createdAt: number;
         };
         /**
          * @description A member's role in an organization.

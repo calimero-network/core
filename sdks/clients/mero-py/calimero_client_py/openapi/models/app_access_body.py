@@ -14,13 +14,14 @@ from typing import Union
 if TYPE_CHECKING:
     from ..models.grant_type_0 import GrantType0
     from ..models.grant_type_3 import GrantType3
+    from ..models.grant_type_1 import GrantType1
     from ..models.access_type_0 import AccessType0
     from ..models.grant_type_2 import GrantType2
     from ..models.access_type_3 import AccessType3
     from ..models.access_type_1 import AccessType1
     from ..models.access_type_4 import AccessType4
     from ..models.access_type_2 import AccessType2
-    from ..models.grant_type_1 import GrantType1
+    from ..models.grant_type_4 import GrantType4
     from ..models.access_type_5 import AccessType5
 
 
@@ -35,7 +36,7 @@ class AppAccessBody:
             Who may reach an app at all, as one mode (deprecated: see `grants`), or `grants`: the instance's grant list (see
             #Grant). Each mode is a grant list: `owner` none, `org` the organization, `team` that team, `accounts` those
             people, `public` `anyone`.
-        grants (Union[Unset, list[Union['GrantType0', 'GrantType1', 'GrantType2', 'GrantType3']]]):
+        grants (Union[Unset, list[Union['GrantType0', 'GrantType1', 'GrantType2', 'GrantType3', 'GrantType4']]]):
     """
 
     access: Union[
@@ -48,20 +49,24 @@ class AppAccessBody:
         Unset,
     ] = UNSET
     grants: Union[
-        Unset, list[Union["GrantType0", "GrantType1", "GrantType2", "GrantType3"]]
+        Unset,
+        list[
+            Union["GrantType0", "GrantType1", "GrantType2", "GrantType3", "GrantType4"]
+        ],
     ] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.grant_type_0 import GrantType0
         from ..models.grant_type_3 import GrantType3
+        from ..models.grant_type_1 import GrantType1
         from ..models.access_type_0 import AccessType0
         from ..models.grant_type_2 import GrantType2
         from ..models.access_type_3 import AccessType3
         from ..models.access_type_1 import AccessType1
         from ..models.access_type_4 import AccessType4
         from ..models.access_type_2 import AccessType2
-        from ..models.grant_type_1 import GrantType1
+        from ..models.grant_type_4 import GrantType4
         from ..models.access_type_5 import AccessType5
 
         access: Union[Unset, dict[str, Any]]
@@ -91,6 +96,8 @@ class AppAccessBody:
                     grants_item = grants_item_data.to_dict()
                 elif isinstance(grants_item_data, GrantType2):
                     grants_item = grants_item_data.to_dict()
+                elif isinstance(grants_item_data, GrantType3):
+                    grants_item = grants_item_data.to_dict()
                 else:
                     grants_item = grants_item_data.to_dict()
 
@@ -110,13 +117,14 @@ class AppAccessBody:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.grant_type_0 import GrantType0
         from ..models.grant_type_3 import GrantType3
+        from ..models.grant_type_1 import GrantType1
         from ..models.access_type_0 import AccessType0
         from ..models.grant_type_2 import GrantType2
         from ..models.access_type_3 import AccessType3
         from ..models.access_type_1 import AccessType1
         from ..models.access_type_4 import AccessType4
         from ..models.access_type_2 import AccessType2
-        from ..models.grant_type_1 import GrantType1
+        from ..models.grant_type_4 import GrantType4
         from ..models.access_type_5 import AccessType5
 
         d = dict(src_dict)
@@ -188,7 +196,9 @@ class AppAccessBody:
 
             def _parse_grants_item(
                 data: object,
-            ) -> Union["GrantType0", "GrantType1", "GrantType2", "GrantType3"]:
+            ) -> Union[
+                "GrantType0", "GrantType1", "GrantType2", "GrantType3", "GrantType4"
+            ]:
                 try:
                     if not isinstance(data, dict):
                         raise TypeError()
@@ -213,11 +223,19 @@ class AppAccessBody:
                     return componentsschemas_grant_type_2
                 except:  # noqa: E722
                     pass
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    componentsschemas_grant_type_3 = GrantType3.from_dict(data)
+
+                    return componentsschemas_grant_type_3
+                except:  # noqa: E722
+                    pass
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_grant_type_3 = GrantType3.from_dict(data)
+                componentsschemas_grant_type_4 = GrantType4.from_dict(data)
 
-                return componentsschemas_grant_type_3
+                return componentsschemas_grant_type_4
 
             grants_item = _parse_grants_item(grants_item_data)
 

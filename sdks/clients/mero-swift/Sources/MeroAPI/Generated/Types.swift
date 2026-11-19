@@ -5069,7 +5069,7 @@ public enum Components {
                 }
             }
         }
-        /// One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link). At most 16 teams and 1000 accounts.
+        /// One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link); `link`: a public link, whose token's holders call the instance's public methods as anonymous visitors (its key, never a token; made and revoked on `/apps/{app}/public-links` only, shown to whoever may change the instance's access, and kept as they are by `POST /apps/{app}/access`). At most 16 teams and 1000 accounts.
         ///
         /// - Remark: Generated from `#/components/schemas/Grant`.
         @frozen public enum Grant: Codable, Hashable, Sendable {
@@ -5077,6 +5077,8 @@ public enum Components {
             case account(Components.Schemas.GrantAccount)
             /// - Remark: Generated from `#/components/schemas/Grant/GrantAnyone`.
             case anyone(Components.Schemas.GrantAnyone)
+            /// - Remark: Generated from `#/components/schemas/Grant/GrantLink`.
+            case link(Components.Schemas.GrantLink)
             /// - Remark: Generated from `#/components/schemas/Grant/GrantOrg`.
             case org(Components.Schemas.GrantOrg)
             /// - Remark: Generated from `#/components/schemas/Grant/GrantTeam`.
@@ -5095,6 +5097,8 @@ public enum Components {
                     self = .account(try .init(from: decoder))
                 case "anyone":
                     self = .anyone(try .init(from: decoder))
+                case "link":
+                    self = .link(try .init(from: decoder))
                 case "org":
                     self = .org(try .init(from: decoder))
                 case "team":
@@ -5112,6 +5116,8 @@ public enum Components {
                 case let .account(value):
                     try value.encode(to: encoder)
                 case let .anyone(value):
+                    try value.encode(to: encoder)
+                case let .link(value):
                     try value.encode(to: encoder)
                 case let .org(value):
                     try value.encode(to: encoder)
@@ -8676,6 +8682,63 @@ public enum Components {
             }
             public enum CodingKeys: String, CodingKey {
                 case kind
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/GrantLink`.
+        public struct GrantLink: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/GrantLink/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case link = "link"
+            }
+            /// - Remark: Generated from `#/components/schemas/GrantLink/kind`.
+            public var kind: Components.Schemas.GrantLink.KindPayload
+            /// - Remark: Generated from `#/components/schemas/GrantLink/link`.
+            public var link: Swift.String
+            /// - Remark: Generated from `#/components/schemas/GrantLink/label`.
+            public var label: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/GrantLink/expiresAt`.
+            public var expiresAt: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/GrantLink/ratePerMinute`.
+            public var ratePerMinute: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/GrantLink/createdBy`.
+            public var createdBy: Swift.String
+            /// - Remark: Generated from `#/components/schemas/GrantLink/createdAt`.
+            public var createdAt: Swift.Int64
+            /// Creates a new `GrantLink`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - link:
+            ///   - label:
+            ///   - expiresAt:
+            ///   - ratePerMinute:
+            ///   - createdBy:
+            ///   - createdAt:
+            public init(
+                kind: Components.Schemas.GrantLink.KindPayload,
+                link: Swift.String,
+                label: Swift.String? = nil,
+                expiresAt: Swift.Int64? = nil,
+                ratePerMinute: Swift.Int64,
+                createdBy: Swift.String,
+                createdAt: Swift.Int64
+            ) {
+                self.kind = kind
+                self.link = link
+                self.label = label
+                self.expiresAt = expiresAt
+                self.ratePerMinute = ratePerMinute
+                self.createdBy = createdBy
+                self.createdAt = createdAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case link
+                case label
+                case expiresAt
+                case ratePerMinute
+                case createdBy
+                case createdAt
             }
         }
         /// - Remark: Generated from `#/components/schemas/AppScopeOrg`.

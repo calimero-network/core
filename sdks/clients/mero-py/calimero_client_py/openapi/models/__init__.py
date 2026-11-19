@@ -315,6 +315,8 @@ from .grant_type_2 import GrantType2
 from .grant_type_2_kind import GrantType2Kind
 from .grant_type_3 import GrantType3
 from .grant_type_3_kind import GrantType3Kind
+from .grant_type_4 import GrantType4
+from .grant_type_4_kind import GrantType4Kind
 from .group_status import GroupStatus
 from .health_response_200 import HealthResponse200
 from .init_failed import InitFailed
@@ -965,6 +967,8 @@ __all__ = (
     "GrantType2Kind",
     "GrantType3",
     "GrantType3Kind",
+    "GrantType4",
+    "GrantType4Kind",
     "GroupStatus",
     "HealthResponse200",
     "InitFailed",
