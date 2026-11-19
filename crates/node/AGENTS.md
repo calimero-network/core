@@ -871,6 +871,22 @@ is its command line.
   `init` takes `links`, passes their ids in `initArgs` (a client's own
   `links` there is refused). A failure after a member was made leaves it in
   place. Regression: `creating_an_instance_creates_the_apps_its_release_uses`.
+  A unit is one (`Feature::WholeUnits`, rc.32): members of an instance from a deployment
+  carry its deployment (billed to its developer, its secret values), their `CreateApp`
+  naming the offer of the instance's release that covers them (`unit_offer`, checked at
+  apply in place of the member's own release; set by the node, `CreateAppBody::unit_offer`
+  is `serde(skip)`; the member's release is resolved without the owner's visibility,
+  as the instance's offer is). `DELETE /apps/{app}` of an instance deletes its whole unit
+  (`SystemState::unit_of`: its `links`, transitively, as they exist; `DeleteApp { members }`
+  names them and apply refuses a list that differs, `UNIT_NOT_AS_NAMED`, or an actor who may
+  not delete each one) and answers them in `members`; a member (`unit_parent`: an app whose
+  `links` hold it) is refused alone, `409 UNIT_MEMBER` at the API and `UNIT_MEMBER` at apply.
+  The API sends `members` once the logged cluster version brings the feature, or for an
+  instance with members (then `409 FEATURE_NOT_ACTIVE` below it); entries without either
+  field replay as before. Regressions: `a_units_members_are_billed_to_its_deployments_developer`,
+  `deleting_an_instance_deletes_its_unit_and_never_a_member_alone`,
+  `system::tests::a_units_members_carry_its_deployment_and_go_with_it`,
+  `unit_entries_logged_before_whole_units_replay_as_they_did`.
   A unit upgrades in one consent (`api/upgrades.rs`: `app_upgrade_unit`, `POST
   /apps/{app}/upgrade-unit`): a run whose consent (`org:<org> /
   __upgrade_unit / { app, package, version, targets }`) names each member's own
@@ -896,7 +912,7 @@ is its command line.
   app runs (`release_uses`; `409 NOT_AN_ATTACH_REFERENCE`) and the app runs its package
   (`409 WRONG_PACKAGE`); one outside the range is attached and answered `inRange: false`.
   `GET /apps/{app}/links` lists each reference with what is linked, its release and
-  `inRange` (`link_row`). Deleting an app detaches it everywhere (`remove_app`). The consent
+  `inRange` (`link_row`). Deleting an app detaches it everywhere (`remove_app`); an attached app is no unit member and is never deleted with the instance. The consent
   page's upgrade sheet adds `attachedOutOfRange` and the `attachedOutOfRange` attention when
   the target release takes an attached app in another range (`attached_outside`). Runs read
   links with `env::linked` (`SysDirectory::linked`: `links`, then `attached`). Regressions:

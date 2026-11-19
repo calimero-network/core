@@ -401,6 +401,7 @@ fn deleting_an_app_releases_its_runs_and_grants_the_next() {
         actor: "alice".into(),
         owner_in_org: true,
         owner_in_team: true,
+        members: None,
     })
     .unwrap();
     assert_eq!(granted(&m), pairs(&[("b1", "r3")]));
@@ -537,6 +538,7 @@ fn deleting_an_app_forgets_its_released_ids() {
         actor: "alice".into(),
         owner_in_org: true,
         owner_in_team: true,
+        members: None,
     })
     .unwrap();
     assert!(m.state.released_runs.is_empty());

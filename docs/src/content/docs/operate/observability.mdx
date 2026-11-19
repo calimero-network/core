@@ -129,7 +129,8 @@ Code: `crates/node/src/usage.rs`.
 payer, whose quotas it counts against: its organization's id (every app is in
 one). `developer` is who is billed for its
 usage on a shared cluster: for an instance a customer made from a deployment
-(`POST /apps { deployment }`), the deployment's owner, in the same form (an
+(`POST /apps { deployment }`), and for each app its release created with it
+(its unit's members), the deployment's owner, in the same form (an
 organization's id, or `account:{id}`); for an app made from a release
 directly, the same value as `org`. A transfer to another payer starts a new
 series from zero. No other label exists.

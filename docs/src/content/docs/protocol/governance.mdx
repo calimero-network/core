@@ -456,7 +456,12 @@ release otherwise, and without a deployer grant: nothing is installed. The
 instance records the deployment (`AppRecord::deployment`), and `CreateApp`
 checks again where it applies that the deployment exists and offers the
 release the instance runs. Instances created without a deployment, and those
-from before, record none.
+from before, record none. The apps a release creates with its instance (its
+`create` references, the instance's unit) record the instance's deployment
+too: the offer of the instance's release covers them, and their `CreateApp`
+names that offer (`unit_offer`), which apply checks the deployment still
+offers. Deleting the instance deletes them (`DeleteApp { members }`);
+members created before 1.0.0-rc.32 record no deployment.
 
 **Secrets**: a value a manager sets for a secret its offered releases declare
 fills `{{secret:NAME}}` for every instance created from the deployment that

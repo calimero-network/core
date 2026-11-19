@@ -522,7 +522,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Delete an app",
-        "description": "The owner or an organization admin.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "The owner or an organization admin. An instance whose release created apps with it (`uses` with `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -553,6 +553,12 @@
                     },
                     "deleted": {
                       "type": "boolean"
+                    },
+                    "members": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -588,6 +594,25 @@
             "x-calimero-codes": [
               "FORBIDDEN"
             ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`; `UNIT_MEMBER`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE",
+              "UNIT_MEMBER"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
           },
           "421": {
             "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
