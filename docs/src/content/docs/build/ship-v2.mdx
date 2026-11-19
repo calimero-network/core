@@ -301,7 +301,7 @@ The refusals an upgrade meets before it runs, and after:
 | Refusal | Why | What to do |
 | --- | --- | --- |
 | `412 CONFIRM_REQUIRED` | The step-up: not an error | Approve with a passkey (`meroctl` does), or use an upgrade key |
-| `403 FORBIDDEN` "upgrading this app needs whoever its package names" | The caller is not the owner, holds no `MANAGE_APPLICATION`, or is not the publisher's holder for a `publisher` package | Ask whoever the manifest's `upgrades` names |
+| `403 FORBIDDEN` "only an owner or admin of the app's organization approves its upgrades" | The caller is not an owner or admin of the app's organization (a member, the member who created the app, a `MANAGE_APPLICATION` holder or the publisher) | Ask an owner or admin of that organization, for example from the app through the consent page |
 | `403 FORBIDDEN` "decided by its operator" | The cluster's governance gives app upgrades to the operator | The operator upgrades (`POST /ops/apps/{app}/upgrade`) |
 | `403 FORBIDDEN` "not moved to a release its publisher upgrades" | v1 is an `owner` release and v2 a `publisher` one | Keep `upgrades` as it was; a package moves only from `publisher` to `owner` |
 | `409 CONFLICT` "no organization has bound its key yet" | A `publisher` package whose signing key no organization bound | Bind it: `POST /orgs/{org}/publishers` |

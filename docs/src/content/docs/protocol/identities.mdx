@@ -199,7 +199,8 @@ the key is shown once. A key may be scoped:
 A deploy from CI cannot answer a passkey step-up. An **upgrade key** is an API
 key whose scope is one app's upgrades: `POST /auth/apikeys { label, ttlSecs?,
 upgrades: { app, package? } }`, approved with the passkey of someone who [may
-upgrade](/protocol/upgrades/#who-may-upgrade) the app. Its record keeps the
+upgrade](/protocol/upgrades/#who-may-upgrade) the app: an owner or admin of its
+organization (`CreateApiKey { owner_approves }`, judged where it applies). Its record keeps the
 app, the package (by default the one the app runs) and that package's pinned
 signer, and the public half of an Ed25519 key derived from the key itself
 (`proof::api_key_public`: seed `SHA-256("calimero.api-key.v1\0" || key)`); the
@@ -218,7 +219,9 @@ passkey consent covers all four.
   app are refused `403`.
 - **The rules that still apply**: governance holding app upgrades for owners,
   the key's account still [may upgrade](/protocol/upgrades/#who-may-upgrade) the
-  app (a member who lost `MANAGE_APPLICATION` takes the key's power with them),
+  app (an admin made a member, or who left, takes the key's power with them; a
+  key a member made before 1.0.0-rc.32 upgrades nothing once that release
+  holds),
   an owner release is never moved to a publisher one, [release
   deadlines](/protocol/governance/#release-deadlines), and [deployer
   grants](/protocol/governance/#deployers) for a registry install.

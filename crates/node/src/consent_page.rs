@@ -325,7 +325,69 @@ pub struct ReleaseSubject {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpgradeSubject {
     app: String,
-    to_version: String,
+    /// The release to move to. An instance from a deployment moves only to the one its
+    /// deployment offers, which is what leaving it out means; any other instance names it.
+    #[serde(default)]
+    to_version: Option<String>,
+}
+
+/// The version an upgrade request moves `app` (running `package`, service `service`) to
+/// and that release's bundle. For an instance from a deployment: the release its deployment
+/// offers for the package ([`crate::api::apps::offered_bundle`]), which `to_version` may
+/// name and nothing else may (`409 OUTSIDE_DEPLOYMENT`), resolved without the person
+/// seeing the release, as creating from the offer is; a unit's member (`member_of_unit`)
+/// moves to the target its instance's plan gave it, judged on the deployment by the run.
+/// For any other instance: `to_version`, which it names (`400 VERSION_REQUIRED`), as the
+/// person may see it.
+async fn requested_release(
+    node: &Node,
+    p: &Principal,
+    account: &str,
+    app: &crate::types::AppRecord,
+    (package, service): (&str, Option<&str>),
+    to_version: Option<&str>,
+    member_of_unit: bool,
+) -> Result<(String, String), ApiError> {
+    match (&app.deployment, to_version) {
+        (Some(d), _) if !member_of_unit => {
+            let (bundle, _compute, release) =
+                crate::api::apps::offered_bundle(node, d, package, to_version, service)
+                    .await
+                    .map_err(|e| {
+                        if e.code == "NOT_OFFERED" {
+                            crate::node::outside_deployment()
+                        } else {
+                            e
+                        }
+                    })?;
+            Ok((release.version, bundle))
+        }
+        (Some(_), Some(version)) => {
+            let bundle = node
+                .sys(|s| {
+                    let v = s.packages.get(package)?.versions.get(version)?;
+                    v.app_parts().get(service.unwrap_or_default()).cloned()
+                })
+                .ok_or_else(|| ApiError::not_found("no such release"))?;
+            Ok((version.to_owned(), bundle))
+        }
+        (_, None) => Err(ApiError::bad_request(
+            "VERSION_REQUIRED",
+            "name the version to upgrade to (toVersion)",
+        )),
+        (None, Some(version)) => {
+            let bundle = node
+                .resolve_release(
+                    package,
+                    Some(version),
+                    service,
+                    account,
+                    p.bound_app() == Some(package),
+                )
+                .await?;
+            Ok((version.to_owned(), bundle))
+        }
+    }
 }
 
 /// A `delegate` request: `app` (the asking frontend's own) may call `target` as the person.
@@ -1744,18 +1806,19 @@ async fn upgrade_request(
     })?;
     let package = current.at.package.clone();
     let service = current.at.service.clone();
-    let bundle = node
-        .resolve_release(
-            &package,
-            Some(&subject.to_version),
-            service.as_deref(),
-            account,
-            p.bound_app() == Some(package.as_str()),
-        )
-        .await?;
+    let (to_version, bundle) = requested_release(
+        node,
+        p,
+        account,
+        &app,
+        (&package, service.as_deref()),
+        subject.to_version.as_deref(),
+        member_of_unit,
+    )
+    .await?;
     let to_release = PackageRef {
         package: package.clone(),
-        version: subject.to_version.clone(),
+        version: to_version.clone(),
         service: service.clone(),
         compute: false,
     };
@@ -1773,13 +1836,7 @@ async fn upgrade_request(
     )
     .await?;
     let target = node
-        .sys(|s| {
-            s.packages
-                .get(&package)?
-                .versions
-                .get(&subject.to_version)
-                .cloned()
-        })
+        .sys(|s| s.packages.get(&package)?.versions.get(&to_version).cloned())
         .ok_or_else(|| ApiError::not_found("no such release"))?;
     let from = release_facts(node, &package, &current.version).await?;
     let to = release_facts(node, &package, &target).await?;
@@ -1905,7 +1962,8 @@ async fn unit_upgrade_request(
     subject: UpgradeSubject,
 ) -> Result<(Action, Value), ApiError> {
     let app_id = node.canonical_app_id(&subject.app);
-    let plan = crate::api::unit_plan(node, account, &app_id, &subject.to_version).await?;
+    // The instance's own target, as its single upgrade's page resolves it (a
+    // deployment's offer when it names none).
     let (_, root) = upgrade_request(
         node,
         p,
@@ -1917,6 +1975,11 @@ async fn unit_upgrade_request(
         false,
     )
     .await?;
+    let version = root["upgrade"]["to"]["version"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| ApiError::internal("an upgrade sheet without its target"))?;
+    let plan = crate::api::unit_plan(node, account, &app_id, &version).await?;
     let mut from = BTreeMap::from([(app_id.clone(), plan.app.bundle.clone())]);
     let mut pages = vec![root.clone()];
     for member in &plan.members {
@@ -1929,7 +1992,7 @@ async fn unit_upgrade_request(
             account,
             UpgradeSubject {
                 app: member.app_id.clone(),
-                to_version: t.version.clone(),
+                to_version: Some(t.version.clone()),
             },
             true,
         )
@@ -1991,7 +2054,7 @@ async fn unit_upgrade_request(
     Ok((
         Action::UpgradeUnit {
             app: app_id,
-            version: subject.to_version,
+            version,
             targets: plan.targets,
             from,
         },

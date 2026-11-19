@@ -447,6 +447,16 @@ is its command line.
   (`SystemState::cluster_brings`); earlier entries replay as they applied.
   Regressions: `a_deployments_secret_never_reaches_a_package_it_does_not_offer`
   (`component_cluster.rs`), `an_instance_from_a_deployment_moves_only_to_what_it_offers`.
+  The customer accepts the offer from inside the app: the consent page's
+  `upgrade` (and `upgradeUnit`) of a deployment instance takes `toVersion` as
+  optional (`UpgradeSubject::to_version`) and resolves the target from the
+  offer (`consent_page::requested_release` over `api::apps::offered_bundle`;
+  no `sees_release`), any other version `409 OUTSIDE_DEPLOYMENT`; a unit's
+  member takes the target its instance's plan gave it, from the state. Another
+  instance still names it (`400 VERSION_REQUIRED`). The frontend learns of it
+  from `GET /apps/{app}/update` (Upgrades below). Regressions:
+  `a_customer_accepts_its_deployments_offer_on_the_page` (`tests/consent_page.rs`),
+  `an_instance_shows_its_update_and_who_may_approve_it` (`tests/deployments.rs`).
   `UninstallPackage` refuses an offered release (`offered`);
   `DeleteOrg` refuses an org that owns a deployment. Reads: `GET /deployments`
   (what the caller manages), `GET /deployments/{id}` (public, on fresh state:
@@ -551,13 +561,34 @@ is its command line.
     entries/snapshots to a peer whose attested release
     (`HttpAttestor::seen_release`) is not approved, `Node::place` skips such
     nodes, `/ops/apps/{app}/replicas` refuses them.
-  - *App upgrades*, per app: the package's signed manifest says
-    `upgrades: owner | publisher` (`calimero_bundle::UpgradeAuthority`, kept on
-    `PackageVersion::upgrades`; absent = `owner`). `owner`: the app's owner, or, for an org app, whoever holds
-    `MANAGE_APPLICATION` on its team or org-wide (`SystemState::manages_apps`).
-    `publisher`: the publisher's org-wide `MANAGE_APPLICATION` holders, for
-    every instance (`POST /orgs/{org}/packages/{package}/upgrade`), not the
-    instance's owner, and nobody (`409`) while the key is unbound.
+  - *App upgrades*, per app: the **owner and admins of its organization**
+    (`SystemState::approves_upgrades`: `OrgRole::Admin` or above), whatever the
+    package's signed manifest says (`upgrades: owner | publisher`,
+    `calimero_bundle::UpgradeAuthority`, kept on `PackageVersion::upgrades`;
+    absent = `owner`) and its key bound or not; not the app's creator as a
+    member, a team's lead, a `MANAGE_APPLICATION` holder, nor the publisher for
+    another organization's instance (`Feature::OwnerApprovedUpgrades`, rc.32).
+    `SystemState::may_upgrade(app, account, owner_approves)`; at apply
+    `UpgradeApp`, `StartUpgradeRun` (its starter, before the run's apps are
+    derived) and `CreateApiKey` judge it when their `owner_approves` flag is set
+    or the logged cluster version brings the feature
+    (`SystemState::owner_approves`, over `cluster_brings`; `NOT_AN_UPGRADE_APPROVER`).
+    The API asks `api::owner_approves` (`require_features`, which logs the
+    version first when every node supports it), refuses `403` before the
+    step-up (`api::upgrade_refusal`; `run_refusal` for runs) and sets the flag;
+    the consent page's upgrade sheets ask the same before any page exists, and
+    `act` runs `upgrade_app`. Not in `hold_to_current_rules`: an entry logged
+    below the version replays as it applied, under the rule before: `owner`:
+    the app's owner, or, for an org app, whoever holds `MANAGE_APPLICATION` on
+    its team or org-wide (`SystemState::manages_apps`, which still gates
+    outbound approvals, backup keys and deployers); `publisher`: the
+    publisher's org-wide `MANAGE_APPLICATION` holders, for every instance, and
+    nobody (`409`) while the key is unbound. Regressions:
+    `system::tests::only_an_organizations_owner_and_admins_approve_its_upgrades`,
+    `a_member_needs_the_capability_to_create_apps_or_invite`,
+    `a_publisher_package_is_upgraded_by_its_customers_owner_and_admins`
+    (`tests/cluster.rs`), `the_leader_checks_upgrade_authority_again`,
+    `a_publisher_upgraded_package_is_upgraded_on_its_organizations_page`.
     Only loosens toward owners: `PackageRecord::upgrades_in_order` at install,
     `SystemState::upgrade_keeps_authority` at upgrade (API and apply). Each with
     their own passkey assertion (`consent` on `UpgradeApp`). `run_upgrade` judges
@@ -689,8 +720,14 @@ is its command line.
   of its package (`SystemState::key_may_upgrade`), signing the statement in place of
   the step-up (`proof::sign_key_upgrade`, carried in `UpgradeApp::consent`). `authorize`
   verifies it under the key the log holds then (revoked or expired: refused) and spends
-  it; every other upgrade rule is unchanged. `UpgradeRecord::api_key` names the key
-  (`lastUpgrade.apiKey`). Regressions: `tests/upgrade_keys.rs`.
+  it; every other upgrade rule is unchanged. Made and used only by an owner or admin
+  of the app's organization (`upgrade_key_fits(.., owner_approves)` at `POST
+  /auth/apikeys`, `403` before the passkey, and `CreateApiKey { owner_approves }` at
+  apply; each use is judged on the key's account by `upgrade_app` and `UpgradeApp`,
+  so a key whose account is no longer one upgrades nothing, a member's key from
+  before included). `UpgradeRecord::api_key` names the key
+  (`lastUpgrade.apiKey`). Regressions: `tests/upgrade_keys.rs`
+  (`an_upgrade_key_is_an_owners_or_admins_of_the_apps_organization`).
 - **Job nodes** (`NodeRole::Job`, `job_node.rs`, `node/job.rs`): `POST /ops/nodes { id, addr, zone?, role?, pool? }` (operator-signed; `role` is in the signed arguments unless it is `replica`, `pool` only when set; `"replica"` default, `"job"`; any other role is refused) registers a node that only runs compute. It is in the directory but never a Raft member (not even a learner: a member keeps its log sealed under K_c, which a job node never holds), never a replica, blob (a sealed file included, `a_sealed_file_is_never_sent_to_a_job_node`) or bundle target, majority member, presence peer, CSP origin or cluster-key recipient. Every site that picks nodes for the cluster's own work reads `SystemState::replica_nodes()` / `replica_node(id)`, never `nodes`; `/ops/apps/{app}/replicas` naming a job node answers `400 JOB_NODE`, `internal/cluster-key` for one is refused, `/ops/placement` lists it with `role` and app counts stay replica-only. `DELETE /ops/nodes/{id}` removes one without touching system voters. A node's role is fixed (`RegisterNode` refuses another role for an id; remove it first) and `/ops/nodes` refuses `role: job` for a system voter, learner or `--peers` id (`NODE_HOLDS_CLUSTER`); removal changes system membership only for a node that is in it. Nodes are reached by id: Raft's `PeerTransport::send` takes the address `Node::replica_addr(id)` holds (the directory's, else `--peers`; none for a job node), and `internal/cluster-key` the one `Node::key_recipient_addr(id)` holds (the directory's, else the system group's membership, else `--peers` only before genesis), and address-only callers (`Node::peer`, so `peer_post` and streams) resolve it by a normalised comparison (`system::normalize_addr`) and refuse anything that is not a replica's, so the cluster secret never leaves for a job node. `RegisterNode` refuses an address another id holds (`ADDRESS_TAKEN` at the API). A ceremony holder is resolved through `replica_node`. Registering a job node (`POST /ops/nodes`, `role: job`) answers `409 CLUSTER_NOT_UPGRADED` unless every replica node, voter and learner runs at least this node's release, so no job record exists while an older node could misread it (upgrade the voters first). Upgrade the voters before anything else: the `RegisterNode` refusals (role fixed, address taken) bind only nodes that run this release. A node registered as a replica is admitted as a learner only after it attests its transport key as a cluster node (`attests_as_replica`): a job node registered as a replica never is, and `--peers` must list only replica nodes. `merod run --job-node` calls `run_job(JobConfig)`: no store, K_c, KMS, Raft or system group; it serves `/health`, `/attestation` (only `purpose=jobs`, answering `jobKey` bound with the transport key, release, cluster and node id in one quote; every other purpose or none is 404, so no channel that attests a transport key opens to it; a cluster node answers `purpose=jobs` with 404) and `GET /job/load` (`{ running, capacity }`, capacity is `--job-slots`, default `RUNS_PER_JOB_NODE` = 2). Its Ed25519 job key is made in memory at start. Leader side: `Node::attest_job(id, app)` fetches `purpose=jobs` over a fresh nonce, verifies it with `verify_job_key` under the peer policy (`--peer-profiles`, `--peer-min-release`), keeps the result `JOB_ATTEST_TTL` (60 s) for as long as the directory's `node_epoch` for the id is unchanged (any registration or removal) and until a channel to it fails (`forget_job`); it fails outright when the directory could not be brought up to date. `attest_job` also refuses a release the app's org or account has not approved (`release_may_hold`, as `may_send` does), and `/ops/placement` reads a job node's release through the same cached attestation; `GET /ops/job-nodes/{id}/attestation` (ops token) answers the leader's check without the per-app approval as `{ state: admitted|refused|unreachable, node, release|reason }` (`JobAttestError` tells a failed request from a refusal, by status: 5xx, 408, 425, 429 and transport failures are unreachable, any other non-2xx is refused; `404` for a non-job node; tests `the_ops_route_*`); `Node::job_load(peer)` asks over a sealed channel pinned to the attested transport key. Regressions: `tests/job_nodes.rs`, `placement::tests::a_job_node_is_never_placed`.
 - **Job runs** (`job_node/{admission,bundles,runs,exec}.rs`, `job_wire.rs`; tests `job_runs.rs`): a job node runs one attempt of a compute run per assignment, all inside the sealed channel. **Who may give it work**: only the cluster whose identity key it was started with (`merod run --job-node --cluster-identity HEX`, from `GET /ops/cluster` / `meroctl ops cluster`). The identity is an Ed25519 key derived from K_c (`backup::cluster_identity_key`, seed `HMAC-SHA256(K_c, "calimero.cluster-identity.v1")`), so a valid signature shows a node of this cluster signed; the job node fetches and attests nothing about the sender, and has no `--peers`; a key that is not a curve point or is of small order is refused at start (`check_cluster_identity`), signatures are checked strictly, and the identity is bound into the job node's `purpose=jobs` quote (`AttestationDoc::cluster_identity`, `job_key_binding`) so the leader's `attest_job` refuses a job node that serves another cluster. `PUT /job/bundles/{hash}` takes a component only with `x-bundle-signature`, the identity's signature over `"calimero.compute.bundle.v1\0" || hash` (`403 BAD_SIGNATURE`), then checks the hash and prepares it once on the compute engine (`MAX_JOB_BUNDLES` kept, least recently used first); only a compute component (`calimero:app/compute`, its ABI listing compute methods) prepares, and an app component is refused with `400 BAD_BUNDLE` even when the cluster signed it, so the job node never links storage, state or the network for it. `POST /job/runs` (at most `MAX_ASSIGNMENT_BYTES`) takes an `Assignment` (`job_wire`: app, run, attempt, method, args, bundle, caller, owner, `startTsMs`, budget, inputs `{id = the file id, size, sha256, segments = the hex SHA-256 of each segment, wrapped}`, wrapped seed, hex token, `signature`) signed by the identity over a length-prefixed binary message of every field (`assignment_message`, big-endian integers; `Node::sign_assignment` is the cluster side). Refusals, in order: shape (`400 BAD_ASSIGNMENT`/`BAD_BUDGET`, duplicate input ids, `413 TOO_MANY_INPUTS`/`INPUT_TOO_LARGE`/`INPUTS_TOO_LARGE`), `403 BAD_SIGNATURE`, then an assignment already held answers its state (`409 RUN_CONFLICT` if it differs), `503 BUSY` at the node's `--job-slots` runs waiting or running or when the finished outputs held on disk plus the most each active run and the new one may still write exceed `MAX_FINISHED_BYTES` (nothing is evicted, the leader collects or deletes), `409 NEED_BUNDLE`, `400 NOT_COMPUTE` (the compute ABI must list the method as a compute method), `400 BAD_WRAP` (every wrapped key opens at admission through `unwrap_for_job`, so a key made for another node, run, attempt or index never gets in). Runs are keyed by `(app, run, attempt)` (run ids are per app) and every other route is `/job/runs/{app}/{run}/{attempt}/...` with the app id URL-encoded; they need the run token in `x-run-token` (constant-time compare); a wrong token answers exactly as an unknown run, `404 UNKNOWN_RUN`, which the leader treats as lost. `PUT .../inputs/{i}/{k}` takes segment `k` of input `i`, in any order, only if its length is the segment's and its SHA-256 is the one the assignment lists (`400 BAD_SEGMENT`, `404 NO_SUCH_SEGMENT`); an input whose list does not hash to its id is `400 BAD_ASSIGNMENT`; each segment is written at `k * SEGMENT_BYTES` in the input's scratch file, and when the last one is in the file is streamed through the opener from disk (`exec::input_matches`) to prove it opens under the run's key to the declared size and plaintext SHA-256; an input that does not match ends the run on the spot with a signed `integrity` report, since the leader sent it; the leader sends the segments of an input one at a time, from its store or fetched from a replica; the run starts on its own OS thread when every input is in (at once for none). Sealed request bodies are decrypted and buffered before any route check, bounded by the sealed in-flight cap; that is accepted. `GET .../{attempt}` answers `{ state: awaiting|running|done|lost, progress?, report?, signature? }`: `done` carries the signed report, a failed run included; `lost` is a run this node could not serve (`Unavailable` trap, thread panic, node file I/O, an input that fails to open during the run, which is the node's own disk), never signed, which the leader restarts elsewhere with the next attempt. `GET .../outputs/{i}/{k}` gives one segment of an output's ciphertext, read by range from the scratch file (`404 NO_SUCH_SEGMENT` past the last), and `.../outputs/{i}/key` its data key (hex), once done; outputs are listed in the order the run finished them. `DELETE` sets the cancel flag, waits `CANCEL_WAIT` for the run to stop, answers its last status and drops it with its scratch files (a run that did not stop stays and answers `running`); runs not deleted are swept `JOB_RESULT_TTL` after they end, runs still waiting for inputs end lost and are swept after `AWAITING_INPUTS_TTL`; the scratch directory is emptied at start, so a restarted node knows no runs. The run is the compute component's `run` export, invoked as an action with a compute context over the files of the assignment only (`Assignment.bundle` names the compute component's hash): inputs are streamed from the scratch ciphertext through `FileOpener` and checked with `finish_expecting` at the end, and a failure then is a read error, so the run is lost, never signed as `integrity`. Outputs are sealed to disk under a fresh key each (`NewFile.ciphertext` stays empty); engine `WasmtimeEngine::for_compute`, run through `WasmtimeEngine::run_compute` (`ComputeRun`), the setup `crates/meroctl/compute` also calls, so only the file provider differs. A trap maps to the reason structurally (`calimero_app_engine_wasmtime::ending_of`, which `exec::classify` maps onto `FailReason`): fuel, memory, cancelled, trap (fault, stack, any other denied call), app-error; a wall clock that ran out (`Timeout`) is a lost attempt, so the outcome never depends on the machine and only fuel is the deterministic cap. A trap or app-error report also carries the text (`Report::message`, signed, at most `MAX_REPORT_MESSAGE_BYTES`). The `Report` (`job_wire`) holds app, run, attempt, status, reason, the result bytes, outputs `{id = the file id, size, sha256, segments}` and usage as integers (`cpuMicros` thread CPU, `gibMicros` peak memory times wall, `fuel`); the job key signs `"calimero.compute.report.v1\0"`, the SHA-256 of the assignment message it ran (so a report stands for that assignment only) and the length-prefixed fields, output ids, hashes and segment hashes as their 32 decoded bytes (`report_message`); one encoding only: ids and hashes are lowercase 64 hex, a done report has no reason, a failed one has a reason and neither result nor outputs, and `verify_report(job_key, assignment_digest, report, signature)` is the one check the leader uses. `Assignment`'s `Debug` hides the token and the wrapped keys; the seed and keys live in `Zeroizing`, except the copy of the seed the host core keeps in its `Invocation` for the run's life. A job node feeds no metrics series: a compute run leaves every `calimero_app_*` series of the cluster unchanged until the leader counts it. The leader's reads from a job node (`attest_job`, `job_load`) stop at `MAX_JOB_RESPONSE_BYTES`.
 - **Compute runs** (`component/runs.rs`; tests `component/tests/runs.rs`, `system/queue_tests.rs`, `component_compute.rs`):
@@ -1064,7 +1101,8 @@ is its command line.
   `report::MAX_REPORT_PAGE`). Per app: scope, bundle digest, package release
   (`report::release_of_app`: the one the instance runs, so releases sharing a
   WASM are told apart),
-  `upgradesHeldBy`, `lastUpgrade` (`AppRecord::last_upgrade`, with
+  `upgradesHeldBy` (`operator`, else `owner` once the logged version brings
+  `Feature::OwnerApprovedUpgrades`, else the manifest's), `lastUpgrade` (`AppRecord::last_upgrade`, with
   `report::actor_kind`: `owner`/`member`/`operator`, judged against the app's and
   org's owners as they stand), approved releases, each replica's release and
   whether approved; for accounts also name, the upgrader's account, newer
@@ -1135,6 +1173,20 @@ is its command line.
   `a_blob_put_waiting_for_the_disk_leaves_the_async_worker_free` (`tests/slow_disk.rs`:
   one worker; a blob upload and a bundle wait behind a held synced write while a
   ticker must keep ticking).
+- **Update available** (`api/upgrades.rs`: `app_update`, `GET /apps/{app}/update`): for
+  whoever `GET /apps/{app}` admits (`principal`, `within`, `reaches`; a session bound
+  to the package's frontend included), so the app's frontend can offer an upgrade and
+  open the consent page. Answers `{ app, running: { package, version } | null,
+  available: { package, version, source: deployment | release } | null, mayApprove,
+  approvers: owner-and-admins | operator | managers }`: `available` is a deployment
+  instance's offer for the package it runs (the newest when several) where it differs
+  from the running one, else the newest release of its package the caller sees (all of
+  them for a bound session) newer than the running one that the upgrade would take
+  (`report::newer_versions`, `report::newest_reachable`: authority and runtime, as
+  `latestReachable`); `mayApprove` is `api::upgrade_refusal` under the rule in force;
+  `approvers` is `managers` while `Feature::OwnerApprovedUpgrades` is not.
+  Regression: `an_instance_shows_its_update_and_who_may_approve_it`
+  (`tests/deployments.rs`).
 - **Upgrades are code-only**: a component upgrade swaps the bundle
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
   consent page shows the state version each side's `calimero:abi` declares and flags a
@@ -1159,7 +1211,8 @@ is its command line.
   (`tests/component_packages.rs`),
   `the_newest_reachable_release_is_reported_with_why_the_latest_is_not`.
 - **Upgrade runs** (cascade, status, retry): `POST
-  /orgs/{org}/upgrade { package, version, team?, cascade? }` (whoever holds
+  /orgs/{org}/upgrade { package, version, team?, cascade? }` (its owner or an admin,
+  `approves_upgrades`; before `Feature::OwnerApprovedUpgrades`, whoever holds
   `MANAGE_APPLICATION` there, `SystemState::manages_apps`; one passkey assertion for the run) or `POST /ops/orgs/{org}/upgrade` (where the
   operator holds app upgrades) records a `types::UpgradeRun` in the org
   (`StartUpgradeRun`, newest `UPGRADE_RUNS_KEPT`), then upgrades its apps one by
@@ -1169,7 +1222,7 @@ is its command line.
   missing from the cluster is installed from the registry first (owner runs).
   From `SystemState::current_rules_from` on, `apply` derives the run's apps
   from the state and its consent's method (`SystemState::upgrade_run_apps`:
-  `org_run_apps`, `published_run_apps` (by the release each app runs, `app_release`, with `StartUpgradeRun { by_release }`, which a publisher's run sets; `Feature::PublishedRunByRelease`, rc.24; absent, by the bundle's first recorded package; regression `a_publishers_run_covers_the_instances_that_run_its_package`), or a retry's failed apps), clears its
+  `org_run_apps`, `published_run_apps` (by the release each app runs, `app_release`, with `StartUpgradeRun { by_release }`, which a publisher's run sets; `Feature::PublishedRunByRelease`, rc.24; absent, by the bundle's first recorded package; regression `a_publishers_run_covers_the_instances_that_run_its_package`; under `owner_approves` only the instances of the organizations its starter, an owner or admin of the publisher, is an owner or admin of), or a retry's failed apps), clears its
   progress and refuses a run id any organization holds; `UpgradeApp { run }`
   moves an app once, only while it runs the run's package and never to an
   older release (`SystemState::run_may_move`, which `api::start_run` asks
