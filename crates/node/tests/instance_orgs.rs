@@ -195,7 +195,7 @@ async fn an_instance_goes_where_its_release_says() {
     );
     assert!(orgs(&zed).await.is_empty(), "no refusal made one");
     let home = create(&zed, EITHER, "Notes", json!({})).await.unwrap();
-    assert_eq!(orgs(&zed).await, [home.clone()]);
+    assert_eq!(orgs(&zed).await, std::slice::from_ref(&home));
     let org = zed.orgs().get(&home).await.map(wire).unwrap();
     assert_eq!(org["name"], "Notes", "named after the instance: {org}");
     assert_eq!(

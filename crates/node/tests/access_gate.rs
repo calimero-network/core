@@ -198,17 +198,43 @@ async fn signed_up(c: &ProxiedCluster, i: usize, name: &str) -> (Client, SoftAut
     (client, pk)
 }
 
+/// An organization `owner` makes with `who` as a member: an `accounts` list reaches the
+/// organization's members (a sign-up makes no organization any more).
+async fn shared_org(owner: &Client, pk: &mut SoftAuthenticator, who: &Client) -> String {
+    let org = owner
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = owner
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "member" })), Some(pk))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = who.orgs().invite_redeem(&token).await.unwrap();
+    org
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_grant_is_honoured_by_a_follower_that_has_not_applied_it_yet() {
     let c = ProxiedCluster::start().await;
     let leader = c.system_leader();
     let follower = (0..3).find(|i| *i != leader).unwrap();
-    let (alice, _a) = signed_up(&c, leader, "alice").await;
+    let (alice, mut a) = signed_up(&c, leader, "alice").await;
     let (bob, _b) = signed_up(&c, follower, "bob").await;
     let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
+    let org = shared_org(&alice, &mut a, &bob).await;
     let bundle = alice
         .packages()
         .bundle_put(kv_wasm())
@@ -217,7 +243,9 @@ async fn a_grant_is_honoured_by_a_follower_that_has_not_applied_it_yet() {
         .unwrap();
     let created = alice
         .apps()
-        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .create(typed(json!({
+            "name": "kv", "bundle": bundle, "org": org, "access": { "kind": "owner" },
+        })))
         .await
         .map(wire)
         .unwrap();
@@ -278,12 +306,13 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
     let c = ProxiedCluster::start().await;
     let leader = c.system_leader();
     let follower = (0..3).find(|i| *i != leader).unwrap();
-    let (alice, _a) = signed_up(&c, leader, "alice").await;
+    let (alice, mut a) = signed_up(&c, leader, "alice").await;
     let (bob, _b) = signed_up(&c, follower, "bob").await;
     let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
+    let org = shared_org(&alice, &mut a, &bob).await;
     let bundle = alice
         .packages()
         .bundle_put(kv_wasm())
@@ -292,7 +321,7 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
         .unwrap();
     let created = alice
         .apps()
-        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .create(typed(json!({ "name": "kv", "bundle": bundle, "org": org })))
         .await
         .map(wire)
         .unwrap();
@@ -849,12 +878,13 @@ async fn a_call_costs_one_system_read_round() {
 async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
     let c = ProxiedCluster::start_with(|cfg| cfg.replicas = 2).await;
     let sys_leader = c.system_leader();
-    let (alice, _a) = signed_up(&c, sys_leader, "alice").await;
+    let (alice, mut a) = signed_up(&c, sys_leader, "alice").await;
     let (bob, _b) = signed_up(&c, sys_leader, "bob").await;
     let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
+    let org = shared_org(&alice, &mut a, &bob).await;
     let bundle = alice
         .packages()
         .bundle_put(kv_wasm())
@@ -866,7 +896,7 @@ async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
         let app = alice
             .apps()
             .create(typed(
-                json!({ "name": &format!("kv{n}"), "bundle": &bundle }),
+                json!({ "name": &format!("kv{n}"), "bundle": &bundle, "org": &org }),
             ))
             .await
             .map(|a| a.app_id)
