@@ -52,6 +52,7 @@ import kotlinx.serialization.Contextual
  * @param allApps 
  * @param personal 
  * @param allowGuests 
+ * @param allowPublicLinks 
  * @param mode 
  * @param releaseApprovers 
  * @param publishes 
@@ -106,6 +107,9 @@ data class Org (
 
     @SerialName(value = "allowGuests")
     val allowGuests: kotlin.Boolean? = null,
+
+    @SerialName(value = "allowPublicLinks")
+    val allowPublicLinks: kotlin.Boolean? = null,
 
     @SerialName(value = "mode")
     val mode: Org.Mode? = null,

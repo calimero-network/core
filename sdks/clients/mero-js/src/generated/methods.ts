@@ -346,6 +346,32 @@ export function createRoutes(api: RouteClient) {
       presencePublish: (args: operations['presence_publish']['parameters']['path'] & operations['presence_publish']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['presence_publish']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/apps/{app}/presence","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['presence_publish']['responses'][200]['content']['application/json']>,
       /**
+       * Make a public link of an instance.
+       *
+       * `POST /apps/{app}/public-links` (`public_link_create`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      publicLinkCreate: (args: operations['public_link_create']['parameters']['path'] & operations['public_link_create']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['public_link_create']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/public-links","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['public_link_create']['responses'][200]['content']['application/json']>,
+      /**
+       * An instance's public links.
+       *
+       * `GET /apps/{app}/public-links` (`public_link_list`). **Who:** a passkey session (an API key is refused).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      publicLinkList: (args: operations['public_link_list']['parameters']['path'], options?: MethodOptions): Promise<operations['public_link_list']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/public-links","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['public_link_list']['responses'][200]['content']['application/json']>,
+      /**
+       * Revoke a public link.
+       *
+       * `DELETE /apps/{app}/public-links/{link}` (`public_link_revoke`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      publicLinkRevoke: (args: operations['public_link_revoke']['parameters']['path'] & Partial<NonNullable<operations['public_link_revoke']['requestBody']>['content']['application/json']>, options?: MethodOptions): Promise<operations['public_link_revoke']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/apps/{app}/public-links/{link}","pathParams":["app","link"],"query":[],"body":"fields","optionalBody":true,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['public_link_revoke']['responses'][200]['content']['application/json']>,
+      /**
        * One compute run.
        *
        * `GET /apps/{app}/runs/{run}` (`app_run`). **Who:** whoever the app's access admits (a public app: anyone).

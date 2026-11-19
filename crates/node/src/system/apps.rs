@@ -189,6 +189,28 @@ pub(super) fn authorize(
             proofs.states(&st, &invite.app, "__create_app_invite", &|a| *a == args)?;
             Ok(Some(used))
         }
+        SystemCmd::CreatePublicLink {
+            link_key,
+            link,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = super::public_link_args(link_key, link);
+            proofs.states(&st, &link.app, "__create_public_link", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::RevokePublicLink {
+            app_id,
+            link_key,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = json!({ "linkKey": link_key });
+            proofs.states(&st, app_id, "__revoke_public_link", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         SystemCmd::RevokeAppInvite {
             app_id,
             invite_key,
@@ -895,6 +917,65 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 ..invite
             };
             let _prev = s.app_invites.insert(invite_key, invite);
+            Ok(Value::Null)
+        }
+        SystemCmd::CreatePublicLink {
+            link_key,
+            link,
+            actor,
+            ..
+        } => {
+            let app = s.apps.get(&link.app).ok_or("no such app")?;
+            if !s.manages_guests(app, &actor) {
+                return Err("only whoever may change the instance's access makes its public links");
+            }
+            if !s.orgs.get(&app.org).is_some_and(|o| o.allow_public_links) {
+                return Err(super::PUBLIC_LINKS_OFF);
+            }
+            if link.rate_per_minute == 0 || link.rate_per_minute > super::MAX_PUBLIC_LINK_RATE {
+                return Err("a public link admits 1 to 600 calls a minute per visitor");
+            }
+            if link.label.as_ref().is_some_and(|l| {
+                l.chars().count() > super::MAX_PUBLIC_LINK_LABEL_CHARS
+                    || l.chars().any(char::is_control)
+            }) {
+                return Err("a public link's label is one line of at most 64 characters");
+            }
+            if s.public_links.contains_key(&link_key) {
+                return Err("public link exists");
+            }
+            if s.public_links
+                .values()
+                .filter(|l| l.app == link.app)
+                .count()
+                >= super::MAX_PUBLIC_LINKS_PER_APP
+                || s.public_links.len() >= super::MAX_PUBLIC_LINKS
+            {
+                return Err("quota exceeded: public links");
+            }
+            let link = crate::types::PublicLink {
+                created_by: actor,
+                ..link
+            };
+            let _prev = s.public_links.insert(link_key, link);
+            Ok(Value::Null)
+        }
+        SystemCmd::RevokePublicLink {
+            app_id,
+            link_key,
+            actor,
+            ..
+        } => {
+            let link = s
+                .public_links
+                .get(&link_key)
+                .filter(|l| l.app == app_id)
+                .ok_or(super::PUBLIC_LINK_GONE)?;
+            let app = s.apps.get(&app_id).ok_or("no such app")?;
+            if link.created_by != actor && !s.manages_guests(app, &actor) {
+                return Err("only the link's creator or whoever may change the instance's access revokes it");
+            }
+            let _gone = s.public_links.remove(&link_key);
             Ok(Value::Null)
         }
         SystemCmd::RevokeAppInvite {

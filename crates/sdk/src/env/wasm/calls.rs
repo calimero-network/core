@@ -25,7 +25,14 @@ fn from_wit(caller: types::Caller) -> Caller {
 }
 
 pub fn caller() -> Caller {
-    from_wit(context::caller())
+    match from_wit(context::caller()) {
+        // A public caller may be a visitor through a public link (0.5.6).
+        Caller::Public => context::visitor().map_or(Caller::Public, |v| Caller::Visitor {
+            link: v.link,
+            key: v.key,
+        }),
+        other => other,
+    }
 }
 
 pub fn via() -> Option<String> {

@@ -3,11 +3,14 @@
 use crate::env::{self, Caller, OrgRole};
 use crate::error::{AppError, Result};
 
-/// The account the caller acts for; `LoginRequired` for system, public and app callers.
+/// The account the caller acts for; `LoginRequired` for system, public, visitor and app
+/// callers.
 fn account() -> Result<String> {
     match env::caller() {
         Caller::Account(account) | Caller::ApiKey { account, .. } => Ok(account),
-        Caller::Public | Caller::System | Caller::App(_) => Err(AppError::login_required()),
+        Caller::Public | Caller::Visitor { .. } | Caller::System | Caller::App(_) => {
+            Err(AppError::login_required())
+        }
     }
 }
 

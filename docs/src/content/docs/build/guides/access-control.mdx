@@ -19,7 +19,7 @@ before anything is written. Two layers enforce it:
 | Attribute | The node refuses |
 | --- | --- |
 | none | Callers who are not signed in (`401`). |
-| `#[app::public]` | Nothing: anyone may call it on a public app, optionally rate-limited (`rate = "10/min"`). |
+| `#[app::public]` | Nothing: anyone may call it on a public app, optionally rate-limited (`rate = "10/min"`), and a visitor through one of the instance's [public links](/protocol/organizations/#public-links) may call it on an instance of any access, as `Caller::Visitor { link, key }`. |
 | `#[app::confirm]` | A call without a fresh passkey assertion. |
 | `#[app::allow(system)]` | Only the node itself calls it (timers imply it). |
 | `#[app::allow(app = "<id>")]` | Cross-app calls from any other app. |
@@ -39,8 +39,8 @@ pub fn set_user_simple(&mut self, value: String) -> app::Result<()> {
 ```
 
 `guards::require_member()` and `guards::require_admin()` return the caller's
-account, or fail with `LoginRequired` (not an account: public, system or
-another app) or `Forbidden` (below the role). For anything else, match on the
+account, or fail with `LoginRequired` (not an account: public, a visitor, system
+or another app) or `Forbidden` (below the role). For anything else, match on the
 caller yourself, as `apps/forum` does:
 
 ```rust
@@ -56,6 +56,31 @@ fn caller() -> app::Result<String> {
 
 `env::org_role(&account)` gives `Guest`, `Member`, `Admin` or `Owner` (ordered);
 `env::in_team(&account, team)` checks a team.
+
+## Visitors through a public link
+
+An instance's managers make a public link (`POST /apps/{app}/public-links`);
+anyone holding its token calls the instance's `#[app::public]` methods without
+an account, whatever the instance's access, and nothing else. The app sees
+`Caller::Visitor { link, key }`: the link's key and the visitor's own Ed25519
+public key (hex), which the visitor proves it holds on every request. Two
+visitors have different keys and the same browser keeps its key, so a form can
+count one answer per visitor or let a visitor edit what it wrote:
+
+```rust
+#[app::public]
+pub fn submit(&mut self, answer: String) -> app::Result<()> {
+    let Caller::Visitor { link, key } = env::caller() else {
+        return Err(AppError::forbidden());
+    };
+    self.answers.insert(&format!("{link}/{key}"), &answer)?;
+    Ok(())
+}
+```
+
+The node also limits each visitor's calls through a link (its `ratePerMinute`),
+besides a method's own `rate`. A component built before WIT 0.5.6 sees a
+visitor as `Caller::Public`.
 
 ## Write rules as data shapes
 

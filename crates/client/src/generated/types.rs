@@ -1727,6 +1727,9 @@ pub struct Org {
     #[serde(rename = "allowGuests")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_guests: Option<bool>,
+    #[serde(rename = "allowPublicLinks")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_public_links: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<OrgMode>,
     #[serde(rename = "releaseApprovers")]
@@ -2956,6 +2959,41 @@ pub struct PresenceGetResponsePresentItem {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PresenceGetResponse {
     pub present: Vec<PresenceGetResponsePresentItem>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PublicLinkCreateResponse {
+    pub link: String,
+    pub token: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PublicLinkListResponseLinksItem {
+    pub link: String,
+    pub label: Option<String>,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: Option<u64>,
+    pub expired: bool,
+    #[serde(rename = "ratePerMinute")]
+    pub rate_per_minute: u64,
+    #[serde(rename = "createdBy")]
+    pub created_by: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PublicLinkListResponse {
+    pub links: Vec<PublicLinkListResponseLinksItem>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -5750,6 +5788,8 @@ pub struct OrgSettingsResponse {
     pub org: String,
     #[serde(rename = "allowGuests")]
     pub allow_guests: bool,
+    #[serde(rename = "allowPublicLinks")]
+    pub allow_public_links: bool,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

@@ -750,6 +750,45 @@ extension CalimeroClient {
             }
         }
 
+        /// Make a public link of an instance: `POST /apps/{app}/public-links` (`public_link_create`).
+        ///
+        /// A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor (`Caller::Visitor { link, key }`), whatever its access: send `Authorization: Bearer vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing `"calimero.visitor.v1\0" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's clock. Whoever may change the instance's access, while its organization allows public links (`409 PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func publicLinkCreate(app: Swift.String, label: Swift.String? = nil, expiresAt: Swift.Int64? = nil, ratePerMinute: Swift.Int64? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.PublicLinkCreate.Output.Ok.Body.JsonPayload {
+            let input = Operations.PublicLinkCreate.Input(path: .init(app: app), body: .json(.init(label: label, expiresAt: expiresAt, ratePerMinute: ratePerMinute)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.publicLinkCreate(input).ok.body.json
+            }
+        }
+
+        /// An instance's public links: `GET /apps/{app}/public-links` (`public_link_list`).
+        ///
+        /// For whoever may change its access: each link's key, terms and creator, never a token.
+        ///
+        /// **Who:** a passkey session (an API key is refused).
+        @discardableResult
+        public func publicLinkList(app: Swift.String) async throws -> Operations.PublicLinkList.Output.Ok.Body.JsonPayload {
+            let input = Operations.PublicLinkList.Input(path: .init(app: app))
+            return try await client.perform { api in
+                try await api.publicLinkList(input).ok.body.json
+            }
+        }
+
+        /// Revoke a public link: `DELETE /apps/{app}/public-links/{link}` (`public_link_revoke`).
+        ///
+        /// Its creator, or whoever may change the instance's access; it admits nobody from the next request. `412` first.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func publicLinkRevoke(app: Swift.String, link: Swift.String, passkey: (any PasskeyProvider)? = nil) async throws -> OpenAPIRuntime.OpenAPIObjectContainer {
+            let input = Operations.PublicLinkRevoke.Input(path: .init(app: app, link: link))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.publicLinkRevoke(input).ok.body.json
+            }
+        }
+
         /// Abort an upload: `DELETE /apps/{app}/files/uploads/{upload}` (`upload_abort`).
         ///
         /// **Who:** signed in (a session or an API key).
@@ -1902,12 +1941,12 @@ extension CalimeroClient {
 
         /// Change the organization's settings: `POST /orgs/{org}/settings` (`org_settings`).
         ///
-        /// `allowGuests` (default on): whether its instances take guests, accounts listed on one instance (its `accounts` access) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+        /// `allowGuests` (default on): whether its instances take guests, accounts listed on one instance (its `accounts` access) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
         ///
         /// **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
-        public func settings(org: Swift.String, allowGuests: Swift.Bool? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.OrgSettings.Output.Ok.Body.JsonPayload {
-            let input = Operations.OrgSettings.Input(path: .init(org: org), body: .json(.init(allowGuests: allowGuests)))
+        public func settings(org: Swift.String, allowGuests: Swift.Bool? = nil, allowPublicLinks: Swift.Bool? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.OrgSettings.Output.Ok.Body.JsonPayload {
+            let input = Operations.OrgSettings.Input(path: .init(org: org), body: .json(.init(allowGuests: allowGuests, allowPublicLinks: allowPublicLinks)))
             return try await client.perform(passkey: passkey) { api in
                 try await api.orgSettings(input).ok.body.json
             }

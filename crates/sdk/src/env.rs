@@ -42,6 +42,17 @@ pub enum Caller {
     System,
     /// Another app, by id (a delivered xcall).
     App(String),
+    /// An anonymous visitor through one of the instance's public links: the link (its key)
+    /// and the visitor's own Ed25519 public key (hex), which it proved it holds. It reaches
+    /// only `#[app::public]` methods, has no account and no org role: `require_member` and
+    /// the other guards refuse it with `LoginRequired`. Two visitors have different keys; the
+    /// same browser keeps its key. WIT 0.5.6 (`context.visitor`).
+    Visitor {
+        /// The public link it came through.
+        link: String,
+        /// The visitor's Ed25519 public key, 64 lowercase hex.
+        key: String,
+    },
 }
 
 /// An account's role in an org.

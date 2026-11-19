@@ -1044,6 +1044,64 @@ class AppsFacade internal constructor(
         api(null, null, emptySet()).apps.presenceStream(app = app)
 
     /**
+     * Make a public link of an instance
+     *
+     * A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor (`Caller::Visitor { link, key }`), whatever its access: send `Authorization: Bearer vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing `"calimero.visitor.v1\0" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's clock. Whoever may change the instance's access, while its organization allows public links (`409 PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /apps/{app}/public-links` (`public_link_create`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun publicLinkCreate(
+        app: kotlin.String,
+        label: kotlin.String? = null,
+        expiresAt: kotlin.Long? = null,
+        ratePerMinute: kotlin.Long? = null,
+        passkey: PasskeyProvider? = null,
+    ): PublicLinkCreate200Response =
+        api(passkey, null, emptySet()).apps.publicLinkCreate(app = app, publicLinkCreateRequest = PublicLinkCreateRequest(label = label, expiresAt = expiresAt, ratePerMinute = ratePerMinute))
+
+    /**
+     * An instance's public links
+     *
+     * For whoever may change its access: each link's key, terms and creator, never a token.
+     *
+     * **Who:** a passkey session (an API key is refused).
+     *
+     * `GET /apps/{app}/public-links` (`public_link_list`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun publicLinkList(
+        app: kotlin.String,
+    ): PublicLinkList200Response =
+        api(null, null, emptySet()).apps.publicLinkList(app = app)
+
+    /**
+     * Revoke a public link
+     *
+     * Its creator, or whoever may change the instance's access; it admits nobody from the next request. `412` first.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `DELETE /apps/{app}/public-links/{link}` (`public_link_revoke`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun publicLinkRevoke(
+        app: kotlin.String,
+        link: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): kotlinx.serialization.json.JsonObject =
+        api(passkey, null, emptySet()).apps.publicLinkRevoke(app = app, link = link)
+
+    /**
      * Abort an upload
      *
      * **Who:** signed in (a session or an API key).

@@ -156,6 +156,11 @@ fn push_caller(out: &mut Vec<u8>, caller: &Caller) -> EyreResult<()> {
             out.push(5);
             Ok(())
         }
+        Caller::Visitor { link, key } => {
+            out.push(6);
+            push_prefixed(out, link.as_bytes())?;
+            push_prefixed(out, key.as_bytes())
+        }
     }
 }
 

@@ -540,6 +540,11 @@ from .presence_get_response_200_present_item import PresenceGetResponse200Presen
 from .presence_publish_body import PresencePublishBody
 from .presence_publish_response_200 import PresencePublishResponse200
 from .proof_only import ProofOnly
+from .public_link_create_body import PublicLinkCreateBody
+from .public_link_create_response_200 import PublicLinkCreateResponse200
+from .public_link_list_response_200 import PublicLinkListResponse200
+from .public_link_list_response_200_links_item import PublicLinkListResponse200LinksItem
+from .public_link_revoke_response_200 import PublicLinkRevokeResponse200
 from .publisher_binding_response_200 import PublisherBindingResponse200
 from .publisher_upgrade_body import PublisherUpgradeBody
 from .quota_changes import QuotaChanges
@@ -1134,6 +1139,11 @@ __all__ = (
     "PresencePublishBody",
     "PresencePublishResponse200",
     "ProofOnly",
+    "PublicLinkCreateBody",
+    "PublicLinkCreateResponse200",
+    "PublicLinkListResponse200",
+    "PublicLinkListResponse200LinksItem",
+    "PublicLinkRevokeResponse200",
     "PublisherBindingResponse200",
     "PublisherUpgradeBody",
     "QuotaChanges",

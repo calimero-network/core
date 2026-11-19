@@ -30,6 +30,12 @@ pub enum Caller {
     /// The platform itself: a component's timer ticks (D34), which reach only
     /// methods whose ABI says `allowSystem`. Never from a client.
     System,
+    /// An anonymous visitor through one of the instance's public links
+    /// (`SystemState::public_links`): the link's key and the visitor's Ed25519 public key
+    /// (hex), which it proved it holds. It reaches only `#[app::public]` methods of that
+    /// instance. Written in an app's log only from the cluster version that brings
+    /// `Feature::PublicLinks`, so every replica decodes it.
+    Visitor { link: String, key: String },
 }
 
 impl Caller {
@@ -37,7 +43,7 @@ impl Caller {
     pub fn account(&self) -> Option<&str> {
         match self {
             Self::Account { account } | Self::ApiKey { account, .. } => Some(account),
-            Self::Public | Self::App { .. } | Self::System => None,
+            Self::Public | Self::App { .. } | Self::System | Self::Visitor { .. } => None,
         }
     }
 
@@ -78,6 +84,10 @@ impl Caller {
             Self::Public => H::Public,
             Self::App { app } => H::App(app.clone()),
             Self::System => H::System,
+            Self::Visitor { link, key } => H::Visitor {
+                link: link.clone(),
+                key: key.clone(),
+            },
         }
     }
 }
@@ -752,6 +762,12 @@ pub struct Org {
     /// when `true` (the default), so an organization from before writes as it did.
     #[serde(default = "allowed", skip_serializing_if = "is_allowed")]
     pub allow_guests: bool,
+    /// Whether its instances' public links admit visitors
+    /// ([`crate::system::SystemState::public_link_admits`]); off, creating one is refused
+    /// and existing ones admit nobody. Set like [`Self::allow_guests`]; left out when
+    /// `true` (the default).
+    #[serde(default = "allowed", skip_serializing_if = "is_allowed")]
+    pub allow_public_links: bool,
 }
 
 /// [`Org::allow_guests`]' default.
@@ -765,6 +781,31 @@ const fn allowed() -> bool {
 )]
 const fn is_allowed(b: &bool) -> bool {
     *b
+}
+
+/// A public link of one instance ([`crate::system::SystemCmd::CreatePublicLink`]): whoever
+/// holds its token calls the instance's `#[app::public]` methods as an anonymous visitor
+/// (`Caller::Visitor`), whatever the instance's access. Kept under the token's Ed25519 public
+/// key ([`crate::proof::public_link_key`]), so a node that only saw the log cannot use it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicLink {
+    pub app: AppId,
+    /// A name its managers know it by (at most `MAX_PUBLIC_LINK_LABEL_CHARS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// When it stops admitting visitors (Unix seconds); none: until revoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    /// Calls one visitor may make through it a minute, counted on each node
+    /// (`api::VisitorLimits`).
+    pub rate_per_minute: u32,
+    /// Who made it: the command's actor, set where it applies.
+    #[serde(default)]
+    pub created_by: AccountId,
+    /// When it was made (Unix seconds, the creating node's clock).
+    #[serde(default)]
+    pub created_at: u64,
 }
 
 /// An instance invite ([`crate::system::SystemCmd::CreateAppInvite`]): whoever redeems it

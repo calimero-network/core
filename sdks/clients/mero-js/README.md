@@ -67,6 +67,11 @@ await client.apps.call({ app, method: 'set', args: { key: 'a', value: '1' } });
 const { result } = await client.apps.view({ app, method: 'get', args: { key: 'a' } });
 await client.apps.call({ app, method: 'clear', args: {} }, { confirm: passkeyConfirm(browserPasskey()) }); // passkey consent
 for await (const event of client.events(app)) console.log(event);
+
+// A visitor through a public link (no account): its own key, kept in local storage,
+// signs each request; only the instance's #[app::public] methods answer.
+const visitor = await CalimeroClient.connect({ cluster: 'eu-shared-1' });
+await visitor.useVisitor({ link: tokenFromTheLinksUrl, seed: savedSeed ?? newVisitorSeed() });
 await client.apps.upgrade({ app, version: '1.1.0' }, { confirm: passkeyConfirm(browserPasskey()) }); // the owner approves
 ```
 

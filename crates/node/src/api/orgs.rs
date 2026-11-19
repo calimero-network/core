@@ -194,6 +194,7 @@ async fn org_get(
     }
     // Its settings, whatever they are: the state leaves a default out.
     v["allowGuests"] = json!(o.allow_guests);
+    v["allowPublicLinks"] = json!(o.allow_public_links);
     for field in ["members", "capabilities", "memberMetadata"] {
         if let Some(m) = v.get_mut(field).and_then(Value::as_object_mut) {
             m.retain(|a, _| o.sees_member(&account, a));
@@ -1144,7 +1145,14 @@ async fn org_settings(
             "name a setting to change",
         ));
     }
-    node.require_features(&[Feature::Guests]).await?;
+    let mut needs = Vec::new();
+    if body.settings.allow_guests.is_some() {
+        needs.push(Feature::Guests);
+    }
+    if body.settings.allow_public_links.is_some() {
+        needs.push(Feature::PublicLinks);
+    }
+    node.require_features(&needs).await?;
     let args = serde_json::to_value(&body.settings).unwrap_or_default();
     let consent = org_consent(&node, &p, &org, "__set_org_settings", &args, body.confirm).await?;
     Ok(Json(

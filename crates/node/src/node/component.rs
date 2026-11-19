@@ -263,6 +263,10 @@ fn abi_check(
         Caller::Public if !m.public => {
             Err(ApiError::unauthenticated("sign in to call this method"))
         }
+        // A visitor through a public link reaches only `#[app::public]` methods.
+        Caller::Visitor { .. } if !m.public => Err(ApiError::forbidden(
+            "a visitor through a public link calls only the app's public methods",
+        )),
         Caller::System if !m.allow_system => Err(app_refusal("Forbidden")),
         // A delivered xcall reaches only a method that allows its source (D13).
         Caller::App { app } if !m.allows_app(app) => Err(app_refusal("Forbidden")),
@@ -1511,17 +1515,28 @@ impl Node {
             None => self.sys_fresh_index().await.0,
         };
         let app = self.sys(|s| s.apps.get(&req.app_id).cloned());
-        if let (Some(app), Some(account)) = (&app, req.caller.account()) {
-            if !self.sys(|s| s.may_reach(app, Some(account))) {
-                return Ok(Applied::unlogged(
-                    g.applied(),
-                    Outcome {
-                        status: Status::AppError,
-                        error: Value::String(NOT_REACHED.into()),
-                        ..Outcome::default()
-                    },
-                ));
-            }
+        // A visitor's link is judged again here, on the state the round covers: revoked,
+        // expired or turned off since the gate, it admits nobody.
+        let visitor_out = match &req.caller {
+            Caller::Visitor { link, .. } => !self.sys(|s| {
+                s.public_link_admits(link, crate::types::now_secs())
+                    .is_some_and(|l| l.app == req.app_id)
+            }),
+            _ => false,
+        };
+        let reached = match (&app, req.caller.account()) {
+            (Some(app), Some(account)) => self.sys(|s| s.may_reach(app, Some(account))),
+            _ => true,
+        };
+        if visitor_out || !reached {
+            return Ok(Applied::unlogged(
+                g.applied(),
+                Outcome {
+                    status: Status::AppError,
+                    error: Value::String(NOT_REACHED.into()),
+                    ..Outcome::default()
+                },
+            ));
         }
         // A read-only member's call runs, but one that would write keys or emit
         // events is refused (v1 discarded such writes; a client is told).
@@ -2860,7 +2875,7 @@ fn forwarded(caller: &calimero_app_host::Caller) -> Option<Caller> {
             key: key_id.clone(),
             account: account.clone(),
         }),
-        H::App(_) | H::Public | H::System => None,
+        H::App(_) | H::Public | H::System | H::Visitor { .. } => None,
     }
 }
 

@@ -51,6 +51,7 @@ class Org:
             all_apps (Union[Unset, list[str]]):
             personal (Union[Unset, bool]):
             allow_guests (Union[Unset, bool]):
+            allow_public_links (Union[Unset, bool]):
             mode (Union[Unset, OrgMode]):
             release_approvers (Union[Unset, list[str]]):
             publishes (Union[Unset, list[str]]):
@@ -72,6 +73,7 @@ class Org:
     all_apps: Union[Unset, list[str]] = UNSET
     personal: Union[Unset, bool] = UNSET
     allow_guests: Union[Unset, bool] = UNSET
+    allow_public_links: Union[Unset, bool] = UNSET
     mode: Union[Unset, OrgMode] = UNSET
     release_approvers: Union[Unset, list[str]] = UNSET
     publishes: Union[Unset, list[str]] = UNSET
@@ -122,6 +124,8 @@ class Org:
 
         allow_guests = self.allow_guests
 
+        allow_public_links = self.allow_public_links
+
         mode: Union[Unset, str] = UNSET
         if not isinstance(self.mode, Unset):
             mode = self.mode.value
@@ -167,6 +171,8 @@ class Org:
             field_dict["personal"] = personal
         if allow_guests is not UNSET:
             field_dict["allowGuests"] = allow_guests
+        if allow_public_links is not UNSET:
+            field_dict["allowPublicLinks"] = allow_public_links
         if mode is not UNSET:
             field_dict["mode"] = mode
         if release_approvers is not UNSET:
@@ -225,6 +231,8 @@ class Org:
 
         allow_guests = d.pop("allowGuests", UNSET)
 
+        allow_public_links = d.pop("allowPublicLinks", UNSET)
+
         _mode = d.pop("mode", UNSET)
         mode: Union[Unset, OrgMode]
         if isinstance(_mode, Unset):
@@ -271,6 +279,7 @@ class Org:
             all_apps=all_apps,
             personal=personal,
             allow_guests=allow_guests,
+            allow_public_links=allow_public_links,
             mode=mode,
             release_approvers=release_approvers,
             publishes=publishes,

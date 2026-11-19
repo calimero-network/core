@@ -18,6 +18,7 @@ pub mod receipt;
 pub mod recovery;
 mod route;
 pub mod transport;
+pub mod visitor;
 
 pub use attest::{AttestationDoc, HttpAttestor, Measurements, Policy};
 pub use files::ExportedFile;
@@ -268,6 +269,13 @@ impl Client {
     /// Use an API key for every request.
     pub async fn use_api_key(&self, key: &str) {
         self.transport.use_api_key(key).await;
+    }
+
+    /// Call as an anonymous visitor through a public link: every request carries a credential
+    /// signed fresh with the visitor's key ([`visitor::Visitor`]). Only the instance's
+    /// `#[app::public]` methods answer it.
+    pub async fn use_visitor(&self, visitor: visitor::Visitor) {
+        self.transport.use_visitor(visitor).await;
     }
 
     /// Use a session token for every request.

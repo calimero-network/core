@@ -589,6 +589,39 @@ at most `MAX_GUESTS_PER_APP` (1 000) accounts. The consent page's
 `acceptInvite` shows an instance invite as joining the app of a package in an
 organization as a guest.
 
+## Public links
+
+A **public link** lets anyone holding its token call one instance's
+`#[app::public]` methods as an anonymous **visitor**, without an account and
+whatever the instance's access (from cluster version 1.0.0-rc.32,
+`Feature::PublicLinks`). Whoever may change the instance's access makes one with
+a passkey: `POST /apps/{app}/public-links { label?, expiresAt?, ratePerMinute? }`
+(`412 CONFIRM_REQUIRED` first; the consent is `<app> / __create_public_link /
+{ linkKey, label, expiresAt, ratePerMinute }`) answers `{ link, token }` once;
+only the token's Ed25519 public key (`link`) is logged, so a node that saw the
+log cannot let anyone in. `GET /apps/{app}/public-links` lists them (never a
+token) and `DELETE /apps/{app}/public-links/{link}` revokes one with a passkey.
+A link lasts until revoked unless it names `expiresAt`; an instance holds at
+most 16 (`MAX_PUBLIC_LINKS_PER_APP`); deleting the instance drops them. The
+organization's owner or an admin turns links off with `POST /orgs/{org}/settings
+{ allowPublicLinks: false }`: no new link, and existing ones admit nobody at the
+visitor's next call (`allowPublicLinks` in `GET /orgs/{org}`).
+
+A visitor holds its own Ed25519 key (a browser keeps its seed in local
+storage) and sends, on every request, `Authorization: Bearer
+vis1.<token>.<key>.<at>.<signature>`: its public key (64 hex) and its signature
+over `"calimero.visitor.v1\0" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at`, `at` within 5 minutes
+of the node's clock (mero-js `client.useVisitor({ link, seed })`, the Rust
+client's `use_visitor`). Nothing about a visitor is logged. The node admits it
+only to that instance's calls and views of `#[app::public]` methods
+(`403` for any other method, `403 VISITOR_ONLY` on every other route, `404` for
+another app, `401` once the link is revoked, expired or turned off), at most
+`ratePerMinute` calls a minute per visitor on each node (`429 TOO_MANY_VISITS`;
+default 60, at most 600), besides a method's own `rate`. The app sees
+`Caller::Visitor { link, key }` (WIT `context.visitor`, 0.5.6; a component
+built before sees `Caller::Public`), so it can tell visitors apart and count
+one answer per visitor; it has no org role, and the SDK's guards refuse it.
+
 ## Recovery
 
 An organization may hold a **recovery key** (`Org::recovery`): an Ed25519 key

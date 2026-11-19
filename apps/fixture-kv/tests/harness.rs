@@ -540,3 +540,33 @@ fn slow_bump_counts_under_its_key() {
         json!("2")
     );
 }
+
+/// A visitor through a public link calls the public methods only, and the app sees the link
+/// and its key (`env::Caller::Visitor`); any other method is refused before it runs, and the
+/// SDK's guards refuse it as they refuse an anonymous caller.
+#[test]
+fn a_visitor_calls_only_the_public_methods_and_is_named() {
+    let mut t = app();
+    let key = "ab".repeat(32);
+    let who = t
+        .visitor("link1", &key)
+        .call("signGuestbook", json!({ "note": "hi" }))
+        .unwrap();
+    assert_eq!(who, json!(format!("visitor:link1:{key}")));
+    assert_eq!(
+        t.visitor("link1", &key).view("whoamiPublic", json!({})).unwrap(),
+        json!(format!("visitor:link1:{key}"))
+    );
+    let refused = t
+        .visitor("link1", &key)
+        .call("set", json!({ "key": "a", "value": "1" }))
+        .unwrap_err();
+    assert!(
+        matches!(refused, Failure::Refused { status: 403, .. }),
+        "{refused:?}"
+    );
+    assert!(t
+        .visitor("link1", &key)
+        .view("get", json!({ "key": "a" }))
+        .is_err());
+}

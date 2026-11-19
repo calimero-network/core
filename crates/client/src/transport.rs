@@ -188,6 +188,8 @@ pub struct Transport {
     sealed: Arc<SealedTransport>,
     auth: RwLock<Option<String>>,
     session: RwLock<Option<Session>>,
+    /// A visitor through a public link, whose credential is signed fresh for each request.
+    visitor: RwLock<Option<crate::visitor::Visitor>>,
     /// One refresh at a time: requests that got a `401` together refresh once
     /// (a refresh token presented twice ends the session).
     refreshing: tokio::sync::Mutex<()>,
@@ -230,6 +232,7 @@ impl Transport {
             sealed,
             auth: RwLock::new(None),
             session: RwLock::new(None),
+            visitor: RwLock::new(None),
             refreshing: tokio::sync::Mutex::new(()),
         })
     }
@@ -248,6 +251,7 @@ impl Transport {
             sealed,
             auth: RwLock::new(None),
             session: RwLock::new(None),
+            visitor: RwLock::new(None),
             refreshing: tokio::sync::Mutex::new(()),
         }
     }
@@ -276,11 +280,20 @@ impl Transport {
 
     /// Use an API key for every request.
     pub async fn use_api_key(&self, key: &str) {
+        *self.visitor.write().await = None;
         *self.auth.write().await = Some(key.to_owned());
+    }
+
+    /// Call as `visitor` through its public link: each request signs a fresh credential.
+    pub async fn use_visitor(&self, visitor: crate::visitor::Visitor) {
+        *self.auth.write().await = None;
+        *self.session.write().await = None;
+        *self.visitor.write().await = Some(visitor);
     }
 
     /// Use a session token for every request, refreshed on a `401`.
     pub async fn use_session(&self, session: Session) {
+        *self.visitor.write().await = None;
         *self.auth.write().await = Some(session.session_token.clone());
         *self.session.write().await = Some(session);
     }
@@ -302,10 +315,17 @@ impl Transport {
     /// [`Error::Api`] `413 TOO_LARGE`.
     pub async fn send(&self, req: Request) -> Result<reqwest::Response> {
         let held = matches!(req.credential, Credential::Held);
-        let token = if held {
-            self.auth.read().await.clone()
-        } else {
-            None
+        let visitor = self.visitor.read().await.clone();
+        let token = match (held, visitor) {
+            (true, Some(v)) => Some(
+                v.bearer(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs()),
+                ),
+            ),
+            (true, None) => self.auth.read().await.clone(),
+            (false, _) => None,
         };
         let resp = self.send_once(&req, token.as_deref()).await?;
         if !held || resp.status().as_u16() != 401 || req.relative_path() == REFRESH_PATH {

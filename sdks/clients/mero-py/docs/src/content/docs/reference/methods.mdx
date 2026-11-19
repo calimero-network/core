@@ -68,6 +68,9 @@ Generated from core's `docs/public/openapi.json`.
 | `pipelines_validate(source, package=…, version=…)` | `POST /pipelines/validate` | Validate a pipeline. *Refusals:* `400 BAD_RELEASE` |
 | `presence_get(app)` | `GET /apps/{app}/presence` | Who is present |
 | `presence_publish(app, seq, state=…)` | `POST /apps/{app}/presence` | Publish presence. *Refusals:* `400 BAD_STATE` |
+| `public_link_create(app, label=…, expires_at=…, rate_per_minute=…, confirm=None)` | `POST /apps/{app}/public-links` | Make a public link of an instance. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 PUBLIC_LINKS_OFF`, `429 QUOTA_EXCEEDED` |
+| `public_link_list(app)` | `GET /apps/{app}/public-links` | An instance's public links |
+| `public_link_revoke(app, link, confirm=None)` | `DELETE /apps/{app}/public-links/{link}` | Revoke a public link. **passkey** |
 | `run(app, run)` | `GET /apps/{app}/runs/{run}` | One compute run |
 | `run_logs(app, run)` | `GET /apps/{app}/runs/{run}/logs` | A compute run's attempt logs |
 | `runs(app, limit=…, before=…)` | `GET /apps/{app}/runs` | An app's compute runs. *Refusals:* `400 BAD_CURSOR`, `400 BAD_LIMIT` |
@@ -241,7 +244,7 @@ Generated from core's `docs/public/openapi.json`.
 | `rename(org, name, confirm=None)` | `POST /orgs/{org}/name` | Rename an organization. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
 | `set_backup_key(org, public_key, confirm=None)` | `POST /orgs/{org}/backup-key` | Set the organization's backup key. **passkey**. *Refusals:* `400 BAD_BACKUP_KEY`, `409 FEATURE_NOT_ACTIVE` |
 | `set_member(org, account, role, confirm=None)` | `POST /orgs/{org}/members` | Set a member's role. **passkey** |
-| `settings(org, allow_guests=…, confirm=None)` | `POST /orgs/{org}/settings` | Change the organization's settings. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
+| `settings(org, allow_guests=…, allow_public_links=…, confirm=None)` | `POST /orgs/{org}/settings` | Change the organization's settings. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
 | `team_create(org, name, parent=…, join)` | `POST /orgs/{org}/teams` | Create a team |
 | `team_delete(org, team, confirm=None)` | `DELETE /orgs/{org}/teams/{team}` | Delete a team. **passkey** |
 | `team_get(org, team)` | `GET /orgs/{org}/teams/{team}` | One team |

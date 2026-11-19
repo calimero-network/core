@@ -150,7 +150,7 @@ fn refused(e: &Error, status: &str) {
 async fn guests_switch(c: &Client, pk: &mut SoftAuthenticator, org: &str, allow: bool) {
     let _v = c
         .orgs()
-        .settings(org, Some(allow), Some(pk))
+        .settings(org, Some(allow), None, Some(pk))
         .await
         .map(wire)
         .unwrap();

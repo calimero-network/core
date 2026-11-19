@@ -1,4 +1,4 @@
-package calimero:app@0.5.5;
+package calimero:app@0.5.6;
 
 interface types {
   type account-id = string;
@@ -7,6 +7,9 @@ interface types {
   type blob-id = string;
   type action-id = string;
   record api-key-caller { key-id: string, account: account-id }
+  // An anonymous visitor through one of the instance's public links: the link (its key) and
+  // the visitor's own Ed25519 public key (hex), which it proved it holds. 0.5.6.
+  record visitor-caller { link: string, key: string }
   variant caller { account(account-id), api-key(api-key-caller), public, system, app(string) }
   enum org-role { owner, admin, member, guest }
   record org-membership { org: org-id, role: org-role }
@@ -42,7 +45,13 @@ interface rebuild {
 
 interface context {
   use types.{caller as caller-t, account-id, org-id, team-id, org-role as org-role-t, org-membership, action-id};
+  use types.{visitor-caller};
+  // A visitor through a public link is `public` here, so a component built before 0.5.6
+  // sees an anonymous caller; `visitor` names them.
   caller: func() -> caller-t;
+  // The visitor a public link let in, when `caller` is `public` because of one; none for
+  // any other run. 0.5.6.
+  visitor: func() -> option<visitor-caller>;
   // The app this call came through, when another app called as the person it serves (who
   // granted it this method; `caller` is that person): set by the node, never by an
   // argument; none for any other run. 0.5.2.
