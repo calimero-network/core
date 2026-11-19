@@ -325,29 +325,29 @@ class OrdinaryOrgs(DeepCase):
                 "data; another instance naming none joins it; a transfer to someone outside it is refused")
 
     def populate(self, w):
-        uma, vic = people(w, "uma", "vic")
-        del vic  # an outsider
-        check(not [o for o in uma.get("auth/me").get("orgs", [])], "a sign-up made an organization")
-        app = uma.deploy(kv_wasm(w), "uma-1")
-        uma.call(app, "set", {"key": "k", "value": app})
-        org = uma.get(f"apps/{app}").get("org")
+        orla, odin = people(w, "orla", "odin")
+        del odin  # an outsider
+        check(not [o for o in orla.get("auth/me").get("orgs", [])], "a sign-up made an organization")
+        app = orla.deploy(kv_wasm(w), "orla-1")
+        orla.call(app, "set", {"key": "k", "value": app})
+        org = orla.get(f"apps/{app}").get("org")
         return {"org": org, "apps": [app]}
 
     def check(self, w, s):
-        uma = person(w, "uma")
-        mine = [o for o in uma.get("auth/me").get("orgs", [])]
+        orla = person(w, "orla")
+        mine = [o for o in orla.get("auth/me").get("orgs", [])]
         eq([(o["orgId"], o["role"], o.get("personal")) for o in mine], [(s["org"], "owner", None)],
            "the account's organizations")
         for app in s["apps"]:
-            eq(uma.get(f"apps/{app}").get("org"), s["org"], "the instance's organization")
-            eq(uma.result(app, "get", {"key": "k"}), app, "the instance's data")
+            eq(orla.get(f"apps/{app}").get("org"), s["org"], "the instance's organization")
+            eq(orla.result(app, "get", {"key": "k"}), app, "the instance's data")
 
     def exercise(self, w, s):
-        uma, vic = people(w, "uma", "vic")
-        app = uma.deploy(kv_wasm(w), f"uma-{len(s['apps']) + 1}")
-        uma.call(app, "set", {"key": "k", "value": app})
+        orla, odin = people(w, "orla", "odin")
+        app = orla.deploy(kv_wasm(w), f"orla-{len(s['apps']) + 1}")
+        orla.call(app, "set", {"key": "k", "value": app})
         s["apps"].append(app)
-        refused(("REJECTED",), lambda: uma.raw("post", f"apps/{app}/transfer", {"to": vic.id}),
+        refused(("REJECTED",), lambda: orla.raw("post", f"apps/{app}/transfer", {"to": odin.id}),
                 "a transfer outside the organization")
         self.check(w, s)
 
