@@ -539,19 +539,26 @@ fn target_bundle(
     let service = r.at.service.clone().unwrap_or_default();
     node.sys(|s| {
         let v = s.packages.get(&r.at.package)?.versions.get(version)?;
-        if !upgrade_sees(s, v, app, &who.actor, who.by_operator) {
+        let release = PackageRef {
+            package: r.at.package.clone(),
+            version: version.to_owned(),
+            service: r.at.service.clone(),
+            compute: false,
+        };
+        // An instance from a deployment runs what its developer chose, not what
+        // its owner sees: a move that stays on the deployment (its offer, or a
+        // unit member's own package) needs no visibility of the release, as
+        // creating from the offer needs none; any other move does.
+        let on_deployment =
+            app.deployment.is_some() && s.within_deployment(app, Some(&release)).is_ok();
+        if !on_deployment && !upgrade_sees(s, v, app, &who.actor, who.by_operator) {
             return None;
         }
         let bundle = v.app_parts().get(&service).cloned()?;
         Some(Target {
             bundle,
             compute_bundle: v.compute.get(&service).cloned(),
-            release: Some(PackageRef {
-                package: r.at.package.clone(),
-                version: version.to_owned(),
-                service: r.at.service.clone(),
-                compute: false,
-            }),
+            release: Some(release),
         })
     })
 }
