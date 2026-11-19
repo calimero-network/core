@@ -1292,8 +1292,9 @@ fn operations() -> Vec<Op> {
             .ok("#App")
             .errors(&[(404, "NOT_FOUND")]),
         delete("/apps/{app}", "app_delete", Session, "Delete an app")
-            .about("The owner or an organization admin.")
-            .ok("{ appId: string, deleted: bool }"),
+            .about("The owner or an organization admin. An instance whose release created apps with it (`uses` with `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).")
+            .ok("{ appId: string, deleted: bool, members?: string[] }")
+            .errors(&[(409, "UNIT_MEMBER"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/metadata", "app_metadata", SignedIn, "Set an app's metadata")
             .about("The owner or an organization admin; 16 KiB at most. `metadata` is the caller's own JSON, free-form, kept as given.")
             .json::<super::MetadataBody>("{ metadata: any }")

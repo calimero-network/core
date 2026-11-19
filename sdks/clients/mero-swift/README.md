@@ -27,18 +27,20 @@ the same methods, the same typed errors, the same retry and failover rules.
 - Docs: <https://calimero-network.github.io/swift-sdk/>
 
 ```swift
-.package(url: "https://github.com/calimero-network/swift-sdk", exact: "1.0.0-rc.31"),
+.package(url: "https://github.com/calimero-network/core", exact: "1.0.0-rc.31"),
 // a target:
-.product(name: "MeroKit", package: "swift-sdk"),
+.product(name: "MeroKit", package: "core"),
 ```
 
 The package is named `mero-swift` (SwiftPM only; there is no CocoaPods pod);
 the modules you import keep their names (`import MeroKit`,
 `MeroAPI`, `MeroKitUI`, `MeroKitTestSupport`), so code that built against
-MeroKit builds unchanged. SwiftPM names a remote package by its URL, so
-`package: "swift-sdk"` stays right. Versions are core's (`1.0.0-rc.N`): the SDK
-is released with core and tagged in calimero-network/swift-sdk, a read-only
-mirror of core's `sdks/clients/mero-swift`.
+MeroKit builds unchanged. SwiftPM names a remote package by its URL, so the
+product's package is `core`. Versions are core's (`1.0.0-rc.N`): the SDK is
+released with core, and core's root `Package.swift` points SwiftPM at this
+directory, so a core release tag is an SDK version. SwiftPM clones all of core
+to install it. Versions before 1.0.0-rc.32 were tagged in the archived
+calimero-network/swift-sdk.
 
 | Product | What it is |
 | --- | --- |
@@ -47,7 +49,7 @@ mirror of core's `sdks/clients/mero-swift`.
 | `MeroKitUI` | `MeroAppSession`, `MeroClient`, `CalimeroAppBackend`, `PlatformPasskey`, the consent page in the system browser. |
 | `MeroKitTestSupport` | `InMemoryAppBackend`, `RecordingContextContract`, `FakeCloudNode` + `FakeCloud` (a node that runs the real sealed channel, and a cluster in memory), `MockURLProtocol`. |
 
-> mero-swift is developed in [calimero-network/core](https://github.com/calimero-network/core) under `sdks/clients/mero-swift` and released with core, on core's version. This repository's copy is read only: read [AGENTS.md](AGENTS.md) before changing it.
+> mero-swift is developed in [calimero-network/core](https://github.com/calimero-network/core) under `sdks/clients/mero-swift` and released with core, on core's version: read [AGENTS.md](AGENTS.md) before changing it.
 
 ## The client
 

@@ -871,6 +871,22 @@ is its command line.
   `init` takes `links`, passes their ids in `initArgs` (a client's own
   `links` there is refused). A failure after a member was made leaves it in
   place. Regression: `creating_an_instance_creates_the_apps_its_release_uses`.
+  A unit is one (`Feature::WholeUnits`, rc.32): members of an instance from a deployment
+  carry its deployment (billed to its developer, its secret values), their `CreateApp`
+  naming the offer of the instance's release that covers them (`unit_offer`, checked at
+  apply in place of the member's own release; set by the node, `CreateAppBody::unit_offer`
+  is `serde(skip)`; the member's release is resolved without the owner's visibility,
+  as the instance's offer is). `DELETE /apps/{app}` of an instance deletes its whole unit
+  (`SystemState::unit_of`: its `links`, transitively, as they exist; `DeleteApp { members }`
+  names them and apply refuses a list that differs, `UNIT_NOT_AS_NAMED`, or an actor who may
+  not delete each one) and answers them in `members`; a member (`unit_parent`: an app whose
+  `links` hold it) is refused alone, `409 UNIT_MEMBER` at the API and `UNIT_MEMBER` at apply.
+  The API sends `members` once the logged cluster version brings the feature, or for an
+  instance with members (then `409 FEATURE_NOT_ACTIVE` below it); entries without either
+  field replay as before. Regressions: `a_units_members_are_billed_to_its_deployments_developer`,
+  `deleting_an_instance_deletes_its_unit_and_never_a_member_alone`,
+  `system::tests::a_units_members_carry_its_deployment_and_go_with_it`,
+  `unit_entries_logged_before_whole_units_replay_as_they_did`.
   A member names its instance with `env::unit_of()` (WIT `context.unit-of`, 0.5.5;
   `SysDirectory::unit_of`: the app whose `links` hold it, derived from the system state,
   so nothing new is stored and it is `None` once the instance is gone); Confidential KV
@@ -901,7 +917,7 @@ is its command line.
   app runs (`release_uses`; `409 NOT_AN_ATTACH_REFERENCE`) and the app runs its package
   (`409 WRONG_PACKAGE`); one outside the range is attached and answered `inRange: false`.
   `GET /apps/{app}/links` lists each reference with what is linked, its release and
-  `inRange` (`link_row`). Deleting an app detaches it everywhere (`remove_app`). The consent
+  `inRange` (`link_row`). Deleting an app detaches it everywhere (`remove_app`); an attached app is no unit member and is never deleted with the instance. The consent
   page's upgrade sheet adds `attachedOutOfRange` and the `attachedOutOfRange` attention when
   the target release takes an attached app in another range (`attached_outside`). Runs read
   links with `env::linked` (`SysDirectory::linked`: `links`, then `attached`). Regressions:
@@ -1071,6 +1087,22 @@ is its command line.
   move to `spawn_blocking`; it goes through `block_in_place`, which hands the
   worker's other tasks (Raft heartbeats, the system group, HTTP) to another
   worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
+- **Disk work leaves the async workers** (`node/disk.rs`): a store write (a blob, a
+  bundle, a file segment, a node row) waits for the disk, and RocksDB writes in
+  groups, so even an unsynced one queues behind another group's fsync. The node
+  writes only through `Disk` (`Node::disk()`, `Disk::of(&engine)`), which runs each
+  write through `off_workers` and is still awaited by its caller (durable before the
+  answer, in order). Enforced by `crates/node/clippy.toml` (`disallowed-methods` on
+  `Engine::put_blob`, `delete_blob`, `put_segment`, `delete_segment`,
+  `put_node_meta`); only `disk.rs` and the tests that hold the disk on purpose allow
+  it. `BlobGuards` takes a per-id turn across a put or delete, never its map lock,
+  so a pin on a worker never waits for an fsync. Other disk work runs off the
+  workers where it is done: recovery and backup file reads and the system state's
+  seeding in `restore.rs` (`off_workers`), a view's run and `sweep_segments`
+  (`spawn_blocking`). Store reads stay inline, as the log's do. Regression:
+  `a_blob_put_waiting_for_the_disk_leaves_the_async_worker_free` (`tests/slow_disk.rs`:
+  one worker; a blob upload and a bundle wait behind a held synced write while a
+  ticker must keep ticking).
 - **Upgrades are code-only**: a component upgrade swaps the bundle
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
   consent page shows the state version each side's `calimero:abi` declares and flags a

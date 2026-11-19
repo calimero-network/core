@@ -134,7 +134,7 @@ The docs live in [`docs/`](docs/) (Astro Starlight).
 | [apps](https://github.com/calimero-network/apps) | The apps built on Calimero, and the templates `meroctl app new` starts from |
 | [mero-js](https://github.com/calimero-network/mero-js) · [mero-react](https://github.com/calimero-network/mero-react) | JavaScript/TypeScript client and React bindings |
 | [calimero-client-py](https://github.com/calimero-network/calimero-client-py) | Python client |
-| [swift-sdk](https://github.com/calimero-network/swift-sdk) · [kotlin-sdk](https://github.com/calimero-network/kotlin-sdk) | iOS/macOS and Android clients |
+| [mero-swift](sdks/clients/mero-swift) · [kotlin-sdk](https://github.com/calimero-network/kotlin-sdk) | iOS/macOS and Android clients |
 
 ## License
 

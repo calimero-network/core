@@ -68,8 +68,8 @@
     "The SDKs (mero-js, calimero-client-py, swift-sdk, kotlin-sdk) were the `openapi`",
     "surface (openapi-sync.yml asked each to regenerate); they now live in sdks/ and",
     "regenerate in this tree (sdk-regenerate.yml, one pull request in core),",
-    "so they are no longer listed. swift-sdk is the read-only SwiftPM mirror that",
-    "release.yml pushes sdks/clients/mero-swift to."
+    "so they are no longer listed. swift-sdk is archived: SwiftPM installs",
+    "sdks/clients/mero-swift from this repository's root Package.swift."
   ],
 
   "consumers": [

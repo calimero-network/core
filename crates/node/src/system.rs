@@ -924,6 +924,13 @@ pub const ONLY_ADMINS_RENAME: &str = "only the organization's owner and admins r
 /// A refusal: making, changing or dropping an app team, scoping apps, or
 /// creating the first instance of a package without one in an organization
 /// whose apps have app teams, is installing an app there: an admin's.
+/// Refusal of a `DeleteApp` under the whole-unit rule naming a unit's member: it goes with
+/// the instance whose release created it.
+pub const UNIT_MEMBER: &str =
+    "this app is a member of an instance's unit: it is deleted with that instance, not alone";
+/// Refusal of a `DeleteApp` whose `members` are not the instance's unit as it stands.
+pub const UNIT_NOT_AS_NAMED: &str = "the unit's members are not the ones the delete names";
+
 pub const ONLY_ADMINS_INSTALL: &str =
     "only the organization's owner and admins install apps in it and change its app teams";
 /// The personal organization a sign-up makes ([`SystemCmd::CreateAccount`]).
@@ -1442,6 +1449,34 @@ impl SystemState {
         } else {
             let _prev = self.app_file_bytes.insert(app_id.to_owned(), now);
         }
+    }
+
+    /// The members of `app_id`'s unit: the apps its release created with it (its `links`),
+    /// and theirs in turn, that still exist; in order. Empty for an app that created none.
+    #[must_use]
+    pub fn unit_of(&self, app_id: &str) -> Vec<AppId> {
+        let mut members = BTreeSet::new();
+        let mut next = vec![app_id];
+        while let Some(id) = next.pop() {
+            let Some(a) = self.apps.get(id) else {
+                continue;
+            };
+            for m in a.links.values() {
+                if m != app_id && self.apps.contains_key(m) && members.insert(m.clone()) {
+                    next.push(m);
+                }
+            }
+        }
+        members.into_iter().collect()
+    }
+
+    /// The instance whose unit `app_id` is a member of: the app whose `links` name it.
+    #[must_use]
+    pub fn unit_parent(&self, app_id: &str) -> Option<&str> {
+        self.apps
+            .values()
+            .find(|a| a.app_id != app_id && a.links.values().any(|l| l == app_id))
+            .map(|a| a.app_id.as_str())
     }
 
     /// Removes an app, the file bytes counted against its payer and the compute runs it held.
@@ -4690,6 +4725,12 @@ pub enum SystemCmd {
     },
     CreateApp {
         app: Box<AppRecord>,
+        /// A unit's member created from its instance's deployment (`app.deployment`): the
+        /// release the deployment offers for the instance, whose offer covers the member's
+        /// own release ([`Feature::WholeUnits`](cluster_version::Feature::WholeUnits)).
+        /// Absent in an entry an earlier release logged, whose members carry no deployment.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unit_offer: Option<PackageRef>,
     },
     UpgradeApp {
         app_id: AppId,
@@ -4814,6 +4855,13 @@ pub enum SystemCmd {
         /// logged, which replays judging the owner without the team.
         #[serde(default)]
         owner_in_team: bool,
+        /// The whole-unit rule ([`Feature::WholeUnits`](cluster_version::Feature::WholeUnits)):
+        /// the apps the instance's release created with it, theirs included
+        /// ([`SystemState::unit_of`]), deleted with it; the entry names exactly them, and a
+        /// unit's member is not deleted alone ([`UNIT_MEMBER`]). Absent in an entry an
+        /// earlier release logged, which replays deleting the app alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        members: Option<Vec<AppId>>,
     },
     /// Counts `delta` bytes more (less, when negative) of files against an app's payer. A
     /// charge past `Quotas::max_file_bytes_per_org` is refused; a refund stops at zero.
@@ -6122,7 +6170,7 @@ impl SystemMachine {
     fn new_work_refusal(&self, cmd: &SystemCmd) -> Option<Stall> {
         let s = &self.state;
         match cmd {
-            SystemCmd::CreateApp { app } => {
+            SystemCmd::CreateApp { app, .. } => {
                 s.stalled_for_release(s.governing_release(app), &app.org, app.created_at)
             }
             SystemCmd::UpgradeApp {

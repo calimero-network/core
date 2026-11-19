@@ -106,7 +106,7 @@ impl Node {
             if now.saturating_duration_since(first) < SEGMENT_GRACE {
                 continue;
             }
-            match self.engine.delete_segment(hash) {
+            match self.disk().delete_segment(hash) {
                 Ok(()) => {
                     let _gone = seen.unreferenced.remove(hash);
                 }

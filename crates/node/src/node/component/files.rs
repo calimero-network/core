@@ -31,6 +31,7 @@ use crate::files::{
     SEGMENT_BYTES, SEGMENT_CHUNKS, TAG_BYTES,
 };
 use crate::node::blob_guards::Pins;
+use crate::node::disk::Disk;
 use crate::node::{off_workers, status_of, Node, FORWARD_TIMEOUT, MAX_BLOB_BYTES};
 use crate::system::SystemCmd;
 use crate::types::Caller;
@@ -400,11 +401,11 @@ impl NodeFiles {
         let Some(node) = self.node.upgrade() else {
             return;
         };
-        for hash in made {
-            if !kept.iter().any(|b| b.segment && b.id == hash) {
-                let _gone = node.engine.delete_segment(&hash);
-            }
-        }
+        let dropped = made
+            .iter()
+            .filter(|hash| !kept.iter().any(|b| b.segment && b.id == **hash));
+        node.disk()
+            .delete_segments(dropped.map(String::as_str), |_, _| {});
     }
 
     /// The key the app's data keys are wrapped under, derived when a run touches a file.
@@ -602,7 +603,7 @@ impl SealedWriter {
     fn store(&mut self, segment: Segment) -> Result<(), FileError> {
         let node = self.node.upgrade().ok_or(FileError::Unavailable)?;
         let hash = hex::encode(segment.hash);
-        (node.engine.put_segment(&hash, &segment.bytes)).map_err(|_| FileError::Unavailable)?;
+        (node.disk().put_segment(&hash, &segment.bytes)).map_err(|_| FileError::Unavailable)?;
         (self.made.lock())
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(hash);
@@ -768,9 +769,9 @@ where
 impl Node {
     /// Deletes this node's copy of the segments of `blobs`: files no entry will mark.
     pub(super) fn forget_local(&self, blobs: &[Blob]) {
-        for blob in blobs.iter().filter(|b| b.segment) {
-            let _gone = self.engine.delete_segment(&blob.id);
-        }
+        let segments = blobs.iter().filter(|b| b.segment);
+        self.disk()
+            .delete_segments(segments.map(|b| b.id.as_str()), |_, _| {});
     }
 
     /// Stores a run's new files here and on the app's replicas; `503 FILES_UNAVAILABLE` unless
@@ -883,12 +884,15 @@ impl Node {
         let engine = Arc::clone(&self.engine);
         let guards = Arc::clone(&self.blob_guards);
         let (id, held, segment) = (blob.id.clone(), blob.bytes.clone(), blob.segment);
-        let found = tokio::task::spawn_blocking(move || match held {
-            None => engine.get_segment(&id),
-            Some(held) if segment => engine.put_segment(&id, &held).map(|()| Some(held.to_vec())),
-            Some(held) => guards
-                .put(&id, || engine.put_blob(&id, &held))
-                .map(|()| Some(held.to_vec())),
+        let found = tokio::task::spawn_blocking(move || {
+            let disk = Disk::of(&engine);
+            match held {
+                None => engine.get_segment(&id),
+                Some(held) if segment => disk.put_segment(&id, &held).map(|()| Some(held.to_vec())),
+                Some(held) => disk
+                    .put_guarded_blob(&guards, &id, &held)
+                    .map(|()| Some(held.to_vec())),
+            }
         })
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?
@@ -1018,7 +1022,7 @@ impl Node {
         if self.holds_segment(hash) {
             return;
         }
-        if let Err(e) = self.engine.delete_segment(hash) {
+        if let Err(e) = self.disk().delete_segment(hash) {
             warn!(segment = %hash, error = %e, "file bytes not deleted");
         }
     }

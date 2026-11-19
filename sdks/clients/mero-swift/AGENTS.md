@@ -5,8 +5,7 @@
 > [core's `sdks/AGENTS.md`](https://github.com/calimero-network/core/blob/master/sdks/AGENTS.md)
 > and core's `RELEASING.md` before
 > changing how it is built, versioned or published.
-> calimero-network/swift-sdk is a read-only mirror of this directory: never
-> change it there.
+> calimero-network/swift-sdk, its old repository, is archived.
 
 mero-swift is the native Swift SDK for Calimero 1.0 (Swift 5.9+, iOS 15+ /
 macOS 12+), the Swift port of mero-js's `CalimeroClient`: attestation, the
@@ -20,11 +19,11 @@ source is `docs/`.
 | --- | --- |
 | SwiftPM package (`Package.swift` `name`) | `mero-swift` |
 | Modules and products people import | unchanged: `MeroKit`, `MeroAPI`, `MeroKitUI`, `MeroKitTestSupport` (and the `MeroExample` executable) |
-| SwiftPM URL | `https://github.com/calimero-network/swift-sdk` (the mirror) |
+| SwiftPM URL | `https://github.com/calimero-network/core` (core's root `Package.swift`) |
 
 Renaming the package and the pod changes no source: `import MeroKit` keeps
-working. SwiftPM names a remote package by its URL, so consumers keep
-`.product(name: "MeroKit", package: "swift-sdk")`; a path dependency on this
+working. SwiftPM names a remote package by its URL, so consumers write
+`.product(name: "MeroKit", package: "core")`; a path dependency on this
 directory is named by the directory, `package: "mero-swift"`. Never rename a
 module or product: that breaks every app that imports it.
 
@@ -88,11 +87,10 @@ checked in. They are `sdk.json`'s `generated`. Never hand-edit them.
 
 ## Self-contained
 
-This directory must build on its own, because the mirror is this directory
-alone: nothing here may reference a file outside it. The one exception is
-the generators' inputs, core's OpenAPI document and receipt vectors; the
-mirror carries the generated output instead, so building there never needs
-them.
+This directory must build on its own (`swift build` here, with its own
+`Package.swift`): nothing here may reference a file outside it. The one
+exception is the generators' inputs, core's OpenAPI document and receipt
+vectors; the generated output is committed, so building never needs them.
 
 ## Version
 
@@ -101,27 +99,24 @@ They are `sdk.json`'s `version_files`; `python3 scripts/sdks.py version-sync`
 writes them. Never bump them by hand. `ci/core-version` is not one: it is the
 merod release `scripts/dev-cluster.sh` runs.
 
-## Release: the SwiftPM mirror
+## Release: core's tag
 
-SwiftPM needs `Package.swift` at the root of a git repository, so
-calimero-network/swift-sdk stays as a read-only mirror. A core release calls
-`sdk-mero-swift.yml` with `publish: true`, which:
+There is nothing to upload. SwiftPM installs a package from the root of a git
+repository, so core's root `Package.swift` declares this SDK's libraries with
+their sources here (`path: "sdks/clients/mero-swift/Sources/..."`), and a core
+release tag (`1.0.0-rc.N`, no `v`) is an SDK version. Apps clone all of core
+to install it.
 
-1. `git subtree split --prefix=sdks/clients/mero-swift` (this directory's
-   history as a branch whose root is this directory);
-2. pushes it to calimero-network/swift-sdk as `master` and tags it with
-   VERSION (no `v`), as the organization's GitHub App
-   (`vars.ACTIONS_APP_ID` / `secrets.ACTIONS_APP_PRIVATE_KEY`).
+That manifest lists the libraries only: tests and the example stay in this
+directory's `Package.swift`, which is the one to develop with. Change both
+together: `sdk-mero-swift.yml`'s `Root Package.swift matches` step fails when
+their library products, targets, dependencies or platforms differ.
 
 There is no CocoaPods pod. The trunk turns read-only on 2026-12-02, and MeroKit
 depends on swift-openapi-runtime and swift-http-types, which were never on it;
 the last pod is swift-sdk's 0.7.0. SwiftPM is the only distribution.
-
-`dry-run: true` (the default) splits and prints what it would push, and
-pushes nothing. The split carries swift-sdk's own commits unchanged (it was
-imported with its history, not squashed), so each release fast-forwards the
-mirror's `master`; the push is never forced, and fails if someone committed
-to the mirror.
+Releases before 1.0.0-rc.32 were tagged in calimero-network/swift-sdk, now
+archived.
 
 ## Core's App ABI check against this directory
 
