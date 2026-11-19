@@ -54,12 +54,13 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
-    ("Apps", "Public links and their visitors (`/apps/{app}/public-links`, `Caller::Visitor`, "
-     "`allowPublicLinks`, `Feature::PublicLinks`)",
+    ("Apps", "Public links and their visitors (a `link` grant, `/apps/{app}/public-links`, `Caller::Visitor`, "
+     "`allowPublicLinks`, `Feature::PublicLinks`) and an app reading a grant's scope (`env::grant_scope`)",
      "a link is made only once every node runs this release and a visitor's call needs an app built for "
      "WIT 0.5.6 with a public method, so nothing is seeded before the roll; `public_links.rs` covers it on "
      "one build and `system::tests::a_public_link_admits_visitors_while_it_and_its_organization_allow` "
-     "the apply rules. State from before has no link, and an older component sees a visitor as public"),
+     "the apply rules, `guests.rs` a scope the app reads. State from before has no link and no scope, and an "
+     "older component sees a visitor as public and reads no scope"),
     ("Organizations", "Guests reaching an instance and scoped instance invites (an outsider's `account` grant, "
      "`allowGuests`, `/apps/{app}/invites` with `scope`, `Feature::Guests`)",
      "a guest is admitted only by a release whose manifest says `guests: allowed`, which the old release's "
