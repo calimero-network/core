@@ -135,10 +135,15 @@ pub enum Feature {
     /// with it (`members`): an earlier release ignores both fields, so its replicas would
     /// refuse the member as not offered and keep the members of a deleted instance.
     WholeUnits,
+    /// `SetDeploymentSecret` with `used` (a name a release an offered release references
+    /// declares), and `InstallPackage` recording a release's `uses`: an earlier release
+    /// refuses the one as undeclared and drops the other, so its replicas would hold no value
+    /// where the others hold one.
+    DeploymentUsedSecrets,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 33] = [
+pub const FEATURES: [Feature; 34] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -172,6 +177,7 @@ pub const FEATURES: [Feature; 33] = [
     Feature::ExpireProofs,
     Feature::DeploymentSecrets,
     Feature::WholeUnits,
+    Feature::DeploymentUsedSecrets,
 ];
 
 impl Feature {
@@ -212,6 +218,7 @@ impl Feature {
             Self::ExpireProofs => "expireProofs",
             Self::DeploymentSecrets => "deploymentSecrets",
             Self::WholeUnits => "wholeUnits",
+            Self::DeploymentUsedSecrets => "deploymentUsedSecrets",
         }
     }
 
@@ -248,7 +255,9 @@ impl Feature {
             | Self::Delegation
             | Self::AttachApp
             | Self::ExpireProofs => "1.0.0-rc.31",
-            Self::DeploymentSecrets | Self::WholeUnits => "1.0.0-rc.32",
+            Self::DeploymentSecrets | Self::WholeUnits | Self::DeploymentUsedSecrets => {
+                "1.0.0-rc.32"
+            }
         }
     }
 }
@@ -499,6 +508,9 @@ impl SystemCmd {
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
             Self::SetDelegation { .. } => vec![Feature::Delegation],
             Self::LinkApp { .. } => vec![Feature::AttachApp],
+            Self::SetDeploymentSecret { used: true, .. } => {
+                vec![Feature::DeploymentSecrets, Feature::DeploymentUsedSecrets]
+            }
             Self::SetDeploymentSecret { .. } | Self::ClearDeploymentSecret { .. } => {
                 vec![Feature::DeploymentSecrets]
             }
@@ -554,6 +566,9 @@ impl SystemCmd {
                 }
                 if !release.secrets.is_empty() {
                     f.push(Feature::DeclaredSecrets);
+                }
+                if !release.uses.is_empty() {
+                    f.push(Feature::DeploymentUsedSecrets);
                 }
                 f
             }
@@ -947,6 +962,9 @@ mod tests {
                 "actor": "a", "members": [] })),
             Feature::DeploymentSecrets => entry(json!({ "op": "setDeploymentSecret",
                 "deployment": "d", "name": "API_KEY", "value": "v", "actor": "a", "at": 1 })),
+            Feature::DeploymentUsedSecrets => install(json!({
+                "uses": { "inference": { "package": "pi", "range": "^1" } },
+            })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1366,8 +1384,16 @@ mod tests {
         for &feature in &rc30 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.32's (a deployment's secrets, whole units) wait for every node on rc.32.
-        assert_eq!(rc32, [Feature::DeploymentSecrets, Feature::WholeUnits]);
+        // rc.32's (a deployment's secrets, whole units, secrets of used releases) wait
+        // for every node on rc.32.
+        assert_eq!(
+            rc32,
+            [
+                Feature::DeploymentSecrets,
+                Feature::WholeUnits,
+                Feature::DeploymentUsedSecrets
+            ]
+        );
         for &feature in &rc32 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
@@ -1381,6 +1407,14 @@ mod tests {
             propose(&mut nodes, &clear).unwrap_err().feature,
             Feature::DeploymentSecrets
         );
+        // A name a release an offered one references declares: both rc.32 features.
+        let used = entry(json!({ "op": "setDeploymentSecret", "deployment": "d",
+            "name": "API_KEY", "value": "v", "actor": "a", "at": 1, "used": true }));
+        assert_eq!(
+            used.features(),
+            [Feature::DeploymentSecrets, Feature::DeploymentUsedSecrets]
+        );
+        assert!(propose(&mut nodes, &used).is_err());
         for n in &mut nodes {
             n.release = RC32;
         }

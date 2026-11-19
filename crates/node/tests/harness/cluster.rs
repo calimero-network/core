@@ -106,6 +106,7 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         storage_key: [42; 32],
         attestation: Mode::Mock,
         allow_mock_peers: true,
+        tls_extra_roots: Vec::new(),
         sealed_required: true,
         rp_id: "localhost".into(),
         origins: vec![ORIGIN.into()],

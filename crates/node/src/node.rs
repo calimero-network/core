@@ -125,6 +125,10 @@ pub struct Config {
     pub attestation: Mode,
     /// Accept mock quotes from peers (development only).
     pub allow_mock_peers: bool,
+    /// Extra CA roots for HTTPS to peers, job nodes and attestation fetches,
+    /// on top of the web roots (`--tls-extra-roots`, [`crate::peer_tls`]).
+    /// Empty: the web roots alone.
+    pub tls_extra_roots: Vec<reqwest::Certificate>,
     /// Refuse requests that are not sealed (except attestation and health).
     pub sealed_required: bool,
     pub rp_id: String,
@@ -905,7 +909,8 @@ pub fn unknown_capabilities() -> ApiError {
     )
 }
 
-/// `404 UNDECLARED_SECRET`: no release the deployment offers declares the secret.
+/// `404 UNDECLARED_SECRET`: no release the deployment offers, nor one they reference (`uses`),
+/// declares the secret.
 #[must_use]
 pub fn undeclared_secret() -> ApiError {
     ApiError::new(404, "UNDECLARED_SECRET", crate::system::UNDECLARED_SECRET)
@@ -1022,6 +1027,9 @@ impl Node {
         let compute_wasm = calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?;
         let clock = Clock::new(config.clock_offset_ms);
         let quoter = crate::attest::Quoter::new(config.attestation);
+        let http = crate::peer_tls::peer_client(&config.tls_extra_roots)
+            .timeout(shared_http_timeout())
+            .build()?;
         #[cfg(feature = "testing")]
         let quoter = quoter.for_node(&config.public_url);
         let node = Arc::new(Self {
@@ -1065,9 +1073,7 @@ impl Node {
             recovery: recovery_disk::RecoveryWriter::default(),
             quoter,
             peers: Mutex::new(HashMap::new()),
-            http: reqwest::Client::builder()
-                .timeout(shared_http_timeout())
-                .build()?,
+            http,
             challenges: Mutex::new(HashMap::new()),
             event_streams: std::sync::Arc::default(),
             pipeline_subscribers: Mutex::new(HashMap::new()),

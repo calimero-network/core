@@ -82,6 +82,10 @@ tempfile.workspace = true
 # The cluster scenario runner reads `cluster.settings` (TOML) and crate manifests.
 toml.workspace = true
 rand_chacha.workspace = true
+# A TLS server signed by its own CA, for the peer client's extra roots (`peer_tls`).
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 
 [lib]
 bench = false

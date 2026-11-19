@@ -78,8 +78,9 @@ NOT_COVERED = [
      "`a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range` (`component_cluster.rs`) covers it on "
      "one build; a run without targets reads and writes as before"),
     ("Packages", "The apps a release references (`uses` in the signed manifest, on its capability card)",
-     "nothing is stored: the node checks them at install and reads them from the release's manifest; the "
-     "deep fixtures are packed by the old release's meroctl, which writes no `uses`. "
+     "the node checks them at install and reads them from the release's manifest, and from 1.0.0-rc.32 keeps "
+     "their package and range on the release (`PackageVersion::uses`), which `deployment-used-secrets` reads "
+     "back; the deep fixtures are packed by the old release's meroctl, which writes no `uses`. "
      "`a_release_names_the_apps_it_uses_on_its_card` (`component_cluster.rs`) covers install and the card "
      "on one build. A case once the upgrade-from release packs them"),
     ("Apps", "An instance created with the apps its release creates (`AppRecord::links`, `init`'s `links`)",
@@ -95,6 +96,11 @@ NOT_COVERED = [
      "(`deployments.rs`) and `deleting_an_instance_deletes_its_unit_and_never_a_member_alone` "
      "(`component_cluster.rs`) cover them on one build, and entries without the fields replay as before "
      "(`system::tests::unit_entries_logged_before_whole_units_replay_as_they_did`)"),
+    ("Apps", "A unit's member reading the instance that created it (`env::unit_of`, WIT `context.unit-of`)",
+     "nothing is stored: it is derived from the instance's `links` in the system state; it needs a unit, "
+     "which the old release cannot create (its meroctl packs no `uses`), and a component built for 0.5.5. "
+     "`a_member_names_the_instance_that_created_it_with_unit_of` (`component_cluster.rs`) covers it on one "
+     "build, and components built before 0.5.5 keep running without it"),
     ("Apps", "A person's grant letting an app call another as them (`SetDelegation`, `env::via`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `uses` with `methods`, and a "
      "grant is written only once every node runs this release (`Feature::Delegation`); "

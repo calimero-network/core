@@ -17,6 +17,7 @@ pub struct Org {
     pub(crate) guests: BTreeSet<String>,
     pub(crate) teams: BTreeMap<String, BTreeSet<String>>,
     pub(crate) links: BTreeMap<String, String>,
+    pub(crate) unit_of: Option<String>,
 }
 
 impl Org {
@@ -82,6 +83,14 @@ impl Org {
     #[must_use]
     pub fn link(mut self, name: impl Into<String>, app: impl Into<String>) -> Self {
         self.links.insert(name.into(), app.into());
+        self
+    }
+
+    /// Makes the app a member of `app`'s unit, as the node does for an app an instance's
+    /// release created: `env::unit_of()` answers it, from `init` on.
+    #[must_use]
+    pub fn unit_of(mut self, app: impl Into<String>) -> Self {
+        self.unit_of = Some(app.into());
         self
     }
 
@@ -155,5 +164,9 @@ impl Directory for HarnessDir {
 
     fn linked(&self, name: &str) -> Option<String> {
         self.0.links.get(name).cloned()
+    }
+
+    fn unit_of(&self) -> Option<String> {
+        self.0.unit_of.clone()
     }
 }

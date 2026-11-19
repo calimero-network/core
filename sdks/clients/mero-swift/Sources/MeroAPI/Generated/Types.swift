@@ -933,7 +933,7 @@ public protocol APIProtocol: Sendable {
     func deploymentOrgs(_ input: Operations.DeploymentOrgs.Input) async throws -> Operations.DeploymentOrgs.Output
     /// A deployment's secrets
     ///
-    /// For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`, empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
+    /// For its managers, on fresh state: every secret a release the deployment offers declares, or a release one of those references (`uses`, for the apps it creates), and every one it holds a value of. Each row names the deployment's apps whose release declares it or references one that does (`apps`, empty when none does any more: the value is kept, unused, until cleared), the releases that declare it (`declaredBy`) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -942,7 +942,7 @@ public protocol APIProtocol: Sendable {
     func deploymentSecrets(_ input: Operations.DeploymentSecrets.Input) async throws -> Operations.DeploymentSecrets.Output
     /// Set a deployment's value of a secret
     ///
-    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -3301,7 +3301,7 @@ extension APIProtocol {
     }
     /// A deployment's secrets
     ///
-    /// For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`, empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
+    /// For its managers, on fresh state: every secret a release the deployment offers declares, or a release one of those references (`uses`, for the apps it creates), and every one it holds a value of. Each row names the deployment's apps whose release declares it or references one that does (`apps`, empty when none does any more: the value is kept, unused, until cleared), the releases that declare it (`declaredBy`) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -3318,7 +3318,7 @@ extension APIProtocol {
     }
     /// Set a deployment's value of a secret
     ///
-    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -29099,7 +29099,7 @@ public enum Operations {
     }
     /// A deployment's secrets
     ///
-    /// For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`, empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
+    /// For its managers, on fresh state: every secret a release the deployment offers declares, or a release one of those references (`uses`, for the apps it creates), and every one it holds a value of. Each row names the deployment's apps whose release declares it or references one that does (`apps`, empty when none does any more: the value is kept, unused, until cleared), the releases that declare it (`declaredBy`) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -29160,6 +29160,33 @@ public enum Operations {
                             public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
                                 /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/apps`.
                                 public var apps: [Swift.String]
+                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/DeclaredByPayload`.
+                                public struct DeclaredByPayloadPayload: Codable, Hashable, Sendable {
+                                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/DeclaredByPayload/package`.
+                                    public var package: Swift.String
+                                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/DeclaredByPayload/version`.
+                                    public var version: Swift.String
+                                    /// Creates a new `DeclaredByPayloadPayload`.
+                                    ///
+                                    /// - Parameters:
+                                    ///   - package:
+                                    ///   - version:
+                                    public init(
+                                        package: Swift.String,
+                                        version: Swift.String
+                                    ) {
+                                        self.package = package
+                                        self.version = version
+                                    }
+                                    public enum CodingKeys: String, CodingKey {
+                                        case package
+                                        case version
+                                    }
+                                }
+                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/declaredBy`.
+                                public typealias DeclaredByPayload = [Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.DeclaredByPayloadPayload]
+                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/declaredBy`.
+                                public var declaredBy: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.DeclaredByPayload
                                 /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/set`.
                                 public var set: Swift.Bool
                                 /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/fingerprint`.
@@ -29172,18 +29199,21 @@ public enum Operations {
                                 ///
                                 /// - Parameters:
                                 ///   - apps:
+                                ///   - declaredBy:
                                 ///   - set:
                                 ///   - fingerprint:
                                 ///   - setBy:
                                 ///   - setAt:
                                 public init(
                                     apps: [Swift.String],
+                                    declaredBy: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.DeclaredByPayload,
                                     set: Swift.Bool,
                                     fingerprint: Swift.String? = nil,
                                     setBy: Swift.String? = nil,
                                     setAt: Swift.Int64? = nil
                                 ) {
                                     self.apps = apps
+                                    self.declaredBy = declaredBy
                                     self.set = set
                                     self.fingerprint = fingerprint
                                     self.setBy = setBy
@@ -29191,6 +29221,7 @@ public enum Operations {
                                 }
                                 public enum CodingKeys: String, CodingKey {
                                     case apps
+                                    case declaredBy
                                     case set
                                     case fingerprint
                                     case setBy
@@ -29313,7 +29344,7 @@ public enum Operations {
     }
     /// Set a deployment's value of a secret
     ///
-    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///

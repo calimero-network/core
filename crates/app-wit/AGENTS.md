@@ -8,7 +8,7 @@
 
 ## What This Crate Does
 
-Holds the `calimero:app@0.5.4` world: the spec's 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1), `context.via` (0.5.2), `context.linked` (0.5.3) and `xcall.batch` (0.5.4), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
+Holds the `calimero:app@0.5.5` world: the spec's 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1), `context.via` (0.5.2), `context.linked` (0.5.3), `xcall.batch` (0.5.4) and `context.unit-of` (0.5.5), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
 
 ## The compute world
 
@@ -26,6 +26,7 @@ The compute world imports no state, xcall, context, events, blobs, search, actio
 
 - `context.via` (0.5.2): for a call another app made as the person it serves, with their grant (`caller` is that person), the app it came through; see `docs/src/content/docs/protocol/xcall.mdx`, "As the person".
 - `xcall.batch` (0.5.4): a list of `request { kind: call | view, app, method, args }`, answered in order; the node runs them at once, each with the checks, count and key of the same `call`/`view` alone. The SDK sends every synchronous xcall through it; `call` and `view` stay for components built before.
+- `context.unit-of` (0.5.5): the app whose unit this one is a member of (the instance whose release created it); none otherwise and in a compute run. The host asks `Directory::unit_of`, which answers none by default.
 - `context.linked` (0.5.3): the app linked under a name of the release's `uses` (a unit member or an attached app); none in a compute run. The host asks `Directory::linked`, which answers none by default.
 
 ## Rules

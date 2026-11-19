@@ -130,6 +130,13 @@ fingerprint, who set it and when. `meroctl raw delete
 /deployments/<id>/secrets/NEAR_AI_API_KEY` removes it. A name no release you
 offer declares is refused (`404 UNDECLARED_SECRET`).
 
+If your release uses another app (`uses`, say Private Inference, which declares
+`NEAR_AI_API_KEY`), you can set that app's secrets on your deployment too: the
+apps your instances create with it then use your value, and the listing names
+the release that declares it (`declaredBy`) and your app that uses it (`apps`).
+A release installed before the cluster ran 1.0.0-rc.32 needs installing again
+first, so the node records what it uses.
+
 <SeqDiagram
   id="d-deployment-secret"
   title="A deployment's secret: set once, filled only where declared"

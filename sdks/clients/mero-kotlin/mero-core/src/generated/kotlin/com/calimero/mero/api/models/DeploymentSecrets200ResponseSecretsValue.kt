@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.DeploymentSecrets200ResponseSecretsValueDeclaredByInner
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -32,6 +33,7 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param apps 
+ * @param declaredBy 
  * @param set 
  * @param fingerprint 
  * @param setBy 
@@ -43,6 +45,9 @@ data class DeploymentSecrets200ResponseSecretsValue (
 
     @SerialName(value = "apps")
     val apps: kotlin.collections.List<kotlin.String>,
+
+    @SerialName(value = "declaredBy")
+    val declaredBy: kotlin.collections.List<DeploymentSecrets200ResponseSecretsValueDeclaredByInner>,
 
     @SerialName(value = "set")
     val set: kotlin.Boolean,

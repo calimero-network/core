@@ -585,30 +585,29 @@ pub(super) struct DeploymentSecretBody {
 }
 
 /// A deployment's secrets as its managers read them: every name a release it
-/// offers declares, and every name it holds a value of, each with the apps
-/// whose release declares it (none: the value is kept, unused, until cleared)
-/// and, when it holds a value, its fingerprint, who set it and when. Never a
-/// value.
+/// offers declares, or a release one of those references (`uses`), and every
+/// name it holds a value of, each with the apps whose release declares it or
+/// references one that does (none: the value is kept, unused, until cleared),
+/// the releases that declare it (`declaredBy`), and, when it holds a value,
+/// its fingerprint, who set it and when. Never a value.
 fn deployment_secrets_json(s: &crate::system::SystemState, d: &Deployment) -> Value {
     let held = s.deployment_secrets.get(&d.id);
-    let mut rows: BTreeMap<String, Value> = BTreeMap::new();
-    for (app, o) in &d.apps {
-        let Some(v) = s.offered_release(o) else {
-            continue;
-        };
-        for name in v.secrets.keys() {
-            let row = rows
-                .entry(name.clone())
-                .or_insert_with(|| json!({ "apps": [], "set": false }));
-            if let Some(apps) = row["apps"].as_array_mut() {
-                apps.push(json!(app));
-            }
-        }
-    }
+    let empty = || json!({ "apps": [], "declaredBy": [], "set": false });
+    let mut rows: BTreeMap<String, Value> = s
+        .deployment_declarers(d)
+        .into_iter()
+        .map(|(name, by)| {
+            let declared_by: Vec<Value> = by
+                .declared_by
+                .into_iter()
+                .map(|(package, version)| json!({ "package": package, "version": version }))
+                .collect();
+            let row = json!({ "apps": by.apps, "declaredBy": declared_by, "set": false });
+            (name, row)
+        })
+        .collect();
     for (name, secret) in held.into_iter().flatten() {
-        let row = rows
-            .entry(name.clone())
-            .or_insert_with(|| json!({ "apps": [], "set": false }));
+        let row = rows.entry(name.clone()).or_insert_with(empty);
         row["set"] = json!(true);
         row["fingerprint"] = json!(secret.fingerprint);
         row["setBy"] = json!(secret.set_by);
@@ -630,10 +629,13 @@ async fn deployment_secrets(
     Ok(Json(node.sys(|s| deployment_secrets_json(s, &d))))
 }
 
-/// Set the deployment's value of a secret a release it offers declares: every
-/// instance created from it uses the value unless it set its own, only toward
-/// that secret's declared hosts. With a passkey assertion over
-/// `deployment:{id} / __set_secret / { name, fingerprint }` (never the value).
+/// Set the deployment's value of a secret a release it offers declares, or a
+/// release one of those references (`uses`, for the apps it creates; then
+/// `Feature::DeploymentUsedSecrets` too): every instance created from it uses
+/// the value unless it set its own, only toward that secret's declared hosts,
+/// and only where the instance's own release declares it. With a passkey
+/// assertion over `deployment:{id} / __set_secret / { name, fingerprint }`
+/// (never the value).
 async fn deployment_secret_set(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -653,10 +655,20 @@ async fn deployment_secret_set(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let d = managed_deployment(&node, &p, &id).await?;
-    if !node.sys(|s| s.deployment_declares(&d, &name)) {
+    // Judged as apply judges it: the offered releases first, and only past them the
+    // releases they reference, which an older node does not apply.
+    let (offered, used) = node.sys(|s| {
+        let offered = s.deployment_declares(&d, &name);
+        (offered, !offered && s.deployment_uses_declare(&d, &name))
+    });
+    if !offered && !used {
         return Err(crate::node::undeclared_secret());
     }
-    node.require_features(&[Feature::DeploymentSecrets]).await?;
+    let mut features = vec![Feature::DeploymentSecrets];
+    if used {
+        features.push(Feature::DeploymentUsedSecrets);
+    }
+    node.require_features(&features).await?;
     let consent = consent(
         &node,
         &p,
@@ -674,6 +686,7 @@ async fn deployment_secret_set(
             actor: account,
             at: now_secs(),
             consent,
+            used,
         })
         .await?,
     ))

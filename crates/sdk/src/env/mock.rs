@@ -19,6 +19,8 @@ pub struct MockState {
     pub app_id: String,
     /// The apps linked by name (`env::linked`).
     pub links: HashMap<String, String>,
+    /// The instance whose unit this app is a member of (`env::unit_of`).
+    pub unit_of: Option<String>,
     /// The app owner's account.
     pub owner: String,
     /// The app's org.
@@ -61,6 +63,7 @@ impl Default for MockState {
             via: None,
             app_id: "app".into(),
             links: HashMap::new(),
+            unit_of: None,
             owner: "owner".into(),
             org: None,
             roles: HashMap::new(),
@@ -111,6 +114,10 @@ pub fn app_id() -> String {
 
 pub fn linked(name: &str) -> Option<String> {
     read(|s| s.links.get(name).cloned())
+}
+
+pub fn unit_of() -> Option<String> {
+    read(|s| s.unit_of.clone())
 }
 
 pub fn app_owner() -> String {

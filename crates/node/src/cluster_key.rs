@@ -393,7 +393,7 @@ async fn receive(config: &Config, listener: TcpListener) -> eyre::Result<([u8; 3
         })
     };
     info!(%addr, "waiting for a peer to deliver the cluster key");
-    let http = reqwest::Client::builder()
+    let http = crate::peer_tls::peer_client(&config.tls_extra_roots)
         .timeout(Duration::from_secs(30))
         .build()?;
     let request = Request {

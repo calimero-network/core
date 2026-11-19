@@ -691,6 +691,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             metadata: Value::Null,
             outbound: Vec::new(),
             secrets: BTreeMap::new(),
+            uses: BTreeMap::new(),
             installed_by: "alice".into(),
             installed_at: 0,
             installers: BTreeSet::new(),
@@ -789,6 +790,7 @@ fn a_compute_release_is_charged_each_parts_own_size() {
             metadata: Value::Null,
             outbound: Vec::new(),
             secrets: BTreeMap::new(),
+            uses: BTreeMap::new(),
             installed_by: "alice".into(),
             installed_at: 0,
             installers: BTreeSet::new(),
@@ -830,6 +832,7 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             metadata: Value::Null,
             outbound: Vec::new(),
             secrets: BTreeMap::new(),
+            uses: BTreeMap::new(),
             installed_by: "alice".into(),
             installed_at: 0,
             installers: BTreeSet::new(),
@@ -7517,6 +7520,32 @@ fn set_secret(deployment: &str, name: &str, value: &str, actor: &str) -> SystemC
         actor: actor.into(),
         at: 20,
         consent: serde_json::Value::Null,
+        used: false,
+    }
+}
+
+/// [`set_secret`] judged by the releases the offered ones reference too (`used`).
+fn set_used_secret(deployment: &str, name: &str, value: &str, actor: &str) -> SystemCmd {
+    let SystemCmd::SetDeploymentSecret {
+        deployment,
+        name,
+        value,
+        actor,
+        at,
+        consent,
+        ..
+    } = set_secret(deployment, name, value, actor)
+    else {
+        unreachable!("set_secret makes a SetDeploymentSecret")
+    };
+    SystemCmd::SetDeploymentSecret {
+        deployment,
+        name,
+        value,
+        actor,
+        at,
+        consent,
+        used: true,
     }
 }
 
@@ -7725,6 +7754,7 @@ fn deployment_secrets_carry_their_managers_consent() {
             actor: actor.into(),
             at: 20,
             consent,
+            used: false,
         };
     let fp = |v: &str| crate::component::SecretValue(v.into()).fingerprint();
     let args = json!({ "name": "API_KEY", "fingerprint": fp("real") });
@@ -7830,6 +7860,199 @@ fn state_from_before_deployment_secrets_reads_with_none_and_writes_as_before() {
     };
     let _ok = m.run_unproven(delete_deployment("a", "alice")).unwrap();
     assert!(m.state.deployments.is_empty());
+}
+
+/// `package@version` installed by alice, declaring `secrets` (each for
+/// `api.example.com`) and referencing `uses` (the manifest's JSON for them).
+fn install_release(package: &str, version: &str, secrets: &[&str], uses: Value) -> SystemCmd {
+    let secrets: serde_json::Map<String, Value> = secrets
+        .iter()
+        .map(|n| ((*n).to_owned(), json!({ "hosts": ["api.example.com"] })))
+        .collect();
+    let uses = if uses.is_null() { json!({}) } else { uses };
+    SystemCmd::InstallPackage {
+        package: package.into(),
+        signer_id: "did:key:z".into(),
+        release: serde_json::from_value(json!({
+            "version": version, "mpk": format!("{package}-{version}"), "mpkSize": 1,
+            "source": "upload", "services": { "": format!("b-{package}-{version}") },
+            "installedBy": "alice", "installedAt": 5,
+            "outbound": ["https://api.example.com/"], "secrets": secrets, "uses": uses,
+        }))
+        .unwrap(),
+    }
+}
+
+/// A deployment offering `notes`, whose release references (`uses`) the package `pi`, holds
+/// a value of a secret a release of `pi` in the reference's range declares, by an entry that
+/// says it was judged so (`used`); not of a name nothing it reaches declares, nor of one a
+/// release outside the range declares. The app it creates, carrying the deployment, reads the
+/// value for a name its own release declares, and `notes` itself does not.
+#[test]
+fn a_deployment_holds_secrets_the_releases_its_offers_use_declare() {
+    use std::collections::BTreeMap;
+
+    use super::{Deployer, Deployments, UNDECLARED_SECRET};
+    let mut m = deploying(Deployments::Open);
+    let _ok = m
+        .run_unproven(install_release(
+            "pi",
+            "1.0.0",
+            &["NEAR_AI_API_KEY"],
+            Value::Null,
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(install_release("pi", "2.0.0", &["V2_KEY"], Value::Null))
+        .unwrap();
+    let _ok = m
+        .run_unproven(install_release(
+            "notes",
+            "1.0.0",
+            &[],
+            json!({ "inference": { "package": "pi", "range": "^1", "version": "1.0.0" } }),
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(create_deployment(
+            "a",
+            Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::OfferApp {
+            deployment: "a".into(),
+            app: "notes".into(),
+            package: "notes".into(),
+            version: "1.0.0".into(),
+            actor: "alice".into(),
+            at: 10,
+            consent: Value::Null,
+        })
+        .unwrap();
+    let d = m.state.deployments["a"].clone();
+    assert!(!m.state.deployment_declares(&d, "NEAR_AI_API_KEY"));
+    assert!(m.state.deployment_uses_declare(&d, "NEAR_AI_API_KEY"));
+
+    // An entry judged by the offered releases alone (every one from before) refuses it.
+    assert_eq!(
+        m.run_unproven(set_secret("a", "NEAR_AI_API_KEY", "k", "alice"))
+            .unwrap_err(),
+        UNDECLARED_SECRET
+    );
+    // Nothing it reaches declares OTHER; pi 2.0.0 is outside `^1`.
+    for name in ["OTHER", "V2_KEY"] {
+        assert_eq!(
+            m.run_unproven(set_used_secret("a", name, "k", "alice"))
+                .unwrap_err(),
+            UNDECLARED_SECRET,
+            "{name}"
+        );
+    }
+    // Only a manager.
+    assert!(m
+        .run_unproven(set_used_secret("a", "NEAR_AI_API_KEY", "k", "bob"))
+        .is_err());
+    assert!(m.state.deployment_secrets.is_empty());
+    let out = m
+        .run_unproven(set_used_secret("a", "NEAR_AI_API_KEY", "devs-key", "alice"))
+        .unwrap();
+    assert!(!out.to_string().contains("devs-key"), "{out}");
+
+    // A release installed later inside the range is reached too.
+    let _ok = m
+        .run_unproven(install_release("pi", "1.1.0", &["NEW_KEY"], Value::Null))
+        .unwrap();
+    let _ok = m
+        .run_unproven(set_used_secret("a", "NEW_KEY", "new", "alice"))
+        .unwrap();
+    let declarers = m.state.deployment_declarers(&m.state.deployments["a"]);
+    assert_eq!(
+        declarers["NEAR_AI_API_KEY"].declared_by,
+        [("pi".to_owned(), "1.0.0".to_owned())].into()
+    );
+    assert_eq!(
+        declarers["NEAR_AI_API_KEY"].apps,
+        ["notes".to_owned()].into()
+    );
+    assert!(!declarers.contains_key("V2_KEY"));
+
+    // The app `notes` creates, carrying the deployment, gets the value for a name its own
+    // release declares; `notes`, declaring none, gets nothing of it.
+    for (id, bundle) in [("member", "b-pi-1.0.0"), ("notes-1", "b-notes-1.0.0")] {
+        let _prev = m.state.apps.insert(
+            id.into(),
+            serde_json::from_value(json!({
+                "appId": id, "name": id, "group": 2, "bundle": bundle, "owner": "alice",
+                "org": p("alice"), "replicas": [1], "createdAt": 10, "deployment": "a",
+            }))
+            .unwrap(),
+        );
+    }
+    let release = |package: &str| m.state.packages[package].versions["1.0.0"].secrets.clone();
+    let filled = |app: &str, package: &str| {
+        crate::component::run_secrets(
+            &BTreeMap::new(),
+            m.state.deployment_secrets_of(app),
+            &release(package),
+        )
+        .0
+        .into_iter()
+        .map(|(name, value)| (name, value.as_str().to_owned()))
+        .collect::<BTreeMap<String, String>>()
+    };
+    assert_eq!(
+        filled("member", "pi"),
+        [("NEAR_AI_API_KEY".to_owned(), "devs-key".to_owned())].into()
+    );
+    assert!(filled("notes-1", "notes").is_empty());
+}
+
+/// A release recorded before its `uses` were kept reads with none and writes as it did; an
+/// install of the same `.mpk` again fills them in, and nothing else of the record changes.
+/// An entry from before `used` reads as `false` and writes as it was.
+#[test]
+fn releases_and_entries_from_before_used_secrets_replay_unchanged() {
+    use super::Deployments;
+    let mut m = deploying(Deployments::Open);
+    let _ok = m
+        .run_unproven(install_release("notes", "1.0.0", &[], Value::Null))
+        .unwrap();
+    let before = serde_json::to_value(&m.state).unwrap();
+    let release = &before["packages"]["notes"]["versions"]["1.0.0"];
+    assert!(release.get("uses").is_none(), "{release}");
+    let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
+    assert!(restored.packages["notes"].versions["1.0.0"].uses.is_empty());
+    assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+
+    let uses = json!({ "inference": { "package": "pi", "range": "^1" } });
+    let _ok = m
+        .run_unproven(install_release("notes", "1.0.0", &[], uses.clone()))
+        .unwrap();
+    let mut after = serde_json::to_value(&m.state).unwrap();
+    assert_eq!(
+        after["packages"]["notes"]["versions"]["1.0.0"]["uses"],
+        uses
+    );
+    let _gone = after["packages"]["notes"]["versions"]["1.0.0"]
+        .as_object_mut()
+        .unwrap()
+        .remove("uses");
+    assert_eq!(after, before, "only the uses were filled in");
+
+    let entry = json!({ "op": "setDeploymentSecret", "deployment": "d", "name": "API_KEY",
+        "value": "v", "actor": "a", "at": 1 });
+    let cmd: SystemCmd = serde_json::from_value(entry.clone()).unwrap();
+    assert!(matches!(
+        cmd,
+        SystemCmd::SetDeploymentSecret { used: false, .. }
+    ));
+    let written = serde_json::to_value(&cmd).unwrap();
+    assert!(written.get("used").is_none(), "{written}");
+    let mut entry = entry;
+    entry["consent"] = Value::Null;
+    assert_eq!(written, entry);
 }
 
 /// An app of `org` (or of alice's personal organization, `p-alice`) in a
