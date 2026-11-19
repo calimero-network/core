@@ -16,7 +16,7 @@
     }
   ],
   "depends_on": [
-    "mero-ui"
+    "mero-design"
   ],
   "inputs": [],
   "workflow": ".github/workflows/sdk-mero-charts.yml"

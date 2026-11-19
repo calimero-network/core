@@ -1,7 +1,7 @@
 name: SDKs
 
 # The SDKs under sdks/ (clients: mero-js, mero-py, mero-swift, mero-kotlin;
-# components: mero-react, mero-ui, mero-icons, mero-tokens, mero-charts):
+# components: mero-react, mero-design, mero-icons, mero-tokens, mero-charts):
 # each is tested by its own reusable workflow, sdk-<name>.yml, and only when a
 # change can reach it (scripts/sdks.py scope, from each SDK's sdk.json).
 #
@@ -46,7 +46,7 @@ jobs:
       mero-kotlin: ${{ steps.decide.outputs.mero-kotlin }}
       mero-icons: ${{ steps.decide.outputs.mero-icons }}
       mero-tokens: ${{ steps.decide.outputs.mero-tokens }}
-      mero-ui: ${{ steps.decide.outputs.mero-ui }}
+      mero-design: ${{ steps.decide.outputs.mero-design }}
       mero-charts: ${{ steps.decide.outputs.mero-charts }}
       any: ${{ steps.decide.outputs.any }}
       sdks: ${{ steps.decide.outputs.sdks }}
@@ -96,7 +96,7 @@ jobs:
           verdict=$(printf '%s\n' "$files" | python3 scripts/sdks.py scope) || exit 1
           printf '%s\n' "$verdict" >> "$GITHUB_OUTPUT"
           # An SDK with a job below whose directory is not in this tree has nothing to test.
-          for name in mero-js mero-react mero-py mero-swift mero-kotlin mero-icons mero-tokens mero-ui mero-charts; do
+          for name in mero-js mero-react mero-py mero-swift mero-kotlin mero-icons mero-tokens mero-design mero-charts; do
             grep -q "^$name=" <<<"$verdict" || echo "$name=false" >> "$GITHUB_OUTPUT"
           done
 
@@ -142,11 +142,11 @@ jobs:
     if: needs.scope.outputs.mero-tokens != 'false'
     uses: ./.github/workflows/sdk-mero-tokens.yml
 
-  mero-ui:
-    name: mero-ui
+  mero-design:
+    name: mero-design
     needs: scope
-    if: needs.scope.outputs.mero-ui != 'false'
-    uses: ./.github/workflows/sdk-mero-ui.yml
+    if: needs.scope.outputs.mero-design != 'false'
+    uses: ./.github/workflows/sdk-mero-design.yml
 
   mero-charts:
     name: mero-charts
@@ -243,7 +243,7 @@ jobs:
   sdks:
     name: SDKs
     if: ${{ !cancelled() }}
-    needs: [scope, codegen, mero-js, mero-react, mero-py, mero-swift, mero-kotlin, mero-icons, mero-tokens, mero-ui, mero-charts]
+    needs: [scope, codegen, mero-js, mero-react, mero-py, mero-swift, mero-kotlin, mero-icons, mero-tokens, mero-design, mero-charts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
