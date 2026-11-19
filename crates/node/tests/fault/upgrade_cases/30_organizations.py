@@ -336,7 +336,7 @@ class OrdinaryOrgs(DeepCase):
     def check(self, w, s):
         orla = person(w, "orla")
         mine = [o for o in orla.get("auth/me").get("orgs", [])]
-        eq([(o["orgId"], o["role"], o.get("personal")) for o in mine], [(s["org"], "owner", None)],
+        eq([(o["orgId"], o["role"], o.get("personal")) for o in mine], [(s["org"], "owner", False)],
            "the account's organizations")
         for app in s["apps"]:
             eq(orla.get(f"apps/{app}").get("org"), s["org"], "the instance's organization")
