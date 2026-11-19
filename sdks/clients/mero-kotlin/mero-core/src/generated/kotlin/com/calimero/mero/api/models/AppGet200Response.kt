@@ -46,7 +46,6 @@ import kotlinx.serialization.Contextual
  * @param createdAt 
  * @param initArgs Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param metadata Free-form JSON: its shape is not this API's (see the description around it for whose it is).
- * @param grants 
  * @param executor 
  * @param computeBundle 
  * @param components 
@@ -56,6 +55,7 @@ import kotlinx.serialization.Contextual
  * @param restore 
  * @param links 
  * @param attached 
+ * @param grants 
  */
 @Serializable
 
@@ -99,9 +99,6 @@ data class AppGet200Response (
     @Contextual @SerialName(value = "metadata")
     val metadata: kotlinx.serialization.json.JsonElement?,
 
-    @SerialName(value = "grants")
-    val grants: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>,
-
     @SerialName(value = "executor")
     val executor: AppGet200Response.Executor? = null,
 
@@ -127,7 +124,10 @@ data class AppGet200Response (
     val links: kotlin.collections.Map<kotlin.String, kotlin.String>? = null,
 
     @SerialName(value = "attached")
-    val attached: kotlin.collections.Map<kotlin.String, kotlin.String>? = null
+    val attached: kotlin.collections.Map<kotlin.String, kotlin.String>? = null,
+
+    @SerialName(value = "grants")
+    val grants: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>? = null
 
 ) {
 

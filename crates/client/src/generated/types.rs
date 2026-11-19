@@ -2600,7 +2600,8 @@ pub struct AppGetResponse {
     pub links: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attached: Option<BTreeMap<String, String>>,
-    pub grants: Vec<Grant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grants: Option<Vec<Grant>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

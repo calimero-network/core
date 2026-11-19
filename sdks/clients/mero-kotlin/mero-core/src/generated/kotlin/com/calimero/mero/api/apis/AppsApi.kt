@@ -661,7 +661,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}
      * One app
-     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route. &#x60;grants&#x60; is its access as grants whichever shape it was set in; a guest sees only their own grant (and &#x60;access&#x60; naming only them).  **Who:** signed in (a session or an API key).
+     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route. &#x60;grants&#x60; is its access as grants whichever shape it was set in (absent from a node before 1.0.0-rc.32); a guest sees only their own grant (and &#x60;access&#x60; naming only them).  **Who:** signed in (a session or an API key).
      * @param app 
      * @return AppGet200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -693,7 +693,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}
      * One app
-     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route. &#x60;grants&#x60; is its access as grants whichever shape it was set in; a guest sees only their own grant (and &#x60;access&#x60; naming only them).  **Who:** signed in (a session or an API key).
+     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route. &#x60;grants&#x60; is its access as grants whichever shape it was set in (absent from a node before 1.0.0-rc.32); a guest sees only their own grant (and &#x60;access&#x60; naming only them).  **Who:** signed in (a session or an API key).
      * @param app 
      * @return ApiResponse<AppGet200Response?>
      * @throws IllegalStateException If the request is not correctly configured

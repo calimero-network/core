@@ -203,7 +203,7 @@ public struct Client: APIProtocol {
     }
     /// One app
     ///
-    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).
+    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in (absent from a node before 1.0.0-rc.32); a guest sees only their own grant (and `access` naming only them).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
