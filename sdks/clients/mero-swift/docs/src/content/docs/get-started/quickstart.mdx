@@ -8,7 +8,9 @@ sidebar:
 ## Add the package
 
 ```swift
-.package(url: "https://github.com/calimero-network/swift-sdk", exact: "1.0.0-rc.31")
+.package(url: "https://github.com/calimero-network/core", exact: "1.0.0-rc.31")
+// a target:
+.product(name: "MeroKit", package: "core")
 ```
 
 The package is `mero-swift` (SwiftPM only), on Calimero core's version;
@@ -20,7 +22,7 @@ the modules keep their names (`import MeroKit`). Products: `MeroKit` (the client
 ```sh
 # in calimero-network/core, on Linux:
 cargo run -p merod -- local     # 3 nodes on 127.0.0.1:2501-2503, mock attestation
-# on a Mac (merod 1.0 is Linux only), in core's sdks/clients/mero-swift (or a swift-sdk checkout), with Docker:
+# on a Mac (merod 1.0 is Linux only), in core's sdks/clients/mero-swift, with Docker:
 scripts/dev-cluster.sh up
 ```
 
