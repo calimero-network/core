@@ -70,7 +70,11 @@ and `UpgradeApp` refuses it again where it applies.
 
 The developer decides the target, the owner decides whether to take it, and
 nothing else is reachable; with `upgrades: publisher` the publisher's run
-takes the owner's place, held to the same offer.
+takes the owner's place, held to the same offer. An app the instance created
+(a unit's member) carries the same deployment and moves only with its unit, in
+a unit upgrade to the release the deployment offers (`POST
+/apps/{app}/upgrade-unit`): alone, or in a unit run to any other release, it is
+refused `409 OUTSIDE_DEPLOYMENT`, before any passkey is asked for.
 
 An owner-side upgrader may hand one app's upgrades to CI with an [upgrade
 key](/protocol/identities/#upgrade-keys): made once with a passkey, it signs
