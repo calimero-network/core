@@ -53,7 +53,6 @@ class AppGetResponse200:
         created_at (int):
         init_args (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
         metadata (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-        grants (list[Union['GrantType0', 'GrantType1', 'GrantType2', 'GrantType3']]):
         executor (Union[Unset, AppGetResponse200Executor]):
         compute_bundle (Union[Unset, str]):
         components (Union[Unset, AppGetResponse200Components]):
@@ -66,6 +65,7 @@ class AppGetResponse200:
         restore (Union[Unset, AppGetResponse200Restore]):
         links (Union[Unset, AppGetResponse200Links]):
         attached (Union[Unset, AppGetResponse200Attached]):
+        grants (Union[Unset, list[Union['GrantType0', 'GrantType1', 'GrantType2', 'GrantType3']]]):
     """
 
     app_id: str
@@ -87,7 +87,6 @@ class AppGetResponse200:
     created_at: int
     init_args: Any
     metadata: Any
-    grants: list[Union["GrantType0", "GrantType1", "GrantType2", "GrantType3"]]
     executor: Union[Unset, AppGetResponse200Executor] = UNSET
     compute_bundle: Union[Unset, str] = UNSET
     components: Union[Unset, AppGetResponse200Components] = UNSET
@@ -97,6 +96,9 @@ class AppGetResponse200:
     restore: Union[Unset, "AppGetResponse200Restore"] = UNSET
     links: Union[Unset, "AppGetResponse200Links"] = UNSET
     attached: Union[Unset, "AppGetResponse200Attached"] = UNSET
+    grants: Union[
+        Unset, list[Union["GrantType0", "GrantType1", "GrantType2", "GrantType3"]]
+    ] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -153,20 +155,6 @@ class AppGetResponse200:
 
         metadata = self.metadata
 
-        grants = []
-        for grants_item_data in self.grants:
-            grants_item: dict[str, Any]
-            if isinstance(grants_item_data, GrantType0):
-                grants_item = grants_item_data.to_dict()
-            elif isinstance(grants_item_data, GrantType1):
-                grants_item = grants_item_data.to_dict()
-            elif isinstance(grants_item_data, GrantType2):
-                grants_item = grants_item_data.to_dict()
-            else:
-                grants_item = grants_item_data.to_dict()
-
-            grants.append(grants_item)
-
         executor: Union[Unset, str] = UNSET
         if not isinstance(self.executor, Unset):
             executor = self.executor.value
@@ -199,6 +187,22 @@ class AppGetResponse200:
         if not isinstance(self.attached, Unset):
             attached = self.attached.to_dict()
 
+        grants: Union[Unset, list[dict[str, Any]]] = UNSET
+        if not isinstance(self.grants, Unset):
+            grants = []
+            for grants_item_data in self.grants:
+                grants_item: dict[str, Any]
+                if isinstance(grants_item_data, GrantType0):
+                    grants_item = grants_item_data.to_dict()
+                elif isinstance(grants_item_data, GrantType1):
+                    grants_item = grants_item_data.to_dict()
+                elif isinstance(grants_item_data, GrantType2):
+                    grants_item = grants_item_data.to_dict()
+                else:
+                    grants_item = grants_item_data.to_dict()
+
+                grants.append(grants_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -215,7 +219,6 @@ class AppGetResponse200:
                 "createdAt": created_at,
                 "initArgs": init_args,
                 "metadata": metadata,
-                "grants": grants,
             }
         )
         if executor is not UNSET:
@@ -236,6 +239,8 @@ class AppGetResponse200:
             field_dict["links"] = links
         if attached is not UNSET:
             field_dict["attached"] = attached
+        if grants is not UNSET:
+            field_dict["grants"] = grants
 
         return field_dict
 
@@ -343,47 +348,6 @@ class AppGetResponse200:
 
         metadata = d.pop("metadata")
 
-        grants = []
-        _grants = d.pop("grants")
-        for grants_item_data in _grants:
-
-            def _parse_grants_item(
-                data: object,
-            ) -> Union["GrantType0", "GrantType1", "GrantType2", "GrantType3"]:
-                try:
-                    if not isinstance(data, dict):
-                        raise TypeError()
-                    componentsschemas_grant_type_0 = GrantType0.from_dict(data)
-
-                    return componentsschemas_grant_type_0
-                except:  # noqa: E722
-                    pass
-                try:
-                    if not isinstance(data, dict):
-                        raise TypeError()
-                    componentsschemas_grant_type_1 = GrantType1.from_dict(data)
-
-                    return componentsschemas_grant_type_1
-                except:  # noqa: E722
-                    pass
-                try:
-                    if not isinstance(data, dict):
-                        raise TypeError()
-                    componentsschemas_grant_type_2 = GrantType2.from_dict(data)
-
-                    return componentsschemas_grant_type_2
-                except:  # noqa: E722
-                    pass
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_grant_type_3 = GrantType3.from_dict(data)
-
-                return componentsschemas_grant_type_3
-
-            grants_item = _parse_grants_item(grants_item_data)
-
-            grants.append(grants_item)
-
         _executor = d.pop("executor", UNSET)
         executor: Union[Unset, AppGetResponse200Executor]
         if isinstance(_executor, Unset):
@@ -437,6 +401,47 @@ class AppGetResponse200:
         else:
             attached = AppGetResponse200Attached.from_dict(_attached)
 
+        grants = []
+        _grants = d.pop("grants", UNSET)
+        for grants_item_data in _grants or []:
+
+            def _parse_grants_item(
+                data: object,
+            ) -> Union["GrantType0", "GrantType1", "GrantType2", "GrantType3"]:
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    componentsschemas_grant_type_0 = GrantType0.from_dict(data)
+
+                    return componentsschemas_grant_type_0
+                except:  # noqa: E722
+                    pass
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    componentsschemas_grant_type_1 = GrantType1.from_dict(data)
+
+                    return componentsschemas_grant_type_1
+                except:  # noqa: E722
+                    pass
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    componentsschemas_grant_type_2 = GrantType2.from_dict(data)
+
+                    return componentsschemas_grant_type_2
+                except:  # noqa: E722
+                    pass
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_grant_type_3 = GrantType3.from_dict(data)
+
+                return componentsschemas_grant_type_3
+
+            grants_item = _parse_grants_item(grants_item_data)
+
+            grants.append(grants_item)
+
         app_get_response_200 = cls(
             app_id=app_id,
             name=name,
@@ -450,7 +455,6 @@ class AppGetResponse200:
             created_at=created_at,
             init_args=init_args,
             metadata=metadata,
-            grants=grants,
             executor=executor,
             compute_bundle=compute_bundle,
             components=components,
@@ -460,6 +464,7 @@ class AppGetResponse200:
             restore=restore,
             links=links,
             attached=attached,
+            grants=grants,
         )
 
         app_get_response_200.additional_properties = d

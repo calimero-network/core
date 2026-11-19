@@ -35,7 +35,7 @@ public protocol APIProtocol: Sendable {
     func appCreate(_ input: Operations.AppCreate.Input) async throws -> Operations.AppCreate.Output
     /// One app
     ///
-    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).
+    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in (absent from a node before 1.0.0-rc.32); a guest sees only their own grant (and `access` naming only them).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -1599,7 +1599,7 @@ extension APIProtocol {
     }
     /// One app
     ///
-    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).
+    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in (absent from a node before 1.0.0-rc.32); a guest sees only their own grant (and `access` naming only them).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -10693,7 +10693,7 @@ public enum Operations {
     }
     /// One app
     ///
-    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).
+    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in (absent from a node before 1.0.0-rc.32); a guest sees only their own grant (and `access` naming only them).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -10890,7 +10890,7 @@ public enum Operations {
                         /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/attached`.
                         public var attached: Operations.AppGet.Output.Ok.Body.JsonPayload.AttachedPayload?
                         /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/grants`.
-                        public var grants: [Components.Schemas.Grant]
+                        public var grants: [Components.Schemas.Grant]?
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
@@ -10938,7 +10938,7 @@ public enum Operations {
                             restore: Operations.AppGet.Output.Ok.Body.JsonPayload.RestorePayload? = nil,
                             links: Operations.AppGet.Output.Ok.Body.JsonPayload.LinksPayload? = nil,
                             attached: Operations.AppGet.Output.Ok.Body.JsonPayload.AttachedPayload? = nil,
-                            grants: [Components.Schemas.Grant]
+                            grants: [Components.Schemas.Grant]? = nil
                         ) {
                             self.appId = appId
                             self.name = name
