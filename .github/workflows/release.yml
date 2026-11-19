@@ -890,7 +890,8 @@ jobs:
     uses: ./.github/workflows/sdk-mero-swift.yml
     with:
       publish: true
-      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+      # calimero-network/swift-sdk is archived: the mirror is not pushed.
+      dry-run: true
     secrets: inherit
 
   # The apps that pin the JavaScript SDKs, once both are published.

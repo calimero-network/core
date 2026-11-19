@@ -190,7 +190,7 @@ All from `release.yml`, on master only:
 | the public crates (`cargo ws publish`) | crates.io |
 | the `merod` image, multi-arch: `X`, plus `latest` for a final or `prerelease` for a pre-release | `ghcr.io/calimero-network/merod` |
 | a `meroctl` formula bump | a pull request in `calimero-network/homebrew-tap` |
-| the SDKs under `sdks/`, all at `X`: mero-js and mero-react (npm, `next` for a pre-release), mero-py (PyPI), mero-kotlin (Maven Central), mero-swift (the SwiftPM mirror `calimero-network/swift-sdk`, tagged `X`) | npm, PyPI, Maven Central, GitHub |
+| the SDKs under `sdks/`, all at `X`: mero-js and mero-react (npm, `next` for a pre-release), mero-py (PyPI), mero-kotlin (Maven Central); mero-swift is built and tested, not published (its SwiftPM mirror `calimero-network/swift-sdk` is archived) | npm, PyPI, Maven Central |
 | SDK pin bumps for consumers (cargo, tee, and npm once the JS SDKs are out) | pull requests opened by `fleet-bump.yml` (below) |
 
 Each binary is `<binary>_<target triple>.tar.gz`, e.g.

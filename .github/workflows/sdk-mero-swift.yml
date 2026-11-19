@@ -19,6 +19,8 @@ name: SDK mero-swift
 # There is no CocoaPods pod: its trunk turns read-only on 2026-12-02, and
 # MeroKit's dependencies (swift-openapi-runtime, swift-http-types) are not on it.
 # `dry-run` (the default) prints what it would push and pushes nothing.
+# calimero-network/swift-sdk is archived, so release.yml calls this with
+# `dry-run: true` until the Swift package has a new home.
 
 on:
   workflow_call:

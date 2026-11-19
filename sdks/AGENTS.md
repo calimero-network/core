@@ -9,7 +9,7 @@ sdks/
 ├── clients/                 # talk to a node: one per language
 │   ├── mero-js/             # TypeScript  npm  @calimero-network/mero-js
 │   ├── mero-py/             # Python      PyPI mero-py
-│   ├── mero-swift/          # Swift       SwiftPM (mirror: calimero-network/swift-sdk)
+│   ├── mero-swift/          # Swift       SwiftPM (not published: calimero-network/swift-sdk is archived)
 │   └── mero-kotlin/         # Kotlin      Maven network.calimero:mero-kotlin(-*)
 ├── components/              # UI built on a client
 │   ├── mero-react/          # React       npm  @calimero-network/mero-react (on mero-js)
@@ -81,8 +81,8 @@ A release cut (RELEASING.md) releases everything from the same commit:
 `release.yml` checks that `VERSION` is the release, and once core's binaries
 are released publishes each SDK through its workflow's `publish` path (npm:
 mero-js then mero-react, and mero-icons and mero-tokens, then mero-ui, then
-mero-charts; PyPI: mero-py; Maven Central: mero-kotlin;
-the SwiftPM mirror `calimero-network/swift-sdk`: mero-swift). Then
+mero-charts; PyPI: mero-py; Maven Central: mero-kotlin; mero-swift's mirror push is a dry run
+while `calimero-network/swift-sdk` is archived). Then
 `fleet-bump.yml` opens the downstream pull requests: cargo and tee as before,
 and npm (`surfaces: npm`) for the apps that pin the JS SDKs and components. A run of
 release.yml by hand runs every publish path as a dry run.
