@@ -47,7 +47,7 @@ class AppsFacade internal constructor(
     suspend fun access(
         app: kotlin.String,
         access: com.calimero.mero.AppAccess? = null,
-        grants: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>? = null,
+        grants: kotlin.collections.List<kotlinx.serialization.json.JsonElement?>? = null,
     ): kotlinx.serialization.json.JsonObject =
         api(null, null, emptySet()).apps.appAccess(app = app, appAccessRequest = AppAccessRequest(access = access, grants = grants))
 
@@ -88,7 +88,7 @@ class AppsFacade internal constructor(
         org: kotlin.String? = null,
         newOrg: AppCreateRequestNewOrg? = null,
         access: com.calimero.mero.AppAccess? = null,
-        grants: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>? = null,
+        grants: kotlin.collections.List<kotlinx.serialization.json.JsonElement?>? = null,
         initArgs: kotlinx.serialization.json.JsonElement? = null,
         metadata: kotlinx.serialization.json.JsonElement? = null,
         deployment: kotlin.String? = null,
