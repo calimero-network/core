@@ -10,8 +10,8 @@
 
 `@calimero-network/mero-icons` is the Calimero icon set: one React component per
 icon (`forwardRef` to the `<svg>`, `size`, `strokeWidth`, `absoluteStrokeWidth`),
-stroked in `currentColor`. ESM only (`exports` names `import`). mero-ui depends
-on it, so a change here runs mero-ui's and mero-charts' CI too.
+stroked in `currentColor`. ESM only (`exports` names `import`). mero-design depends
+on it, so a change here runs mero-design's and mero-charts' CI too.
 
 ## Layout
 
