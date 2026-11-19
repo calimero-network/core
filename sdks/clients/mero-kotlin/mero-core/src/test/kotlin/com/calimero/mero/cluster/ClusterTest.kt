@@ -216,7 +216,11 @@ class ClusterTest {
                     .none { it.keyId == keyId },
             )
 
-            val app = deployKv(alice, "shared")
+            // Owner-only, in an organization made with it: an `accounts` list reaches only the
+            // organization's members, so bob joins it, and joining alone still leaves him out.
+            val app = deployKv(alice, "shared", access = AppAccess.Owner)
+            val shared = alice.apps.get(app = app).org!!
+            bob.orgs.inviteRedeem(token = alice.orgs.inviteCreate(org = shared, role = OrgRole.MEMBER, passkey = pk).token)
             assertEquals("NOT_FOUND", refused<CalimeroError> { bob.apps.intents(app = app, method = "set", args = kv("x", "y")) }.code)
             alice.apps.access(app = app, access = AppAccess.Accounts(listOf(bobId)))
             delay(300)

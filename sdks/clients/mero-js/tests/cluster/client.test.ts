@@ -187,7 +187,11 @@ describe('Calimero 1.0 cluster', () => {
     expect((await (await alice.auth.apikeyList()).keys).map((k) => k.keyId)).not.toContain(keyId);
 
     const bundle = await (await alice.packages.bundlePut({ body: new Uint8Array(readFileSync(KV_STORE_WASM)), contentType: 'application/wasm' })).hash;
-    const app = await (await alice.apps.create({ name: 'shared', bundle })).appId;
+    // Owner-only, in an organization made with it; an `accounts` list reaches only the organization's
+    // members, so bob joins it first, and joining alone still leaves him out.
+    const app = await (await alice.apps.create({ name: 'shared', bundle, access: { kind: 'owner' } })).appId;
+    const shared = (await alice.apps.get({ app })).org as string;
+    await bob.orgs.inviteRedeem({ token: await (await alice.orgs.inviteCreate({ org: shared, role: 'member' }, { confirm: passkeyConfirm(pk) })).token });
     await expect(bob.apps.call({ app, method: 'set', args: { key: 'x', value: 'y' } })).rejects.toMatchObject({ code: 'NOT_FOUND' });
     await alice.apps.access({ app, access: { kind: 'accounts', accounts: [bobId] } });
     await new Promise((r) => setTimeout(r, 300));
