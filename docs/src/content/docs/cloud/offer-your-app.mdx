@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import DeploymentModel from '../../../components/diagrams/DeploymentModel.astro';
 
 You built an app and want other organizations to run their own instances of
 it, each with its own data, without installing anything themselves. A
@@ -13,6 +14,13 @@ it, each with its own data, without installing anything themselves. A
 pinned to one installed release. A customer creates an instance from your
 offer; the instance is theirs (their organization, their members, their
 data), and its usage is billed to you as its **developer**.
+
+<DeploymentModel />
+
+Read it from the left: you own the deployment and decide what it offers and
+which secret values it holds; each instance, and every app its release creates
+with it, lives in a customer's organization and is theirs, while its usage
+names you as `developer` and them as `org`.
 
 This guide uses `meroctl raw` (`METHOD PATH [BODY]`): `meroctl` has no
 deployment commands yet. Every change below asks for a passkey step-up
@@ -121,6 +129,39 @@ operator's applies. It is never shown again: the listing gives each value's
 fingerprint, who set it and when. `meroctl raw delete
 /deployments/<id>/secrets/NEAR_AI_API_KEY` removes it. A name no release you
 offer declares is refused (`404 UNDECLARED_SECRET`).
+
+<SeqDiagram
+  id="d-deployment-secret"
+  title="A deployment's secret: set once, filled only where declared"
+  lanes={[
+    { label: 'Developer', color: '#f0883e' },
+    { label: 'Node API', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: 'Declared host', color: '#a371f7' },
+    { label: 'Run (leader)', color: '#58a6ff' },
+    { label: 'Outbound gate', color: '#e3b341' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'PUT /deployments/{id}/secrets/NAME { value }' },
+    { from: 1, to: 1, label: 'a release it offers, or one those use, declares NAME? else 404 UNDECLARED_SECRET' },
+    { from: 1, to: 0, label: '412: step-up over { name, fingerprint }, never the value', dashed: true },
+    { from: 0, to: 1, label: 'the same PUT + passkey assertion' },
+    { from: 1, to: 2, label: 'SetDeploymentSecret: managers and fingerprint judged again' },
+    { from: 1, to: 0, label: '{ name, fingerprint }: the value is never answered', dashed: true },
+    { type: 'divider', label: 'later: a run of an instance from the deployment, or of a unit member' },
+    { from: 4, to: 4, label: 'request with {{secret:NAME}}' },
+    { from: 4, to: 5, label: 'outbound_for: this app\'s values' },
+    { from: 5, to: 5, label: 'NAME declared? the instance\'s value, else the deployment\'s if it covers the package, else the operator\'s' },
+    { from: 5, to: 5, label: 'host approved and declared for NAME? else refused' },
+    { from: 5, to: 3, label: 'HTTPS with the value filled in' },
+    { from: 3, to: 5, label: 'response', dashed: true },
+    { from: 5, to: 4, label: 'response, each copy → [redacted]', dashed: true },
+  ]}
+/>
+
+The value goes from your passkey into the system log once; after that it is
+read only by the outbound gate, for a run whose release declares the name, and
+leaves the node only toward that secret's declared hosts.
 
 ## 4. Share the frontend
 

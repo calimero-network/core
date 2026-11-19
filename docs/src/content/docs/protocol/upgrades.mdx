@@ -35,6 +35,43 @@ New code reads the app's data, so an upgrade is one of the three decisions
 - **Operator**: only the operator (`POST /ops/apps/{app}/upgrade`), to a release
   it installed itself.
 
+**An instance from a deployment** moves only to the release its
+[deployment](/protocol/governance/#deployments) offers for its package: the
+deployment's managers choose the release (`OfferApp`), and whoever holds the
+instance's upgrades only accepts it or not. Another version, another package
+or a raw bundle is refused `409 OUTSIDE_DEPLOYMENT` before the step-up, an
+organization's, publisher's or unit's run notes such an instance as failed,
+and `UpgradeApp` refuses it again where it applies.
+
+<SeqDiagram
+  id="d-deployment-upgrade"
+  title="Upgrading an instance from a deployment"
+  lanes={[
+    { label: 'Developer', color: '#f0883e' },
+    { label: 'Node API', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: 'Instance owner', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /deployments/{id}/apps { app, package, version: 1.3.0 } + passkey' },
+    { from: 1, to: 2, label: 'OfferApp: the offer moves to chat@1.3.0' },
+    { type: 'divider', label: 'the customer\'s instance still runs chat@1.2.0' },
+    { from: 3, to: 1, label: 'POST /apps/{app}/upgrade { } (no version: accept the offer)' },
+    { from: 1, to: 3, label: '412: step-up over { bundle, migrate, manifest } of 1.3.0', dashed: true },
+    { from: 3, to: 1, label: 'the same + passkey assertion' },
+    { from: 1, to: 2, label: 'UpgradeApp { in_deployment }: the offer judged again' },
+    { from: 1, to: 3, label: 'the instance runs chat@1.3.0', dashed: true },
+    { type: 'divider', label: 'anything but the offer' },
+    { from: 3, to: 1, label: '{ version: 1.1.0 }, another package, or a raw bundle' },
+    { from: 1, to: 3, label: '409 OUTSIDE_DEPLOYMENT, before any step-up', dashed: true },
+    { from: 2, to: 2, label: 'an entry that got this far: refused at apply' },
+  ]}
+/>
+
+The developer decides the target, the owner decides whether to take it, and
+nothing else is reachable; with `upgrades: publisher` the publisher's run
+takes the owner's place, held to the same offer.
+
 An owner-side upgrader may hand one app's upgrades to CI with an [upgrade
 key](/protocol/identities/#upgrade-keys): made once with a passkey, it signs
 each upgrade of that app to a signed release of its package in place of the

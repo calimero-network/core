@@ -1,0 +1,79 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-unit-model">
+<svg viewBox="0 0 760 420" role="img" aria-label="Two kinds of reference in a release's uses. mode create: creating the instance first creates each member, named instance name dot reference, in the same organization with the same owner and the instance's deployment; the instance's links name them, the members upgrade with it through upgrade-unit, are deleted with it, are refused deletion alone with 409 UNIT_MEMBER, and read the instance with env::unit_of. mode attach: the reference starts empty; an owner who manages both apps links an app they already run in the same organization with PUT /apps/{app}/links/{name} and a passkey; the instance reads it with env::linked; the attached app keeps its own owner, upgrades and deployment, is never deleted with the instance, and deleting it detaches it." xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="um-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="420" rx="10" fill="#0f0f16"/>
+  <text x="380" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">uses: an app made with the instance, or one the owner already runs</text>
+
+  <!-- create -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="16" y="40" width="356" height="364" rx="6" fill="#1a1430" stroke="#a371f7" stroke-opacity=".7"/>
+    <text x="194" y="60" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">mode = "create": a unit</text>
+    <text x="194" y="75" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">kv = &#123; package = "…confidential-kv", mode = "create" &#125;</text>
+  </g>
+  <g class="seq-step" style="--step-i:1">
+    <rect x="32" y="90" width="150" height="58" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="107" y="110" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">instance "Support"</text>
+    <text x="107" y="125" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">links: &#123; kv &#125;</text>
+    <text x="107" y="139" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">env::linked("kv")</text>
+    <rect x="210" y="90" width="148" height="58" rx="5" fill="#10151c" stroke="#a371f7"/>
+    <text x="284" y="110" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">member "Support.kv"</text>
+    <text x="284" y="125" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">created first</text>
+    <text x="284" y="139" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">env::unit_of() = Support</text>
+    <line x1="182" y1="112" x2="206" y2="112" stroke="#a371f7" stroke-width="1.2" marker-end="url(#um-arrow)"/>
+    <line x1="210" y1="130" x2="186" y2="130" stroke="#8b949e" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#um-arrow)"/>
+  </g>
+  <g class="seq-step" style="--step-i:2">
+    <text x="32" y="174" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">made with it</text>
+    <text x="32" y="190" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· named &lt;instance name&gt;.&lt;reference&gt;</text>
+    <text x="32" y="204" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· same org, same owner</text>
+    <text x="32" y="218" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· the instance's deployment (billed to it)</text>
+    <text x="32" y="232" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· its release: locked, else newest in range</text>
+  </g>
+  <g class="seq-step" style="--step-i:3">
+    <text x="32" y="258" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">lives and goes with it</text>
+    <text x="32" y="274" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· upgraded together: POST …/upgrade-unit</text>
+    <text x="32" y="288" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">  (alone only in range: OUTSIDE_UNIT_RANGE)</text>
+    <text x="32" y="302" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· DELETE the instance deletes every member</text>
+    <text x="32" y="316" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· a member alone: 409 UNIT_MEMBER</text>
+    <text x="32" y="330" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· KV, inference: admin app:&lt;unit_of&gt;</text>
+    <text x="194" y="388" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">a unit gains members only when it is created</text>
+  </g>
+
+  <!-- attach -->
+  <g class="seq-step" style="--step-i:4">
+    <rect x="388" y="40" width="356" height="364" rx="6" fill="#161b22" stroke="#39d0d8" stroke-opacity=".7"/>
+    <text x="566" y="60" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">mode = "attach": a link</text>
+    <text x="566" y="75" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">calendar = &#123; package = "…calendar", mode = "attach" &#125;</text>
+  </g>
+  <g class="seq-step" style="--step-i:5">
+    <rect x="404" y="90" width="150" height="58" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="479" y="110" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">instance "Booking"</text>
+    <text x="479" y="125" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">attached: &#123; calendar &#125;</text>
+    <text x="479" y="139" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">env::linked("calendar")</text>
+    <rect x="582" y="90" width="148" height="58" rx="5" fill="#10151c" stroke="#39d0d8" stroke-dasharray="4 3"/>
+    <text x="656" y="110" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">"Team calendar"</text>
+    <text x="656" y="125" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">already running,</text>
+    <text x="656" y="139" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">its owner's own</text>
+    <line x1="554" y1="119" x2="578" y2="119" stroke="#39d0d8" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#um-arrow)"/>
+  </g>
+  <g class="seq-step" style="--step-i:6">
+    <text x="404" y="174" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">linked by the owner</text>
+    <text x="404" y="190" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· starts empty: never created</text>
+    <text x="404" y="204" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· PUT /apps/&#123;app&#125;/links/&#123;name&#125; &#123; app &#125;</text>
+    <text x="404" y="218" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">  + passkey; who manages both apps</text>
+    <text x="404" y="232" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· same org, the reference's package</text>
+  </g>
+  <g class="seq-step" style="--step-i:7">
+    <text x="404" y="258" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">lives on its own</text>
+    <text x="404" y="274" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· never upgraded with the instance;</text>
+    <text x="404" y="288" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">  out of range: inRange false, a warning</text>
+    <text x="404" y="302" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· never deleted with the instance</text>
+    <text x="404" y="316" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· deleting it detaches it; DELETE …/links</text>
+    <text x="404" y="330" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">· keeps its own owner and deployment</text>
+    <text x="566" y="388" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">the owner may attach another app later, or none</text>
+  </g>
+</svg>
+</Figure>

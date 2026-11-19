@@ -6,6 +6,9 @@ sidebar:
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import DecisionMatrix from '../../../components/diagrams/DecisionMatrix.astro';
+import DeploymentModel from '../../../components/diagrams/DeploymentModel.astro';
+import SecretLookup from '../../../components/diagrams/SecretLookup.astro';
 
 Attestation proves a node runs a trusted image *today*. Three later decisions
 could still put an app's data in front of something new:
@@ -40,6 +43,15 @@ With `operator`, each row's decision is the operator's instead
 (`POST /ops/releases`, `/ops/apps/{app}/upgrade`, `/ops/orgs/{org}/upgrade`,
 `/ops/outbound`). Whichever side does not hold a decision is refused by the API
 (`403`) and, should a command get that far, by `apply`.
+
+The three decisions sit among the others that shape what an app runs and
+where its data may go:
+
+<DecisionMatrix />
+
+Read a row across: who may make the decision, what they present for it, and
+where a node refuses anyone else; a row's operator path exists only where the
+cluster's governance gives the operator that decision.
 
 ## Fixed at genesis, attested with every receipt key
 
@@ -378,6 +390,37 @@ grant, for the operator and for whoever acts for the owner.
 Where deployments are `granted`, creating a [deployment](#deployments) and
 offering an app in one need the same grant, held by the account acting.
 
+<SeqDiagram
+  id="d-granted-cluster"
+  title="Granted deployers: the operator, then the cluster's owner"
+  lanes={[
+    { label: 'Operator', color: '#8b949e' },
+    { label: 'Node API', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: 'Cluster owner', color: '#a371f7' },
+    { label: 'Account', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /ops/deployments/granted (signed): open → granted, never back' },
+    { from: 0, to: 1, label: 'POST /ops/deployers { deployer, until? } (signed)' },
+    { from: 1, to: 2, label: 'GrantDeployer: the operator\'s signature' },
+    { type: 'divider', label: 'deployers: owner' },
+    { from: 0, to: 1, label: 'POST /ops/cluster-owner { owner } (signed), once' },
+    { from: 1, to: 2, label: 'SetClusterOwner: operator signatures refused from here on' },
+    { from: 3, to: 1, label: 'POST /deployers { deployer, until? } + passkey' },
+    { from: 1, to: 2, label: 'GrantDeployer: the owner\'s consent' },
+    { type: 'divider', label: 'an install' },
+    { from: 4, to: 1, label: 'POST /packages/install { package, version }' },
+    { from: 1, to: 1, label: 'a live grant (account:<id>, or org:<id> held org-wide)? else 403 DEPLOY_NOT_GRANTED, nothing fetched' },
+    { from: 1, to: 2, label: 'InstallPackage: the grant judged again at installedAt' },
+  ]}
+/>
+
+Read it top to bottom: the operator grants until it names the cluster's owner
+(only where `deployers: owner`), the owner grants with a passkey from then on,
+and an install goes ahead only for an account whose grant is live at the
+install's own time.
+
 The governance JSON names `deployments` and `deployers` only when they are not
 the defaults, after the other three fields, so a cluster deployed with the
 defaults attests the same bytes as before
@@ -430,6 +473,13 @@ deployments, each independent of the others. A developer's walk-through,
 from creating one to withdrawing an offer:
 [Offer your app to customers](/cloud/offer-your-app/).
 
+<DeploymentModel />
+
+The developer's side (left) holds the offers and the secret values; every
+instance, with the apps its release creates, sits in the customer's
+organization (right), which owns and governs it, and its usage is labelled
+with both.
+
 **Who manages it**: for an account owner, that account; for an organization,
 whoever holds `MANAGE_APPLICATION` there organization-wide (the owner and
 admins included). Each change carries the actor's own passkey consent,
@@ -472,6 +522,12 @@ instance's `GET /apps/{app}/secrets` says only `source: deployment`. A value
 whose name no offered release declares any more (an offer withdrawn or moved
 to a release without it) is kept, unused, until a manager clears it. Needs
 cluster version 1.0.0-rc.32 (`deploymentSecrets`).
+
+<SecretLookup />
+
+Each step is tried only for a name the running release declares; the first
+value found is used, and the gate still sends it only to that secret's
+declared hosts.
 
 **Releases**: `DELETE /packages/{p}[/{v}]` is refused for a release any
 deployment offers, whoever installed it first; a release no deployment
