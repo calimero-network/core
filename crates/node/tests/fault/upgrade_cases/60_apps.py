@@ -291,13 +291,18 @@ class TransferMove(DeepCase):
         ted, tess = people(w, "ted", "tess")
         # Organizations are ordinary on the new release: an app goes only to a member of
         # its organization (ted's, where the old release's transfer put it), so tess joins.
-        join(ted, ted.get(f"apps/{s['given']}")["org"], tess)
+        org = ted.get(f"apps/{s['given']}")["org"]
+        join(ted, org, tess)
         ted.raw("post", f"apps/{s['given']}/transfer", {"to": tess.id})
         s["owner"] = "tess"
         s["records"]["given"] = snap(tess, f"apps/{s['given']}")
         s["decisions"] = self._decide(w, s)
-        eq((s["decisions"]["tess reads given"], s["decisions"]["ted reads given"] != "ok"), ("ok", True),
-           "handed back on the new release")
+        # The app stays in ted's organization (its app goes only to a member), so ted, its
+        # owner, still reaches it as one; the app is tess's.
+        eq((s["records"]["given"].get("owner"), s["records"]["given"].get("org")), (tess.id, org),
+           "handed back on the new release, in its organization")
+        eq((s["decisions"]["tess reads given"], s["decisions"]["ted reads given"]), ("ok", "ok"),
+           "the new owner and the organization's owner read it")
 
 
 # The quotas are the operator's (`ops-state` changes them); the figures of today grow.
