@@ -373,6 +373,7 @@ fn manage_application_lets_a_member_upgrade_and_approve_outbound() {
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        owner_approves: false,
     };
     for (app, actor, may) in [
         ("in-org", "bob", true),
@@ -480,6 +481,7 @@ fn check(g: &Governance) {
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        owner_approves: false,
     };
     let by_operator = m.run_authorized(upgrade(true, "")).is_ok();
     let by_owner = m.run_authorized(upgrade(false, "alice")).is_ok();
@@ -744,6 +746,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        owner_approves: false,
     };
     let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
     assert!(e.contains("compute component"), "{e}");
@@ -1018,6 +1021,7 @@ fn an_upgrade_names_its_consent_or_its_run() {
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        owner_approves: false,
     };
     assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, None)).is_err());
     let c = consent(
@@ -1118,6 +1122,7 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
             run: Box::new(run),
             consent: c,
             by_release: false,
+            owner_approves: false,
         }
     };
     let upgrade = |app: &str, bundle: &str, version: &str| SystemCmd::UpgradeApp {
@@ -1137,6 +1142,7 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
         }),
         owner_in_org: true,
         owner_in_team: true,
+        owner_approves: false,
     };
 
     // Logged before the mark: kept as the entry says, as it was.
@@ -1242,6 +1248,7 @@ fn a_publishers_run_covers_the_instances_that_run_its_package() {
                 run: Box::new(run),
                 consent: c,
                 by_release,
+                owner_approves: false,
             })
             .unwrap();
         let mut apps = m.state.orgs["org"].upgrade_runs[run_id].apps.clone();
@@ -1456,6 +1463,7 @@ fn credentials_need_the_accounts_own_passkey() {
         consent,
         owner_in_org: true,
         owner_in_team: true,
+        owner_approves: false,
     };
     // Another key's hash under the same consent: refused.
     let c = consent(&mut alice, "account:alice", "__create_api_key", &args);
@@ -1466,6 +1474,7 @@ fn credentials_need_the_accounts_own_passkey() {
             consent: c,
             owner_in_org: true,
             owner_in_team: true,
+            owner_approves: false,
         })
         .is_err());
     needs_consent(
@@ -4640,7 +4649,7 @@ fn a_move_entry_without_its_optional_fields_reads_as_a_plain_move() {
 fn an_org_apps_owner_manages_it_only_while_a_member() {
     let (mut m, _alice, mut bob) = org_app_of_bob();
     assert!(m.state.owner_acts(&m.state.apps["oa"], "bob"));
-    assert!(m.state.may_upgrade(&m.state.apps["oa"], "bob"));
+    assert!(m.state.may_upgrade(&m.state.apps["oa"], "bob", false));
     let _ok = m.run(set_app_metadata("oa", "bob")).unwrap();
 
     for demoted in [Some(OrgRole::Guest), None] {
@@ -4656,7 +4665,7 @@ fn an_org_apps_owner_manages_it_only_while_a_member() {
         let app = &m.state.apps["oa"];
         assert!(!m.state.owner_acts(app, "bob"), "{demoted:?}");
         assert!(!m.state.manages_app(app, "bob"), "{demoted:?}");
-        assert!(!m.state.may_upgrade(app, "bob"), "{demoted:?}");
+        assert!(!m.state.may_upgrade(app, "bob", false), "{demoted:?}");
         assert!(m.run(set_access("oa", "bob")).is_err(), "{demoted:?}");
         assert!(m.run(set_app_metadata("oa", "bob")).is_err(), "{demoted:?}");
         assert!(m.run(delete_app("oa", "bob")).is_err(), "{demoted:?}");
@@ -4714,7 +4723,7 @@ fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
         assert!(!m.state.may_reach(app, Some("bob")));
         assert!(!m.state.owner_acts(app, "bob"));
         assert!(!m.state.manages_app(app, "bob"));
-        assert!(!m.state.may_upgrade(app, "bob"));
+        assert!(!m.state.may_upgrade(app, "bob", false));
         assert!(m.run(set_access("oa", "bob")).is_err());
         assert!(m.run(set_app_metadata("oa", "bob")).is_err());
         assert!(m.run(delete_app("oa", "bob")).is_err());
@@ -4729,7 +4738,7 @@ fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
     };
     assert!(m
         .state
-        .may_upgrade_as_logged(&m.state.apps["oa"], "bob", OwnerRule::InOrg));
+        .may_upgrade_as_logged(&m.state.apps["oa"], "bob", OwnerRule::InOrg, false));
     let _ok = m.run(old(set_app_metadata("oa", "bob"))).unwrap();
     // Open to the organization again: Bob, a member, is in it.
     set(&mut m, team(&[], TeamJoin::Everyone));
@@ -4806,10 +4815,10 @@ fn app_commands_logged_before_the_membership_rule_replay_as_they_did() {
         let _flag = v.as_object_mut().unwrap().remove("owner_in_team");
         serde_json::from_value::<SystemCmd>(v).unwrap()
     };
-    assert!(!m.state.may_upgrade(&m.state.apps["oa"], "bob"));
+    assert!(!m.state.may_upgrade(&m.state.apps["oa"], "bob", false));
     assert!(m
         .state
-        .may_upgrade_as_logged(&m.state.apps["oa"], "bob", OwnerRule::Ownership));
+        .may_upgrade_as_logged(&m.state.apps["oa"], "bob", OwnerRule::Ownership, false));
     let refused = m
         .run(old(transfer_app(&mut alice, "oa", "alice", "carol")))
         .unwrap_err();
@@ -5747,6 +5756,7 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        owner_approves: false,
     };
     let install = |by: &str, version: &str, at: u64| SystemCmd::InstallPackage {
         package: "p".into(),
@@ -6169,7 +6179,8 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
     };
     let r = record(100);
     assert_eq!(
-        m.state.upgrade_key_fits(&r, r.upgrades.as_ref().unwrap()),
+        m.state
+            .upgrade_key_fits(&r, r.upgrades.as_ref().unwrap(), false),
         Ok(())
     );
     assert!(
@@ -6179,7 +6190,8 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
                 &crate::types::UpgradeScope {
                     app: "rawapp".into(),
                     ..r.upgrades.clone().unwrap()
-                }
+                },
+                false
             )
             .is_err(),
         "an app that runs no release of the package"
@@ -6203,6 +6215,7 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
             release: None,
             owner_in_org: true,
             owner_in_team: true,
+            owner_approves: false,
         }
     };
     let e = m.run(upgrade("b2", 10, "cal_other")).unwrap_err();
@@ -6228,7 +6241,7 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
     if let Some(o) = m.state.orgs.get_mut("cust") {
         let _prev = o.capabilities.insert("dan".into(), 0);
     }
-    assert!(!m.state.may_upgrade(&m.state.apps["inst"], "dan"));
+    assert!(!m.state.may_upgrade(&m.state.apps["inst"], "dan", false));
     assert!(m.run(upgrade("b1", 10, secret)).is_err(), "descoped");
     if let Some(o) = m.state.orgs.get_mut("cust") {
         let _prev = o.capabilities.insert("dan".into(), MANAGE_APPLICATION);
@@ -6273,7 +6286,7 @@ fn a_package_says_whether_its_publisher_or_each_owner_upgrades_it() {
         let _prev = o.capabilities.insert("dan".into(), MANAGE_APPLICATION);
     }
     let inst = |m: &SystemMachine| m.state.apps["inst"].clone();
-    let may = |m: &SystemMachine, who: &str| m.state.may_upgrade(&inst(m), who);
+    let may = |m: &SystemMachine, who: &str| m.state.may_upgrade(&inst(m), who, false);
 
     // Unbound: nobody upgrades a `publisher` package's instances yet.
     for who in ["pam", "bob", "cora", "dan"] {
@@ -6303,6 +6316,7 @@ fn a_package_says_whether_its_publisher_or_each_owner_upgrades_it() {
         release: None,
         owner_in_org: true,
         owner_in_team: true,
+        owner_approves: false,
     };
     assert!(
         m.run_unproven(upgrade("cora", "b2")).is_err(),
@@ -6374,6 +6388,7 @@ fn upgrade_to(app: &str, actor: &str, bundle: &str, release: Option<(&str, &str)
         }),
         owner_in_org: true,
         owner_in_team: true,
+        owner_approves: false,
     }
 }
 
@@ -6432,8 +6447,9 @@ fn an_instance_is_upgraded_as_the_release_it_runs_says() {
         "b1",
         json!({ "package": "p", "version": "2.0.0" }),
     );
-    let may =
-        |m: &SystemMachine, app: &str, who: &str| m.state.may_upgrade(&m.state.apps[app], who);
+    let may = |m: &SystemMachine, app: &str, who: &str| {
+        m.state.may_upgrade(&m.state.apps[app], who, false)
+    };
     assert!(may(&m, "own", "cora"), "the owner upgrades it");
     assert!(
         !may(&m, "own", "pam") && !may(&m, "own", "bob"),
@@ -6526,12 +6542,12 @@ fn a_wasm_of_one_package_gives_another_no_authority() {
     }
     let victim = |m: &SystemMachine| m.state.apps["victim"].clone();
     assert!(
-        legacy.state.may_upgrade(&victim(&legacy), "eve"),
+        legacy.state.may_upgrade(&victim(&legacy), "eve", false),
         "as replayed"
     );
     legacy.state.attributes_by_release = true;
-    assert!(!legacy.state.may_upgrade(&victim(&legacy), "eve"));
-    assert!(legacy.state.may_upgrade(&victim(&legacy), "cora"));
+    assert!(!legacy.state.may_upgrade(&victim(&legacy), "eve", false));
+    assert!(legacy.state.may_upgrade(&victim(&legacy), "cora", false));
     assert_eq!(
         legacy.state.approved_releases(&victim(&legacy)),
         m.state.orgs.get("pub").map(|o| &o.approved_releases),
@@ -6549,8 +6565,8 @@ fn a_wasm_of_one_package_gives_another_no_authority() {
             .map(|r| r.package.as_str()),
         Some("q")
     );
-    assert!(!m.state.may_upgrade(&rawapp, "eve"));
-    assert!(m.state.may_upgrade(&rawapp, "cora"));
+    assert!(!m.state.may_upgrade(&rawapp, "eve", false));
+    assert!(m.state.may_upgrade(&rawapp, "cora", false));
     assert_eq!(
         m.state.approved_releases(&rawapp),
         m.state.orgs.get("cust").map(|o| &o.approved_releases)
@@ -6577,10 +6593,230 @@ fn a_wasm_of_one_package_gives_another_no_authority() {
         json!({ "package": "p2", "version": "1.0.0" }),
     );
     let twin = m.state.apps["twin"].clone();
-    assert!(m.state.may_upgrade(&victim(&m), "cora"));
-    assert!(!m.state.may_upgrade(&victim(&m), "pam"));
-    assert!(m.state.may_upgrade(&twin, "pam"), "p2 says publisher");
-    assert!(!m.state.may_upgrade(&twin, "cora"));
+    assert!(m.state.may_upgrade(&victim(&m), "cora", false));
+    assert!(!m.state.may_upgrade(&victim(&m), "pam", false));
+    assert!(
+        m.state.may_upgrade(&twin, "pam", false),
+        "p2 says publisher"
+    );
+    assert!(!m.state.may_upgrade(&twin, "cora", false));
+}
+
+/// From `Feature::OwnerApprovedUpgrades` on, only an owner or admin of an app's
+/// organization approves its upgrades, whatever its package declares: not the app's
+/// creator as a member, a team's lead or a member holding `MANAGE_APPLICATION`, nor
+/// the publisher's organization for an instance elsewhere; a `publisher` package's
+/// instance is its organization's to upgrade, its key bound or not. Judged at apply
+/// for an entry that says so (`owner_approves`) or once the logged cluster version
+/// brings the rule; an entry logged before replays as it applied. Runs and upgrade
+/// keys follow the same rule.
+#[test]
+fn only_an_organizations_owner_and_admins_approve_its_upgrades() {
+    use super::cluster_version::Feature;
+    use super::NOT_AN_UPGRADE_APPROVER;
+    use crate::types::caps::MANAGE_APPLICATION;
+    let (key, signer) = publisher_key(14);
+    let mut m = publishing(&signer, "owner");
+    for who in ["eve", "lee", "mia"] {
+        let _ok = m.run_unproven(account(who)).unwrap();
+    }
+    if let Some(o) = m.state.orgs.get_mut("cust") {
+        for (who, role) in [
+            ("eve", crate::types::OrgRole::Admin),
+            ("lee", crate::types::OrgRole::Member),
+            ("mia", crate::types::OrgRole::Member),
+        ] {
+            let _prev = o.members.insert(who.into(), role);
+        }
+        let _prev = o.capabilities.insert("mia".into(), MANAGE_APPLICATION);
+        let _prev = o.teams.insert(
+            "t".into(),
+            serde_json::from_value(json!({
+                "teamId": "t", "name": "T", "join": "invite",
+                "members": { "lee": true, "dan": false }
+            }))
+            .unwrap(),
+        );
+    }
+    for (id, access) in [
+        ("mine", json!({ "kind": "org" })),
+        ("onteam", json!({ "kind": "team", "team": "t" })),
+    ] {
+        let _prev = m.state.apps.insert(
+            id.into(),
+            serde_json::from_value(json!({
+                "appId": id, "name": id, "group": 4, "bundle": "b1", "owner": "dan",
+                "org": "cust", "access": access, "replicas": [1], "createdAt": 0,
+                "release": { "package": "p", "version": "1.0.0" }
+            }))
+            .unwrap(),
+        );
+    }
+    let may = |m: &SystemMachine, app: &str, who: &str, rule: bool| {
+        m.state.may_upgrade(&m.state.apps[app], who, rule)
+    };
+    // As before: the creator while a member, the team's lead, a holder of the capability.
+    assert!(may(&m, "mine", "dan", false));
+    assert!(may(&m, "onteam", "lee", false));
+    assert!(may(&m, "mine", "mia", false));
+    // Under the rule: the owner and admins only.
+    for app in ["mine", "onteam"] {
+        for (who, expected) in [
+            ("cora", true),
+            ("eve", true),
+            ("dan", false),
+            ("lee", false),
+            ("mia", false),
+            ("pam", false),
+        ] {
+            assert_eq!(may(&m, app, who, true), expected, "{app} {who}");
+        }
+    }
+    let flagged = |app: &str, who: &str| {
+        let mut cmd = upgrade_to(app, who, "b2", Some(("p", "1.1.0")));
+        if let SystemCmd::UpgradeApp { owner_approves, .. } = &mut cmd {
+            *owner_approves = true;
+        }
+        cmd
+    };
+    assert_eq!(
+        flagged("mine", "dan").features(),
+        [Feature::OwnerApprovedUpgrades]
+    );
+    assert!(upgrade_to("mine", "dan", "b2", None).features().is_empty());
+    for (app, who) in [("mine", "dan"), ("onteam", "lee"), ("mine", "mia")] {
+        assert_eq!(
+            m.run_unproven(flagged(app, who)),
+            Err(NOT_AN_UPGRADE_APPROVER.to_owned()),
+            "{app} {who}"
+        );
+    }
+    // An entry logged before the rule replays as it applied.
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let _ok = old
+        .run_unproven(upgrade_to("mine", "dan", "b2", Some(("p", "1.1.0"))))
+        .unwrap();
+    assert_eq!(old.state.apps["mine"].bundle, "b2");
+    // Once the logged cluster version brings it, an entry without the flag is judged by it.
+    let mut new = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    new.state.cluster_version = Some(Feature::OwnerApprovedUpgrades.since().into());
+    assert_eq!(
+        new.run_unproven(upgrade_to("mine", "dan", "b2", Some(("p", "1.1.0")))),
+        Err(NOT_AN_UPGRADE_APPROVER.to_owned())
+    );
+    let _ok = m.run_unproven(flagged("onteam", "eve")).unwrap();
+    let _ok = m.run_unproven(flagged("mine", "cora")).unwrap();
+    assert_eq!(m.state.apps["mine"].bundle, "b2");
+
+    // A run: only the organization's owner or an admin starts one.
+    let run = |by: &str, id: &str, flag: bool| -> SystemCmd {
+        serde_json::from_value(json!({ "op": "startUpgradeRun", "org": "cust",
+            "run": { "runId": id, "package": "p", "version": "1.1.0", "by": by,
+                "startedAt": 1, "apps": [], "done": [], "failed": {}, "finished": false },
+            "owner_approves": flag }))
+        .unwrap()
+    };
+    assert_eq!(
+        run("mia", "r1", true).features(),
+        [Feature::OwnerApprovedUpgrades]
+    );
+    assert_eq!(
+        m.run_unproven(run("mia", "r1", true)),
+        Err(NOT_AN_UPGRADE_APPROVER.to_owned())
+    );
+    let _ok = m.run_unproven(run("mia", "r0", false)).unwrap();
+    let _ok = m.run_unproven(run("eve", "r2", true)).unwrap();
+
+    // An upgrade key: made only for an account the rule lets upgrade the app.
+    let record = |account: &str| super::ApiKeyRecord {
+        key_id: "k1".into(),
+        account: account.into(),
+        label: "ci".into(),
+        apps: None,
+        methods: None,
+        read_only: false,
+        allow_confirm: false,
+        expires_at: 100,
+        upgrades: Some(crate::types::UpgradeScope {
+            app: "inst".into(),
+            package: "p".into(),
+            signer: signer.clone(),
+            proof_key: String::new(),
+        }),
+    };
+    let fits = |account: &str, rule: bool| {
+        let r = record(account);
+        m.state
+            .upgrade_key_fits(&r, r.upgrades.as_ref().unwrap(), rule)
+    };
+    assert_eq!(fits("mia", false), Ok(()));
+    assert_eq!(fits("mia", true), Err(NOT_AN_UPGRADE_APPROVER));
+    assert_eq!(fits("eve", true), Ok(()));
+
+    // A package its publisher upgrades: the customer's owner and admins approve, the
+    // publisher's admins do not, bound or not; a publisher's run covers only the
+    // organizations its starter is an owner or admin of.
+    let mut sealed = publishing(&signer, "publisher");
+    let _ok = sealed.run_unproven(account("eve")).unwrap();
+    if let Some(o) = sealed.state.orgs.get_mut("cust") {
+        let _prev = o.members.insert("eve".into(), crate::types::OrgRole::Admin);
+    }
+    if let Some(o) = sealed.state.orgs.get_mut("pub") {
+        let _prev = o.members.insert("bob".into(), crate::types::OrgRole::Admin);
+    }
+    let inst = |m: &SystemMachine, who: &str, rule: bool| {
+        m.state.may_upgrade(&m.state.apps["inst"], who, rule)
+    };
+    assert!(!inst(&sealed, "cora", false), "unbound: nobody, as before");
+    assert!(inst(&sealed, "cora", true) && inst(&sealed, "eve", true));
+    let _ok = sealed
+        .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "pam"))
+        .unwrap();
+    assert!(inst(&sealed, "bob", false), "as before: the publisher's");
+    for (who, expected) in [
+        ("cora", true),
+        ("eve", true),
+        ("pam", false),
+        ("bob", false),
+    ] {
+        assert_eq!(inst(&sealed, who, true), expected, "{who}");
+    }
+    let _prev = sealed.state.apps.insert(
+        "own".into(),
+        serde_json::from_value(json!({
+            "appId": "own", "name": "own", "group": 5, "bundle": "b1", "owner": "pam",
+            "org": "pub", "access": { "kind": "org" }, "replicas": [1], "createdAt": 0,
+            "release": { "package": "p", "version": "1.0.0" }
+        }))
+        .unwrap(),
+    );
+    let _ok = sealed.run_unproven(SystemCmd::AttributeByRelease).unwrap();
+    let mut before = sealed.state.published_run_apps("p", "bob", true, false);
+    before.sort();
+    assert_eq!(before, ["inst", "own"], "as before: every instance");
+    assert_eq!(
+        sealed.state.published_run_apps("p", "bob", true, true),
+        ["own"]
+    );
+    let sealed_up = |who: &str| {
+        let mut cmd = upgrade_to("inst", who, "b2", Some(("p", "1.1.0")));
+        if let SystemCmd::UpgradeApp { owner_approves, .. } = &mut cmd {
+            *owner_approves = true;
+        }
+        cmd
+    };
+    assert_eq!(
+        sealed.run_unproven(sealed_up("bob")),
+        Err(NOT_AN_UPGRADE_APPROVER.to_owned())
+    );
+    let _ok = sealed.run_unproven(sealed_up("eve")).unwrap();
+    assert_eq!(sealed.state.apps["inst"].bundle, "b2");
 }
 
 // ------------------------------------------------------------ deployers

@@ -26,6 +26,66 @@ pub(crate) struct UpgradeBody {
     pub(crate) migrate: Option<String>,
 }
 
+/// Whether upgrades are judged by the rule only an organization's owner and admins
+/// approve ([`crate::system::cluster_version::Feature::OwnerApprovedUpgrades`]): once
+/// every node reads the flag the entries then carry (`owner_approves`). Before that, as
+/// an earlier release judges them, so no node refuses what another applies.
+pub(crate) async fn owner_approves(node: &Node) -> bool {
+    node.require_features(&[crate::system::cluster_version::Feature::OwnerApprovedUpgrades])
+        .await
+        .is_ok()
+}
+
+/// Why `account` may not upgrade `app` under the rule in force (`owner_approves`), as
+/// `UpgradeApp` would refuse it: the API's `403` (or, before the rule, `409` for a
+/// package its publisher upgrades while its key is unbound), asked before any step-up.
+pub(crate) fn upgrade_refusal(
+    s: &SystemState,
+    app: &crate::types::AppRecord,
+    account: &str,
+    owner_approves: bool,
+) -> Option<ApiError> {
+    if !owner_approves && s.upgrades_unbound(app) {
+        return Some(ApiError::conflict(
+            "this app's package is upgraded by its publisher, and no organization has bound its key yet",
+        ));
+    }
+    if s.may_upgrade(app, account, owner_approves) {
+        return None;
+    }
+    Some(ApiError::forbidden(if owner_approves {
+        crate::system::NOT_AN_UPGRADE_APPROVER
+    } else {
+        "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders"
+    }))
+}
+
+/// Why `account` may not start an upgrade run in `org` (on `team`) under the rule in
+/// force: from [`crate::system::cluster_version::Feature::OwnerApprovedUpgrades`] on, an
+/// owner or admin of `org`; before it, whoever holds `MANAGE_APPLICATION` there.
+fn run_refusal(
+    node: &Node,
+    org: &str,
+    account: &str,
+    team: Option<&str>,
+    owner_approves: bool,
+) -> Result<(), ApiError> {
+    if owner_approves {
+        if !node.sys(|s| s.approves_upgrades(org, account)) {
+            return Err(ApiError::forbidden(
+                "only an owner or admin of the organization approves its apps' upgrades",
+            ));
+        }
+        return Ok(());
+    }
+    if !node.sys(|s| s.manages_apps(org, account, team)) {
+        return Err(ApiError::forbidden(
+            "upgrading the organization's apps needs MANAGE_APPLICATION there",
+        ));
+    }
+    Ok(())
+}
+
 async fn app_upgrade(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -98,22 +158,15 @@ pub(crate) async fn upgrade_app(
         body.package = package;
     }
     // Who may upgrade is the system log's rule (`UpgradeApp`); asked first, so
-    // a refused or failed upgrade records nothing. An upgrade is the app's
-    // owner's decision, or, for an org app, of whoever holds
-    // `MANAGE_APPLICATION` there (`SystemState::manages_apps`), each with
-    // their own passkey: new code reads the app's data.
+    // a refused or failed upgrade records nothing. An upgrade is the decision of an
+    // owner or admin of the app's organization (`SystemState::approves_upgrades`),
+    // each with their own passkey: new code reads the app's data. An upgrade key is
+    // judged the same, as its account.
     let app = node.app(&app_id).await?;
     owner_holds(node, |g| g.app_upgrades, "app upgrades")?;
-    let (may, unbound) = node.sys(|s| (s.may_upgrade(&app, &account), s.upgrades_unbound(&app)));
-    if unbound {
-        return Err(ApiError::conflict(
-            "this app's package is upgraded by its publisher, and no organization has bound its key yet",
-        ));
-    }
-    if !may {
-        return Err(ApiError::forbidden(
-            "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders",
-        ));
+    let owner_approves = owner_approves(node).await;
+    if let Some(e) = node.sys(|s| upgrade_refusal(s, &app, &account, owner_approves)) {
+        return Err(e);
     }
     // A version alone means the app's own package and service: the release
     // it runs, not merely one shipping its WASM.
@@ -210,6 +263,7 @@ pub(crate) async fn upgrade_app(
             by_operator: false,
             consent,
             run: None,
+            owner_approves,
         },
     )
     .await
@@ -226,6 +280,9 @@ struct Upgrader {
     consent: Value,
     /// The organization-wide run this belongs to.
     run: Option<String>,
+    /// Judged by the rule only an organization's owner and admins approve
+    /// ([`owner_approves`]): carried on its entries.
+    owner_approves: bool,
 }
 
 impl Upgrader {
@@ -279,10 +336,8 @@ async fn run_upgrade(
     // app's group; `UpgradeApp` judges both again.
     let refusal = node.sys(|s| {
         let a = s.apps.get(&app_id)?;
-        if !who.by_operator && !s.may_upgrade(a, &who.actor) {
-            return Some(ApiError::forbidden(
-                "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders",
-            ));
+        if !who.by_operator && !s.may_upgrade(a, &who.actor, who.owner_approves) {
+            return upgrade_refusal(s, a, &who.actor, who.owner_approves);
         }
         let to = s.governing(release.as_ref(), &bundle, begun);
         if !who.by_operator && !s.upgrade_keeps_authority(s.governing_release(a), to) {
@@ -390,6 +445,7 @@ async fn run_upgrade(
             release,
             owner_in_org: true,
             owner_in_team: true,
+            owner_approves: who.owner_approves,
         })
         .await?;
     Ok(Json(json!({
@@ -567,6 +623,7 @@ async fn start_run_with(
             run: Box::new(run.clone()),
             consent: who.consent.clone(),
             by_release,
+            owner_approves: who.owner_approves,
         })
         .await?;
     // The run as it applied: its apps are the state's (`SystemState::upgrade_run_apps`).
@@ -618,6 +675,7 @@ async fn start_run_with(
                             release: t.release.clone(),
                             owner_in_org: true,
                             owner_in_team: true,
+                            owner_approves: who.owner_approves,
                         })
                         .await;
                     if let Err(e) = written {
@@ -659,10 +717,11 @@ async fn start_run_with(
 }
 
 /// Upgrade every app of an organization (or a team, with `cascade` its
-/// subtree) that runs `package` to `version`: for whoever holds
-/// `MANAGE_APPLICATION` there (the owner, an admin, a team's lead, or a member
-/// granted it), with one passkey assertion over the whole run, where owners
-/// hold app upgrades. Each app is still checked on its own (`UpgradeApp`).
+/// subtree) that runs `package` to `version`: for the organization's owner or an
+/// admin (before [`crate::system::cluster_version::Feature::OwnerApprovedUpgrades`],
+/// whoever holds `MANAGE_APPLICATION` there), with one passkey assertion over the
+/// whole run, where owners hold app upgrades. Each app is still checked on its own
+/// (`UpgradeApp`).
 async fn org_upgrade(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -672,11 +731,8 @@ async fn org_upgrade(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
-    if !node.sys(|s| s.manages_apps(&org, &account, body.team.as_deref())) {
-        return Err(ApiError::forbidden(
-            "upgrading the organization's apps needs MANAGE_APPLICATION there",
-        ));
-    }
+    let owner_approves = owner_approves(&node).await;
+    run_refusal(&node, &org, &account, body.team.as_deref(), owner_approves)?;
     // Installed from the registry first if the cluster lacks the release.
     let _bundle = node
         .resolve_release(&body.package, Some(&body.version), None, &account, false)
@@ -708,6 +764,7 @@ async fn org_upgrade(
         by_operator: false,
         consent,
         run: None,
+        owner_approves,
     };
     start_run(node, org, body, apps, who, false).await
 }
@@ -722,11 +779,14 @@ pub(super) struct PublisherUpgradeBody {
     confirm: Option<ConfirmBody>,
 }
 
-/// Upgrade every instance of `package`, whoever owns it, that its publisher
-/// upgrades (its release declares `upgrades: publisher`): for whoever holds
-/// `MANAGE_APPLICATION` in the publisher organization (`org`, which proved
-/// it holds the package's key), with one passkey assertion over the run.
-/// The run is kept on the publisher; each app is still checked on its own.
+/// Upgrade the instances of `package` the starter may upgrade, with one passkey
+/// assertion over the run, kept on the publisher organization (`org`, which proved it
+/// holds the package's key); each app is still checked on its own. From
+/// [`crate::system::cluster_version::Feature::OwnerApprovedUpgrades`] on, for an owner
+/// or admin of `org`, over the instances of the organizations they are an owner or
+/// admin of (their own included), never another organization's; before it, for whoever
+/// holds `MANAGE_APPLICATION` in `org`, over every instance its publisher upgrades (its
+/// release declares `upgrades: publisher`), whoever owns it.
 async fn publisher_upgrade(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -749,7 +809,10 @@ async fn publisher_upgrade(
             "the organization publishes no such package",
         ));
     }
-    if !node.sys(|s| s.manages_apps(&org, &account, None)) {
+    let owner_approves = owner_approves(&node).await;
+    if owner_approves {
+        run_refusal(&node, &org, &account, None, true)?;
+    } else if !node.sys(|s| s.manages_apps(&org, &account, None)) {
         return Err(ApiError::forbidden(
             "upgrading a published package's instances needs MANAGE_APPLICATION in the publisher",
         ));
@@ -772,7 +835,7 @@ async fn publisher_upgrade(
     )
     .await?;
     let apps: Vec<crate::types::AppRecord> = node.sys(|s| {
-        s.published_run_apps(&package, &account, true)
+        s.published_run_apps(&package, &account, true, owner_approves)
             .iter()
             .filter_map(|a| s.apps.get(a).cloned())
             .collect()
@@ -785,6 +848,7 @@ async fn publisher_upgrade(
         by_operator: false,
         consent,
         run: None,
+        owner_approves,
     };
     let run = OrgUpgradeBody {
         package,
@@ -834,6 +898,7 @@ async fn ops_org_upgrade(
         by_operator: true,
         consent,
         run: None,
+        owner_approves: false,
     };
     start_run(node, org, body, apps, who, false).await
 }
@@ -898,17 +963,15 @@ async fn org_upgrade_retry(
             by_operator: true,
             consent,
             run: None,
+            owner_approves: false,
         };
         return start_run(node, org, retry, failed, who, false).await;
     }
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
-    if !node.sys(|s| s.manages_apps(&org, &account, retry.team.as_deref())) {
-        return Err(ApiError::forbidden(
-            "upgrading the organization's apps needs MANAGE_APPLICATION there",
-        ));
-    }
+    let owner_approves = owner_approves(&node).await;
+    run_refusal(&node, &org, &account, retry.team.as_deref(), owner_approves)?;
     let consent = consent(
         &node,
         &p,
@@ -926,6 +989,7 @@ async fn org_upgrade_retry(
         by_operator: false,
         consent,
         run: None,
+        owner_approves,
     };
     start_run(node, org, retry, failed, who, false).await
 }
@@ -1046,6 +1110,7 @@ async fn ops_upgrade(
             by_operator: true,
             consent,
             run: None,
+            owner_approves: false,
         },
     )
     .await
@@ -1086,6 +1151,8 @@ pub(crate) struct UnitPlan {
     pub target: PackageRef,
     pub targets: BTreeMap<String, crate::types::RunTarget>,
     pub members: Vec<crate::types::AppRecord>,
+    /// Judged by the rule only an organization's owner and admins approve ([`owner_approves`]).
+    pub owner_approves: bool,
 }
 
 /// [`UnitPlan`] for `app_id` to `version`, as `account` (who must be one who may upgrade
@@ -1104,10 +1171,9 @@ pub(crate) async fn unit_plan(
             "this app was created with no apps of its own: upgrade it with /apps/{app}/upgrade",
         ));
     }
-    if !node.sys(|s| s.may_upgrade(&app, account)) {
-        return Err(ApiError::forbidden(
-            "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
-        ));
+    let owner_approves = owner_approves(node).await;
+    if let Some(e) = node.sys(|s| upgrade_refusal(s, &app, account, owner_approves)) {
+        return Err(e);
     }
     let current = node
         .release_of_app(&app)
@@ -1163,6 +1229,7 @@ pub(crate) async fn unit_plan(
         target,
         targets,
         members,
+        owner_approves,
     })
 }
 
@@ -1203,6 +1270,7 @@ pub(crate) async fn upgrade_unit(
         by_operator: false,
         consent,
         run: None,
+        owner_approves: plan.owner_approves,
     };
     let run = OrgUpgradeBody {
         package: plan.target.package,

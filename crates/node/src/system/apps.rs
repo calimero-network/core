@@ -344,6 +344,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             release,
             owner_in_org,
             owner_in_team,
+            owner_approves,
         } => {
             if !s.bundles.contains_key(&bundle) {
                 return Err("unknown bundle");
@@ -385,6 +386,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     "this cluster's apps are upgraded by their owners"
                 });
             }
+            let owner_approves = s.owner_approves(owner_approves);
             let allowed = if by_operator {
                 s.apps.contains_key(&app_id)
             } else {
@@ -393,13 +395,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                         a,
                         &actor,
                         OwnerRule::logged(owner_in_org, owner_in_team),
+                        owner_approves,
                     )
                 })
             };
             if !allowed {
-                return Err(
-                    "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
-                );
+                return Err(if owner_approves {
+                    NOT_AN_UPGRADE_APPROVER
+                } else {
+                    "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization"
+                });
             }
             // A run moves each app it names once, along its package and
             // never back: its consent covers that, not whatever an entry
@@ -470,7 +475,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             mut run,
             consent,
             by_release,
+            owner_approves,
         } => {
+            let owner_approves = s.owner_approves(owner_approves);
+            // Only an owner or admin of the organization starts a run there; a
+            // publisher's run then covers the organizations the starter is one of.
+            if owner_approves && run.by != OPERATOR && !s.approves_upgrades(&org, &run.by) {
+                return Err(NOT_AN_UPGRADE_APPROVER);
+            }
             if s.holds_current_rules(index) {
                 // What the run covers and how far it got are the state's,
                 // not the proposer's: its consent names only the package,
@@ -485,7 +497,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 {
                     return Err("that run exists");
                 }
-                run.apps = s.upgrade_run_apps(&org, &run, &consent, by_release);
+                run.apps = s.upgrade_run_apps(&org, &run, &consent, by_release, owner_approves);
                 run.done.clear();
                 run.failed.clear();
                 run.finished = false;

@@ -140,10 +140,15 @@ pub enum Feature {
     /// refuses the one as undeclared and drops the other, so its replicas would hold no value
     /// where the others hold one.
     DeploymentUsedSecrets,
+    /// `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey` with `owner_approves`: only an
+    /// owner or admin of the app's organization approves its upgrades
+    /// (`SystemState::approves_upgrades`). An earlier release ignores the field and would
+    /// apply a member's, a team lead's or a publisher's upgrade where a later one refuses it.
+    OwnerApprovedUpgrades,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 34] = [
+pub const FEATURES: [Feature; 35] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -178,6 +183,7 @@ pub const FEATURES: [Feature; 34] = [
     Feature::DeploymentSecrets,
     Feature::WholeUnits,
     Feature::DeploymentUsedSecrets,
+    Feature::OwnerApprovedUpgrades,
 ];
 
 impl Feature {
@@ -219,6 +225,7 @@ impl Feature {
             Self::DeploymentSecrets => "deploymentSecrets",
             Self::WholeUnits => "wholeUnits",
             Self::DeploymentUsedSecrets => "deploymentUsedSecrets",
+            Self::OwnerApprovedUpgrades => "ownerApprovedUpgrades",
         }
     }
 
@@ -255,9 +262,10 @@ impl Feature {
             | Self::Delegation
             | Self::AttachApp
             | Self::ExpireProofs => "1.0.0-rc.31",
-            Self::DeploymentSecrets | Self::WholeUnits | Self::DeploymentUsedSecrets => {
-                "1.0.0-rc.32"
-            }
+            Self::DeploymentSecrets
+            | Self::WholeUnits
+            | Self::DeploymentUsedSecrets
+            | Self::OwnerApprovedUpgrades => "1.0.0-rc.32",
         }
     }
 }
@@ -480,8 +488,11 @@ impl SystemCmd {
         match self {
             Self::SetClusterVersion { .. } => vec![Feature::ClusterVersion],
             Self::StartUpgradeRun {
-                by_release, run, ..
-            } if *by_release || !run.targets.is_empty() => {
+                by_release,
+                run,
+                owner_approves,
+                ..
+            } => {
                 let mut f = Vec::new();
                 if *by_release {
                     f.push(Feature::PublishedRunByRelease);
@@ -489,8 +500,19 @@ impl SystemCmd {
                 if !run.targets.is_empty() {
                     f.push(Feature::UnitUpgrade);
                 }
+                if *owner_approves {
+                    f.push(Feature::OwnerApprovedUpgrades);
+                }
                 f
             }
+            Self::UpgradeApp {
+                owner_approves: true,
+                ..
+            }
+            | Self::CreateApiKey {
+                owner_approves: true,
+                ..
+            } => vec![Feature::OwnerApprovedUpgrades],
             Self::MoveApp {
                 accounts_in_app_team,
                 org_quotas,
@@ -656,7 +678,6 @@ impl SystemCmd {
             | Self::SetAppMetadata { .. }
             | Self::SetPasskeyLabel { .. }
             | Self::UpgradeFailed { .. }
-            | Self::StartUpgradeRun { .. }
             | Self::FinishUpgradeRun { .. }
             | Self::SetAlias { .. }
             | Self::SetOrgRole { .. }
@@ -837,6 +858,7 @@ mod tests {
                 ),
                 consent: Value::Null,
                 by_release: true,
+                owner_approves: false,
             },
             Feature::AppTeamJoin => SystemCmd::ScopeApps {
                 org: "org".into(),
@@ -965,6 +987,8 @@ mod tests {
             Feature::DeploymentUsedSecrets => install(json!({
                 "uses": { "inference": { "package": "pi", "range": "^1" } },
             })),
+            Feature::OwnerApprovedUpgrades => entry(json!({ "op": "upgradeApp",
+                "app_id": "app", "bundle": "b", "actor": "a", "owner_approves": true })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1384,14 +1408,15 @@ mod tests {
         for &feature in &rc30 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.32's (a deployment's secrets, whole units, secrets of used releases) wait
-        // for every node on rc.32.
+        // rc.32's (a deployment's secrets, whole units, secrets of used releases, upgrades
+        // only an organization's owner and admins approve) wait for every node on rc.32.
         assert_eq!(
             rc32,
             [
                 Feature::DeploymentSecrets,
                 Feature::WholeUnits,
-                Feature::DeploymentUsedSecrets
+                Feature::DeploymentUsedSecrets,
+                Feature::OwnerApprovedUpgrades
             ]
         );
         for &feature in &rc32 {

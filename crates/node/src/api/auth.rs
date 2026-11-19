@@ -1056,6 +1056,7 @@ async fn upgrade_scope(
     node: &Node,
     account: &str,
     body: &UpgradesBody,
+    owner_approves: bool,
 ) -> Result<crate::types::UpgradeScope, ApiError> {
     let app = node.app(&node.canonical_app_id(&body.app)).await?;
     let package = body
@@ -1071,10 +1072,12 @@ async fn upgrade_scope(
     let signer = node
         .sys(|s| s.packages.get(&package).map(|p| p.signer_id.clone()))
         .ok_or_else(|| ApiError::not_found("no such package"))?;
-    if !node.sys(|s| s.may_upgrade(&app, account)) {
-        return Err(ApiError::forbidden(
-            "an upgrade key is made by someone who may upgrade the app",
-        ));
+    if !node.sys(|s| s.may_upgrade(&app, account, owner_approves)) {
+        return Err(ApiError::forbidden(if owner_approves {
+            "an upgrade key is made by an owner or admin of the app's organization, who approve its upgrades"
+        } else {
+            "an upgrade key is made by someone who may upgrade the app"
+        }));
     }
     Ok(crate::types::UpgradeScope {
         app: app.app_id,
@@ -1099,8 +1102,12 @@ async fn apikey_create(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let (key, hash) = calimero_identity::new_api_key();
+    // An upgrade key is made, and used, only by whom the rule in force lets upgrade
+    // the app: from `Feature::OwnerApprovedUpgrades` on, an owner or admin of its
+    // organization, judged again where it applies (`owner_approves`).
+    let owner_approves = body.upgrades.is_some() && crate::api::owner_approves(&node).await;
     let upgrades = match &body.upgrades {
-        Some(u) => Some(upgrade_scope(&node, &account, u).await?),
+        Some(u) => Some(upgrade_scope(&node, &account, u, owner_approves).await?),
         None => None,
     };
     let with_key = |key: &str| {
@@ -1125,7 +1132,7 @@ async fn apikey_create(
         upgrades: with_key(&key),
     };
     if let Some(scope) = &record.upgrades {
-        node.sys(|s| s.upgrade_key_fits(&record, scope))
+        node.sys(|s| s.upgrade_key_fits(&record, scope, owner_approves))
             .map_err(|e| ApiError::bad_request("BAD_UPGRADE_KEY", e))?;
     }
     let args = crate::system::api_key_args(&hash, &record);
@@ -1171,6 +1178,7 @@ async fn apikey_create(
             consent: c.consent,
             owner_in_org: true,
             owner_in_team: true,
+            owner_approves,
         })
         .await?;
     Ok(Json(json!({ "keyId": key_id, "key": key })))

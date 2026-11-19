@@ -1730,18 +1730,11 @@ async fn upgrade_request(
     if !member_of_unit {
         p.within(node, &app)?;
     }
-    // The route's own authority rules, asked before anything is shown: a
-    // package its publisher upgrades is not the instance owner's to approve.
-    let (may, unbound) = node.sys(|s| (s.may_upgrade(&app, account), s.upgrades_unbound(&app)));
-    if unbound {
-        return Err(ApiError::conflict(
-            "this app's package is upgraded by its publisher, and no organization has bound its key yet",
-        ));
-    }
-    if !may {
-        return Err(ApiError::forbidden(
-            "upgrading this app needs whoever its package names: its owner (or MANAGE_APPLICATION in its organization), or its publisher's MANAGE_APPLICATION holders",
-        ));
+    // The route's own authority rules, asked before anything is shown: only an
+    // owner or admin of the app's organization approves its upgrade.
+    let owner_approves = crate::api::owner_approves(node).await;
+    if let Some(e) = node.sys(|s| crate::api::upgrade_refusal(s, &app, account, owner_approves)) {
+        return Err(e);
     }
     let current = node.release_of_app(&app).ok_or_else(|| {
         ApiError::bad_request(

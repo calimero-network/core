@@ -318,13 +318,14 @@ fn approved_json(set: Option<&BTreeSet<String>>) -> Value {
     set.map_or(Value::Null, |s| json!(s))
 }
 
-/// Who upgrades `app`: `operator` where the cluster gives it app upgrades,
-/// else what its release's manifest declares (`owner` or `publisher`; a raw
-/// upload is its owner's).
+/// Who upgrades `app`: `operator` where the cluster gives it app upgrades; `owner`
+/// (the owner and admins of its organization) once the logged cluster version brings
+/// `Feature::OwnerApprovedUpgrades`; before it, what its release's manifest declares
+/// (`owner` or `publisher`; a raw upload is its owner's).
 fn upgrades_held_by(s: &SystemState, app: &AppRecord) -> &'static str {
     if s.governance().app_upgrades == Authority::Operator {
         "operator"
-    } else if s.upgrades_of(s.governing_release(app)).is_owner() {
+    } else if s.owner_approves(false) || s.upgrades_of(s.governing_release(app)).is_owner() {
         "owner"
     } else {
         "publisher"
