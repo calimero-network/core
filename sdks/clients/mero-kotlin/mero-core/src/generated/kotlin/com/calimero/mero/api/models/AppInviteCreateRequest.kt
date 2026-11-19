@@ -34,6 +34,7 @@ import kotlinx.serialization.Contextual
  *
  * @param ttlSecs 
  * @param uses 
+ * @param scope Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param confirm 
  */
 @Serializable
@@ -45,6 +46,10 @@ data class AppInviteCreateRequest (
 
     @SerialName(value = "uses")
     val uses: kotlin.Long? = null,
+
+    /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+    @Contextual @SerialName(value = "scope")
+    val scope: kotlinx.serialization.json.JsonElement? = null,
 
     @SerialName(value = "confirm")
     val confirm: Confirm? = null

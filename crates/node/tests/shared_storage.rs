@@ -85,7 +85,8 @@ async fn a_non_writers_map_write_is_refused_and_a_writers_lands() {
         .apps()
         .access(
             &app,
-            typed(json!({ "kind": "accounts", "accounts": [bob_id] })),
+            Some(typed(json!({ "kind": "accounts", "accounts": [bob_id] }))),
+            None,
         )
         .await
         .unwrap();

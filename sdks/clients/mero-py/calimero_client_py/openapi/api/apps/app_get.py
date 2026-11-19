@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app import App
+from ...models.app_get_response_200 import AppGetResponse200
 from ...models.error import Error
 from typing import cast
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[App, Error]]:
+) -> Optional[Union[AppGetResponse200, Error]]:
     if response.status_code == 200:
-        response_200 = App.from_dict(response.json())
+        response_200 = AppGetResponse200.from_dict(response.json())
 
         return response_200
 
@@ -57,7 +57,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[App, Error]]:
+) -> Response[Union[AppGetResponse200, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -70,11 +70,12 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[App, Error]]:
+) -> Response[Union[AppGetResponse200, Error]]:
     """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route.
+    route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own
+    grant (and `access` naming only them).
 
     **Who:** signed in (a session or an API key).
 
@@ -86,7 +87,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[App, Error]]
+        Response[Union[AppGetResponse200, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -104,11 +105,12 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[App, Error]]:
+) -> Optional[Union[AppGetResponse200, Error]]:
     """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route.
+    route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own
+    grant (and `access` naming only them).
 
     **Who:** signed in (a session or an API key).
 
@@ -120,7 +122,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[App, Error]
+        Union[AppGetResponse200, Error]
     """
 
     return sync_detailed(
@@ -133,11 +135,12 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[App, Error]]:
+) -> Response[Union[AppGetResponse200, Error]]:
     """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route.
+    route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own
+    grant (and `access` naming only them).
 
     **Who:** signed in (a session or an API key).
 
@@ -149,7 +152,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[App, Error]]
+        Response[Union[AppGetResponse200, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -165,11 +168,12 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[App, Error]]:
+) -> Optional[Union[AppGetResponse200, Error]]:
     """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route.
+    route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own
+    grant (and `access` naming only them).
 
     **Who:** signed in (a session or an API key).
 
@@ -181,7 +185,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[App, Error]
+        Union[AppGetResponse200, Error]
     """
 
     return (

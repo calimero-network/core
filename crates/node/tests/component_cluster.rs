@@ -1707,7 +1707,7 @@ async fn set_access(
     access: Value,
 ) -> Result<Value, Box<calimero_client::Error>> {
     who.apps()
-        .access(app, typed(json!(access)))
+        .access(app, Some(typed(json!(access))), None)
         .await
         .map(wire)
         .map_err(Box::new)

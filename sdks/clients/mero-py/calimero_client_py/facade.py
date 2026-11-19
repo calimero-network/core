@@ -725,20 +725,21 @@ class Apps(Group):
         """
         return self._run(_APP_ABI, (app,), {}, None)
 
-    def access(self, *, app, access):
+    def access(self, *, app, access=UNSET, grants=UNSET):
         """Set who may reach an app (`POST /apps/{app}/access`, `app_access`).
 
-        A package-bound session: only its own package's app, from one of its package's teams to another.
+        `grants` replace the instance's grant list (#Grant; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`); the deprecated `access` sets one mode. Exactly one of them, else `400 BAD_REQUEST`. Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
 
         **Who:** a passkey session (an API key is refused).
 
         Args:
             app: path
             access: body `access`
+            grants: body `grants`
 
         Returns: AppAccessResponse200
         """
-        return self._run(_APP_ACCESS, (app,), {}, {"access": access})
+        return self._run(_APP_ACCESS, (app,), {}, {"access": access, "grants": grants})
 
     def attestation(self, *, app, nonce):
         """Every replica's receipt-key attestation (`GET /apps/{app}/attestation`, `app_attestation`).
@@ -916,13 +917,14 @@ class Apps(Group):
         org=UNSET,
         new_org=UNSET,
         access=UNSET,
+        grants=UNSET,
         init_args=UNSET,
         metadata=UNSET,
         deployment=UNSET,
     ):
         """Create an app instance (`POST /apps`, `app_create`).
 
-        From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+        From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version 1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
 
         **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
@@ -935,6 +937,7 @@ class Apps(Group):
             org: body `org`
             new_org: body `newOrg`
             access: body `access`
+            grants: body `grants`
             init_args: body `initArgs`
             metadata: body `metadata`
             deployment: body `deployment`
@@ -954,6 +957,7 @@ class Apps(Group):
                 "org": org,
                 "newOrg": new_org,
                 "access": access,
+                "grants": grants,
                 "initArgs": init_args,
                 "metadata": metadata,
                 "deployment": deployment,
@@ -1115,21 +1119,23 @@ class Apps(Group):
     def get(self, *, app):
         """One app (`GET /apps/{app}`, `app_get`).
 
-        `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.
+        `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).
 
         **Who:** signed in (a session or an API key).
 
         Args:
             app: path
 
-        Returns: App
+        Returns: AppGetResponse200
         """
         return self._run(_APP_GET, (app,), {}, None)
 
-    def invite_create(self, *, app, ttl_secs=UNSET, uses=UNSET, confirm=None):
-        """Invite a guest to an instance (`POST /apps/{app}/invites`, `app_invite_create`).
+    def invite_create(
+        self, *, app, ttl_secs=UNSET, uses=UNSET, scope=UNSET, confirm=None
+    ):
+        """Invite someone to an instance (`POST /apps/{app}/invites`, `app_invite_create`).
 
-        A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+        A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -1137,6 +1143,7 @@ class Apps(Group):
             app: path
             ttl_secs: body `ttlSecs`
             uses: body `uses`
+            scope: body `scope`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
         Returns: AppInviteCreateResponse200
@@ -1145,14 +1152,14 @@ class Apps(Group):
             _APP_INVITE_CREATE,
             (app,),
             {},
-            {"ttlSecs": ttl_secs, "uses": uses},
+            {"ttlSecs": ttl_secs, "uses": uses, "scope": scope},
             confirm=confirm,
         )
 
     def invite_list(self, *, app):
         """An instance's invites (`GET /apps/{app}/invites`, `app_invite_list`).
 
-        For whoever manages its guests: keys and terms, never a token.
+        For whoever may change its access: keys, terms and scope, never a token.
 
         **Who:** a passkey session (an API key is refused).
 
@@ -1166,7 +1173,7 @@ class Apps(Group):
     def invite_revoke(self, *, app, key, confirm=None):
         """Revoke an instance invite (`DELETE /apps/{app}/invites/{key}`, `app_invite_revoke`).
 
-        Its creator, or whoever manages the instance's guests; `412` first.
+        Its creator, or whoever may change the instance's access; `412` first.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -4697,7 +4704,7 @@ class Orgs(Group):
     def invite_redeem(self, *, token):
         """Join with an invite (`POST /invites/{token}/redeem`, `invite_redeem`).
 
-        No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+        No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
 
         **Who:** a passkey session (an API key is refused).
 

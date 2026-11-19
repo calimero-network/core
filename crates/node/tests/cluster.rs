@@ -3594,7 +3594,7 @@ async fn a_frontend_session_manages_no_organization_and_no_app() {
     forbidden(
         "change an app's access",
         site.apps()
-            .access(&app, typed(json!({ "kind": "public" })))
+            .access(&app, Some(typed(json!({ "kind": "public" }))), None)
             .await
             .map(wire),
     );
@@ -3605,7 +3605,7 @@ async fn a_frontend_session_manages_no_organization_and_no_app() {
     // On the cluster's own origin the same account still can.
     let _ = alice
         .apps()
-        .access(&app, typed(json!({ "kind": "public" })))
+        .access(&app, Some(typed(json!({ "kind": "public" }))), None)
         .await
         .map(wire)
         .unwrap();
@@ -5329,7 +5329,7 @@ async fn access_changed_through_one_node_holds_at_once_through_another() {
     for round in 0..20 {
         let _ok = alice
             .apps()
-            .access(&app, typed(json!({ "kind": "owner" })))
+            .access(&app, Some(typed(json!({ "kind": "owner" }))), None)
             .await
             .unwrap();
         let refused = bob
@@ -5352,7 +5352,8 @@ async fn access_changed_through_one_node_holds_at_once_through_another() {
             .apps()
             .access(
                 &app,
-                typed(json!({ "kind": "accounts", "accounts": [bob_id] })),
+                Some(typed(json!({ "kind": "accounts", "accounts": [bob_id] }))),
+                None,
             )
             .await
             .unwrap();

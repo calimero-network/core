@@ -37,6 +37,7 @@ import kotlinx.serialization.Contextual
  * @param expired 
  * @param createdBy 
  * @param createdAt 
+ * @param scope Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  */
 @Serializable
 
@@ -58,7 +59,11 @@ data class AppInviteList200ResponseInvitesInner (
     val createdBy: kotlin.String,
 
     @SerialName(value = "createdAt")
-    val createdAt: kotlin.Long
+    val createdAt: kotlin.Long,
+
+    /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+    @Contextual @SerialName(value = "scope")
+    val scope: kotlinx.serialization.json.JsonElement?
 
 ) {
 

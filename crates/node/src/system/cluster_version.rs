@@ -160,10 +160,17 @@ pub enum Feature {
     /// others admit. Apply reads the logged version for the reach rule
     /// (`SystemState::guests_on`), so state before it reads as it did.
     Guests,
+    /// An instance's access as a list of grants (`Access::Grants`: the organization, teams,
+    /// named members and guests with an app-defined scope, anyone): `CreateApp` and
+    /// `SetAccess` writing one, and an instance invite carrying a `scope`. An earlier
+    /// release cannot decode the variant. A redemption makes the instance's access grants, so
+    /// the instance invites need it too. Access logged before it keeps its mode and is judged
+    /// as it was.
+    AccessGrants,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 37] = [
+pub const FEATURES: [Feature; 38] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -201,6 +208,7 @@ pub const FEATURES: [Feature; 37] = [
     Feature::UpgradeInDeployment,
     Feature::OrdinaryOrgs,
     Feature::Guests,
+    Feature::AccessGrants,
 ];
 
 impl Feature {
@@ -245,6 +253,7 @@ impl Feature {
             Self::UpgradeInDeployment => "upgradeInDeployment",
             Self::OrdinaryOrgs => "ordinaryOrgs",
             Self::Guests => "guests",
+            Self::AccessGrants => "accessGrants",
         }
     }
 
@@ -286,7 +295,8 @@ impl Feature {
             | Self::DeploymentUsedSecrets
             | Self::UpgradeInDeployment
             | Self::OrdinaryOrgs
-            | Self::Guests => "1.0.0-rc.32",
+            | Self::Guests
+            | Self::AccessGrants => "1.0.0-rc.32",
         }
     }
 }
@@ -535,10 +545,14 @@ impl SystemCmd {
                 f
             }
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
-            Self::SetOrgSettings { .. }
-            | Self::CreateAppInvite { .. }
-            | Self::RevokeAppInvite { .. }
-            | Self::RedeemAppInvite { .. } => vec![Feature::Guests],
+            Self::SetOrgSettings { .. } | Self::RevokeAppInvite { .. } => vec![Feature::Guests],
+            Self::CreateAppInvite { .. } | Self::RedeemAppInvite { .. } => {
+                vec![Feature::Guests, Feature::AccessGrants]
+            }
+            Self::SetAccess {
+                access: crate::types::Access::Grants { .. },
+                ..
+            } => vec![Feature::AccessGrants],
             Self::SetDelegation { .. } => vec![Feature::Delegation],
             Self::LinkApp { .. } => vec![Feature::AttachApp],
             Self::SetDeploymentSecret { used: true, .. } => {
@@ -625,6 +639,9 @@ impl SystemCmd {
                 }
                 if unit_offer.is_some() {
                     f.push(Feature::WholeUnits);
+                }
+                if matches!(app.access, crate::types::Access::Grants { .. }) {
+                    f.push(Feature::AccessGrants);
                 }
                 f
             }
@@ -1013,6 +1030,10 @@ mod tests {
             Feature::OrdinaryOrgs => install(json!({ "instanceOrg": "standalone" })),
             Feature::Guests => entry(json!({ "op": "setOrgSettings", "org": "org",
                 "settings": { "allowGuests": false }, "actor": "alice" })),
+            Feature::AccessGrants => entry(json!({ "op": "setAccess", "app_id": "app",
+                "access": { "kind": "grants", "grants": [{ "kind": "team", "team": "t" },
+                    { "kind": "account", "account": "carol", "scope": { "channel": "p" } }] },
+                "actor": "alice" })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1433,7 +1454,8 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.32's (a deployment's secrets, whole units, secrets of used releases, an
-        // upgrade kept on its deployment's offer, a release's instance mode, guests) wait for every node on rc.32.
+        // upgrade kept on its deployment's offer, a release's instance mode, guests, access
+        // grants) wait for every node on rc.32.
         assert_eq!(
             rc32,
             [
@@ -1442,7 +1464,8 @@ mod tests {
                 Feature::DeploymentUsedSecrets,
                 Feature::UpgradeInDeployment,
                 Feature::OrdinaryOrgs,
-                Feature::Guests
+                Feature::Guests,
+                Feature::AccessGrants
             ]
         );
         for &feature in &rc32 {

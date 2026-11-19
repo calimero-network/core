@@ -29,7 +29,7 @@ Generated from core's `docs/public/openapi.json`.
 | Method | Route | What it does |
 | --- | --- | --- |
 | `abi(app)` | `GET /apps/{app}/abi` | An app's ABI |
-| `access(app, access)` | `POST /apps/{app}/access` | Set who may reach an app |
+| `access(app, access=…, grants=…)` | `POST /apps/{app}/access` | Set who may reach an app |
 | `attestation(app, nonce)` | `GET /apps/{app}/attestation` | Every replica's receipt-key attestation |
 | `blob_delete(app, id)` | `DELETE /apps/{app}/blobs/{id}` | Forget a blob |
 | `blob_download(app, id, grant=…)` | `GET /apps/{app}/blobs/{id}` | Download a blob |
@@ -38,7 +38,7 @@ Generated from core's `docs/public/openapi.json`.
 | `blob_revoke(app, id)` | `POST /apps/{app}/blobs/{id}/revoke` | Invalidate a blob's grants |
 | `blob_upload(app, sealed=…, body, content_type='application/octet-stream')` | `POST /apps/{app}/blobs` | Upload a blob. *Refusals:* `400 USE_FILES_API`, `429 QUOTA_EXCEEDED` |
 | `call(app, method, args=…, idempotency_key=…, confirm=None)` | `POST /apps/{app}/intents` | Call a method. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 TIMEOUT` |
-| `create(name=…, bundle=…, package=…, version=…, service=…, org=…, new_org=…, access=…, init_args=…, metadata=…, deployment=…)` | `POST /apps` | Create an app instance. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 NOT_OFFERED`, `400 NO_SUCH_SERVICE`, `400 ORG_INSTANCE`, `400 ORG_REQUIRED`, `400 STANDALONE_INSTANCE`, `400 VERSION_REQUIRED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_ORGANIZATION`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 INIT_FAILED`, `429 QUOTA_EXCEEDED` |
+| `create(name=…, bundle=…, package=…, version=…, service=…, org=…, new_org=…, access=…, grants=…, init_args=…, metadata=…, deployment=…)` | `POST /apps` | Create an app instance. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 NOT_OFFERED`, `400 NO_SUCH_SERVICE`, `400 ORG_INSTANCE`, `400 ORG_REQUIRED`, `400 STANDALONE_INSTANCE`, `400 VERSION_REQUIRED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_ORGANIZATION`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 INIT_FAILED`, `429 QUOTA_EXCEEDED` |
 | `delegate(app, target, confirm=None)` | `PUT /apps/{app}/delegations/{target}` | Let an app call another as you. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NOTHING_TO_DELEGATE` |
 | `delegations(app)` | `GET /apps/{app}/delegations` | What you let an app do as you |
 | `delete(app)` | `DELETE /apps/{app}` | Delete an app. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 UNIT_MEMBER` |
@@ -48,7 +48,7 @@ Generated from core's `docs/public/openapi.json`.
 | `files_list(app)` | `GET /apps/{app}/files` | List an app's sealed files |
 | `files_upload(app, body)` | `POST /apps/{app}/files` | Upload a sealed file. *Refusals:* `429 QUOTA_EXCEEDED` |
 | `get(app)` | `GET /apps/{app}` | One app |
-| `invite_create(app, ttl_secs=…, uses=…, confirm=None)` | `POST /apps/{app}/invites` | Invite a guest to an instance. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 GUESTS_NOT_ALLOWED`, `409 NOT_AN_ACCOUNTS_INSTANCE`, `429 QUOTA_EXCEEDED` |
+| `invite_create(app, ttl_secs=…, uses=…, scope=…, confirm=None)` | `POST /apps/{app}/invites` | Invite someone to an instance. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 GUESTS_NOT_ALLOWED`, `429 QUOTA_EXCEEDED` |
 | `invite_list(app)` | `GET /apps/{app}/invites` | An instance's invites |
 | `invite_revoke(app, key, confirm=None)` | `DELETE /apps/{app}/invites/{key}` | Revoke an instance invite. **passkey** |
 | `link(app, name, body_app, confirm=None)` | `PUT /apps/{app}/links/{name}` | Attach an app to one of an app's references. **passkey**. *Refusals:* `400 NOT_ATTACHABLE`, `409 FEATURE_NOT_ACTIVE`, `409 NOT_AN_ATTACH_REFERENCE`, `409 WRONG_PACKAGE` |
@@ -222,7 +222,7 @@ Generated from core's `docs/public/openapi.json`.
 | `get(org)` | `GET /orgs/{org}` | One organization |
 | `invite_create(org, role, teams=…, ttl_secs=…, uses=…, all_apps=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/invites` | Make an invite. **passkey**. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `403 CANNOT_GRANT_UNHELD`, `409 FEATURE_NOT_ACTIVE` |
 | `invite_list(org)` | `GET /orgs/{org}/invites` | The organization's invites |
-| `invite_redeem(token)` | `POST /invites/{token}/redeem` | Join with an invite. *Refusals:* `409 GUESTS_NOT_ALLOWED`, `409 NOT_AN_ACCOUNTS_INSTANCE` |
+| `invite_redeem(token)` | `POST /invites/{token}/redeem` | Join with an invite. *Refusals:* `409 GUESTS_NOT_ALLOWED` |
 | `invite_revoke(org, key, confirm=None)` | `DELETE /orgs/{org}/invites/{key}` | Revoke an invite. **passkey** |
 | `member_metadata(org, account, metadata)` | `POST /orgs/{org}/members/{account}/metadata` | Set a member's metadata |
 | `member_remove_teams(org, account, teams, confirm=None)` | `DELETE /orgs/{org}/members/{account}/teams` | Remove a member from several teams, or leave them. **passkey**. *Refusals:* `400 BAD_TEAMS`, `409 FEATURE_NOT_ACTIVE` |

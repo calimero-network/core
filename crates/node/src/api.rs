@@ -1218,17 +1218,19 @@ pub async fn read_only_in(
     account: Option<&str>,
     sys_index: Option<u64>,
 ) -> bool {
-    let (crate::types::Access::Team { team }, Some(a)) = (&app.access, account) else {
+    let Some(a) = account else {
         return false;
     };
-    if a == app.owner {
+    // Only through teams: a name, or the whole organization, writes.
+    let teams = app.access.teams();
+    if teams.is_empty() || a == app.owner || app.access.org_wide() || app.access.names(a) {
         return false;
     }
     let check = || {
         node.sys(|s| {
             s.orgs
                 .get(&app.org)
-                .is_some_and(|o| !o.writes_team(a, team))
+                .is_some_and(|o| teams.iter().all(|t| !o.writes_team(a, t)))
         })
     };
     check() && {

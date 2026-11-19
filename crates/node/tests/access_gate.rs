@@ -261,7 +261,8 @@ async fn a_grant_is_honoured_by_a_follower_that_has_not_applied_it_yet() {
         .apps()
         .access(
             &app,
-            typed(json!({ "kind": "accounts", "accounts": [bob_id] })),
+            Some(typed(json!({ "kind": "accounts", "accounts": [bob_id] }))),
+            None,
         )
         .await
         .unwrap();
@@ -330,7 +331,8 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
         .apps()
         .access(
             &app,
-            typed(json!({ "kind": "accounts", "accounts": [bob_id] })),
+            Some(typed(json!({ "kind": "accounts", "accounts": [bob_id] }))),
+            None,
         )
         .await
         .unwrap();
@@ -362,7 +364,7 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
     c.hold[follower].send_replace(true);
     let _ok = alice
         .apps()
-        .access(&app, typed(json!({ "kind": "owner" })))
+        .access(&app, Some(typed(json!({ "kind": "owner" }))), None)
         .await
         .unwrap();
     assert!(
@@ -416,7 +418,7 @@ async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behi
     let app = created["appId"].as_str().unwrap().to_owned();
     let _ok = alice
         .apps()
-        .access(&app, typed(json!({ "kind": "public" })))
+        .access(&app, Some(typed(json!({ "kind": "public" }))), None)
         .await
         .unwrap();
     let follower_node = &c.nodes[follower].node;
@@ -437,7 +439,7 @@ async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behi
     c.hold[follower].send_replace(true);
     let _ok = alice
         .apps()
-        .access(&app, typed(json!({ "kind": "owner" })))
+        .access(&app, Some(typed(json!({ "kind": "owner" }))), None)
         .await
         .unwrap();
     assert!(
@@ -483,7 +485,7 @@ async fn attestation_names_no_app_an_anonymous_caller_cannot_reach() {
     let app = created["appId"].as_str().unwrap().to_owned();
     let _ok = alice
         .apps()
-        .access(&app, typed(json!({ "kind": "owner" })))
+        .access(&app, Some(typed(json!({ "kind": "owner" }))), None)
         .await
         .unwrap();
     let plain = reqwest::Client::new();
@@ -510,7 +512,7 @@ async fn attestation_names_no_app_an_anonymous_caller_cannot_reach() {
 
     let _ok = alice
         .apps()
-        .access(&app, typed(json!({ "kind": "public" })))
+        .access(&app, Some(typed(json!({ "kind": "public" }))), None)
         .await
         .unwrap();
     for i in 0..3 {
@@ -925,7 +927,8 @@ async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
         .apps()
         .access(
             &app,
-            typed(json!({ "kind": "accounts", "accounts": [bob_id] })),
+            Some(typed(json!({ "kind": "accounts", "accounts": [bob_id] }))),
+            None,
         )
         .await
         .unwrap();
@@ -962,7 +965,7 @@ async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
     c.hold[app_leader].send_replace(true);
     let _ok = alice
         .apps()
-        .access(&app, typed(json!({ "kind": "owner" })))
+        .access(&app, Some(typed(json!({ "kind": "owner" }))), None)
         .await
         .unwrap();
     let (index, _caught_up) = c.nodes[sys_leader].node.sys_fresh_index().await;

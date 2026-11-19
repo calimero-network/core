@@ -21,7 +21,7 @@ export interface paths {
         put?: never;
         /**
          * Create an app instance
-         * @description From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+         * @description From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version 1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
          *
          *     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
          */
@@ -41,7 +41,7 @@ export interface paths {
         };
         /**
          * One app
-         * @description `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.
+         * @description `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -93,7 +93,7 @@ export interface paths {
         put?: never;
         /**
          * Set who may reach an app
-         * @description A package-bound session: only its own package's app, from one of its package's teams to another.
+         * @description `grants` replace the instance's grant list (#Grant; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`); the deprecated `access` sets one mode. Exactly one of them, else `400 BAD_REQUEST`. Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
          *
          *     **Who:** a passkey session (an API key is refused).
          */
@@ -509,15 +509,15 @@ export interface paths {
         };
         /**
          * An instance's invites
-         * @description For whoever manages its guests: keys and terms, never a token.
+         * @description For whoever may change its access: keys, terms and scope, never a token.
          *
          *     **Who:** a passkey session (an API key is refused).
          */
         get: operations["app_invite_list"];
         put?: never;
         /**
-         * Invite a guest to an instance
-         * @description A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+         * Invite someone to an instance
+         * @description A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
          *
          *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -540,7 +540,7 @@ export interface paths {
         post?: never;
         /**
          * Revoke an instance invite
-         * @description Its creator, or whoever manages the instance's guests; `412` first.
+         * @description Its creator, or whoever may change the instance's access; `412` first.
          *
          *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -2127,7 +2127,7 @@ export interface paths {
         put?: never;
         /**
          * Join with an invite
-         * @description No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+         * @description No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
          *
          *     **Who:** a passkey session (an API key is refused).
          */
@@ -4255,7 +4255,7 @@ export interface components {
             key: string;
             signature: string;
         };
-        /** @description Who may reach an app at all. */
+        /** @description Who may reach an app at all, as one mode (deprecated: see `grants`), or `grants`: the instance's grant list (see #Grant). Each mode is a grant list: `owner` none, `org` the organization, `team` that team, `accounts` those people, `public` `anyone`. */
         Access: {
             /** @enum {string} */
             kind: "owner";
@@ -4273,6 +4273,28 @@ export interface components {
             /** @enum {string} */
             kind: "team";
             team: string;
+        } | {
+            /** @enum {string} */
+            kind: "grants";
+            grants: components["schemas"]["Grant"][];
+        };
+        /** @description One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link). At most 16 teams and 1000 accounts. */
+        Grant: {
+            /** @enum {string} */
+            kind: "org";
+        } | {
+            /** @enum {string} */
+            kind: "team";
+            team: string;
+        } | {
+            /** @enum {string} */
+            kind: "account";
+            account: string;
+            /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+            scope?: unknown;
+        } | {
+            /** @enum {string} */
+            kind: "anyone";
         };
         /**
          * @description A member's role in an organization.
@@ -5121,6 +5143,7 @@ export interface operations {
                         name: string;
                     };
                     access?: components["schemas"]["Access"];
+                    grants?: components["schemas"]["Grant"][];
                     /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
                     initArgs?: unknown;
                     /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
@@ -5237,7 +5260,49 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["App"];
+                    "application/json": {
+                        appId: string;
+                        name: string;
+                        /** Format: int64 */
+                        group: number;
+                        bundle: string;
+                        owner: string;
+                        org: string | null;
+                        access: components["schemas"]["Access"];
+                        confirmMethods: string[];
+                        /** @enum {string} */
+                        executor?: "component" | "wasmer";
+                        replicas: number[];
+                        /** Format: int64 */
+                        createdAt: number;
+                        /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                        initArgs: unknown;
+                        computeBundle?: string;
+                        /** @enum {string} */
+                        components?: "computeOnly";
+                        /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                        metadata: unknown;
+                        lastUpgrade?: components["schemas"]["Upgrade"];
+                        deployment?: string;
+                        release?: components["schemas"]["PackageRef"];
+                        restore?: {
+                            /** Format: int64 */
+                            seed?: number;
+                            source?: {
+                                name: string;
+                                sha256: string;
+                                /** Format: int64 */
+                                index: number;
+                            };
+                        };
+                        links?: {
+                            [key: string]: string;
+                        };
+                        attached?: {
+                            [key: string]: string;
+                        };
+                        grants: components["schemas"]["Grant"][];
+                    };
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -5387,7 +5452,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    access: components["schemas"]["Access"];
+                    access?: components["schemas"]["Access"];
+                    grants?: components["schemas"]["Grant"][];
                 };
             };
         };
@@ -6939,6 +7005,8 @@ export interface operations {
                             createdBy: string;
                             /** Format: int64 */
                             createdAt: number;
+                            /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                            scope: unknown;
                         }[];
                     };
                 };
@@ -6997,6 +7065,8 @@ export interface operations {
                     ttlSecs?: number;
                     /** Format: int64 */
                     uses?: number;
+                    /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                    scope?: unknown;
                     confirm?: components["schemas"]["Confirm"];
                 };
             };
@@ -7049,7 +7119,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FEATURE_NOT_ACTIVE`; `GUESTS_NOT_ALLOWED`; `NOT_AN_ACCOUNTS_INSTANCE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            /** @description `FEATURE_NOT_ACTIVE`; `GUESTS_NOT_ALLOWED`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -13002,6 +13072,7 @@ export interface operations {
                     "application/json": {
                         org: string;
                         app?: string;
+                        member?: boolean;
                     };
                 };
             };
@@ -13023,7 +13094,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `GUESTS_NOT_ALLOWED`; `NOT_AN_ACCOUNTS_INSTANCE` */
+            /** @description `GUESTS_NOT_ALLOWED` */
             409: {
                 headers: {
                     [name: string]: unknown;

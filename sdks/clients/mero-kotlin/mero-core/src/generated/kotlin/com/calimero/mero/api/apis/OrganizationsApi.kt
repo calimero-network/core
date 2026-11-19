@@ -407,7 +407,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /invites/{token}/redeem
      * Join with an invite
-     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, joined as a guest (not a member). An instance invite is refused &#x60;409 GUESTS_NOT_ALLOWED&#x60; while its instance takes no guests.  **Who:** a passkey session (an API key is refused).
+     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, and &#x60;member&#x60;: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest &#x60;409 GUESTS_NOT_ALLOWED&#x60; while its instance takes no guests.  **Who:** a passkey session (an API key is refused).
      * @param token 
      * @return InviteRedeem200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -439,7 +439,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /invites/{token}/redeem
      * Join with an invite
-     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, joined as a guest (not a member). An instance invite is refused &#x60;409 GUESTS_NOT_ALLOWED&#x60; while its instance takes no guests.  **Who:** a passkey session (an API key is refused).
+     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, and &#x60;member&#x60;: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest &#x60;409 GUESTS_NOT_ALLOWED&#x60; while its instance takes no guests.  **Who:** a passkey session (an API key is refused).
      * @param token 
      * @return ApiResponse<InviteRedeem200Response?>
      * @throws IllegalStateException If the request is not correctly configured

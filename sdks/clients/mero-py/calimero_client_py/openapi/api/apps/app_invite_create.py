@@ -106,13 +106,15 @@ def sync_detailed(
     client: AuthenticatedClient,
     body: AppInviteCreateBody,
 ) -> Response[Union[AppInviteCreateResponse200, Error]]:
-    """Invite a guest to an instance
+    """Invite someone to an instance
 
-     A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses`
-    times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the
-    instance's access; only while it takes guests (its release's manifest and its organization's
-    `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409
-    NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+     A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named
+    member when they are a member of its organization; never added to the organization), `uses` times (1
+    to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque
+    JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the
+    app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it
+    takes guests (its release's manifest and its organization's `allowGuests`, `409
+    GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -148,13 +150,15 @@ def sync(
     client: AuthenticatedClient,
     body: AppInviteCreateBody,
 ) -> Optional[Union[AppInviteCreateResponse200, Error]]:
-    """Invite a guest to an instance
+    """Invite someone to an instance
 
-     A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses`
-    times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the
-    instance's access; only while it takes guests (its release's manifest and its organization's
-    `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409
-    NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+     A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named
+    member when they are a member of its organization; never added to the organization), `uses` times (1
+    to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque
+    JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the
+    app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it
+    takes guests (its release's manifest and its organization's `allowGuests`, `409
+    GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -185,13 +189,15 @@ async def asyncio_detailed(
     client: AuthenticatedClient,
     body: AppInviteCreateBody,
 ) -> Response[Union[AppInviteCreateResponse200, Error]]:
-    """Invite a guest to an instance
+    """Invite someone to an instance
 
-     A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses`
-    times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the
-    instance's access; only while it takes guests (its release's manifest and its organization's
-    `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409
-    NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+     A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named
+    member when they are a member of its organization; never added to the organization), `uses` times (1
+    to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque
+    JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the
+    app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it
+    takes guests (its release's manifest and its organization's `allowGuests`, `409
+    GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -225,13 +231,15 @@ async def asyncio(
     client: AuthenticatedClient,
     body: AppInviteCreateBody,
 ) -> Optional[Union[AppInviteCreateResponse200, Error]]:
-    """Invite a guest to an instance
+    """Invite someone to an instance
 
-     A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses`
-    times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the
-    instance's access; only while it takes guests (its release's manifest and its organization's
-    `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409
-    NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+     A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named
+    member when they are a member of its organization; never added to the organization), `uses` times (1
+    to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque
+    JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the
+    app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it
+    takes guests (its release's manifest and its organization's `allowGuests`, `409
+    GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

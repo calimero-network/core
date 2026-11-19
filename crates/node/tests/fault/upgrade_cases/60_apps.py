@@ -79,7 +79,9 @@ class AccessKinds(DeepCase):
     area = "Apps"
     seeds = "an organization's app of each access kind: owner, organization, listed accounts, public, team"
     verifies = ("who reads and writes each (the owner, a member, a listed account, an outsider, no "
-                "credential), allowed and refused as before; access changed on the new release")
+                "credential), allowed and refused as before; on the new release each keeps its mode and answers "
+                "the grants it stands for (owner none, org, the listed account, anyone, the team), and access "
+                "changed there, in the old form and as grants")
 
     def populate(self, w):
         ace, mo, lis, oz = people(w, "ace", "mo", "lis", "oz")
@@ -120,9 +122,81 @@ class AccessKinds(DeepCase):
 
     def exercise(self, w, s):
         ace, mo, lis = people(w, "ace", "mo", "lis")
+        team = ace.get(f"apps/{s['apps']['team']}")["access"]["team"]
+        stands_for = {
+            "owner": [], "org": [{"kind": "org"}], "accounts": [{"kind": "account", "account": lis.id}],
+            "public": [{"kind": "anyone"}], "team": [{"kind": "team", "team": team}],
+        }
+        for kind, grants in stands_for.items():
+            record = ace.get(f"apps/{s['apps'][kind]}")
+            eq(record["access"]["kind"], kind, f"the {kind} instance keeps its mode")
+            eq(record.get("grants"), grants, f"the grants the {kind} instance stands for")
         app = s["apps"]["accounts"]
         ace.raw("post", f"apps/{app}/access", {"access": {"kind": "accounts", "accounts": [lis.id, mo.id]}})
         until("mo reads once listed", lambda: mo.view(app, "get", {"key": "k"}))
+        # The team instance as grants: the team, and lis named beside it.
+        app = s["apps"]["team"]
+        until("the cluster version takes grants", lambda: ace.raw("post", f"apps/{app}/access", {"grants": [
+            {"kind": "team", "team": team}, {"kind": "account", "account": lis.id}]}), timeout=120)
+        until("lis reads once named", lambda: lis.view(app, "get", {"key": "k"}))
+        s["decisions"] = self._decide(w, s)
+
+
+@case
+class AccessGrants(DeepCase):
+    name = "app-access-grants"
+    area = "Apps"
+    since = "1.0.0-rc.32"
+    seeds = ("an organization's instance whose access is a list of grants: a team, a member outside it named with "
+             "an app-defined scope, and an outsider named (a guest, whom the release does not allow); grants "
+             "wait for the cluster version that brings them, so they are set after the roll")
+    verifies = ("who reads and writes it (the owner, the team's member, the named member, the guest, a member "
+                "neither in the team nor named, no credential) and the grants with their scope as the owner reads "
+                "them; a guest sees nothing of it; on the new release the team's grant goes and the organization's "
+                "takes its place")
+
+    def populate(self, w):
+        gil, gus, gia, gow, gem = people(w, "gil", "gus", "gia", "gow", "gem")
+        org = new_org(gil, "Grants Org")
+        team = team_id(gil.raw("post", f"orgs/{org}/teams", {"name": "deal", "join": "invite"}))
+        join(gil, org, gus, teams=(team,))
+        join(gil, org, gia, gem)
+        app = gil.deploy(kv_wasm(w), "grants", org=org)
+        gil.call(app, "set", {"key": "k", "value": "grants"})
+        grants = [{"kind": "team", "team": team},
+                  {"kind": "account", "account": gia.id, "scope": {"channel": "partners"}},
+                  {"kind": "account", "account": gow.id}]
+        until("the cluster version takes grants", lambda: gil.raw(
+            "post", f"apps/{app}/access", {"grants": grants}), timeout=120)
+        s = {"org": org, "team": team, "app": app, "grants": grants}
+        s["decisions"] = self._decide(w, s)
+        for want in ("gus reads", "gia reads"):
+            check(s["decisions"][want] == "ok", f"{want}: {s['decisions'][want]}")
+        for want in ("gow reads", "anonymous reads"):
+            check(s["decisions"][want] != "ok", f"{want} was allowed")
+        return s
+
+    def _decide(self, w, s):
+        out, app = {}, s["app"]
+        for who in ("gil", "gus", "gia", "gow", "gem"):
+            p = person(w, who)
+            out[f"{who} reads"] = decision(lambda p=p: p.view(app, "get", {"key": "k"}))
+            out[f"{who} writes"] = decision(lambda p=p: p.call(app, "set", {"key": "w", "value": p.name}))
+        out["anonymous reads"] = decision(
+            lambda: anyone(w, "POST", f"apps/{app}/views", {"method": "get", "args": {"key": "k"}}))
+        return out
+
+    def check(self, w, s):
+        eq(person(w, "gil").get(f"apps/{s['app']}").get("grants"), s["grants"], "the grants as the owner reads them")
+        same_decisions(self._decide(w, s), s["decisions"], "access grants")
+
+    def exercise(self, w, s):
+        gil, gus = people(w, "gil", "gus")
+        s["grants"] = [{"kind": "org"}] + s["grants"][1:]
+        gil.raw("post", f"apps/{s['app']}/access", {"grants": s["grants"]})
+        until("the organization's members read once it is granted",
+              lambda: person(w, "gem").view(s["app"], "get", {"key": "k"}))
+        gus.view(s["app"], "get", {"key": "k"})
         s["decisions"] = self._decide(w, s)
 
 

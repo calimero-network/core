@@ -765,6 +765,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             for a in &apps {
                 s.remove_app(a);
             }
+            // An instance whose grants keep another way in loses only these teams' grants
+            // (only grant lists hold several, so an entry before them changes nothing here).
+            for a in s.apps.values_mut().filter(|a| a.org == org) {
+                if matches!(a.access, crate::types::Access::Grants { .. }) {
+                    a.access = a.access.without_teams(&gone);
+                }
+            }
             Ok(json!({ "teams": gone, "apps": apps }))
         }
         SystemCmd::SetCapabilities {

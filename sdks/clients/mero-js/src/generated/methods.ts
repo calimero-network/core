@@ -180,7 +180,7 @@ export function createRoutes(api: RouteClient) {
       get: (args: operations['app_get']['parameters']['path'], options?: MethodOptions): Promise<operations['app_get']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/apps/{app}","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_get']['responses'][200]['content']['application/json']>,
       /**
-       * Invite a guest to an instance.
+       * Invite someone to an instance.
        *
        * `POST /apps/{app}/invites` (`app_invite_create`). **Who:** an account holder (a passkey session not bound to an app's frontend).
        * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.

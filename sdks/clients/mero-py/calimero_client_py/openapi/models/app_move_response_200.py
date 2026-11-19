@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from ..models.access_type_4 import AccessType4
     from ..models.access_type_2 import AccessType2
     from ..models.access_type_0 import AccessType0
+    from ..models.access_type_5 import AccessType5
 
 
 T = TypeVar("T", bound="AppMoveResponse200")
@@ -27,8 +28,10 @@ class AppMoveResponse200:
         app_id (str):
         from_ (Union[None, str]):
         org (str):
-        access (Union['AccessType0', 'AccessType1', 'AccessType2', 'AccessType3', 'AccessType4']): Who may reach an app
-            at all.
+        access (Union['AccessType0', 'AccessType1', 'AccessType2', 'AccessType3', 'AccessType4', 'AccessType5']): Who
+            may reach an app at all, as one mode (deprecated: see `grants`), or `grants`: the instance's grant list (see
+            #Grant). Each mode is a grant list: `owner` none, `org` the organization, `team` that team, `accounts` those
+            people, `public` `anyone`.
         created (bool):
         added (list[str]):
         revoked_invites (int):
@@ -38,7 +41,12 @@ class AppMoveResponse200:
     from_: Union[None, str]
     org: str
     access: Union[
-        "AccessType0", "AccessType1", "AccessType2", "AccessType3", "AccessType4"
+        "AccessType0",
+        "AccessType1",
+        "AccessType2",
+        "AccessType3",
+        "AccessType4",
+        "AccessType5",
     ]
     created: bool
     added: list[str]
@@ -51,6 +59,7 @@ class AppMoveResponse200:
         from ..models.access_type_4 import AccessType4
         from ..models.access_type_2 import AccessType2
         from ..models.access_type_0 import AccessType0
+        from ..models.access_type_5 import AccessType5
 
         app_id = self.app_id
 
@@ -67,6 +76,8 @@ class AppMoveResponse200:
         elif isinstance(self.access, AccessType2):
             access = self.access.to_dict()
         elif isinstance(self.access, AccessType3):
+            access = self.access.to_dict()
+        elif isinstance(self.access, AccessType4):
             access = self.access.to_dict()
         else:
             access = self.access.to_dict()
@@ -100,6 +111,7 @@ class AppMoveResponse200:
         from ..models.access_type_4 import AccessType4
         from ..models.access_type_2 import AccessType2
         from ..models.access_type_0 import AccessType0
+        from ..models.access_type_5 import AccessType5
 
         d = dict(src_dict)
         app_id = d.pop("appId")
@@ -116,7 +128,12 @@ class AppMoveResponse200:
         def _parse_access(
             data: object,
         ) -> Union[
-            "AccessType0", "AccessType1", "AccessType2", "AccessType3", "AccessType4"
+            "AccessType0",
+            "AccessType1",
+            "AccessType2",
+            "AccessType3",
+            "AccessType4",
+            "AccessType5",
         ]:
             try:
                 if not isinstance(data, dict):
@@ -150,11 +167,19 @@ class AppMoveResponse200:
                 return componentsschemas_access_type_3
             except:  # noqa: E722
                 pass
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_access_type_4 = AccessType4.from_dict(data)
+
+                return componentsschemas_access_type_4
+            except:  # noqa: E722
+                pass
             if not isinstance(data, dict):
                 raise TypeError()
-            componentsschemas_access_type_4 = AccessType4.from_dict(data)
+            componentsschemas_access_type_5 = AccessType5.from_dict(data)
 
-            return componentsschemas_access_type_4
+            return componentsschemas_access_type_5
 
         access = _parse_access(d.pop("access"))
 

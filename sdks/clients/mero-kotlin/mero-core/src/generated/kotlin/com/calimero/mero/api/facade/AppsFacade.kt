@@ -36,7 +36,7 @@ class AppsFacade internal constructor(
     /**
      * Set who may reach an app
      *
-     * A package-bound session: only its own package's app, from one of its package's teams to another.
+     * `grants` replace the instance's grant list (#Grant; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`); the deprecated `access` sets one mode. Exactly one of them, else `400 BAD_REQUEST`. Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
      *
      * **Who:** a passkey session (an API key is refused).
      *
@@ -46,9 +46,10 @@ class AppsFacade internal constructor(
      */
     suspend fun access(
         app: kotlin.String,
-        access: com.calimero.mero.AppAccess,
+        access: com.calimero.mero.AppAccess? = null,
+        grants: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>? = null,
     ): kotlinx.serialization.json.JsonObject =
-        api(null, null, emptySet()).apps.appAccess(app = app, appAccessRequest = AppAccessRequest(access = access))
+        api(null, null, emptySet()).apps.appAccess(app = app, appAccessRequest = AppAccessRequest(access = access, grants = grants))
 
     /**
      * Every replica's receipt-key attestation
@@ -70,7 +71,7 @@ class AppsFacade internal constructor(
     /**
      * Create an app instance
      *
-     * From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+     * From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version 1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
      *
      * **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      *
@@ -87,11 +88,12 @@ class AppsFacade internal constructor(
         org: kotlin.String? = null,
         newOrg: AppCreateRequestNewOrg? = null,
         access: com.calimero.mero.AppAccess? = null,
+        grants: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>? = null,
         initArgs: kotlinx.serialization.json.JsonElement? = null,
         metadata: kotlinx.serialization.json.JsonElement? = null,
         deployment: kotlin.String? = null,
     ): AppCreate200Response =
-        api(null, null, emptySet()).apps.appCreate(appCreateRequest = AppCreateRequest(name = name, bundle = bundle, `package` = `package`, version = version, service = service, org = org, newOrg = newOrg, access = access, initArgs = initArgs, metadata = metadata, deployment = deployment))
+        api(null, null, emptySet()).apps.appCreate(appCreateRequest = AppCreateRequest(name = name, bundle = bundle, `package` = `package`, version = version, service = service, org = org, newOrg = newOrg, access = access, grants = grants, initArgs = initArgs, metadata = metadata, deployment = deployment))
 
     /**
      * Let an app call another as you
@@ -148,7 +150,7 @@ class AppsFacade internal constructor(
     /**
      * One app
      *
-     * `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.
+     * `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -158,13 +160,13 @@ class AppsFacade internal constructor(
      */
     suspend fun get(
         app: kotlin.String,
-    ): App =
+    ): AppGet200Response =
         api(null, null, emptySet()).apps.appGet(app = app)
 
     /**
-     * Invite a guest to an instance
+     * Invite someone to an instance
      *
-     * A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+     * A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -178,14 +180,15 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         ttlSecs: kotlin.Long? = null,
         uses: kotlin.Long? = null,
+        scope: kotlinx.serialization.json.JsonElement? = null,
         passkey: PasskeyProvider? = null,
     ): AppInviteCreate200Response =
-        api(passkey, null, emptySet()).apps.appInviteCreate(app = app, appInviteCreateRequest = AppInviteCreateRequest(ttlSecs = ttlSecs, uses = uses))
+        api(passkey, null, emptySet()).apps.appInviteCreate(app = app, appInviteCreateRequest = AppInviteCreateRequest(ttlSecs = ttlSecs, uses = uses, scope = scope))
 
     /**
      * An instance's invites
      *
-     * For whoever manages its guests: keys and terms, never a token.
+     * For whoever may change its access: keys, terms and scope, never a token.
      *
      * **Who:** a passkey session (an API key is refused).
      *
@@ -201,7 +204,7 @@ class AppsFacade internal constructor(
     /**
      * Revoke an instance invite
      *
-     * Its creator, or whoever manages the instance's guests; `412` first.
+     * Its creator, or whoever may change the instance's access; `412` first.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
