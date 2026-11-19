@@ -46,7 +46,7 @@ use futures_util::StreamExt;
 use serde_json::{json, Map, Value};
 use sha2::Digest as _;
 
-use crate::cluster::{typed, wire, Cluster, ORIGIN};
+use crate::cluster::{home_org, typed, wire, Cluster, ORIGIN};
 use crate::py;
 
 /// The repository root.
@@ -2206,7 +2206,7 @@ impl<'a> Runner<'a> {
                             None => cl
                                 .orgs()
                                 .release_approval(
-                                    &cl.personal_org().await.unwrap(),
+                                    &home_org(&cl).await,
                                     &version,
                                     None,
                                     Some(&mut *pk),
@@ -2236,7 +2236,7 @@ impl<'a> Runner<'a> {
                             None => cl
                                 .orgs()
                                 .outbound_approval(
-                                    &cl.personal_org().await.unwrap(),
+                                    &home_org(&cl).await,
                                     &package,
                                     selection,
                                     replace,

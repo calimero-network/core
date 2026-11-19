@@ -699,6 +699,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             installers: BTreeSet::new(),
             upgrades: UpgradeAuthority::Owner,
             min_runtime_version: None,
+            instance_org: None,
         },
     };
     let _ok = m
@@ -799,6 +800,7 @@ fn a_compute_release_is_charged_each_parts_own_size() {
             installers: BTreeSet::new(),
             upgrades: UpgradeAuthority::Owner,
             min_runtime_version: None,
+            instance_org: None,
         },
     };
     let _ok = m.run_authorized(release("1.0.0", "m1", "j1")).unwrap();
@@ -841,6 +843,7 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             installers: BTreeSet::new(),
             upgrades: UpgradeAuthority::Owner,
             min_runtime_version: None,
+            instance_org: None,
         },
     };
     let _ok = m.run_authorized(install("1.0.0", "m1", "j1")).unwrap();
@@ -2426,6 +2429,107 @@ fn an_account_has_one_personal_organization_outside_its_quota() {
     let before = serde_json::to_value(&m.state).unwrap();
     let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
     assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+}
+
+/// From the cluster version that makes organizations ordinary
+/// (`Feature::OrdinaryOrgs`, `SystemState::ordinary_orgs`) a sign-up makes no
+/// organization (even one proposed below it with a personal seed), no personal one is
+/// made, and one made before is an organization like any other: it counts against
+/// `maxOrgsPerAccount` and its apps go only to its members. Its `accounts` instances
+/// still reach their listed accounts. Entries logged before the version replay as they
+/// applied: a sign-up still made its personal organization then.
+#[test]
+fn once_organizations_are_ordinary_a_personal_one_is_like_any_other() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let mine = p("alice");
+    // Before the version: a sign-up makes its personal organization, as it did.
+    let _ok = m.run_unproven(account("dave")).unwrap();
+    assert!(m.state.orgs[&p("dave")].personal);
+    assert!(!m.state.ordinary_orgs());
+    assert_eq!(m.state.personal_org_of("alice"), Some(&mine));
+
+    let rc32 = "1.0.0-rc.32";
+    let _ok = m
+        .run_unproven(SystemCmd::SetClusterVersion {
+            version: rc32.into(),
+            nodes: (1..=4).map(|id| (id, rc32.to_owned())).collect(),
+        })
+        .unwrap();
+    assert!(m.state.ordinary_orgs());
+    assert_eq!(m.state.personal_org_of("alice"), None);
+
+    // A sign-up proposed below the version (it carries a seed) and applied after it:
+    // the account, and no organization.
+    let _ok = m.run_unproven(account("erin")).unwrap();
+    assert!(m.state.accounts.contains_key("erin"));
+    assert!(!m.state.orgs.contains_key(&p("erin")));
+    assert!(m.state.orgs_of("erin").is_empty());
+
+    // No personal organization is made any more.
+    let create = |id: &str, actor: &str, personal: bool| SystemCmd::CreateOrg {
+        org_id: id.into(),
+        name: "Team".into(),
+        actor: actor.into(),
+        release: None,
+        recovery_key: None,
+        at: 0,
+        name_fits: true,
+        personal,
+        app_team: None,
+        capabilities: None,
+    };
+    assert_eq!(
+        m.run_unproven(create("erins", "erin", true)),
+        Err(super::NO_PERSONAL_ORGS.to_owned())
+    );
+    assert!(!m.state.orgs.contains_key("erins"));
+
+    // The one made before counts against the quota, as any organization she owns.
+    let owned = m
+        .state
+        .orgs
+        .values()
+        .filter(|o| o.role("alice") == Some(OrgRole::Owner))
+        .count();
+    m.state.quotas.max_orgs_per_account = u32::try_from(owned).unwrap();
+    let refused = m.run_unproven(create("team", "alice", false)).unwrap_err();
+    assert!(refused.starts_with(QUOTA_PREFIX), "{refused}");
+    m.state.quotas.max_orgs_per_account = u32::try_from(owned + 1).unwrap();
+    let _ok = m.run_unproven(create("team", "alice", false)).unwrap();
+    // Erin's first organization is an ordinary one she creates.
+    let _ok = m.run_unproven(create("erins", "erin", false)).unwrap();
+    assert_eq!(m.state.orgs_of("erin"), [&"erins".to_owned()]);
+
+    // An app there goes only to a member: bob, outside it, is refused, and nothing
+    // moves.
+    let app: crate::types::AppRecord = serde_json::from_value(json!({
+        "appId": "gift", "name": "n", "group": 2, "bundle": "b",
+        "owner": "alice", "org": mine, "replicas": [1], "createdAt": 0,
+        "access": { "kind": "accounts", "accounts": ["carol"] },
+    }))
+    .unwrap();
+    let _prev = m.state.apps.insert("gift".into(), app);
+    let transfer = SystemCmd::TransferApp {
+        app_id: "gift".into(),
+        to: "bob".into(),
+        actor: "alice".into(),
+        consent: Value::Null,
+        owner_in_org: true,
+        owner_in_team: true,
+    };
+    assert_eq!(
+        m.run_unproven(transfer),
+        Err(super::NEW_OWNER_NOT_A_MEMBER.to_owned())
+    );
+    let gift = &m.state.apps["gift"];
+    assert_eq!(
+        (gift.owner.as_str(), gift.org.as_str()),
+        ("alice", mine.as_str())
+    );
+
+    // Its listed accounts still reach it without being members.
+    assert!(m.state.may_reach(&m.state.apps["gift"], Some("carol")));
+    assert!(!m.state.may_reach(&m.state.apps["gift"], Some("bob")));
 }
 
 /// From the current-rules mark on, a `CreateOrg` without `name_fits` is
@@ -8062,6 +8166,46 @@ fn releases_and_entries_from_before_used_secrets_replay_unchanged() {
     let mut entry = entry;
     entry["consent"] = Value::Null;
     assert_eq!(written, entry);
+}
+
+/// A release's instance mode (`PackageVersion::instance_org`, the manifest's `instanceOrg`)
+/// is kept on its record, and left out of a record without it, which reads and writes as it
+/// did; installing the same release again with it fills it in and changes nothing else.
+/// The entry that carries it is `Feature::OrdinaryOrgs`.
+#[test]
+fn a_releases_instance_mode_is_kept_and_filled_in_on_a_record_from_before() {
+    use super::cluster_version::Feature;
+    use super::Deployments;
+    let mut m = deploying(Deployments::Open);
+    let plain = install_release("notes", "1.0.0", &[], Value::Null);
+    assert!(plain.features().is_empty());
+    let _ok = m.run_unproven(plain).unwrap();
+    let before = serde_json::to_value(&m.state).unwrap();
+    let release = &before["packages"]["notes"]["versions"]["1.0.0"];
+    assert!(release.get("instanceOrg").is_none(), "{release}");
+    let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
+    assert_eq!(
+        restored.packages["notes"].versions["1.0.0"].instance_org,
+        None
+    );
+    assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+
+    let mut again = install_release("notes", "1.0.0", &[], Value::Null);
+    if let SystemCmd::InstallPackage { release, .. } = &mut again {
+        release.instance_org = Some(calimero_bundle::InstanceOrg::Standalone);
+    }
+    assert_eq!(again.features(), [Feature::OrdinaryOrgs]);
+    let _ok = m.run_unproven(again).unwrap();
+    let mut after = serde_json::to_value(&m.state).unwrap();
+    assert_eq!(
+        after["packages"]["notes"]["versions"]["1.0.0"]["instanceOrg"],
+        "standalone"
+    );
+    let _gone = after["packages"]["notes"]["versions"]["1.0.0"]
+        .as_object_mut()
+        .unwrap()
+        .remove("instanceOrg");
+    assert_eq!(after, before, "only the mode was filled in");
 }
 
 /// An app of `org` (or of alice's personal organization, `p-alice`) in a

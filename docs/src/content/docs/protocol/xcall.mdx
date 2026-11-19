@@ -72,9 +72,8 @@ The node that runs the target checks:
 1. **Entry point.** The target method's ABI must allow the source:
    `#[app::allow(app = "<source>")]` or `allow(app = "*")` (`allowApps`).
 2. **Boundary.** The two apps are in the same organization. Every app is in
-   one, so an account's own apps reach each other through their shared
-   [personal organization](/protocol/organizations/#personal-organizations),
-   and apps of two different organizations never do.
+   one, so an account's own apps reach each other when they share an
+   organization, and apps of two different organizations never do.
 3. **Provenance.** The target sees the caller as `Caller::App(<source>)`, set by
    the node; no argument can claim it. Only where the person the source's run serves
    granted it does the call run as that person instead

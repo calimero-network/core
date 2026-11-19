@@ -195,17 +195,17 @@ approved at creation). A member holding `APPROVE_RELEASES` approves (the owner
 and admins hold it; `getOrg(org).releaseApprovers` lists who does). An app's
 releases are its **publisher's** to approve: the organization its package's
 signing key is bound to, for every instance of the key's packages; for an
-unbound package, the app's own organization (an account's own apps are in its
-personal organization, `personal` in `auth.me()`, made at sign-up). The operator can give a
+unbound package, the app's own organization (an account's own apps are in an
+organization it created, or one made with an instance; a sign-up makes none). The operator can give a
 release a deadline (`releaseRules()` lists them): past it, a scope that has not
 approved it (or newer) creates no apps, installs nothing and upgrades nothing
 (`ReleaseDeadlineError`, `getOrg(org).newWorkStopped`), while its running apps
 keep working:
 
 ```ts
-const personalOrg = (await client.auth.me()).orgs.find((o) => o.personal)!.orgId;
+const ownOrg = (await client.auth.me()).orgs[0].orgId; // e.g. the one made with your first instance
 await client.orgs.releaseApproval({ org, version: '2.3.120', approved: true }, { confirm: passkeyConfirm(passkey) });
-await client.orgs.releaseApproval({ org: personalOrg, version: '2.3.120', approved: true }, { confirm: passkeyConfirm(passkey) }); // the account's own apps
+await client.orgs.releaseApproval({ org: ownOrg, version: '2.3.120', approved: true }, { confirm: passkeyConfirm(passkey) }); // the account's own apps
 await client.orgs.releaseApproval({ org, version: '2.3.110', approved: false }, { confirm: passkeyConfirm(passkey) });  // withdraw
 ```
 
@@ -215,7 +215,7 @@ package's publisher:
 ```ts
 await client.orgs.outboundApproval({ org, package: 'com.example.kv' }, { confirm: passkeyConfirm(passkey) }); // every prefix its latest release declares
 await client.orgs.outboundApproval({ org, package: 'com.example.kv', prefixes: ['https://api.example/'], replace: true }, { confirm: passkeyConfirm(passkey) });
-await client.orgs.outboundApproval({ org: personalOrg, package: 'com.example.kv' }, { confirm: passkeyConfirm(passkey) }); // the account's own apps
+await client.orgs.outboundApproval({ org: ownOrg, package: 'com.example.kv' }, { confirm: passkeyConfirm(passkey) }); // the account's own apps
 ```
 
 **Publishers.** An organization becomes the publisher of a signing key's

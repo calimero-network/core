@@ -768,10 +768,11 @@ async fn deployment_orgs(
             .values()
             .filter(|a| a.deployment.as_deref() == Some(id.as_str()))
         {
-            // A personal organization is one person's: its instances are
-            // only counted (`outsideOrgs`), never named.
+            // A personal organization is one person's: before organizations are
+            // ordinary its instances are only counted (`outsideOrgs`), never named.
+            // After, it is an organization like any other.
             let org = a.org.as_str();
-            if s.orgs.get(org).is_some_and(|o| o.personal) {
+            if s.orgs.get(org).is_some_and(|o| s.acts_personal(o)) {
                 outside += 1;
                 continue;
             }

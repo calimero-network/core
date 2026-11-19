@@ -4,9 +4,9 @@
 //! target. Who may move it is judged on the state of the moment: a member
 //! removed from the source, one who left it, and an admin of the target
 //! demoted are each refused, as are a mover who is not the target's admin and
-//! a move past the target's quota. An instance that names no organization
-//! goes to its owner's personal organization, made once and reused, and moves
-//! out of it into an organization its owner administers.
+//! a move past the target's quota. An instance in an organization of its own
+//! (made with it, `newOrg`) moves out of it into an organization its owner
+//! administers.
 //!
 //! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
@@ -16,7 +16,7 @@
     reason = "the helpers pass on calimero_client::Error as the client returns it"
 )]
 
-use calimero_client::types::{AppCreateRequest, ViewsRequestConsistency};
+use calimero_client::types::{AppCreateRequest, AppCreateRequestNewOrg, ViewsRequestConsistency};
 use calimero_client::{Client, Error};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::system::SystemCmd;
@@ -71,6 +71,7 @@ fn release(package: &str) -> Vec<u8> {
         frontend: None,
         frontend_aliases: Vec::new(),
         upgrades: None,
+        instance_org: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,
@@ -155,27 +156,17 @@ async fn set_role(by: &Client, pk: &mut SoftAuthenticator, org: &str, account: &
         .unwrap();
 }
 
-/// `c`'s personal organization, as `/auth/me` marks it.
-async fn personal_org(c: &Client) -> String {
-    let me = c.auth().me().await.map(wire).unwrap();
-    let mine: Vec<&Value> = me["orgs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|o| o["personal"] == json!(true))
-        .collect();
-    assert_eq!(mine.len(), 1, "{me}");
-    s(&mine[0]["orgId"])
-}
-
 /// An instance of `package` in `org` (organization access), or, naming none,
-/// in its owner's personal organization.
+/// in an organization of its own, made with it (`newOrg`).
 async fn instance(c: &Client, org: Option<&str>, package: &str) -> String {
     c.apps()
         .create(AppCreateRequest {
             name: Some(package.to_owned()),
             package: Some(package.to_owned()),
             org: org.map(str::to_owned),
+            new_org: org.is_none().then(|| AppCreateRequestNewOrg {
+                name: "Mine".to_owned(),
+            }),
             ..AppCreateRequest::default()
         })
         .await
@@ -372,10 +363,10 @@ async fn a_dm_moved_into_a_closed_app_team_keeps_its_people() {
 /// wrong movers are refused on the state of the moment (a member of the
 /// target, a demoted admin of it, a member removed from the source, one who
 /// left it, and someone who manages no app), as is a move past the target's
-/// file quota; a personal app moves into an organization its owner
-/// administers, and no other.
+/// file quota; an app in an organization of its own moves into an organization
+/// its owner administers, and no other.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn wrong_movers_and_quotas_are_refused_and_a_personal_app_moves_in() {
+async fn wrong_movers_and_quotas_are_refused_and_an_app_of_its_own_org_moves_in() {
     let c = Cluster::start(3).await;
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
@@ -496,11 +487,11 @@ async fn wrong_movers_and_quotas_are_refused_and_a_personal_app_moves_in() {
         json!(src)
     );
 
-    // An instance in its owner's personal organization (made when it named
-    // none): into an organization its owner administers, and not into one
-    // they are only a member of, or outside.
+    // An instance in an organization of its own (made with it): into an
+    // organization its owner administers, and not into one they are only a
+    // member of, or outside.
     let mine = instance(&alice, None, CHAT).await;
-    let personal = personal_org(&alice).await;
+    let personal = s(&alice.apps().get(&mine).await.map(wire).unwrap()["org"]);
     let out = move_app(&alice, &mut a, &mine, &dst, false).await.unwrap();
     assert_eq!(out["org"], json!(dst), "{out}");
     assert_eq!(out["from"], json!(personal), "{out}");
@@ -516,71 +507,5 @@ async fn wrong_movers_and_quotas_are_refused_and_a_personal_app_moves_in() {
             .await
             .unwrap_err(),
         "only an admin or the owner of the target",
-    );
-}
-
-/// An instance created without naming an organization goes to its owner's
-/// personal organization, made at sign-up: outside the organization quota,
-/// the same one from any node, and each account's own. It is marked
-/// `personal`, and its owner reaches the instance there.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn an_instance_naming_no_organization_goes_to_its_owners_personal_one() {
-    let c = Cluster::start(3).await;
-    let (alice, mut a) = signed_up(&c, 0, "alice").await;
-    let (bob, _b) = signed_up(&c, 1, "bob").await;
-    for who in [&alice, &bob] {
-        let _ok = who.packages().upload(release(CHAT)).await.unwrap();
-    }
-    let ops = c.client(1);
-    ops.use_api_key("ops-secret").await;
-    let _ok = ops
-        .ops()
-        .quotas_set(
-            typed(json!({ "maxOrgsPerAccount": 1 })),
-            Some(&harness::operator_sign),
-        )
-        .await
-        .unwrap();
-    let team = new_org(&alice, "Team").await;
-
-    let first = instance(&alice, None, CHAT).await;
-    let personal = personal_org(&alice).await;
-    assert_ne!(personal, team);
-    let app = alice.apps().get(&first).await.map(wire).unwrap();
-    assert_eq!(app["org"], json!(personal), "{app}");
-    let org = alice.orgs().get(&personal).await.map(wire).unwrap();
-    assert_eq!(
-        (&org["name"], &org["personal"]),
-        (&json!("Personal"), &json!(true)),
-        "{org}"
-    );
-    assert!(alice
-        .orgs()
-        .get(&team)
-        .await
-        .map(wire)
-        .unwrap()
-        .get("personal")
-        .is_none());
-
-    // The next one goes to the same organization, from any node.
-    let other = c.client(2);
-    let _session = other.sign_in(&mut a).await.unwrap();
-    let second = instance(&other, None, CHAT).await;
-    assert_eq!(personal_org(&alice).await, personal);
-    let mut listed = reaches(&alice, &personal).await;
-    listed.sort();
-    let mut want = vec![first, second];
-    want.sort();
-    assert_eq!(listed, want);
-
-    // Bob's is his own; Alice reaches nothing in it.
-    let bobs = instance(&bob, None, CHAT).await;
-    let bobs_org = personal_org(&bob).await;
-    assert_ne!(bobs_org, personal);
-    assert!(reaches(&alice, &bobs_org).await.is_empty());
-    assert_eq!(
-        bob.apps().get(&bobs).await.map(wire).unwrap()["org"],
-        json!(bobs_org)
     );
 }

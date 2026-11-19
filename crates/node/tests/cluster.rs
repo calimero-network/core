@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 #[path = "harness/cluster.rs"]
 mod harness;
 
-use harness::{free_port, kv_wasm, node_config, signed_up, typed, wire, Cluster, ORIGIN};
+use harness::{free_port, home_org, kv_wasm, node_config, signed_up, typed, wire, Cluster, ORIGIN};
 use reqwest::Method;
 
 const EVENTUALLY_DEADLINE: Duration = Duration::from_secs(60); // sized for a loaded CI runner
@@ -957,6 +957,7 @@ fn mpk_full(
         }),
         frontend_aliases: Vec::new(),
         upgrades,
+        instance_org: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         secrets: None,
         uses: None,
@@ -1562,7 +1563,7 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     assert!(e.to_string().starts_with("404"), "{e}");
     // Approving its outbound hosts answers as for a missing package, before
     // any passkey ceremony.
-    let bobs = bob.personal_org().await.unwrap();
+    let bobs = home_org(&bob).await;
     for package in ["com.acme.secret", "com.never.installed"] {
         let e = bob
             .orgs()
@@ -1824,7 +1825,7 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     let (alice, mut key) = signed_up(&c, 0, "alice").await;
     // Her personal organization, made at sign-up, approves the release she
     // signed up through.
-    let mine = alice.personal_org().await.unwrap();
+    let mine = home_org(&alice).await;
     assert_eq!(
         alice.orgs().get(&mine).await.map(wire).unwrap()["approvedReleases"],
         json!(["1.0.0"])
@@ -1898,12 +1899,7 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     // The owner approves 2.0.0: now the app may move there, and node 3 serves it.
     let _ok = alice
         .orgs()
-        .release_approval(
-            &alice.personal_org().await.unwrap(),
-            "2.0.0",
-            None,
-            Some(&mut key),
-        )
+        .release_approval(&home_org(&alice).await, "2.0.0", None, Some(&mut key))
         .await
         .map(wire)
         .unwrap();
@@ -2525,12 +2521,7 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         );
         let owner_release = alice
             .orgs()
-            .release_approval(
-                &alice.personal_org().await.unwrap(),
-                "9.0.0",
-                None,
-                Some(&mut pk),
-            )
+            .release_approval(&home_org(&alice).await, "9.0.0", None, Some(&mut pk))
             .await
             .map(wire);
         assert_eq!(
@@ -2550,7 +2541,7 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         let owner_outbound = alice
             .orgs()
             .outbound_approval(
-                &alice.personal_org().await.unwrap(),
+                &home_org(&alice).await,
                 "com.test.gov",
                 Some(typed(json!("manifest"))),
                 Some(false),
@@ -5684,12 +5675,7 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     // Bob approves 2.0.0 in time; then the deadline passes.
     let _ok = bob
         .orgs()
-        .release_approval(
-            &bob.personal_org().await.unwrap(),
-            "2.0.0",
-            None,
-            Some(&mut bob_pk),
-        )
+        .release_approval(&home_org(&bob).await, "2.0.0", None, Some(&mut bob_pk))
         .await
         .map(wire)
         .unwrap();
@@ -5755,12 +5741,7 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     // Approving lifts it for Alice at once.
     let _ok = alice
         .orgs()
-        .release_approval(
-            &alice.personal_org().await.unwrap(),
-            "2.0.0",
-            None,
-            Some(&mut alice_pk),
-        )
+        .release_approval(&home_org(&alice).await, "2.0.0", None, Some(&mut alice_pk))
         .await
         .map(wire)
         .unwrap();

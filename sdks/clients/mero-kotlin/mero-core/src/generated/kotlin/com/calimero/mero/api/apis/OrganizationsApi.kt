@@ -1112,7 +1112,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs
      * Create an organization
-     * &#x60;recoveryKey&#x60; is the public half of an organization recovery key. &#x60;capabilities&#x60; (bits) is what members can do unless set for them, in place of the default; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (&#x60;personal&#x60; in &#x60;/auth/me&#x60;), which this does not make.  **Who:** a passkey session (an API key is refused).
+     * &#x60;recoveryKey&#x60; is the public half of an organization recovery key. &#x60;capabilities&#x60; (bits) is what members can do unless set for them, in place of the default; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account&#39;s are those it creates here (or with a &#x60;standalone&#x60; instance) or is invited to; before, every account also had a personal organization from sign-up (&#x60;personal&#x60; in &#x60;/auth/me&#x60;).  **Who:** a passkey session (an API key is refused).
      * @param orgCreateRequest 
      * @return OrgCreate200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -1144,7 +1144,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs
      * Create an organization
-     * &#x60;recoveryKey&#x60; is the public half of an organization recovery key. &#x60;capabilities&#x60; (bits) is what members can do unless set for them, in place of the default; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (&#x60;personal&#x60; in &#x60;/auth/me&#x60;), which this does not make.  **Who:** a passkey session (an API key is refused).
+     * &#x60;recoveryKey&#x60; is the public half of an organization recovery key. &#x60;capabilities&#x60; (bits) is what members can do unless set for them, in place of the default; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account&#39;s are those it creates here (or with a &#x60;standalone&#x60; instance) or is invited to; before, every account also had a personal organization from sign-up (&#x60;personal&#x60; in &#x60;/auth/me&#x60;).  **Who:** a passkey session (an API key is refused).
      * @param orgCreateRequest 
      * @return ApiResponse<OrgCreate200Response?>
      * @throws IllegalStateException If the request is not correctly configured

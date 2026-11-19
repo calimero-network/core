@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.AppCreateRequestNewOrg
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -37,6 +38,7 @@ import kotlinx.serialization.Contextual
  * @param version 
  * @param service 
  * @param org 
+ * @param newOrg 
  * @param access 
  * @param initArgs Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param metadata Free-form JSON: its shape is not this API's (see the description around it for whose it is).
@@ -63,6 +65,9 @@ data class AppCreateRequest (
 
     @SerialName(value = "org")
     val org: kotlin.String? = null,
+
+    @SerialName(value = "newOrg")
+    val newOrg: AppCreateRequestNewOrg? = null,
 
     @SerialName(value = "access")
     val access: com.calimero.mero.AppAccess? = null,

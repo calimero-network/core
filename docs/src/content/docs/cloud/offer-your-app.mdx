@@ -168,8 +168,9 @@ The instance runs the
 release you offer (a `version`, if given, must be it), whether or not the
 customer could see that release otherwise, and without a deployer grant:
 nothing is installed. The customer needs what creating any instance in their
-organization needs (`CREATE_APP` there, or admin); with no `org`, it goes to
-their personal organization. The instance records the deployment, and the
+organization needs (`CREATE_APP` there, or admin); with no `org`, it goes
+where the offered release's `instanceOrg` says (their only organization, or a
+new one made with it). The instance records the deployment, and the
 log checks again, where `CreateApp` applies, that the deployment exists and
 offers that release.
 
@@ -201,7 +202,8 @@ frontend session cannot read it), on fresh state: each customer organization
 with instances from this deployment, how many, which of your apps and the
 releases they run, and two counts of people. Never who the members are,
 teams, instance names or data. Instances in personal organizations are only
-counted (`outsideOrgs`). Another deployment's customers never appear, even on
+counted (`outsideOrgs`) on a cluster below 1.0.0-rc.32; from that version
+they are organizations like any other. Another deployment's customers never appear, even on
 the same release. `GET /deployments` lists the deployments you manage.
 
 ## Who is billed

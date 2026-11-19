@@ -287,9 +287,9 @@ describe('Calimero 1.0 cluster', () => {
     // Releases: approve one for the org.
     await tab.orgs.releaseApproval({ org, version: '2.3.200', approved: true }, { confirm: passkeyConfirm(pk) });
 
-    // The account's own apps are its personal organization's, made at sign-up
-    // (core #5015, 1.0.0-rc.20); a merod before it has none, and its account
-    // routes are no longer in the client.
+    // The account's own apps were its personal organization's, made at sign-up
+    // (core #5015, 1.0.0-rc.20, until 1.0.0-rc.32, whose sign-up makes none); a merod
+    // without one skips this, and its account routes are no longer in the client.
     const mine = (await tab.auth.me()).orgs.find((o) => o.personal)?.orgId;
     if (mine) {
       await tab.orgs.outboundApproval({ org: mine, package: 'com.mero-js.console' }, { confirm: passkeyConfirm(pk) });

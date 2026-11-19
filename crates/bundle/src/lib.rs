@@ -542,6 +542,39 @@ impl UpgradeAuthority {
     }
 }
 
+/// Where an instance of a package goes, as its signed manifest declares
+/// (`instanceOrg`): the organization it is created in.
+///
+/// Absent means [`Self::Either`]. A node older than the rule ignores the field
+/// (the signature is over the raw manifest).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstanceOrg {
+    /// Every instance comes with an organization of its own, made with it (its
+    /// creator the owner); a request may not name an existing one. Its people are
+    /// invited into that organization.
+    Standalone,
+    /// An instance goes into an organization its creator is already in: the one
+    /// named, or their only one. Never makes one.
+    Org,
+    /// The organization named, else the creator's only one, else (they are in none) a
+    /// new one, as [`Self::Standalone`] makes. The default.
+    #[default]
+    Either,
+}
+
+impl InstanceOrg {
+    /// The manifest's word for it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standalone => "standalone",
+            Self::Org => "org",
+            Self::Either => "either",
+        }
+    }
+}
+
 /// Bundle manifest describing the contents of a bundle archive.
 ///
 /// Supports two formats:
@@ -652,6 +685,13 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upgrades: Option<UpgradeAuthority>,
 
+    /// Which organization an instance is created in ([`InstanceOrg`]): one of its own
+    /// (`standalone`), one its creator is in (`org`), or either (`either`, the default
+    /// when absent). Signed with the rest; any other value fails to parse, so the
+    /// bundle is refused. An older node ignores the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_org: Option<InstanceOrg>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<BundleSignature>,
 }
@@ -733,6 +773,7 @@ impl BundleManifest {
             secrets: _,
             uses: _,
             upgrades: _,
+            instance_org: _,
             signature: _,
         } = self;
 
@@ -1214,6 +1255,42 @@ mod tests {
         let _sig = sign_manifest_json(&mut signed, &key).unwrap();
         assert!(verify_manifest_signature(&signed).is_ok());
         signed["upgrades"] = serde_json::json!("publisher");
+        assert!(
+            verify_manifest_signature(&signed).is_err(),
+            "a changed declaration breaks the signature"
+        );
+    }
+
+    /// `instanceOrg` says where a package's instances go: absent (every manifest
+    /// from before) is `either` and is written back absent, an unknown value is
+    /// refused, and the field is signed with the rest.
+    #[test]
+    fn instance_org_is_either_unless_the_manifest_says_otherwise() {
+        let parse = |block: &str| serde_json::from_str::<BundleManifest>(&manifest_json(block));
+        let none = parse("").unwrap();
+        assert_eq!(none.instance_org, None);
+        assert_eq!(none.instance_org.unwrap_or_default(), InstanceOrg::Either);
+        assert!(serde_json::to_value(&none)
+            .unwrap()
+            .get("instanceOrg")
+            .is_none());
+        for (word, mode) in [
+            ("standalone", InstanceOrg::Standalone),
+            ("org", InstanceOrg::Org),
+            ("either", InstanceOrg::Either),
+        ] {
+            let m = parse(&format!(r#""instanceOrg": "{word}","#)).unwrap();
+            assert_eq!(m.instance_org, Some(mode));
+            assert_eq!(mode.as_str(), word);
+        }
+        assert!(parse(r#""instanceOrg": "personal","#).is_err());
+
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let mut signed: serde_json::Value =
+            serde_json::from_str(&manifest_json(r#""instanceOrg": "standalone","#)).unwrap();
+        let _sig = sign_manifest_json(&mut signed, &key).unwrap();
+        assert!(verify_manifest_signature(&signed).is_ok());
+        signed["instanceOrg"] = serde_json::json!("either");
         assert!(
             verify_manifest_signature(&signed).is_err(),
             "a changed declaration breaks the signature"

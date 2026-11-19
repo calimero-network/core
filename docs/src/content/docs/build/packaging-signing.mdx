@@ -110,6 +110,7 @@ detail.
    | `--frontend <dir>`, `--frontend-entry <file>` | `frontend` | the app's static web build, served by the node ([Ship a frontend](/build/guides/frontends/)) |
    | `--outbound <https prefix>` (repeatable) | `outbound` | URL prefixes a run may send requests under ([Call an external service](/build/guides/outbound/)) |
    | `--upgrades owner\|publisher` | `upgrades` | who upgrades the package's instances; absent means `owner` |
+   | `--instance-org standalone\|org\|either` | `instanceOrg` | which organization an instance is created in: one made with it, one its creator is in, or either; absent means `either` ([Where an instance goes](/protocol/organizations/#where-an-instance-goes)) |
 
    `pack` checks each against the node's own rules before signing.
 

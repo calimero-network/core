@@ -20,7 +20,7 @@ class AuthFacade internal constructor(
     /**
      * The account's own apps
      *
-     * The apps the account owns, in any organization (a package-bound session: its package's), with its personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
+     * The apps the account owns, in any organization (a package-bound session: its package's), with its only organization's `approvedReleases` (below cluster version 1.0.0-rc.32 its personal organization's): each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -340,7 +340,7 @@ class AuthFacade internal constructor(
     /**
      * The caller's account
      *
-     * The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: the one made at sign-up, where its instances go unless they name another; its approvals are that organization's), recovery state, and how the caller came (`via`).
+     * The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
      *
      * **Who:** signed in (a session or an API key).
      *

@@ -138,6 +138,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     // A release recorded before its `uses` were kept gets them from the
                     // same `.mpk` installed again (`Feature::DeploymentUsedSecrets`).
                     let fill_uses = v.uses.is_empty() && !release.uses.is_empty();
+                    // And its instance mode (`Feature::OrdinaryOrgs`).
+                    let fill_mode = v.instance_org.is_none() && release.instance_org.is_some();
                     if let Some(v) = s
                         .packages
                         .get_mut(&package)
@@ -148,6 +150,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                         }
                         if fill_uses {
                             v.uses = release.uses;
+                        }
+                        if fill_mode {
+                            v.instance_org = release.instance_org;
                         }
                     }
                     return Ok(json!({ "package": package, "version": release.version }));

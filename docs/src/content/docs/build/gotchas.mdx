@@ -55,7 +55,7 @@ The short list. Each item links to the page that explains it.
 - `#[app::error]` and `#[app::event]` must be in the `#[app::logic]` module, or
   the ABI lists none of them. Every field needs a name: `Invalid(String)` does
   not compile, `Invalid { reason: String }` does.
-- Every app is in an organization (a personal one when created without one), and
+- Every app is in an organization (one its creator is in, or one made with it), and
   a cross-app call reaches only apps in the same organization.
 
 ## Runs

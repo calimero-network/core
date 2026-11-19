@@ -92,7 +92,9 @@ def sync_detailed(
     """Hand an app to another account
 
      The owner (for an organization's app, while a member and in the app's team), or an organization
-    admin; an organization's app only to a member. Answers `null`.
+    admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for;
+    below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal
+    one). Answers `null`.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -131,7 +133,9 @@ def sync(
     """Hand an app to another account
 
      The owner (for an organization's app, while a member and in the app's team), or an organization
-    admin; an organization's app only to a member. Answers `null`.
+    admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for;
+    below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal
+    one). Answers `null`.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -165,7 +169,9 @@ async def asyncio_detailed(
     """Hand an app to another account
 
      The owner (for an organization's app, while a member and in the app's team), or an organization
-    admin; an organization's app only to a member. Answers `null`.
+    admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for;
+    below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal
+    one). Answers `null`.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -202,7 +208,9 @@ async def asyncio(
     """Hand an app to another account
 
      The owner (for an organization's app, while a member and in the app's team), or an organization
-    admin; an organization's app only to a member. Answers `null`.
+    admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for;
+    below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal
+    one). Answers `null`.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

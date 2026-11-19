@@ -115,7 +115,6 @@ async fn org_create(
         account,
         body.name,
         body.recovery_key,
-        false,
         None,
         body.capabilities,
     )
@@ -129,7 +128,6 @@ pub(crate) async fn create_org(
     account: String,
     name: String,
     recovery_key: Option<String>,
-    personal: bool,
     app_team: Option<String>,
     capabilities: Option<u32>,
 ) -> ApiResult {
@@ -150,7 +148,7 @@ pub(crate) async fn create_org(
             recovery_key,
             at: recovery_now(node),
             name_fits: true,
-            personal,
+            personal: false,
             app_team,
             capabilities,
         })
