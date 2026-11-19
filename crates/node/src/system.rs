@@ -2423,6 +2423,7 @@ impl SystemState {
         &self,
         app: &AppRecord,
         release: Option<&PackageRef>,
+        run: Option<&str>,
     ) -> Result<(), &'static str> {
         let Some(id) = app.deployment.as_deref() else {
             return Ok(());
@@ -2438,11 +2439,26 @@ impl SystemState {
         }
         // A unit's member carries its instance's deployment but runs a package
         // the deployment does not offer: it moves only within its own package
-        // (checked above), with its unit, whose run names each member's target
-        // from the offered release's `uses` (`UpgradeRun::target_of`); the API
-        // never moves one alone (no offer names its package).
-        if self.unit_parent(&app.app_id).is_some() {
-            return Ok(());
+        // (checked above), and only with its unit, in a run that takes the
+        // unit's instance to the release the deployment offers (each member's
+        // target comes from that release's `uses`, `UpgradeRun::target_of`).
+        // Never alone, and never in a run to a release the developer did not
+        // offer, which would move the members though the instance stays.
+        if let Some(parent) = self.unit_parent(&app.app_id) {
+            let unit_run = run
+                .and_then(|id| self.orgs.values().find_map(|o| o.upgrade_runs.get(id)))
+                .filter(|r| {
+                    r.targets.contains_key(&app.app_id)
+                        && self
+                            .apps
+                            .get(parent)
+                            .and_then(|p| p.release.as_ref())
+                            .is_some_and(|p| p.package == r.package)
+                        && d.apps
+                            .values()
+                            .any(|o| o.package == r.package && o.version == r.version)
+                });
+            return unit_run.map(|_| ()).ok_or(OUTSIDE_DEPLOYMENT);
         }
         if !d
             .apps

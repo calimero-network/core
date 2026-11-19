@@ -1734,16 +1734,14 @@ async fn a_unit_from_a_deployment_moves_only_to_its_offer() {
         .unwrap_err();
     assert_eq!(e.code(), Some("OUTSIDE_DEPLOYMENT"), "{e}");
 
-    // The unit to a release the deployment does not offer: nothing moves.
-    let refused = carol
+    // The unit to a release the deployment does not offer: refused before any passkey is
+    // asked for, and nothing moves, its member included.
+    let e = carol
         .apps()
-        .upgrade_unit(&notes, "1.1.0", Some(&mut carol_pk))
-        .await;
-    if let Ok(run) = refused.map(wire) {
-        let run_id = run["runId"].as_str().unwrap().to_owned();
-        let status = finished(&carol, &globex, &run_id).await;
-        assert_ne!(status["failed"], json!({}), "{status}");
-    }
+        .upgrade_unit(&notes, "1.1.0", None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OUTSIDE_DEPLOYMENT"), "{e}");
     for (app, version) in [(&notes, "1.0.0"), (&kv, "0.1.0")] {
         let record = carol.apps().get(app).await.map(wire).unwrap();
         assert_eq!(record["release"]["version"], json!(version), "{record}");

@@ -170,7 +170,7 @@ pub(crate) async fn upgrade_app(
             .await?
         }
     };
-    if let Err(why) = node.sys(|s| s.within_deployment(&app, release.as_ref())) {
+    if let Err(why) = node.sys(|s| s.within_deployment(&app, release.as_ref(), None)) {
         return Err(crate::node::rejected(why));
     }
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
@@ -323,7 +323,7 @@ async fn run_upgrade(
                 "an app whose owner upgrades it is not moved to a release its publisher upgrades",
             ));
         }
-        if let Err(why) = s.within_deployment(a, release.as_ref()) {
+        if let Err(why) = s.within_deployment(a, release.as_ref(), who.run.as_deref()) {
             return Some(crate::node::rejected(why));
         }
         if s.components_of(release.as_ref()) != a.components {
@@ -549,8 +549,9 @@ fn target_bundle(
         // its owner sees: a move that stays on the deployment (its offer, or a
         // unit member's own package) needs no visibility of the release, as
         // creating from the offer needs none; any other move does.
-        let on_deployment =
-            app.deployment.is_some() && s.within_deployment(app, Some(&release)).is_ok();
+        let on_deployment = app.deployment.is_some()
+            && s.within_deployment(app, Some(&release), who.run.as_deref())
+                .is_ok();
         if !on_deployment && !upgrade_sees(s, v, app, &who.actor, who.by_operator) {
             return None;
         }
@@ -658,7 +659,12 @@ async fn start_run_with(
             match target_bundle(&node, &app, version, &who) {
                 // Only the deployment's managers move its instances: an app from a
                 // deployment the run would take off its offer is noted as failed.
-                Some(t) if node.sys(|s| s.within_deployment(&app, t.release.as_ref()).is_err()) => {
+                Some(t)
+                    if node.sys(|s| {
+                        s.within_deployment(&app, t.release.as_ref(), who.run.as_deref())
+                            .is_err()
+                    }) =>
+                {
                     let e = crate::node::outside_deployment();
                     let error = json!({ "code": e.code, "message": e.message });
                     note_failed_upgrade(
@@ -1194,6 +1200,11 @@ pub(crate) async fn unit_plan(
         service: current.at.service.clone(),
         compute: false,
     };
+    // A unit from a deployment moves only to the release its developer offers:
+    // refused here, before any passkey is asked for, as one app's upgrade is.
+    if node.sys(|s| s.within_deployment(&app, Some(&target), None).is_err()) {
+        return Err(crate::node::outside_deployment());
+    }
     let unit = super::apps::unit_members(node, &target).await?;
     if let Some(added) = unit.members.keys().find(|n| !app.links.contains_key(*n)) {
         return Err(ApiError::conflict(&format!(

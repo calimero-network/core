@@ -10237,7 +10237,7 @@ fn an_instance_from_a_deployment_moves_only_to_what_it_offers() {
     member.release = Some(q("1.0.0"));
     let _prev = m.state.apps.insert("m1".into(), member.clone());
     assert_eq!(
-        m.state.within_deployment(&member, Some(&q("1.0.0"))),
+        m.state.within_deployment(&member, Some(&q("1.0.0")), None),
         Err(OUTSIDE_DEPLOYMENT),
         "not yet a member: the deployment offers no release of q"
     );
@@ -10248,16 +10248,54 @@ fn an_instance_from_a_deployment_moves_only_to_what_it_offers() {
         .unwrap()
         .links
         .insert("store".into(), "m1".into());
+    // A unit's run to `p@version`, naming the member's target.
+    let unit_run = |id: &str, version: &str| crate::types::UpgradeRun {
+        run_id: id.into(),
+        package: "p".into(),
+        version: version.into(),
+        team: None,
+        cascade: false,
+        by: "bob".into(),
+        started_at: 9,
+        apps: vec!["m1".into(), "i1".into()],
+        done: Vec::new(),
+        failed: std::collections::BTreeMap::new(),
+        finished: false,
+        targets: std::iter::once((
+            "m1".to_owned(),
+            crate::types::RunTarget {
+                package: "q".into(),
+                version: "1.0.0".into(),
+            },
+        ))
+        .collect(),
+    };
+    let org = member.org.clone();
+    let runs = &mut m.state.orgs.get_mut(&org).unwrap().upgrade_runs;
+    let _prev = runs.insert("offered".into(), unit_run("offered", "2.0.0"));
+    let _prev = runs.insert("unoffered".into(), unit_run("unoffered", "1.0.0"));
+    // With its unit, to the release the deployment offers: it moves within q.
     assert_eq!(
-        m.state.within_deployment(&member, Some(&q("1.0.0"))),
+        m.state
+            .within_deployment(&member, Some(&q("1.0.0")), Some("offered")),
         Ok(())
     );
+    // Alone, or in a run to a release the developer did not offer: never.
+    for run in [None, Some("unoffered"), Some("no-such-run")] {
+        assert_eq!(
+            m.state.within_deployment(&member, Some(&q("1.0.0")), run),
+            Err(OUTSIDE_DEPLOYMENT),
+            "{run:?}"
+        );
+    }
+    // Onto another package, or a raw bundle, even with its unit: never.
     assert_eq!(
-        m.state.within_deployment(&member, Some(&p2)),
+        m.state
+            .within_deployment(&member, Some(&p2), Some("offered")),
         Err(OUTSIDE_DEPLOYMENT)
     );
     assert_eq!(
-        m.state.within_deployment(&member, None),
+        m.state.within_deployment(&member, None, Some("offered")),
         Err(OUTSIDE_DEPLOYMENT)
     );
 }

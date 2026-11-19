@@ -409,7 +409,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // every node, so an earlier release's entry replays as it applied.
             if in_deployment || s.cluster_brings(cluster_version::Feature::UpgradeInDeployment) {
                 if let Some(a) = s.apps.get(&app_id) {
-                    s.within_deployment(a, release.as_ref())?;
+                    s.within_deployment(a, release.as_ref(), run.as_deref())?;
                 }
             }
             // A run moves each app it names once, along its package and
