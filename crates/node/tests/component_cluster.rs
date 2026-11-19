@@ -6019,6 +6019,166 @@ async fn a_deployments_secret_reaches_its_instances_unless_they_set_their_own() 
     }
 }
 
+/// A deployment offering an app whose release references (`uses`) a package that declares a
+/// secret holds a value of it, though it does not offer that package: the console lists the
+/// release that declares it and the offered app that reaches it, and a name nothing it
+/// reaches declares is refused. An app the instance creates, carrying the deployment, sends
+/// the deployment's value to the host its own release declares.
+///
+/// Members do not carry their instance's deployment on this tree yet, and `CreateApp` takes
+/// a deployment's instance only on a bundle it offers: the member is recorded here as such a
+/// member would be, on the WASM both releases ship (installed first in the used package, so
+/// its runs are that release's).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it() {
+    use calimero_node::system::SystemCmd;
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const HOST: &str = "echo.outbound.test";
+    const USED: &str = "com.calimero.used-echo";
+    const NOTES: &str = "com.calimero.used-notes";
+    const OPERATORS: &str = "operators-value";
+    const DEPLOYMENTS: &str = "the-deployments-own-value";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            turnstile: false,
+            secrets: [(
+                "ECHO_KEY".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    value: OPERATORS.to_owned(),
+                    packages: vec![USED.to_owned()],
+                    signers: vec![signer],
+                    hosts: vec![HOST.to_owned()],
+                },
+            )]
+            .into(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = alice
+        .packages()
+        .upload(mpk_with_secrets(
+            USED,
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[PREFIX],
+            Some(&[("ECHO_KEY", HOST)]),
+        ))
+        .await
+        .unwrap();
+    let _ = alice
+        .packages()
+        .upload(mpk_using(
+            NOTES,
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            json!({ "echo": { "package": USED, "range": "^0.1", "version": "0.1.0" } }),
+        ))
+        .await
+        .unwrap();
+    let _ = alice
+        .orgs()
+        .outbound_approval(
+            &alice.personal_org().await.unwrap(),
+            USED,
+            Some(typed(json!("manifest"))),
+            Some(false),
+            Some(&mut pk),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let d = alice
+        .deployments()
+        .create("labs", typed(json!({ "account": alice_id })), Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = alice
+        .deployments()
+        .offer(&d, "notes", NOTES, "0.1.0", Some(&mut pk))
+        .await
+        .unwrap();
+
+    // Declared by the release `notes` uses, not by one the deployment offers.
+    let set = alice
+        .deployments()
+        .secret_set(&d, "ECHO_KEY", DEPLOYMENTS, Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert!(!set.to_string().contains(DEPLOYMENTS), "{set}");
+    let e = alice
+        .deployments()
+        .secret_set(&d, "OTHER", "x", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("UNDECLARED_SECRET"), "{e}");
+    let listed = alice.deployments().secrets(&d).await.map(wire).unwrap();
+    let row = &listed["secrets"]["ECHO_KEY"];
+    assert_eq!(row["set"], json!(true), "{listed}");
+    assert_eq!(row["apps"], json!(["notes"]), "{listed}");
+    assert_eq!(
+        row["declaredBy"],
+        json!([{ "package": USED, "version": "0.1.0" }]),
+        "{listed}"
+    );
+    assert_eq!(row["fingerprint"], set["fingerprint"], "{listed}");
+    assert!(!listed.to_string().contains(DEPLOYMENTS), "{listed}");
+
+    // An instance from the deployment creates the app its release uses.
+    let made = alice
+        .apps()
+        .create(AppCreateRequest {
+            name: Some("notes".to_owned()),
+            deployment: Some(d.clone()),
+            package: Some(NOTES.to_owned()),
+            ..AppCreateRequest::default()
+        })
+        .await
+        .map(wire)
+        .unwrap();
+    let member_id = made["links"]["echo"].as_str().unwrap().to_owned();
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let mut member = node
+        .sys(|s| s.apps.get(&member_id).cloned())
+        .expect("the member's record");
+    member.app_id = format!("{member_id}-carried");
+    member.name = "notes.echo-carried".to_owned();
+    member.group = 0;
+    member.deployment = Some(d.clone());
+    member.release = None;
+    let carried = member.app_id.clone();
+    let _ = node
+        .sys_write(&SystemCmd::CreateApp {
+            app: Box::new(member),
+        })
+        .await
+        .unwrap();
+    let mut round = 0;
+    assert_eq!(
+        echoed_secret(&alice, &carried, &mut round).await,
+        json!([DEPLOYMENTS.len()])
+    );
+}
+
 /// An instance's owner sets its own value of a secret its release declares: no operator
 /// bound one here, so the action that names it fails until the owner sets it, then reaches
 /// the echo host with it (redacted in what comes back). The value is never answered, only

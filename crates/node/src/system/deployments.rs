@@ -370,6 +370,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             actor,
             at,
             consent: _,
+            used,
         } => {
             let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
             s.manages_deployment(d, &actor)?;
@@ -379,7 +380,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !value.fits() {
                 return Err(crate::component::SECRET_VALUE_SIZE);
             }
-            if !s.deployment_declares(d, &name) {
+            // An entry from before `used` is judged by the offered releases alone, as it was.
+            let declared =
+                s.deployment_declares(d, &name) || (used && s.deployment_uses_declare(d, &name));
+            if !declared {
                 return Err(UNDECLARED_SECRET);
             }
             let held = s.deployment_secrets.get(&deployment);
