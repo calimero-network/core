@@ -315,6 +315,32 @@ pub struct ModulePin {
     pub compute: String,
 }
 
+/// One app a release references in its signed manifest (`BundleManifest::uses`), as the
+/// system state keeps it: what judges the secrets a deployment offering the release may hold
+/// for the apps it uses ([`SystemState::used_releases`]). Unknown fields are read past, so a
+/// later release may add to it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseUse {
+    /// The referenced package.
+    pub package: String,
+    /// The semver requirement its releases meet (`^0.1`).
+    pub range: String,
+    /// The release the app was built against (`calimero.lock`), inside `range`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+impl From<&calimero_bundle::BundleUse> for ReleaseUse {
+    fn from(u: &calimero_bundle::BundleUse) -> Self {
+        Self {
+            package: u.package.clone(),
+            range: u.range.clone(),
+            version: u.version.clone(),
+        }
+    }
+}
+
 /// One release of a package, as its signed manifest describes it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -354,6 +380,14 @@ pub struct PackageVersion {
     /// bindings alone, as before.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secrets: BTreeMap<String, calimero_bundle::BundleSecret>,
+    /// The apps the release references (`BundleManifest::uses`), by reference name: a
+    /// deployment offering it may hold the secrets their releases declare
+    /// ([`SystemState::deployment_uses_declare`]). Recorded only once every node applies it
+    /// (`Feature::DeploymentUsedSecrets`); empty in a release recorded before, which an
+    /// install of the same release again fills in. Left out when empty, so such a record
+    /// reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub uses: BTreeMap<String, ReleaseUse>,
     pub installed_by: AccountId,
     pub installed_at: u64,
     /// Who installed this same release again after `installed_by` (an
@@ -1058,9 +1092,19 @@ pub const MAX_SECRETS_PER_DEPLOYMENT: usize = calimero_bundle::MAX_SECRETS;
 /// one checkpoint, so they stay under 16 MiB of it together.
 pub const MAX_DEPLOYMENT_SECRETS: usize = 4096;
 
-/// Why a deployment's secret is refused: no release it offers declares the name.
+/// Why a deployment's secret is refused: no release it offers declares the name, nor (for
+/// an entry judged by `SetDeploymentSecret::used`) one an offered release references.
 pub const UNDECLARED_SECRET: &str =
-    "no release this deployment offers declares that secret; offer one that does first";
+    "no release this deployment offers, or one they use, declares that secret; offer one that does first";
+
+/// The names of a secret a deployment reaches ([`SystemState::deployment_declarers`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SecretDeclarers {
+    /// The deployment's apps whose offered release declares it, or references one that does.
+    pub apps: BTreeSet<String>,
+    /// The releases that declare it, as (`package`, `version`).
+    pub declared_by: BTreeSet<(String, String)>,
+}
 
 /// Why clearing a deployment's secret is refused: it holds no value of it.
 pub const NO_DEPLOYMENT_SECRET: &str = "this deployment holds no value of that secret";
@@ -2397,6 +2441,66 @@ impl SystemState {
             self.offered_release(o)
                 .is_some_and(|v| v.secrets.contains_key(name))
         })
+    }
+
+    /// The installed releases `v` references (`PackageVersion::uses`), each with its
+    /// package: every installed release of a referenced package inside the reference's
+    /// range (the one its lock pinned among them), which is what an app it creates may run,
+    /// then and after an upgrade within the range. A range that does not parse reaches none.
+    pub fn used_releases<'a>(
+        &'a self,
+        v: &'a PackageVersion,
+    ) -> impl Iterator<Item = (&'a str, &'a PackageVersion)> + 'a {
+        v.uses.values().flat_map(move |u| {
+            let range = semver::VersionReq::parse(&u.range).ok();
+            self.packages
+                .get(&u.package)
+                .into_iter()
+                .flat_map(|p| p.versions.values())
+                .filter(move |r| {
+                    range.as_ref().is_some_and(|range| {
+                        semver::Version::parse(&r.version).is_ok_and(|ver| range.matches(&ver))
+                    })
+                })
+                .map(move |r| (u.package.as_str(), r))
+        })
+    }
+
+    /// Whether a release that a release `d` offers references
+    /// ([`Self::used_releases`]) declares secret `name`: the apps it creates read the
+    /// deployment's value of it, where they carry the deployment.
+    #[must_use]
+    pub fn deployment_uses_declare(&self, d: &Deployment, name: &str) -> bool {
+        d.apps.values().any(|o| {
+            self.offered_release(o).is_some_and(|v| {
+                self.used_releases(v)
+                    .any(|(_, r)| r.secrets.contains_key(name))
+            })
+        })
+    }
+
+    /// Each secret name a release reachable from `d` declares (an offered one, or one an
+    /// offered release references), with the offered apps that reach it and the
+    /// releases (`package`, `version`) that declare it.
+    #[must_use]
+    pub fn deployment_declarers(&self, d: &Deployment) -> BTreeMap<String, SecretDeclarers> {
+        let mut out: BTreeMap<String, SecretDeclarers> = BTreeMap::new();
+        for (app, o) in &d.apps {
+            let Some(v) = self.offered_release(o) else {
+                continue;
+            };
+            let reached = std::iter::once((o.package.as_str(), v)).chain(self.used_releases(v));
+            for (package, r) in reached {
+                for name in r.secrets.keys() {
+                    let row = out.entry(name.clone()).or_default();
+                    let _new = row.apps.insert(app.clone());
+                    let _new = row
+                        .declared_by
+                        .insert((package.to_owned(), r.version.clone()));
+                }
+            }
+        }
+        out
     }
 
     /// The secret values of the deployment `app_id` was created from, by name:
@@ -5507,6 +5611,12 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// The name may also be declared by a release an offered release references
+        /// (`SystemState::deployment_uses_declare`), for the apps it creates
+        /// (`Feature::DeploymentUsedSecrets`). `false` (and every entry from before): the
+        /// offered releases alone, as before. Left out when `false`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        used: bool,
     },
     /// A manager removes the deployment's value of `name`
     /// (`deployment:{id} / __clear_secret / { name }`): its instances fall

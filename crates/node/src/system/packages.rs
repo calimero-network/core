@@ -129,17 +129,25 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 if let Some(v) = p.versions.get(&release.version) {
                     // Other bytes under its version are a different,
                     // conflicting release. The same release again changes
-                    // nothing but who installed it: it is theirs too.
+                    // nothing but who installed it (it is theirs too), and
+                    // what the record had not kept yet.
                     if v.mpk != release.mpk {
                         return Err("that version is installed with other contents");
                     }
-                    if !v.installed_by_any(&actor) {
-                        if let Some(v) = s
-                            .packages
-                            .get_mut(&package)
-                            .and_then(|p| p.versions.get_mut(&release.version))
-                        {
+                    let new_installer = !v.installed_by_any(&actor);
+                    // A release recorded before its `uses` were kept gets them from the
+                    // same `.mpk` installed again (`Feature::DeploymentUsedSecrets`).
+                    let fill_uses = v.uses.is_empty() && !release.uses.is_empty();
+                    if let Some(v) = s
+                        .packages
+                        .get_mut(&package)
+                        .and_then(|p| p.versions.get_mut(&release.version))
+                    {
+                        if new_installer {
                             let _new = v.installers.insert(actor);
+                        }
+                        if fill_uses {
+                            v.uses = release.uses;
                         }
                     }
                     return Ok(json!({ "package": package, "version": release.version }));

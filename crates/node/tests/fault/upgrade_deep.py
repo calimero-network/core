@@ -78,8 +78,9 @@ NOT_COVERED = [
      "`a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range` (`component_cluster.rs`) covers it on "
      "one build; a run without targets reads and writes as before"),
     ("Packages", "The apps a release references (`uses` in the signed manifest, on its capability card)",
-     "nothing is stored: the node checks them at install and reads them from the release's manifest; the "
-     "deep fixtures are packed by the old release's meroctl, which writes no `uses`. "
+     "the node checks them at install and reads them from the release's manifest, and from 1.0.0-rc.32 keeps "
+     "their package and range on the release (`PackageVersion::uses`), which `deployment-used-secrets` reads "
+     "back; the deep fixtures are packed by the old release's meroctl, which writes no `uses`. "
      "`a_release_names_the_apps_it_uses_on_its_card` (`component_cluster.rs`) covers install and the card "
      "on one build. A case once the upgrade-from release packs them"),
     ("Apps", "An instance created with the apps its release creates (`AppRecord::links`, `init`'s `links`)",

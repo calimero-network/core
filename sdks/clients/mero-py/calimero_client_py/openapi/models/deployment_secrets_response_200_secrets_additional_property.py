@@ -10,6 +10,12 @@ from ..types import UNSET, Unset
 from typing import cast
 from typing import Union
 
+if TYPE_CHECKING:
+    from ..models.deployment_secrets_response_200_secrets_additional_property_declared_by_item import (
+        DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem,
+    )
+
+
 T = TypeVar("T", bound="DeploymentSecretsResponse200SecretsAdditionalProperty")
 
 
@@ -18,6 +24,7 @@ class DeploymentSecretsResponse200SecretsAdditionalProperty:
     """
     Attributes:
         apps (list[str]):
+        declared_by (list['DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem']):
         set_ (bool):
         fingerprint (Union[Unset, str]):
         set_by (Union[Unset, str]):
@@ -25,6 +32,9 @@ class DeploymentSecretsResponse200SecretsAdditionalProperty:
     """
 
     apps: list[str]
+    declared_by: list[
+        "DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem"
+    ]
     set_: bool
     fingerprint: Union[Unset, str] = UNSET
     set_by: Union[Unset, str] = UNSET
@@ -32,7 +42,16 @@ class DeploymentSecretsResponse200SecretsAdditionalProperty:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.deployment_secrets_response_200_secrets_additional_property_declared_by_item import (
+            DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem,
+        )
+
         apps = self.apps
+
+        declared_by = []
+        for declared_by_item_data in self.declared_by:
+            declared_by_item = declared_by_item_data.to_dict()
+            declared_by.append(declared_by_item)
 
         set_ = self.set_
 
@@ -47,6 +66,7 @@ class DeploymentSecretsResponse200SecretsAdditionalProperty:
         field_dict.update(
             {
                 "apps": apps,
+                "declaredBy": declared_by,
                 "set": set_,
             }
         )
@@ -61,8 +81,21 @@ class DeploymentSecretsResponse200SecretsAdditionalProperty:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.deployment_secrets_response_200_secrets_additional_property_declared_by_item import (
+            DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem,
+        )
+
         d = dict(src_dict)
         apps = cast(list[str], d.pop("apps"))
+
+        declared_by = []
+        _declared_by = d.pop("declaredBy")
+        for declared_by_item_data in _declared_by:
+            declared_by_item = DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem.from_dict(
+                declared_by_item_data
+            )
+
+            declared_by.append(declared_by_item)
 
         set_ = d.pop("set")
 
@@ -74,6 +107,7 @@ class DeploymentSecretsResponse200SecretsAdditionalProperty:
 
         deployment_secrets_response_200_secrets_additional_property = cls(
             apps=apps,
+            declared_by=declared_by,
             set_=set_,
             fingerprint=fingerprint,
             set_by=set_by,

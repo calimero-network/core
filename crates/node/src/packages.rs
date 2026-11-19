@@ -449,6 +449,12 @@ impl Node {
                 metadata,
                 outbound: manifest.outbound.clone(),
                 secrets: manifest.secrets.clone().unwrap_or_default(),
+                uses: manifest
+                    .uses
+                    .iter()
+                    .flatten()
+                    .map(|(name, u)| (name.clone(), u.into()))
+                    .collect(),
                 installed_by: actor.to_owned(),
                 installed_at: now_secs(),
                 installers: BTreeSet::new(),
@@ -468,9 +474,20 @@ impl Node {
     /// nodes), then record it.
     async fn record_release(
         &self,
-        v: Verified,
+        mut v: Verified,
         upload: Option<Arc<[u8]>>,
     ) -> Result<Value, ApiError> {
+        // An older node drops `uses`: they are recorded once every node keeps them, and an
+        // install of the same release after that fills them in. The release installs either
+        // way, as it did before they were kept.
+        if !v.release.uses.is_empty()
+            && self
+                .require_features(&[crate::system::cluster_version::Feature::DeploymentUsedSecrets])
+                .await
+                .is_err()
+        {
+            v.release.uses.clear();
+        }
         self.refuse_stalled_install(&v.release.installed_by, &v.signer_id)?;
         // An older node drops `components` and would apply the release as an app's, and drops
         // `pipelines` and would hold none.

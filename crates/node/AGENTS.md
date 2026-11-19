@@ -459,7 +459,18 @@ is its command line.
   `MAX_SECRETS_PER_DEPLOYMENT`, `MAX_DEPLOYMENT_SECRETS` (the system state is
   one checkpoint). `DeleteDeployment` drops them. A value whose name no offer
   declares any more stays, unused, until cleared. `Feature::DeploymentSecrets`
-  (rc.32). Lookup: `Node::outbound_for` -> `component::run_secrets`: the
+  (rc.32). A name a release an offered one references declares is taken too
+  (`SetDeploymentSecret { used: true }`, which the API sets only when no offered
+  release declares it; `Feature::DeploymentUsedSecrets`, rc.32; an entry
+  without it is judged by the offers alone, as before):
+  `SystemState::deployment_uses_declare` over `used_releases` (every installed
+  release of each `PackageVersion::uses` package inside its range). `uses`
+  (`system::ReleaseUse`: package, range, version) is recorded by
+  `InstallPackage` only once the feature is active (`record_release` drops it
+  before; `SystemCmd::features` names it), and installing the same `.mpk`
+  again fills it into a record that has none. `GET` adds `declaredBy`
+  (`deployment_declarers`) and lists the offered apps that reach a name
+  through `uses` in `apps`. Lookup: `Node::outbound_for` -> `component::run_secrets`: the
   instance's own value, else its deployment's (`SystemState::deployment_secrets_of`,
   this node's system state at run time, not the app's log), else the operator's
   in the gate; each only for a name the release declares. Never answered:
@@ -469,10 +480,13 @@ is its command line.
   it. Regressions: `a_deployments_managers_set_secrets_its_offers_declare`,
   `deployment_secrets_carry_their_managers_consent`,
   `a_deployment_secret_value_never_prints`,
-  `state_from_before_deployment_secrets_reads_with_none_and_writes_as_before`
+  `state_from_before_deployment_secrets_reads_with_none_and_writes_as_before`,
+  `a_deployment_holds_secrets_the_releases_its_offers_use_declare`,
+  `releases_and_entries_from_before_used_secrets_replay_unchanged`
   (`system::tests`), `a_runs_secrets_are_the_instances_then_its_deployments`,
-  `a_deployments_secret_reaches_its_instances_unless_they_set_their_own`
-  (`component_cluster.rs`).
+  `a_deployments_secret_reaches_its_instances_unless_they_set_their_own`,
+  `a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it`
+  (`component_cluster.rs`), the `deployment-used-secrets` upgrade case.
 - **Sign-up policy** (`Governance::sign_up`, `--sign-up open|invite|closed`,
   left out of the governance JSON when `open`): `CreateAccount { invite }`
   is judged at apply by `SystemState::admits` (`open`: anyone; `invite`: an

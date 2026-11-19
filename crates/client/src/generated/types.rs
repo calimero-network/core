@@ -4469,8 +4469,19 @@ pub struct DeploymentOrgsResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentSecretsResponseSecretsValueDeclaredByItem {
+    pub package: String,
+    pub version: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentSecretsResponseSecretsValue {
     pub apps: Vec<String>,
+    #[serde(rename = "declaredBy")]
+    pub declared_by: Vec<DeploymentSecretsResponseSecretsValueDeclaredByItem>,
     pub set: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
