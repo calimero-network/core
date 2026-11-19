@@ -156,8 +156,9 @@ impl Node {
         let state = super::off_workers(|| system_state_of(&key, &found))?;
         self.check_same_deployment(&state)?;
         self.refuse_while_old_nodes_answer(&state).await?;
-        for (hash, bytes) in crate::backup::code(&dir, &key)? {
-            self.engine.put_blob(&hash, &bytes)?;
+        let code = super::off_workers(|| crate::backup::code(&dir, &key))?;
+        for (hash, bytes) in code {
+            self.disk().put_blob(&hash, &bytes)?;
         }
         let (apps, accounts) = self.seed_system(state).await?;
         info!(
@@ -210,8 +211,8 @@ impl Node {
             .collect();
         crate::system::refound(&mut state, &founders, self.config.replicas);
         let counts = (state.apps.len(), state.accounts.len());
-        self.system
-            .replace_machine_data(&serde_json::to_vec(&state)?)?;
+        let data = serde_json::to_vec(&state)?;
+        super::off_workers(|| self.system.replace_machine_data(&data))?;
         let index = self.system.applied();
         self.system.snapshot_through(index, SEED_WAIT).await?;
         self.system.purge_log_through(index, SEED_WAIT).await?;
@@ -295,7 +296,7 @@ impl Node {
                     "{file} does not hold the code it names"
                 )));
             }
-            self.engine
+            self.disk()
                 .put_blob(&hash, &bytes)
                 .map_err(|e| ApiError::internal(&e.to_string()))?;
         }
@@ -354,23 +355,27 @@ impl Node {
             .ok()
             .and_then(|k| k.try_into().ok())
             .ok_or_else(|| bad(eyre::eyre!("the app file names no file key")))?;
-        let mut missing = 0_usize;
-        for hash in segments {
-            if self.engine.get_segment(&hash).ok().flatten().is_some() {
-                continue;
+        // Each segment is read from the recovery disk and stored here, off the async workers.
+        let missing = super::off_workers(|| {
+            let mut missing = 0_usize;
+            for hash in segments {
+                if self.engine.get_segment(&hash).ok().flatten().is_some() {
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(at.join(segment_file(&hash))) else {
+                    missing += 1;
+                    continue;
+                };
+                if hex::encode(ring::digest::digest(&ring::digest::SHA256, &bytes)) != hash {
+                    missing += 1;
+                    continue;
+                }
+                self.disk()
+                    .put_segment(&hash, &bytes)
+                    .map_err(|e| ApiError::internal(&e.to_string()))?;
             }
-            let Ok(bytes) = std::fs::read(at.join(segment_file(&hash))) else {
-                missing += 1;
-                continue;
-            };
-            if hex::encode(ring::digest::digest(&ring::digest::SHA256, &bytes)) != hash {
-                missing += 1;
-                continue;
-            }
-            self.engine
-                .put_segment(&hash, &bytes)
-                .map_err(|e| ApiError::internal(&e.to_string()))?;
-        }
+            Ok::<_, ApiError>(missing)
+        })?;
         if missing > 0 {
             return Err(ApiError::new(
                 409,
@@ -386,7 +391,7 @@ impl Node {
     /// Keep code a recovery file holds in this node's store, its hash checked
     /// by the caller; the restore hands it to the other replicas.
     pub(crate) fn put_code(&self, hash: &str, bytes: &[u8]) -> Result<(), ApiError> {
-        self.engine
+        self.disk()
             .put_blob(hash, bytes)
             .map_err(|e| ApiError::internal(&e.to_string()))
     }

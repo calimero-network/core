@@ -2,6 +2,9 @@
 //! on a lost job node, cancel, caps, the result method, usage and the queue. The app is the
 //! `compute` fixture (`apps/fixture-compute`).
 
+// Tests corrupt or drop a node's stored bytes directly, off any runtime path.
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 use common::UploadBytes as _;
 

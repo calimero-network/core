@@ -336,7 +336,7 @@ impl Node {
             .filter_map(|(_, source)| Compiled::of(source).ok())
             .find(|(_, c)| c.hash == hash)
             .ok_or_else(|| ApiError::internal("the release lacks the pipeline it registered"))?;
-        self.engine
+        self.disk()
             .put_blob(hash, &found.1.canonical)
             .map_err(|e| ApiError::internal(&e.to_string()))?;
         Ok(found.1.canonical)

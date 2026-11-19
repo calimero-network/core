@@ -482,7 +482,7 @@ impl Node {
             self.require_upgraded_nodes().await?;
         }
         for (hash, bytes) in &v.wasm {
-            self.engine
+            self.disk()
                 .put_blob(hash, bytes)
                 .map_err(|e| ApiError::internal(&e.to_string()))?;
         }
@@ -567,7 +567,7 @@ impl Node {
                 "the release's WASM is not the recorded one",
             ));
         }
-        self.engine
+        self.disk()
             .put_blob(hash, &bytes)
             .map_err(|e| ApiError::internal(&e.to_string()))?;
         info!(package = %r.at.package, version = %r.at.version, "fetched and verified a release");
