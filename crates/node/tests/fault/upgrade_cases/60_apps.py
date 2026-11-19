@@ -289,6 +289,9 @@ class TransferMove(DeepCase):
 
     def exercise(self, w, s):
         ted, tess = people(w, "ted", "tess")
+        # Organizations are ordinary on the new release: an app goes only to a member of
+        # its organization (ted's, where the old release's transfer put it), so tess joins.
+        join(ted, ted.get(f"apps/{s['given']}")["org"], tess)
         ted.raw("post", f"apps/{s['given']}/transfer", {"to": tess.id})
         s["owner"] = "tess"
         s["records"]["given"] = snap(tess, f"apps/{s['given']}")
