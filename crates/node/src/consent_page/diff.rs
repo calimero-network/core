@@ -492,7 +492,7 @@ mod tests {
                 "sweep": { "kind": "timer", "every": "1h", "allowSystem": true },
             },
             "events": { "Changed": { "id": "string" }, "Wiped": null },
-            "world": "calimero:app@0.5.4",
+            "world": "calimero:app@0.5.5",
         });
         let sheet = capability_sheet(
             &side("1.0.0", &from, Some(&a)),

@@ -24,6 +24,10 @@ pub fn linked(_name: &str) -> Option<String> {
     denied()
 }
 
+pub fn unit_of() -> Option<String> {
+    denied()
+}
+
 pub fn app_owner() -> String {
     denied()
 }

@@ -116,6 +116,20 @@ pub fn linked(name: &str) -> Option<String> {
     backend::linked(name)
 }
 
+/// The app whose unit this one is a member of: the instance whose release created this app
+/// with it (`uses` with `mode = "create"`). `None` for an app no instance created, and for
+/// one whose instance was deleted.
+///
+/// An app that serves others (a confidential KV store, a private inference endpoint) treats
+/// `app:<unit_of()>` as its admin, so the instance that created it uses it with no grant step:
+///
+/// ```ignore
+/// let admin = env::unit_of().is_some_and(|parent| env::caller() == Caller::App(parent));
+/// ```
+pub fn unit_of() -> Option<String> {
+    backend::unit_of()
+}
+
 /// The account that owns the app.
 pub fn app_owner() -> String {
     backend::app_owner()

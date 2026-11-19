@@ -87,6 +87,11 @@ NOT_COVERED = [
      "`links` is written only once every node runs this release (`Feature::AppLinks`); "
      "`creating_an_instance_creates_the_apps_its_release_uses` (`component_cluster.rs`) covers it on one "
      "build, and a record without it reads as before (`serde(default)`)"),
+    ("Apps", "A unit's member reading the instance that created it (`env::unit_of`, WIT `context.unit-of`)",
+     "nothing is stored: it is derived from the instance's `links` in the system state; it needs a unit, "
+     "which the old release cannot create (its meroctl packs no `uses`), and a component built for 0.5.5. "
+     "`a_member_names_the_instance_that_created_it_with_unit_of` (`component_cluster.rs`) covers it on one "
+     "build, and components built before 0.5.5 keep running without it"),
     ("Apps", "A person's grant letting an app call another as them (`SetDelegation`, `env::via`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `uses` with `methods`, and a "
      "grant is written only once every node runs this release (`Feature::Delegation`); "

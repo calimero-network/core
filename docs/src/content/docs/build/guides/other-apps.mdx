@@ -156,6 +156,23 @@ safe to have run. A view reads the other app's latest committed state.
 The member must admit your app, like any app called by another
 ([Cross-app calls](/build/guides/cross-context/#1-admit-the-caller)).
 
+### Serve the instance that created you
+
+The other way round, an app built to be created by others (a confidential KV
+store, a private inference endpoint) asks who created it with `env::unit_of()`:
+the id of the instance whose unit it is a member of, `None` for an app created on
+its own. Confidential KV and Private Inference releases take `app:<env::unit_of()>`
+as their admin, so the app that created them uses them at once, with no grant step:
+
+```rust
+fn is_admin() -> bool {
+    env::unit_of().is_some_and(|parent| env::caller() == env::Caller::App(parent))
+}
+```
+
+It is derived from the instance's record as the node holds it now, so it is `None`
+again once that instance is deleted.
+
 ## 3. Use an app the owner already runs
 
 An `attach` reference starts empty. The owner fills it with an app they manage in the

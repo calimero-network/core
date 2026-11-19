@@ -6296,6 +6296,69 @@ async fn creating_an_instance_creates_the_apps_its_release_uses() {
     assert_eq!(got, json!("hi"));
 }
 
+/// A member names the instance that created it: `env::unit_of()` in the member's run answers
+/// the instance's id, and in the instance's own run, or an app created on its own, `None`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_member_names_the_instance_that_created_it_with_unit_of() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let uses = json!({
+        "kv": { "package": "com.calimero.unit-of-kv", "range": "^0.1", "version": "0.1.0" },
+    });
+    for (package, uses) in [
+        ("com.calimero.unit-of-kv", Value::Null),
+        ("com.calimero.unit-of-notes", uses),
+    ] {
+        let _ = alice
+            .packages()
+            .upload(mpk_using(
+                package,
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[],
+                uses,
+            ))
+            .await
+            .unwrap();
+    }
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": "com.calimero.unit-of-notes" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+    let alone = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "alone", "package": "com.calimero.unit-of-kv" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    assert_eq!(
+        strong_view(&alice, &kv, "unitOf", json!({})).await,
+        json!(notes)
+    );
+    assert_eq!(
+        strong_view(&alice, &notes, "unitOf", json!({})).await,
+        Value::Null
+    );
+    assert_eq!(
+        strong_view(&alice, &alone, "unitOf", json!({})).await,
+        Value::Null
+    );
+}
+
 /// A unit upgrades in one consent: `POST /apps/{app}/upgrade-unit` moves the instance to the
 /// new release of its package and each member to the release the new one pins for it, with
 /// one passkey assertion over all of them. A member is not moved on its own off the range

@@ -5,6 +5,7 @@ Oct 27, 2026 · @Xabi
 Changes proposed after v0.14, in this repository (for @Xabi to fold into the current spec; D76 is a placeholder number, after the D53–D75 that later versions use):
 
 - D76: calls, timers and xcall deliveries may make outbound HTTP, recorded in their log entry so followers and retries never fetch again; S9 reworded, D12 narrowed. This reverses v0.6's "`Outcome` loses its `outbound` field".
+- Section 4: `context` gains `unit-of` (0.5.5): the app whose unit this one is a member of (the instance whose release created it), none otherwise; the SDK table gains `env::unit_of`.
 - Section 4: `xcall` gains `batch` (0.5.4): a run's synchronous calls and views sent together and run at once, each checked, counted and keyed as alone; the SDK's synchronous xcalls become futures, awaited in `async fn` methods and joined with `app::join!` / `app::join_all`, all through `batch`.
 - Section 4: `xcall` gains synchronous `call` and `view`, which wait for another app's answer within the run (one hop, not atomic with the caller); the SDK table gains `env::xcall_call`, `env::xcall_view` and `env::fetch`.
 
@@ -309,7 +310,7 @@ State access (D46): the host core reads app state through a `StateView` trait, `
 Apps import nine Calimero interfaces (including types) and a fixed set of WASI interfaces that the host implements or stubs, and export one dispatcher; nothing else crosses the boundary.
 
 ```wit
-package calimero:app@0.5.4;
+package calimero:app@0.5.5;
 
 interface types {
   type account-id = string;
@@ -530,7 +531,7 @@ A component built against 0.5.0 keeps installing and running: the engine accepts
 
 A method declares itself a compute method in the ABI with `"kind": "compute"` and `"compute": { "fuel": u64, "memoryMib": u32, "wallSecs": u32, "result": "<method>" }`; `fuel` is required, memory defaults to 4,096 MiB and wall time to 900 s.
 `result` names a method of the app component's ABI that carries `"computeResult": true`.
-The compute component's ABI (world `calimero:app/compute@0.5.4`) lists the compute methods only, so the host does not look for the result methods there.
+The compute component's ABI (world `calimero:app/compute@0.5.5`) lists the compute methods only, so the host does not look for the result methods there.
 The host refuses at install (`BadAbi`) a compute method whose fuel is over 10^12, memory over 4,096 MiB or wall time over 900 s, or whose `result` is not a `computeResult` method; so does `compute` on any other kind.
 The SDK writes them from `#[app::compute(fuel = N, memory_mib = M, wall_secs = S, result = "method")]` on a method without `self`, and `#[app::compute_result]` on a call method.
 The node never lets a client reach either: `/intents` and `/views` answer `WrongKind` for a compute method and for a `computeResult` method, whoever the caller is.

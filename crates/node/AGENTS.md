@@ -871,6 +871,11 @@ is its command line.
   `init` takes `links`, passes their ids in `initArgs` (a client's own
   `links` there is refused). A failure after a member was made leaves it in
   place. Regression: `creating_an_instance_creates_the_apps_its_release_uses`.
+  A member names its instance with `env::unit_of()` (WIT `context.unit-of`, 0.5.5;
+  `SysDirectory::unit_of`: the app whose `links` hold it, derived from the system state,
+  so nothing new is stored and it is `None` once the instance is gone); Confidential KV
+  and Private Inference releases take `app:<unit_of>` as their admin. Regression:
+  `a_member_names_the_instance_that_created_it_with_unit_of`.
   A unit upgrades in one consent (`api/upgrades.rs`: `app_upgrade_unit`, `POST
   /apps/{app}/upgrade-unit`): a run whose consent (`org:<org> /
   __upgrade_unit / { app, package, version, targets }`) names each member's own

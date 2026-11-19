@@ -363,7 +363,7 @@ fn bad_compute_caps_are_refused() {
 fn a_compute_world_abi_lists_compute_methods_without_their_result_methods() {
     let only_digest = json!({
         "abiVersion": 1,
-        "world": "calimero:app/compute@0.5.4",
+        "world": "calimero:app/compute@0.5.5",
         "methods": { "digest": { "kind": "compute", "compute": { "fuel": 5, "result": "onDone" } } },
     });
     let abi = Abi::from_json(&only_digest).unwrap();
@@ -382,7 +382,7 @@ fn a_compute_world_abi_lists_compute_methods_without_their_result_methods() {
         MethodKind::Compute(_)
     ));
     let mut app_world = only_digest;
-    app_world["world"] = json!("calimero:app@0.5.4");
+    app_world["world"] = json!("calimero:app@0.5.5");
     assert!(matches!(
         Abi::from_json(&app_world),
         Err(PrepareError::BadAbi(_))
