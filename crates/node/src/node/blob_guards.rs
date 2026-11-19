@@ -1,6 +1,10 @@
 //! What keeps a deletion of a blob's bytes from destroying bytes stored again meanwhile: a
 //! logged entry pins the ids it stores until it commits or fails, and a deletion that was
 //! between its checks and its delete when a put of the same id landed gives up.
+//!
+//! A put and a delete of one id take turns on that id's own lock, held across the disk write;
+//! the map of ids is locked only to read and change counts, never across a write, so a pin or a
+//! check on an async worker never waits for another id's fsync.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,6 +23,8 @@ struct Slot {
     pins: u32,
     deletions: u32,
     raced: bool,
+    /// Taken by a deletion's delete and by a put racing it, across the disk write.
+    turn: Arc<Mutex<()>>,
 }
 
 #[derive(Default)]
@@ -106,15 +112,17 @@ impl BlobGuards {
         }
     }
 
-    /// Runs the put of `id`, and tells the deletions of `id` in flight that bytes came.
+    /// Runs the put of `id`, and tells the deletions of `id` in flight that bytes came. Blocks
+    /// while a deletion of `id` deletes: run it off the async workers (`node::disk`).
     pub(crate) fn put<T>(&self, id: &str, store: impl FnOnce() -> T) -> T {
-        let mut slots = self.slots();
-        if let Some(slot) = slots.get_mut(id).filter(|s| s.deletions > 0) {
+        let turn = (self.slots().get(id))
+            .filter(|s| s.deletions > 0)
+            .map(|s| Arc::clone(&s.turn));
+        let _turn = turn.as_deref().map(take_turn);
+        if let Some(slot) = self.slots().get_mut(id).filter(|s| s.deletions > 0) {
             slot.raced = true;
         }
-        let stored = store();
-        drop(slots);
-        stored
+        store()
     }
 
     fn release(&self, id: &str, pins: u32, deletions: u32) {
@@ -135,13 +143,19 @@ impl BlobGuards {
 
 impl Deletion {
     /// Runs `delete` unless a put of the id landed since this deletion began: `None` then.
+    /// Blocks while a put of the id racing it writes: run it off the async workers
+    /// (`node::disk`).
     pub(crate) fn delete<T>(&self, delete: impl FnOnce() -> T) -> Option<T> {
-        let slots = self.guards.slots();
-        let raced = slots.get(&self.id).is_some_and(|s| s.raced);
-        let deleted = (!raced).then(delete);
-        drop(slots);
-        deleted
+        // This deletion keeps the id's slot.
+        let turn = (self.guards.slots().get(&self.id)).map(|s| Arc::clone(&s.turn));
+        let _turn = turn.as_deref().map(take_turn);
+        let raced = (self.guards.slots().get(&self.id)).is_some_and(|s| s.raced);
+        (!raced).then(delete)
     }
+}
+
+fn take_turn(turn: &Mutex<()>) -> MutexGuard<'_, ()> {
+    turn.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Drop for Pins {
@@ -238,6 +252,37 @@ mod tests {
         let deletion = guards.begin_deletion("x");
         guards.put("y", || ());
         assert_eq!(deletion.delete(|| "deleted"), Some("deleted"));
+    }
+
+    /// A put waits for a delete of the same id that is writing, then stops none: its bytes land
+    /// after the delete. Meanwhile the map of ids is free, as a pin on an async worker needs.
+    #[test]
+    fn a_put_waits_for_a_delete_of_its_id_without_holding_the_others() {
+        let guards = Arc::new(BlobGuards::default());
+        let deletion = guards.begin_deletion("x");
+        let (deleting, writing) = std::sync::mpsc::channel();
+        let (finish, finished) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|s| {
+            let deletion = &deletion;
+            let deleter = s.spawn(move || {
+                deletion.delete(|| {
+                    deleting.send(()).unwrap();
+                    finished.recv().unwrap();
+                })
+            });
+            writing.recv().unwrap();
+            let putter = s.spawn(|| guards.put("x", || "stored"));
+            // The map is not held by the delete's write: other ids are pinned meanwhile.
+            drop(guards.pin(vec!["y".into()]));
+            assert!(!guards.is_pinned("x"));
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!putter.is_finished(), "the put did not wait for the delete");
+            finish.send(()).unwrap();
+            assert_eq!(deleter.join().unwrap(), Some(()));
+            assert_eq!(putter.join().unwrap(), "stored");
+        });
+        drop(deletion);
+        assert!(guards.slots().is_empty());
     }
 
     #[test]

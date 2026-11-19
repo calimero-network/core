@@ -158,6 +158,17 @@ detail.
      `links` in `initArgs` is the node's; a client that sends it is refused.
      `attach` references are never created.
 
+     The instance and its members are one unit. An instance created from a
+     deployment's offer gives each member the same deployment, though the
+     deployment offers only the instance's release (its offer covers the
+     unit): every member's usage is billed to the deployment's developer, and
+     the deployment's secret values fill what the member's own release
+     declares, as they do the instance's. Deleting the
+     instance deletes every member with it, down to the members' own members
+     (`DELETE /apps/{app}` answers them in `members`), and a member is not
+     deleted alone while its instance stands (`409 UNIT_MEMBER`). Both wait
+     for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
+
      <UnitModel />
 
      The two modes side by side: a `create` member is part of its instance's

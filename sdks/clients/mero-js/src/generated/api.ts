@@ -50,7 +50,7 @@ export interface paths {
         post?: never;
         /**
          * Delete an app
-         * @description The owner or an organization admin.
+         * @description The owner or an organization admin. An instance whose release created apps with it (`uses` with `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
          *
          *     **Who:** a passkey session (an API key is refused).
          */
@@ -5213,6 +5213,7 @@ export interface operations {
                     "application/json": {
                         appId: string;
                         deleted: boolean;
+                        members?: string[];
                     };
                 };
             };
@@ -5227,6 +5228,15 @@ export interface operations {
             };
             /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`; `UNIT_MEMBER`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

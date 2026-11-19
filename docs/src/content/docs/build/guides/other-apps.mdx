@@ -119,7 +119,9 @@ Three example apps in core's `apps/` show each step, with harness tests:
 
 When someone creates an instance of your release, the node first creates each
 `create` reference in the same organization, owned by the same person, and named
-`<instance>.<name>`. Your `init` can take their ids:
+`<instance>.<name>`; an instance from a deployment gives them its deployment, so
+their usage is billed to you as the instance's is. Deleting the instance deletes
+them, and none is deleted alone while it stands. Your `init` can take their ids:
 
 ```rust
 #[app::init]
