@@ -1,0 +1,56 @@
+---
+title: Sealed transport and attestation
+description: How CalimeroClient verifies a node's TDX quote and seals every request to its attested key over Noise NK (calimero/sealed-http/v2).
+---
+
+A node speaks plain HTTP, and any TLS in front of it ends outside the enclave, at whatever proxy
+the operator runs. So the client never trusts the connection: it trusts the **quote**.
+
+## 1. Attest
+
+`fetchAttestedKey(baseUrl, policy)` asks `GET /attestation?nonce=…` (the one call besides
+`/health` served in the clear). The quote's report data must be
+`nonce(32) ‖ SHA-256("calimero.tee-attest.transport-key.v1" ‖ app_hash ‖ transport_key)`, so it
+binds this request and the X25519 transport key the channel will be opened to. Then, as core's
+Rust client (`attest::verify`, `Measurements::Release`):
+
+- **mock** quotes (`MOCK_TDX_QUOTE_V1…`, `merod local`) pass only with `CloudPolicy(allowMock = true)`;
+- a **real** quote: the node names its mero-tee release; it must be at least `minReleaseVersion`;
+  the release's `published-mrtds.json` is fetched (`ReleaseSource.Mirror` by default, `Github`, or
+  `Custom`) and its **Sigstore** signature checked against the mero-tee release workflow; the
+  quote's **DCAP** signature chain and TCB status are checked against Intel's collateral (from
+  the cloud's mirror, `DEFAULT_COLLATERAL_MIRROR`, by default; `collateralSource =
+  "intel"` asks Intel's PCS, a URL a PCCS of yours,
+  `fetchCollateral` replaces the fetch; the mirror cannot forge anything, every item is
+  Intel-signed, and `maxCollateralAgeDays` bounds how old a replayed copy may be); the TD must not be a debug TD; and all five registers must be the
+  release's image for the trusted profile (`locked-read-only` unless `allowDebugProfile`).
+
+```kotlin
+val policy = CloudPolicy(release = CloudReleasePolicy(minReleaseVersion = "2.3.109"))
+// or your own verifier, e.g. pinned measurements:
+val pinned = CloudPolicy(verifyQuote = createQuoteVerifier(QuoteVerifierOptions(allowedMeasurements = listOf(…))))
+```
+
+## 2. Seal
+
+`SealedTransport` (an OkHttp interceptor) opens a Noise session to the attested key and seals
+every request. The wire format is core's `calimero-sealed` crate and mero-js `src/sealed/`, byte
+for byte:
+
+```text
+handshake   Noise_NK_25519_AESGCM_SHA256, prologue "calimero/sealed-http/v2"
+  request   POST /sealed/handshake      0x02 ‖ transport_pk ‖ Noise message 1
+  response  0x02 ‖ Noise message 2 (payload = session_id(16) ‖ lifetime secs, u32 BE)
+exchange    POST /sealed
+  header    0x02 ‖ session_id(16) ‖ request_id (u64 BE; from 1, each used once)
+  request   header ‖ AES-256-GCM(req key, nonce = request_id ‖ 0u32, aad = header, inner)
+  response  frames: u32 BE length ‖ AES-256-GCM(resp key, nonce = request_id ‖ index, aad = header, kind ‖ data)
+  inner     u32 BE head length ‖ head (JSON) ‖ body
+```
+
+Both paths are served by nodes from core 1.0.0-rc.25 on. An older node answers the handshake with a
+refusal (`404`, say), which is reported as a `SealedTransportException`; no other path is tried.
+
+Responses stream frame by frame, so server-sent events are sealed too. A restarted node
+(`stale_transport_key`) is attested again; a dropped session (`unknown_session`) is reopened and
+the request resent. `CalimeroClient` keeps one sealed channel per node.

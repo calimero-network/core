@@ -4,9 +4,8 @@ added, removed and with a changed signature, as Markdown.
 
     python scripts/facade_changes.py OLD_FACADE NEW_FACADE
 
-.github/workflows/openapi-sync.yml puts this in the pull request it opens,
-comparing the checked-in facade with the one regenerated from core's new
-document. Exits 0 whatever it finds; prints nothing about a part with no
+Run it on the checked-in facade and the one regenerated from a new
+docs/public/openapi.json to see what a regeneration changes for callers. Exits 0 whatever it finds; prints nothing about a part with no
 change, and "No facade method changed." when nothing did.
 """
 

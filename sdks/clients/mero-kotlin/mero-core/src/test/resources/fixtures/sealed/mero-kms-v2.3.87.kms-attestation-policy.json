@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "role": "kms",
+  "profile": "locked-read-only",
+  "tag": "2.3.87",
+  "commit_sha": "945644278427764f538f4999625e5a527dae232c",
+  "workflow_run_id": "36406429226",
+  "workflow_run_attempt": "1",
+  "generated_at": "2026-09-28T10:43:15Z",
+  "source": {
+    "repository": "calimero-network/mero-tee",
+    "workflow": "Release mero-kms",
+    "ref": "refs/heads/master"
+  },
+  "policy_registry_entry_path": "release-probe+node",
+  "measurement_markers": {
+    "kms_role": "calimero.role=kms",
+    "node_role": "calimero.role=node",
+    "node_profile_key": "calimero.profile",
+    "node_root_hash_key": "calimero.root_hash"
+  },
+  "kms": {
+    "provider": "mero-kms",
+    "attest_endpoint": "/attest",
+    "report_data_layout": {
+      "bytes_0_31": "nonce",
+      "bytes_32_63": "binding_or_default_domain_separator"
+    },
+    "default_binding_hex": "2b035e5f69e1f5ac54d906c2e37c3d412b13dd32360ff0c02b3018ecc26c0a4b",
+    "default_binding_b64": "KwNeX2nh9axU2QbC43w9QSsT3TI2D/DAKzAY7MJsCks="
+  },
+  "policy": {
+    "kms_allowed_tcb_statuses": [
+      "uptodate",
+      "outofdate"
+    ],
+    "kms_allowed_mrtd": [
+      "c1ee9c16e3afc506cfe042c5b846a368528f3b37618eafb27469bc114cf914e9222c91618470e7f2b28ac360968270a5"
+    ],
+    "kms_allowed_rtmr0": [
+      "3fdcd6d94f35d3dee35e62ce7b5620c641618ee9d863a602b3b164792ecae8373703948c415f7725a7ba78df99589b9f"
+    ],
+    "kms_allowed_rtmr1": [
+      "21d9af2f8200f160572da7dbbe099282c50a3f0dac48434684327e32dce94fe6881319abf4942e707586db7d70e062b3"
+    ],
+    "kms_allowed_rtmr2": [
+      "adc0cc9603ea24ae31ef00dbb63dd96539c766b4d59fe3b0415c2284309e288923837a79bb43918633510d364bd4f0f2"
+    ],
+    "kms_allowed_rtmr3": [
+      "daf9c8f339733c3230961455b099b223b3036a33ab00a5e57b67d952901c3da75b4767ca525ce5f701b3ca01fc05fbde"
+    ],
+    "node_allowed_tcb_statuses": [
+      "uptodate",
+      "outofdate"
+    ],
+    "node_allowed_mrtd": [
+      "c1ee9c16e3afc506cfe042c5b846a368528f3b37618eafb27469bc114cf914e9222c91618470e7f2b28ac360968270a5"
+    ],
+    "node_allowed_rtmr0": [
+      "36dd50c47243df4d21c4af2adeb20c13ade4af4bfd2e133f136026f3589efa9466c42a697f9323b2635a5778311e629c"
+    ],
+    "node_allowed_rtmr1": [
+      "331753adb8ef7cb51f7c8ff5ccf8305663bb83f1f4afcf53083c2c98f7c3883bdf42d646ce734c6ff9daead989344035"
+    ],
+    "node_allowed_rtmr2": [
+      "17cc854179fb9083da8a9f1dc01d63513b7580a2755e6e14522601b1c55f9904a38ab3c4a0e9408540b47ca4416fc296"
+    ],
+    "node_allowed_rtmr3": [
+      "38dd580e11c032bbab19ad8bb4ef5b4247f0d91e6681e8f29f2a8b396363c881aefea7d41c4d9d659d228e7b2a2b0002"
+    ]
+  },
+  "merod_config_path": "tee.kms.attestation"
+}

@@ -19,7 +19,6 @@ source is `docs/`.
 | What | Name |
 | --- | --- |
 | SwiftPM package (`Package.swift` `name`) | `mero-swift` |
-| CocoaPods pod | `mero-swift` (`mero-swift.podspec`, `module_name` `MeroKit`) |
 | Modules and products people import | unchanged: `MeroKit`, `MeroAPI`, `MeroKitUI`, `MeroKitTestSupport` (and the `MeroExample` executable) |
 | SwiftPM URL | `https://github.com/calimero-network/swift-sdk` (the mirror) |
 
@@ -59,8 +58,9 @@ cd examples/MeroSampleApp && xcodegen generate && \
 The sample's XCUITest suite (simulator, against the in-app cluster,
 `-uitest-mock`) runs when the workflow is called with `ui-tests: true`. The
 live-node e2e suite (`Tests/MeroKitE2ETests`: the node API as mero-js's
-cluster tests cover it, and the app layer, `CalimeroAppBackend`) is not in
-CI: run it by hand against a `merod local` cluster, as TESTING.md shows
+cluster tests cover it, and the app layer, `CalimeroAppBackend`) runs in core's
+`e2e.yml` (job `clients-swift`: macOS, the change's merod built there; a
+skipped case fails it). By hand, against a `merod local` cluster, as TESTING.md shows
 (`scripts/dev-cluster.sh up`, then `MERO_E2E_NODE_URL`, `MERO_E2E_NODES`,
 `MERO_E2E_BUNDLE` and `MERO_E2E_MPK`).
 
@@ -96,13 +96,12 @@ them.
 
 ## Version
 
-The SDK states core's `VERSION` in `mero-swift.podspec` (`spec.version`) and
-in the install snippets of `README.md` and the docs quickstart (`exact:`).
+The SDK states core's `VERSION` in the install snippets of `README.md` and the docs quickstart (`exact:`).
 They are `sdk.json`'s `version_files`; `python3 scripts/sdks.py version-sync`
 writes them. Never bump them by hand. `ci/core-version` is not one: it is the
 merod release `scripts/dev-cluster.sh` runs.
 
-## Release: the SwiftPM mirror and CocoaPods
+## Release: the SwiftPM mirror
 
 SwiftPM needs `Package.swift` at the root of a git repository, so
 calimero-network/swift-sdk stays as a read-only mirror. A core release calls
@@ -112,12 +111,11 @@ calimero-network/swift-sdk stays as a read-only mirror. A core release calls
    history as a branch whose root is this directory);
 2. pushes it to calimero-network/swift-sdk as `master` and tags it with
    VERSION (no `v`), as the organization's GitHub App
-   (`vars.ACTIONS_APP_ID` / `secrets.ACTIONS_APP_PRIVATE_KEY`);
-3. with `cocoapods: true`, `pod trunk push mero-swift.podspec`
-   (`secrets.COCOAPODS_TRUNK_TOKEN`). Off by default: MeroKit depends on
-   swift-openapi-runtime and swift-http-types, which are not on the CocoaPods
-   trunk, so the pod cannot build until the podspec can depend on them (or
-   vendors them).
+   (`vars.ACTIONS_APP_ID` / `secrets.ACTIONS_APP_PRIVATE_KEY`).
+
+There is no CocoaPods pod. The trunk turns read-only on 2026-12-02, and MeroKit
+depends on swift-openapi-runtime and swift-http-types, which were never on it;
+the last pod is swift-sdk's 0.7.0. SwiftPM is the only distribution.
 
 `dry-run: true` (the default) splits and prints what it would push, and
 pushes nothing. The split carries swift-sdk's own commits unchanged (it was

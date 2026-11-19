@@ -1541,7 +1541,12 @@ is its command line.
   bound to the app and file name under `HMAC(K_c, "calimero.backup.manifest.v1")`);
   `backup::find` checks one, `backup::latest` opens one with K_c. The file and its
   manifest are synced before the rename that lists the backup, and the directory
-  after it (likewise kept code and the kept cluster key).
+  after it (likewise kept code and the kept cluster key). That file work
+  (`keep_cluster_key`, `keep_code`, `backup::write`) runs off the async workers
+  (`node::off_workers`): a copy and its fsyncs on a slow disk would stop every
+  group's heartbeats on the worker. Regression:
+  `a_backup_waiting_for_the_disk_leaves_the_async_worker_free` (`tests/slow_backup.rs`;
+  `testing::slow_backup_files` holds the thread that writes a backup file).
 - **Restore** (`node/restore.rs`, `api/restore.rs`, `POST /ops/apps/{app}/restore`):
   operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before the
   signature (`backup::find`, `Found::check_release`, the bundle the backup's head

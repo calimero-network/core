@@ -15,10 +15,11 @@ name: E2E
 #     keys, signed packages from a registry, a rolling upgrade of every node,
 #     and the kv-store soak (calls/s and p50/p95/p99 per operation in the job
 #     summary);
-#   - the clients (job `clients`): mero-js's and calimero-client-py's cluster
-#     tests against this tree's `merod`. Pair a breaking change with its
-#     client fix by a same-named branch, or by `sdk-ref: <ref>` /
-#     `py-ref: <ref>` in the PR body (scripts/resolve-paired-ref.sh).
+#   - the clients (jobs `clients` and `clients-swift`): the cluster tests of
+#     this tree's mero-js, mero-py, mero-kotlin and mero-swift (sdks/clients/)
+#     against this tree's `merod` (mero-swift's on macOS, against `merod`
+#     built there: MeroKit needs CryptoKit). A breaking server change fixes
+#     the clients in the same PR: they live in one tree.
 #
 # Nightly runs the suite with `--nightly` (three iterations, a 900 s soak,
 # rooms_fault.py's randomized nemesis) and the fuzzy scenarios for 900 s.
@@ -98,7 +99,9 @@ jobs:
   # What this event runs: `e2e` (the builds and the scenarios) on a merge-queue
   # entry, a nightly or a dispatch, or a PR labelled `ci:e2e`, when the change
   # reaches code; `node` (the process suite, compute and the clients) when it also
-  # reaches merod's closure (ci-scope.py's `upgrade_path`) or the compute fixtures.
+  # reaches merod's closure (ci-scope.py's `upgrade_path`) or the compute fixtures;
+  # `clients` also when it reaches a client SDK (sdks/clients/), which then
+  # needs the release build but not the process suite.
   # A nightly or dispatch, or a change to this workflow, runs everything. Fails
   # closed: files it cannot list run everything.
   plan:
@@ -111,6 +114,7 @@ jobs:
     outputs:
       e2e: ${{ steps.plan.outputs.e2e }}
       node: ${{ steps.plan.outputs.node }}
+      clients: ${{ steps.plan.outputs.clients }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -156,8 +160,11 @@ jobs:
           grep -qE '^(\.github/workflows/e2e\.yml|\.github/actions/)' <<<"$files" && all=true
           wanted=true
           if [ "$EVENT" = pull_request ] && [ "$LABELLED" != true ]; then wanted=false; fi
+          # The clients' own sources, and the JS workspace they build in.
+          sdk_clients=false
+          grep -qE '^sdks/(clients/|package\.json$|pnpm-lock\.yaml$)' <<<"$files" && sdk_clients=true
           e2e=false
-          if [ "$wanted" = true ] && { [ "$all" = true ] || [ "$rust" = true ] \
+          if [ "$wanted" = true ] && { [ "$all" = true ] || [ "$rust" = true ] || [ "$sdk_clients" = true ] \
                || grep -qE '^(workflows/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
             e2e=true
           fi
@@ -166,9 +173,12 @@ jobs:
                || grep -qE '^(apps/fixture-compute/|apps/compute-redact/|crates/meroctl/|crates/node/tests/fault/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
             node=true
           fi
+          clients=$node
+          if [ "$e2e" = true ] && [ "$sdk_clients" = true ]; then clients=true; fi
           echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
           echo "node=$node" >> "$GITHUB_OUTPUT"
-          echo "event=$EVENT labelled=$LABELLED rust=$rust node_closure=$node_closure all=$all -> e2e=$e2e node=$node"
+          echo "clients=$clients" >> "$GITHUB_OUTPUT"
+          echo "event=$EVENT labelled=$LABELLED rust=$rust node_closure=$node_closure sdk_clients=$sdk_clients all=$all -> e2e=$e2e node=$node clients=$clients"
           if [ "$EVENT" = pull_request ] && [ "$wanted" != true ]; then
             echo "::notice::e2e runs in the merge queue; add the ci:e2e label to run it on this PR now"
           fi
@@ -177,7 +187,7 @@ jobs:
   result:
     name: E2E result
     if: ${{ !cancelled() }}
-    needs: [plan, build-release, build-scenarios, scenarios, process-suite, compute-e2e, clients]
+    needs: [plan, build-release, build-scenarios, scenarios, process-suite, compute-e2e, clients, clients-swift]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -829,67 +839,25 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # One job per client, on the release merod `build-release` built.
+  # One job per client, on the release merod `build-release` built: this tree's
+  # SDKs (sdks/clients/), so a server change and the client fix it needs land in
+  # one PR.
   clients:
     name: clients against merod (${{ matrix.client }})
     needs: [plan, build-release]
-    if: needs.plan.outputs.node == 'true'
+    if: needs.plan.outputs.clients == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        client: [mero-js, calimero-client-py]
+        client: [mero-js, mero-py, mero-kotlin]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-
-      - name: Test the ref pairing
-        run: bash scripts/tests/resolve-paired-ref.test.sh
-
-      - name: Resolve the client refs (paired)
-        id: refs
-        env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-          DEFAULT_REF: master
-        run: |
-          set -euo pipefail
-          js="$(scripts/resolve-paired-ref.sh "$DEFAULT_REF")"
-          py="$(SDK_REPO=https://github.com/calimero-network/calimero-client-py.git \
-            REF_KEY=py-ref scripts/resolve-paired-ref.sh "$DEFAULT_REF")"
-          echo "js=$js" >> "$GITHUB_OUTPUT"
-          echo "py=$py" >> "$GITHUB_OUTPUT"
-          echo "mero-js@$js, calimero-client-py@$py"
-
-      - name: Checkout mero-js
-        if: matrix.client == 'mero-js'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: calimero-network/mero-js
-          ref: ${{ steps.refs.outputs.js }}
-          path: _mero-js
-          persist-credentials: false
-
-      - name: Checkout calimero-client-py
-        if: matrix.client == 'calimero-client-py'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: calimero-network/calimero-client-py
-          ref: ${{ steps.refs.outputs.py }}
-          path: _client-py
-          persist-credentials: false
-
-      # The client's extension (calimero-client-py) builds with the pinned toolchain.
-      - name: Setup Rust CI
-        if: matrix.client == 'calimero-client-py'
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          shared-key: ci-checks
-          rust-cache: false
 
       # KV_STORE_WASM is the kv component (apps/fixture-kv: set, get, len,
       # and `clear`, a confirm method it declares itself).
@@ -905,6 +873,12 @@ jobs:
           echo "MEROD_BINARY=$PWD/target/release/merod" >> "$GITHUB_ENV"
           echo "KV_STORE_WASM=$PWD/target/app-components/kv.wasm" >> "$GITHUB_ENV"
 
+      - name: Set up pnpm
+        if: matrix.client == 'mero-js'
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: sdks/package.json
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: matrix.client == 'mero-js'
         with:
@@ -913,38 +887,46 @@ jobs:
           # restored here could be poisoned by another branch (zizmor cache-poisoning).
           package-manager-cache: false
 
-      # If this fails, refresh mero-js's receipt vectors from core (paired by `sdk-ref:` in the PR body).
+      # mero-js keeps a copy of core's receipt vectors (its `generate` refreshes it).
       - name: mero-js receipt vectors are the ones core produces
         if: matrix.client == 'mero-js'
         run: |
-          cp crates/client/tests/fixtures/receipt-vectors.json _mero-js/src/client/fixtures/receipt-vectors.json
-          git -C _mero-js diff --exit-code -- src/client/fixtures/receipt-vectors.json
+          cmp crates/client/tests/fixtures/receipt-vectors.json sdks/clients/mero-js/src/client/fixtures/receipt-vectors.json \
+            || { echo "::error::run python3 scripts/sdks.py generate mero-js: mero-js's receipt vectors differ from crates/client's"; exit 1; }
 
       # MERO_JS_REQUIRE_COMPUTE makes the pipeline test fail, not skip, so this job cannot pass vacuously.
       - name: mero-js cluster tests
         if: matrix.client == 'mero-js'
-        working-directory: _mero-js
+        working-directory: sdks
         env:
           MEROCTL: ${{ github.workspace }}/target/release/meroctl
           COMPUTE_WASM: ${{ github.workspace }}/target/app-components/compute.wasm
           COMPUTE_FIXTURE_DIR: ${{ github.workspace }}/apps/fixture-compute
           MERO_JS_REQUIRE_COMPUTE: "1"
         run: |
-          npm install -g pnpm
           pnpm install --frozen-lockfile
+          cd clients/mero-js
           pnpm vitest run --config vitest.config.ts src/client/receipts.test.ts
           pnpm test:cluster
 
+      # The client's extension builds with the pinned toolchain.
+      - name: Setup Rust CI
+        if: matrix.client == 'mero-py'
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: ci-checks
+          rust-cache: false
+
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        if: matrix.client == 'calimero-client-py'
+        if: matrix.client == 'mero-py'
         with:
           python-version: "3.12"
 
       # The client builds against the core its Cargo.toml pins; what this job
       # tests is that client against this tree's node.
-      - name: calimero-client-py cluster tests
-        if: matrix.client == 'calimero-client-py'
-        working-directory: _client-py
+      - name: mero-py cluster tests
+        if: matrix.client == 'mero-py'
+        working-directory: sdks/clients/mero-py
         run: |
           set -euo pipefail
           python -m venv .venv
@@ -952,3 +934,100 @@ jobs:
           pip install maturin==1.15.0
           pip install -e ".[dev]"
           pytest tests/test_cloud_v2.py tests/test_cloud_v2_api.py -v --tb=short
+
+      # The runner's Android SDK (ANDROID_HOME) builds mero-core; no Gradle
+      # cache: this workflow also publishes (zizmor cache-poisoning).
+      - name: Set up JDK 17
+        if: matrix.client == 'mero-kotlin'
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Validate the Gradle wrapper
+        if: matrix.client == 'mero-kotlin'
+        uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      # cluster-test.sh starts `merod local` (three nodes) and deploys the kv
+      # package build-release packed; the cluster tests fail, not skip, with it set.
+      - name: mero-kotlin cluster tests
+        if: matrix.client == 'mero-kotlin'
+        working-directory: sdks/clients/mero-kotlin
+        env:
+          MEROD_BIN: ${{ github.workspace }}/target/release/merod
+          MERO_KV_MPK: ${{ github.workspace }}/dist/com.calimero.kv-store-1.0.0.mpk
+        run: scripts/cluster-test.sh --no-daemon
+
+  # mero-swift's live-node suite (MeroKitE2ETests): MeroKit needs CryptoKit, so
+  # macOS, and `merod` built there from this tree (build-release's is Linux);
+  # the kv component and package come from build-release. Every case must run:
+  # a skipped one (an unset variable) fails the job.
+  clients-swift:
+    name: clients against merod (mero-swift)
+    needs: [plan, build-release]
+    if: needs.plan.outputs.clients == 'true'
+    runs-on: macos-15
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      # The cache group of platforms.yml's macOS release build; saves nothing.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: release
+          save-if: false
+
+      - name: Build merod for macOS
+        run: cargo build -p merod --release --target aarch64-apple-darwin
+
+      - name: Download the kv fixture
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-release
+          path: e2e-release
+
+      - name: Start a merod local cluster
+        working-directory: sdks/clients/mero-swift
+        env:
+          MEROD_BIN: ${{ github.workspace }}/target/aarch64-apple-darwin/release/merod
+          MEROD_BASE_PORT: "3300"
+          MEROD_LOCAL_DIR: ${{ runner.temp }}/merod-local
+        run: scripts/dev-cluster.sh up --fresh
+
+      - name: mero-swift cluster tests
+        working-directory: sdks/clients/mero-swift
+        env:
+          MERO_E2E_NODE_URL: http://127.0.0.1:3301
+          MERO_E2E_NODES: http://127.0.0.1:3302,http://127.0.0.1:3303
+          MERO_E2E_BUNDLE: ${{ github.workspace }}/e2e-release/target/app-components/kv.wasm
+          MERO_E2E_MPK: ${{ github.workspace }}/e2e-release/dist/com.calimero.kv-store-1.0.0.mpk
+        run: |
+          set -euo pipefail
+          swift test --filter MeroKitE2ETests 2>&1 | tee "$RUNNER_TEMP/swift-e2e.log"
+          summary=$(grep -E 'Executed [0-9]+ tests?, with' "$RUNNER_TEMP/swift-e2e.log" | tail -1)
+          echo "$summary"
+          if grep -qE 'with [1-9][0-9]* tests? skipped' <<<"$summary"; then
+            echo "::error::MeroKitE2ETests skipped cases: every case must run against the cluster"
+            exit 1
+          fi
+
+      - name: The cluster's logs
+        if: failure()
+        run: tail -n 300 "$RUNNER_TEMP/merod-local/merod.log" || true
+
+      - name: Stop the cluster
+        if: always()
+        working-directory: sdks/clients/mero-swift
+        env:
+          MEROD_BIN: ${{ github.workspace }}/target/aarch64-apple-darwin/release/merod
+          MEROD_BASE_PORT: "3300"
+          MEROD_LOCAL_DIR: ${{ runner.temp }}/merod-local
+        run: scripts/dev-cluster.sh down || true

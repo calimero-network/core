@@ -85,28 +85,27 @@ including a code a route does not list, the same way; it reads `details` by the
 (`busy`, outside the envelope) is not an `Error`: its schema is the one
 `x-calimero-sealed-refusal` names at the root.
 
-The SDKs (mero-js, calimero-client-py, swift-sdk and kotlin-sdk, the `openapi`
-repositories in `.github/fleet.json`) each vendor this document and generate
-their client from it. When a push to master changes it, `openapi-sync.yml`
-sends each of them a `core-openapi` event with the commit. Each SDK's own
-`openapi-sync.yml` calls core's reusable `sdk-openapi-sync.yml` (pinned by
-commit), which re-vendors the document at that commit, regenerates, and opens
-or refreshes one pull request (`chore/core-openapi`), so that SDK's CI judges
-the change before anything is released. Run the workflow by hand (dry run by
-default) to resend the event.
+The SDKs under `sdks/` (mero-js, mero-py, mero-swift and mero-kotlin) generate
+their clients from this document. When a push to master changes it,
+`sdk-regenerate.yml` regenerates every SDK and opens or refreshes one pull
+request in core (`chore/sdk-regenerate`), so the SDKs' CI judges the change
+before the next release ships them. Run the workflow by hand (dry run by
+default) to see what it would open.
 
-The pull request's title sets the SDK's next version. `scripts/openapi-classify.py`
-diffs the document the SDK vendors now against the new one, using a pinned
-`oasdiff` and a set of rules for the `x-calimero-*` extensions:
+The pull request's title says what the change does to callers.
+`scripts/openapi-classify.py` diffs the document the SDKs were last generated
+from against the new one, using a pinned `oasdiff` and a set of rules for the
+`x-calimero-*` extensions:
 
-| Change | Title | SDK release |
-| --- | --- | --- |
-| Something callers of the generated client rely on is removed or changed: a route, a response field, an operationId, a narrowed enum, a new required request field. The same holds for an operation that now needs a step-up, an operator signature or the sealed channel, stops being retry-safe, or moves to another `x-calimero-group`. | `feat(api)!:` with a `BREAKING-CHANGE:` footer | major |
-| Something is added and nothing is broken | `feat(api):` | minor |
-| Descriptions, new `x-calimero-codes` entries, and anything else no generated signature sees | `chore(api):` | patch |
+| Change | Title |
+| --- | --- |
+| Something callers of the generated client rely on is removed or changed: a route, a response field, an operationId, a narrowed enum, a new required request field. The same holds for an operation that now needs a step-up, an operator signature or the sealed channel, stops being retry-safe, or moves to another `x-calimero-group`. | `feat(sdks)!:`, labelled `api-breaking` |
+| Something is added and nothing is broken | `feat(sdks):` |
+| Descriptions, new `x-calimero-codes` entries, and anything else no generated signature sees | `chore(sdks):` |
 
-A pull request here that changes the document gets the same verdict in the
-summary of its `OpenAPI impact` run, so its author sees what each SDK will
-release before merging.
+The SDKs are versioned with core, so the title marks the change in core's
+release notes rather than choosing an SDK version. A pull request here that
+changes the document gets the same verdict in the summary of its
+`OpenAPI impact` run, so its author sees it before merging.
 
 <OpenApiReference />

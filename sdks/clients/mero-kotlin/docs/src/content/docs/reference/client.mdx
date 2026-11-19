@@ -1,0 +1,41 @@
+---
+title: CalimeroClient
+description: The CalimeroClient facade groups and the methods the client keeps by hand.
+---
+
+`CalimeroClient(CalimeroClientOptions(baseUrl, nodes, policy, httpClient, retry, onSession))`, or
+by cluster name through the node directory:
+`CalimeroClient.connect(CalimeroConnectOptions(cluster, policy, directory, zone, …))`.
+Every method is `suspend`; paths are relative to the node and sealed.
+
+Every route of core's node API is a method of the facade generated from core's OpenAPI document,
+one property per group: `client.auth`, `client.apps`, `client.orgs`, `client.packages`,
+`client.deployments`, `client.consent`, `client.public`, `client.ops`
+(`client.orgs.inviteCreate(org = org, role = OrgRole.MEMBER)`). Each method takes named parameters
+and answers the generated model. A passkey step-up (`412 CONFIRM_REQUIRED`) is approved with the
+call's `passkey`, else `client.passkey`; an operator decision (`428`) is signed with the call's
+`operator`, else `client.operator`. A field whose `null` means something takes `Explicit(null)`.
+`client.api()` is the generated client under the facade.
+
+What `CalimeroClient` keeps besides:
+
+| Group | Methods |
+|---|---|
+| Session | `connect`, `useApiKey`, `useSession`, `session`, `nodeUrl`, `nodes`, `onSessionChange`, `forget`, `passkey`, `operator` |
+| Identity | `signUp(passkey, name, SignUpOptions(origin, invite))`, `signIn(passkey, SignInOptions(origin))`, `refresh`, `signOut`, `signOutEverywhere`, `addPasskey(passkey, approver)`, `attestation` |
+| Streams | `events`, `presenceStream` |
+| Blobs | `uploadBlob(app, data, contentType)`, `blobContent` (bytes and content type) |
+| Organizations | `startRecovery(org, seed)` (the seed signs here) |
+| Approvals | `appsReportAll`, `pendingApprovals`, `requestConsent`, `openConsentPage` (with `OpenConsentOptions(navigate, confirm)`; a code that is not `confirmationCode(requestId)` throws `CONSENT_CODE_MISMATCH`, `checkConsentCode`), `consentResult` (typed `ConsentOutcome` once approved), `resumeConsent(href, requestId)` (`CONSENT_NOT_STARTED`, `CONSENT_REQUEST_MISMATCH`, `CONSENT_NOT_DECIDED`, `CONSENT_REPLACED`), `waitForConsent` (until `expiresAt`, or a `timeout`) |
+
+Helpers beside it: `errorFrom`, `fetchAttestedKey`, `claimedRelease`, `pendingApprovalsFrom`,
+`releaseConsent`, `withdrawConsent`, `upgradeConsent`, `consentReturn`, `consentReturnTo`, `stalledBy`,
+`compareVersions`, `publisherBindingMessage`, `OrgCapabilities`, `b64url` / `fromB64url`,
+`readDirectory` / `orderNodes` / `DEFAULT_DIRECTORY`, `deployerKey`, `frontendManifest`,
+`pageDeployment`, `freshCollateral`, and the recovery seed's `newRecoverySeed`, `recoverySeedText`,
+`parseRecoverySeed`, `recoveryPublicKey`, `recoveryMessage`, `signRecovery`.
+
+Where Kotlin differs from mero-js in shape only: `AbortSignal` → cancel the coroutine (and
+`events` is a `Flow`); option objects → named parameters; `'unknown' | false` → `Committed`;
+`createApp(name, string | {package…})` → `AppSource.Bundle` / `AppSource.Package`; a session
+change is reported through `onSession` / `onSessionChange` so it can be stored.

@@ -3,7 +3,9 @@ name: Release
 # A release cut builds and publishes: a push to master whose version (the root
 # Cargo.toml's) has no GitHub release yet. It publishes the binaries (Linux
 # x86_64 and aarch64; the command-line tools for macOS), crates, the App Bundle,
-# the Homebrew tap and SDK bump PRs, and the merod image (amd64 and arm64) under
+# the Homebrew tap, the SDKs under sdks/ (npm, PyPI, Maven Central and the
+# SwiftPM mirror; the cut's commit runs scripts/sdks.py version-sync) and the
+# downstream bump PRs, and the merod image (amd64 and arm64) under
 # the version and `latest` or `prerelease`, once that image passed its smoke e2e.
 # Any other push builds nothing: `prepare` decides in seconds. PRs and the merge
 # queue build no release: ci-checks tests every crate, and e2e.yml runs a release
@@ -743,6 +745,164 @@ jobs:
           echo "::notice::Homebrew bump: $url"
           gh pr merge --auto --squash "$url" ||
             echo "::warning::auto-merge is off in homebrew-tap (Settings, Allow auto-merge): $url waits for a person"
+
+  # The SDKs under sdks/ (sdks/AGENTS.md) ship with core: same commit, same
+  # version. VERSION is this release (scripts/sdks.py keeps it equal to
+  # Cargo.toml's workspace version, and every SDK's manifests equal to VERSION).
+  # A release cut publishes each SDK after the binaries are out; a run by hand
+  # runs every SDK's publish path as a dry run (builds and packs, pushes nothing).
+  sdk-version:
+    name: SDK version
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Every SDK states this release
+        env:
+          RELEASE: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/sdks.py version-check
+          if [ "$(cat VERSION)" != "$RELEASE" ]; then
+            echo "::error::VERSION is $(cat VERSION), this release is $RELEASE: run scripts/sdks.py version-sync in the release cut"
+            exit 1
+          fi
+
+  # Each runs once the version holds and, on a release cut, once the binaries
+  # are released, so an SDK is never published for a core that is not.
+  sdk-mero-js:
+    name: Publish mero-js
+    needs: [prepare, sdk-version, release-binaries]
+    if: ${{ !cancelled() && needs.sdk-version.result == 'success' && (needs.prepare.outputs.binary_release != 'true' || needs.release-binaries.result == 'success') }}
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    uses: ./.github/workflows/sdk-mero-js.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  sdk-mero-react:
+    name: Publish mero-react
+    # After mero-js: it depends on exactly this release of it.
+    needs: [prepare, sdk-mero-js]
+    if: ${{ !cancelled() && needs.sdk-mero-js.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    uses: ./.github/workflows/sdk-mero-react.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  # The components after what they build on: icons and tokens, then ui, then charts.
+  sdk-mero-icons:
+    name: Publish mero-icons
+    needs: [prepare, sdk-version, release-binaries]
+    if: ${{ !cancelled() && needs.sdk-version.result == 'success' && (needs.prepare.outputs.binary_release != 'true' || needs.release-binaries.result == 'success') }}
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    uses: ./.github/workflows/sdk-mero-icons.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  sdk-mero-tokens:
+    name: Publish mero-tokens
+    needs: [prepare, sdk-version, release-binaries]
+    if: ${{ !cancelled() && needs.sdk-version.result == 'success' && (needs.prepare.outputs.binary_release != 'true' || needs.release-binaries.result == 'success') }}
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    uses: ./.github/workflows/sdk-mero-tokens.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  sdk-mero-ui:
+    name: Publish mero-ui
+    needs: [prepare, sdk-mero-icons, sdk-mero-tokens]
+    if: ${{ !cancelled() && needs.sdk-mero-icons.result == 'success' && needs.sdk-mero-tokens.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    uses: ./.github/workflows/sdk-mero-ui.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  sdk-mero-charts:
+    name: Publish mero-charts
+    needs: [prepare, sdk-mero-ui]
+    if: ${{ !cancelled() && needs.sdk-mero-ui.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    uses: ./.github/workflows/sdk-mero-charts.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  sdk-mero-py:
+    name: Publish mero-py
+    needs: [prepare, sdk-version, release-binaries]
+    if: ${{ !cancelled() && needs.sdk-version.result == 'success' && (needs.prepare.outputs.binary_release != 'true' || needs.release-binaries.result == 'success') }}
+    permissions:
+      contents: read
+      id-token: write # PyPI trusted publishing
+    uses: ./.github/workflows/sdk-mero-py.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  sdk-mero-kotlin:
+    name: Publish mero-kotlin
+    needs: [prepare, sdk-version, release-binaries]
+    if: ${{ !cancelled() && needs.sdk-version.result == 'success' && (needs.prepare.outputs.binary_release != 'true' || needs.release-binaries.result == 'success') }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sdk-mero-kotlin.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  sdk-mero-swift:
+    name: Publish mero-swift
+    needs: [prepare, sdk-version, release-binaries]
+    if: ${{ !cancelled() && needs.sdk-version.result == 'success' && (needs.prepare.outputs.binary_release != 'true' || needs.release-binaries.result == 'success') }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sdk-mero-swift.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  # The apps that pin the JavaScript SDKs, once both are published.
+  fleet-bump-npm:
+    name: Open SDK npm bump PRs
+    if: ${{ !cancelled() && github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true' && needs.sdk-mero-react.result == 'success' && needs.sdk-mero-charts.result == 'success' }}
+    needs: [prepare, sdk-mero-react, sdk-mero-charts]
+    uses: ./.github/workflows/fleet-bump.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      surfaces: npm
+    secrets: inherit
 
   fleet-bump:
     name: Open SDK bump PRs

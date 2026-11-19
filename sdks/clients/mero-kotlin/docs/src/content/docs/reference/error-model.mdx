@@ -1,0 +1,36 @@
+---
+title: Error model
+description: The typed errors CalimeroClient throws, as mero-js names them, and what each means.
+---
+
+The node answers a refusal as `{ "error": CODE, "message", "details" }`. `errorFrom(status, body)`
+turns it into a typed exception, matching status **and** code. Every one extends `CalimeroError`
+(`status`, `code`, `nodeMessage`, `details`).
+
+| Error | Status / code | Meaning |
+|---|---|---|
+| `LoginRequired` | 401 `UNAUTHENTICATED` | Refreshing could not help (no refresh token, or it was refused): sign in again. |
+| `WrongNode` | 421 `WRONG_NODE` | This node's release may not serve the account; the client already moved on once (a refresh: through every node). |
+| `NotLeader` | 421 `NOT_LEADER` | Leader-only route (operator); `leaderUrl` says where. Not followed by itself. |
+| `NotFound` | 404 `NOT_FOUND` | Does not exist *for this caller* (an app it may not reach looks the same). |
+| `ConfirmRequired` | 412 `CONFIRM_REQUIRED` | Needs a passkey assertion over this call; pass a `passkey`. |
+| `ConfirmCancelled` | — | The person dismissed the passkey prompt; nothing was sent. |
+| `ArgsTooLarge` | 413 `ARGS_TOO_LARGE` | The call's arguments are over the node's limit. |
+| `IdempotencyMismatch` | 409 `IDEMPOTENCY_MISMATCH` | The key was used before with other arguments. |
+| `ReleaseDeadlineError` | 409 `RELEASE_DEADLINE` | New work stopped until `release` is approved. |
+| `ConsentStale` | 409 `CONSENT_STALE` | The consent page's facts changed; ask again. |
+| `SignUpRefused` | 403 `SIGN_UP_REFUSED` | The cluster's sign-up policy does not take this sign-up: `reason` (`InviteOnly`, `Closed`, `UnknownInvite`, `ExpiredInvite`, `OrgGone`, `Other`). |
+| `OriginNotRegistered` | 403 `ORIGIN_NOT_REGISTERED` | A sign-in or sign-up named a web origin no package registered: `origin`, `package`. |
+| `BadOrigin` | 400 `BAD_ORIGIN` / `BAD_RP_ID` | The node does not take that origin (or rp-id) for a package. |
+| `OriginTaken` | 409 `ORIGIN_TAKEN` | The origin is registered already, or is one of the cluster's own. |
+| `QuotaExceeded` | 429 `QUOTA_EXCEEDED` | As many of something as allowed (origins, blobs, an organization's file bytes). |
+| `RecoveryNotReady` | 409 `RECOVERY_NOT_READY` | An organization's recovery may finish only at `readyAt` (Unix seconds). |
+| `AppError` | 422 `APP_ERROR` | The app refused: `appCode` and named `fields`. |
+| `TrapError` | 422 `TRAP` | The run trapped (`kind`: `OutOfFuel`, …). |
+| `UnavailableError` | 503, or no answer | After the retries, on every node the client knows: `reason`, `committed` (`No` / `Unknown`), `retryAfter`. |
+| `CalimeroError` | anything else | `status` and `code` as the node sent them. |
+
+Outside the node's answers: `TeeTrustException` (the quote, release or collateral did not
+verify), `SealedTransportException` (the envelope itself was refused), `PasskeyCancelled`, and
+`DirectoryError` from `CalimeroClient.connect` (`reason` `Unreachable`, `NotFound`, `BadResponse`
+or `Empty`; `cluster`).

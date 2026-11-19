@@ -1,0 +1,30 @@
+---
+title: System overview
+description: What Calimero 1.0 is, and how mero-kotlin's layers map onto it — CalimeroClient, the app-facing layer, mero-compose and mero-testkit.
+---
+
+## Calimero 1.0
+
+- A **cluster** of attested TDX nodes holds accounts, organizations, teams and packages. Each
+  **app instance** is its own Raft group: the leader runs a call and the followers apply it.
+- Only `GET /health` and `GET /attestation` are plaintext. Everything else goes through the
+  **sealed channel** `calimero/sealed-http/v2` (Noise NK to the transport key the node's quote
+  binds), opened after the client verifies that quote.
+- People sign in with **passkeys**; approvals happen only on the node's own **consent page**.
+- Apps expose `/apps/{app}/intents` (calls), `/views` (reads) and `/events` (SSE).
+
+## The SDK's layers
+
+| Module | What |
+|---|---|
+| **mero-core** `com.calimero.mero` | `CalimeroClient` (mero-js `CalimeroClient`), its typed errors, `CloudPolicy` and `fetchAttestedKey`, `PasskeyProvider` and `SoftPasskey`, approvals and consent types, `SessionStore`. |
+| mero-core `…tee` | `SealedTransport` (Noise NK, wire-identical with core's `calimero-sealed`), DCAP quote verification, Sigstore-signed mero-tee releases. |
+| mero-core `…app` | The app-facing layer: `MeroAppBackend`, `ContextContract`, `CalimeroAppBackend`, `OrgInvitation`. |
+| **mero-compose** | `MeroAppSession`, `PlatformPasskey` (Credential Manager), `ConsentLauncher` (Custom Tabs), `MeroTheme`. |
+| **mero-testkit** | `InMemoryAppBackend` and `RecordingContextContract` for view-model tests. |
+
+```text
+screens ── MeroAppBackend ── CalimeroAppBackend ── CalimeroClient ── SealedTransport ── node
+                 │                                     │
+            InMemoryAppBackend (tests)          fetchAttestedKey (quote → transport key)
+```

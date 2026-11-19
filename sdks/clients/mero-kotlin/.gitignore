@@ -1,0 +1,41 @@
+.gradle/
+build/
+**/build/
+captures/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+local.properties
+
+# Keystore / secrets
+*.jks
+*.keystore
+!debug.keystore
+
+# Kotlin
+.kotlin/
+
+# Local dev helpers
+.build-env.sh
+
+# Run-script artifacts (run-app.sh / run-all-2.sh / *-e2e.sh)
+.mero-a*
+.mero-b*
+.mero-node*
+.mero-build.log
+.emulator-*.log
+merod.log
+merod.pid
+
+# merobox fixtures: fetched per-run from the pinned core release, never committed.
+# Both extensions — the ignore used to cover only the bundle, so a stray raw wasm
+# was committable, and one was (474 KB of it, for ten releases).
+ci/merobox/res/*.mpk
+ci/merobox/res/*.wasm
+
+# Android resources: core's root .gitignore drops `**/res/*` (a Rust
+# convention), which would silently leave out every new resource file here.
+!**/src/*/res/*

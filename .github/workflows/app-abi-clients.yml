@@ -14,6 +14,11 @@ on:
     paths:
       - "crates/app-abi/**"
       - ".github/workflows/app-abi-clients.yml"
+      # The SDKs the clients are written against, in this tree (sdks/).
+      - "sdks/clients/mero-js/**"
+      - "sdks/clients/mero-py/**"
+      - "sdks/package.json"
+      - "sdks/pnpm-lock.yaml"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
@@ -23,6 +28,11 @@ on:
     paths:
       - "crates/app-abi/**"
       - ".github/workflows/app-abi-clients.yml"
+      # The SDKs the clients are written against, in this tree (sdks/).
+      - "sdks/clients/mero-js/**"
+      - "sdks/clients/mero-py/**"
+      - "sdks/package.json"
+      - "sdks/pnpm-lock.yaml"
       - "!**/*.md"
       - "!**/*.mdx"
 
@@ -32,7 +42,7 @@ concurrency:
 
 jobs:
   typescript:
-    name: TypeScript clients against mero-js
+    name: TypeScript clients against this tree's mero-js
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -56,7 +66,7 @@ jobs:
           npm run check
 
   python:
-    name: Python clients against calimero-client-py
+    name: Python clients against this tree's mero-py
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -72,8 +82,21 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install the pinned Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      # mero-py as it is in this tree (sdks/clients/mero-py; it imports as
+      # calimero_client_py), in place of the release requirements.txt names.
+      - name: Build and install this tree's mero-py
+        run: |
+          set -euo pipefail
+          pip install maturin==1.15.0
+          maturin build --release --locked --manifest-path ../../../../sdks/clients/mero-py/Cargo.toml --out "$RUNNER_TEMP/wheels"
+          pip install "$RUNNER_TEMP"/wheels/mero_py-*.whl
+          grep -v '^calimero-client-py' requirements.txt > "$RUNNER_TEMP/requirements.txt"
+          pip install -r "$RUNNER_TEMP/requirements.txt"
+
       - name: Import, call and type-check the golden clients
         run: |
-          pip install -r requirements.txt
           python smoke.py
           mypy --strict --follow-untyped-imports ../golden/*.py

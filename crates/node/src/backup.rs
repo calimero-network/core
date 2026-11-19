@@ -117,6 +117,8 @@ pub fn keep_cluster_key(
     if path.join(release).exists() {
         return Ok(false);
     }
+    #[cfg(feature = "testing")]
+    crate::testing::backup_file_write(dir);
     crate::cluster_key::write_secret(
         &path,
         release,
@@ -171,6 +173,8 @@ pub fn keep_code(
     if path.join(hash).exists() {
         return Ok(false);
     }
+    #[cfg(feature = "testing")]
+    crate::testing::backup_file_write(dir);
     std::fs::create_dir_all(&path)?;
     let tmp = path.join(format!(".{hash}.tmp"));
     std::fs::write(&tmp, code_sealer(cluster_key).seal(hash.as_bytes(), bytes)?)?;
@@ -572,6 +576,8 @@ pub fn write(
     if out.exists() {
         return Ok(false);
     }
+    #[cfg(feature = "testing")]
+    crate::testing::backup_file_write(dir);
     // The manifest first, the file it names last: a backup is listed only
     // once both are there.
     // Each on the disk before the rename names it: a crash then never leaves a

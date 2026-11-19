@@ -600,7 +600,8 @@ pub(super) async fn put_segment(
             .map_err(|e| ApiError::internal(&e.to_string()))?;
     if !matches {
         // What the leader sent is not the file it declared: the report says so, signed.
-        exec::fail_integrity(&job, &run);
+        // Removes the run's input files, which may be large: off the async workers.
+        crate::node::off_workers(|| exec::fail_integrity(&job, &run));
         return Ok(Json(run.status(&headers)));
     }
     #[cfg(feature = "testing")]

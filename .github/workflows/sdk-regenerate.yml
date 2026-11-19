@@ -7,8 +7,8 @@ name: SDK regenerate
 # transport, the methods list); the hand-written layer stays as it is, and the
 # pull request's own CI (sdks.yml) builds and tests every SDK it touches.
 #
-# This replaces openapi-sync.yml's notice to the SDK repositories for the SDKs
-# that live here: they regenerate in the same tree as the server.
+# This replaces the old openapi-sync.yml, which asked each SDK repository to
+# regenerate and open a pull request there: the SDKs live here now.
 #
 # The pull request says what the API change does to callers
 # (scripts/openapi-classify.py), against the document the SDKs were last

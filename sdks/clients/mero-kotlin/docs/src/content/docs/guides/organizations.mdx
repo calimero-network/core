@@ -1,0 +1,84 @@
+---
+title: Organizations and teams
+description: Create organizations and teams, manage members and capabilities, and invite people with org invite tokens.
+---
+
+```kotlin
+// com.calimero.mero.api.models: OrgRole, TeamRole, TeamJoin
+client.passkey = PlatformPasskey(activity)                               // member changes are passkey step-ups
+val org = client.orgs.create(name = "Acme").orgId
+val team = client.orgs.teamCreate(org = org, name = "general", join = TeamJoin.EVERYONE).teamId   // open to every member
+client.orgs.setMember(org = org, account = accountId, role = OrgRole.ADMIN)
+client.orgs.teamSetMember(org = org, team = team, account = accountId, role = TeamRole.LEAD)
+client.orgs.capabilities(org = org, capabilities = OrgCapabilities.of("CREATE_APP", "INVITE_MEMBERS").toLong(), account = accountId)
+client.orgs.removeMember(org = org, account = accountId)                 // your own account: leave
+val info = client.orgs.get(org = org)                                    // members, teams, metadata, …
+val me = client.auth.me()                                                // the account's orgs
+```
+
+## Recovery
+
+An owner who loses every passkey gets the organization back with its recovery seed. The seed never
+leaves the client: the node stores only its public key and checks a signature the seed makes for
+the recovering account.
+
+```kotlin
+val seed = newRecoverySeed()
+showToOwner(recoverySeedText(seed))                                    // 64 hex digits; keep it offline
+val org = client.orgs.create(name = "Acme", recoveryKey = recoveryPublicKey(seed)).orgId
+// later, or for an organization created without one (the owner, with a passkey):
+client.orgs.recoverySet(org = org, publicKey = recoveryPublicKey(newRecoverySeed()))
+
+// Every passkey lost: sign up again with a new passkey, then
+val (_, readyAt) = fresh.startRecovery(org, parseRecoverySeed(written))
+// 72 hours later (the owner may orgs.recoveryCancel meanwhile)
+fresh.orgs.recoveryFinish(org = org, passkey = newPasskey)             // this account owns it; the old owner leaves
+```
+
+Before `readyAt`, `recoveryFinish` throws `RecoveryNotReady`. Rotating the key (`recoverySet`)
+cancels a recovery under way, and the old seed is refused from then on.
+
+## Invites
+
+```kotlin
+val token = client.orgs.inviteCreate(org = org, role = OrgRole.MEMBER, teams = listOf(team)).token   // "inv_…", one use, 7 days
+client.orgs.inviteRedeem(token = token)                                 // no approval: the redeemer joins at once
+```
+
+Someone without an account yet signs up with the invite and joins in the same step:
+`client.signUp(passkey, "bob", SignUpOptions(invite = token))`. On a cluster whose sign-up policy is
+`invite` (`client.deployments.signUpPublic()`, no session needed) that is the only way in; a refused one is
+`SignUpRefused` with a `reason`.
+
+Apps pass invites around as an `OrgInvitation`; in a link it is
+`base58(deflate({"invitation": "inv_…", "namespaceId": "<orgId>", "contextId"?, "name"?}))` in the
+`invitation` query parameter, the same keys 0.x links had:
+
+```kotlin
+val link = OrgInvitation(org, token, name = "Acme").link("com.calimero.chat")
+val parsed = OrgInvitation.parse(pastedLink, expectedSlug = "com.calimero.chat")
+```
+
+Deleting an organization needs the owner's passkey: `client.orgs.delete(org = org, passkey = PlatformPasskey(activity))`.
+
+In the app layer (`MeroAppBackend`), `createInvitation`, `leaveNamespace`, `leaveSubgroup`,
+`setMemberRole` and `removeMember` are step-ups too: they use `MeroAppSession.passkey`, which the
+app sets from the Activity on screen (`session.passkey = PlatformPasskey(this)`). While it is null
+they throw `ConfirmRequired`.
+
+## Deployments
+
+A deployment is an account's or organization's list of the package releases it offers customers;
+an instance created from it runs the offered release, with no install and no deployer grant.
+
+```kotlin
+val id = client.deployments.create(name = "Chat", owner = Deployer.Org(org)).id
+client.deployments.offer(id = id, app = "chat", `package` = "com.calimero.chat", version = "1.0.0")
+client.deployments.get(id = id)                                         // public: name, owner, apps
+// a customer's app (or a page opened through /d/{id}/, see pageDeployment):
+client.apps.create(name = "chat", `package` = "com.calimero.chat", deployment = id, org = customerOrg)
+```
+
+Where the cluster's deployments are `granted`, the cluster's owner lets accounts or organizations
+install apps: `grantDeployer(Deployer.Account(id), passkey, until)`, `deployers()`,
+`revokeDeployer(deployer, passkey)`.

@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """Compile the Swift and Kotlin clients `meroctl app codegen` writes, warnings as errors,
-against the SDK releases they are written for, and run their round-trip tests.
+against this tree's SDKs (sdks/clients/mero-swift, sdks/clients/mero-kotlin: they ship with
+core, on its version), and run their round-trip tests.
 
 The golden files (crates/app-abi/tests/golden/*.swift, *.kt) pin what the generator writes;
 this checks that what it writes compiles, and that the app types' JSON (records, the four serde
 enum tagging styles, recursive and generic types) survives a decode and an encode
 (crates/app-abi/tests/native/{swift,kotlin}):
 
-    python3 scripts/check-app-abi-clients.py swift    # macOS: swift-sdk (MeroKit), `swift build`, `swift test`
-    python3 scripts/check-app-abi-clients.py kotlin   # JDK 17 and the Android SDK: kotlin-sdk's mero-core
+    python3 scripts/check-app-abi-clients.py swift    # macOS: mero-swift (MeroKit), `swift build`, `swift test`
+    python3 scripts/check-app-abi-clients.py kotlin   # JDK 17 and the Android SDK: mero-kotlin's mero-core
 
 Swift: a package with one target per golden (each its own module, as an app gives each
-service's client one), depending on swift-sdk at SWIFT_SDK_VERSION, and a test target with the
+service's client one), depending on sdks/clients/mero-swift by path, and a test target with the
 round-trip tests.
-Kotlin: kotlin-sdk's tag KOTLIN_SDK_REF is cloned and the goldens compiled as a module of that
+Kotlin: sdks/clients/mero-kotlin is copied and the goldens compiled as a module of that
 build, depending on `:mero-core`, with the round-trip tests as its unit tests; the `*.plugin.kt`
 goldens (`--kotlin-serialization-plugin`) in a second module that applies the kotlinx.serialization
 compiler plugin, with the same tests.
@@ -29,8 +30,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GOLDEN = ROOT / "crates" / "app-abi" / "tests" / "golden"
 NATIVE_TESTS = ROOT / "crates" / "app-abi" / "tests" / "native"
-SWIFT_SDK_VERSION = os.environ.get("SWIFT_SDK_VERSION", "4.1.0")
-KOTLIN_SDK_REF = os.environ.get("KOTLIN_SDK_REF", "v4.0.0")
+SWIFT_SDK = ROOT / "sdks" / "clients" / "mero-swift"
+KOTLIN_SDK = ROOT / "sdks" / "clients" / "mero-kotlin"
 
 
 def module_name(stem):
@@ -60,7 +61,7 @@ def swift(work):
         targets.append(
             f"""        .target(
             name: "{name}",
-            dependencies: [.product(name: "MeroKit", package: "swift-sdk")],
+            dependencies: [.product(name: "MeroKit", package: "mero-swift")],
             {settings}
         ),"""
         )
@@ -72,7 +73,7 @@ def swift(work):
     targets.append(
         f"""        .testTarget(
             name: "GoldenClientsTests",
-            dependencies: [{dependencies}, .product(name: "MeroKit", package: "swift-sdk")],
+            dependencies: [{dependencies}, .product(name: "MeroKit", package: "mero-swift")],
             {settings}
         ),"""
     )
@@ -84,7 +85,7 @@ let package = Package(
     name: "GoldenClients",
     platforms: [.iOS(.v15), .macOS(.v12)],
     dependencies: [
-        .package(url: "https://github.com/calimero-network/swift-sdk", exact: "{SWIFT_SDK_VERSION}"),
+        .package(path: "{SWIFT_SDK}"),
     ],
     targets: [
 {chr(10).join(targets)}
@@ -97,21 +98,12 @@ let package = Package(
 
 
 def kotlin(work):
-    sdk = work / "kotlin-sdk"
-    run(
-        [
-            "git",
-            "clone",
-            "--quiet",
-            "--depth",
-            "1",
-            "--branch",
-            KOTLIN_SDK_REF,
-            "https://github.com/calimero-network/kotlin-sdk",
-            str(sdk),
-        ],
-        work,
-    )
+    # A copy: the golden modules are added to its settings, and its build outputs and a
+    # developer's local.properties stay out.
+    sdk = work / "mero-kotlin"
+    shutil.copytree(KOTLIN_SDK, sdk, ignore=shutil.ignore_patterns("build", ".gradle", "local.properties", ".kotlin"))
+    if os.environ.get("ANDROID_HOME") and not (sdk / "local.properties").exists():
+        (sdk / "local.properties").write_text(f"sdk.dir={os.environ['ANDROID_HOME']}\n")
     # The goldens as written for a module without the kotlinx.serialization plugin, and the
     # kitchen-sink's as written for one with it (`*.plugin.kt`, `--kotlin-serialization-plugin`):
     # each compiled the way it is meant to be, with the same round-trip tests.

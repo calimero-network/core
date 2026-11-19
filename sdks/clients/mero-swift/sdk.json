@@ -3,11 +3,9 @@
   "kind": "client",
   "language": "swift",
   "published": [
-    {"registry": "swiftpm", "name": "calimero-network/swift-sdk", "note": "read-only mirror: git subtree split of this directory, tagged VERSION"},
-    {"registry": "cocoapods", "name": "mero-swift"}
+    {"registry": "swiftpm", "name": "calimero-network/swift-sdk", "note": "read-only mirror: git subtree split of this directory, tagged VERSION"}
   ],
   "version_files": [
-    {"path": "mero-swift.podspec", "format": "regex", "pattern": "^\\s*spec\\.version\\s*=\\s*'([^']+)'"},
     {"path": "README.md", "format": "regex", "pattern": "calimero-network/swift-sdk\", exact: \"([^\"]+)\""},
     {"path": "docs/src/content/docs/get-started/quickstart.mdx", "format": "regex", "pattern": "calimero-network/swift-sdk\", exact: \"([^\"]+)\""}
   ],
