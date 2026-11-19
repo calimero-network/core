@@ -19,6 +19,7 @@ class AppInviteListResponse200InvitesItem:
         expired (bool):
         created_by (str):
         created_at (int):
+        scope (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     """
 
     invite_key: str
@@ -27,6 +28,7 @@ class AppInviteListResponse200InvitesItem:
     expired: bool
     created_by: str
     created_at: int
+    scope: Any
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,6 +44,8 @@ class AppInviteListResponse200InvitesItem:
 
         created_at = self.created_at
 
+        scope = self.scope
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -52,6 +56,7 @@ class AppInviteListResponse200InvitesItem:
                 "expired": expired,
                 "createdBy": created_by,
                 "createdAt": created_at,
+                "scope": scope,
             }
         )
 
@@ -72,6 +77,8 @@ class AppInviteListResponse200InvitesItem:
 
         created_at = d.pop("createdAt")
 
+        scope = d.pop("scope")
+
         app_invite_list_response_200_invites_item = cls(
             invite_key=invite_key,
             uses_left=uses_left,
@@ -79,6 +86,7 @@ class AppInviteListResponse200InvitesItem:
             expired=expired,
             created_by=created_by,
             created_at=created_at,
+            scope=scope,
         )
 
         app_invite_list_response_200_invites_item.additional_properties = d

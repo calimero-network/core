@@ -29,12 +29,12 @@ extension CalimeroClient {
 
         /// Set who may reach an app: `POST /apps/{app}/access` (`app_access`).
         ///
-        /// A package-bound session: only its own package's app, from one of its package's teams to another.
+        /// `grants` replace the instance's grant list (#Grant; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`); the deprecated `access` sets one mode. Exactly one of them, else `400 BAD_REQUEST`. Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
         ///
         /// **Who:** a passkey session (an API key is refused).
         @discardableResult
-        public func access(app: Swift.String, access: Components.Schemas.Access) async throws -> OpenAPIRuntime.OpenAPIObjectContainer {
-            let input = Operations.AppAccess.Input(path: .init(app: app), body: .json(.init(access: access)))
+        public func access(app: Swift.String, access: Components.Schemas.Access? = nil, grants: [Components.Schemas.Grant]? = nil) async throws -> OpenAPIRuntime.OpenAPIObjectContainer {
+            let input = Operations.AppAccess.Input(path: .init(app: app), body: .json(.init(access: access, grants: grants)))
             return try await client.perform { api in
                 try await api.appAccess(input).ok.body.json
             }
@@ -55,12 +55,12 @@ extension CalimeroClient {
 
         /// Create an app instance: `POST /apps` (`app_create`).
         ///
-        /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+        /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version 1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
         ///
         /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
         @discardableResult
-        public func create(name: Swift.String? = nil, bundle: Swift.String? = nil, package: Swift.String? = nil, version: Swift.String? = nil, service: Swift.String? = nil, org: Swift.String? = nil, newOrg: Operations.AppCreate.Input.Body.JsonPayload.NewOrgPayload? = nil, access: Components.Schemas.Access? = nil, initArgs: OpenAPIRuntime.OpenAPIValueContainer? = nil, metadata: OpenAPIRuntime.OpenAPIValueContainer? = nil, deployment: Swift.String? = nil) async throws -> Operations.AppCreate.Output.Ok.Body.JsonPayload {
-            let input = Operations.AppCreate.Input(body: .json(.init(name: name, bundle: bundle, package: package, version: version, service: service, org: org, newOrg: newOrg, access: access, initArgs: initArgs, metadata: metadata, deployment: deployment)))
+        public func create(name: Swift.String? = nil, bundle: Swift.String? = nil, package: Swift.String? = nil, version: Swift.String? = nil, service: Swift.String? = nil, org: Swift.String? = nil, newOrg: Operations.AppCreate.Input.Body.JsonPayload.NewOrgPayload? = nil, access: Components.Schemas.Access? = nil, grants: [Components.Schemas.Grant]? = nil, initArgs: OpenAPIRuntime.OpenAPIValueContainer? = nil, metadata: OpenAPIRuntime.OpenAPIValueContainer? = nil, deployment: Swift.String? = nil) async throws -> Operations.AppCreate.Output.Ok.Body.JsonPayload {
+            let input = Operations.AppCreate.Input(body: .json(.init(name: name, bundle: bundle, package: package, version: version, service: service, org: org, newOrg: newOrg, access: access, grants: grants, initArgs: initArgs, metadata: metadata, deployment: deployment)))
             return try await client.perform { api in
                 try await api.appCreate(input).ok.body.json
             }
@@ -107,25 +107,25 @@ extension CalimeroClient {
 
         /// One app: `GET /apps/{app}` (`app_get`).
         ///
-        /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.
+        /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
-        public func get(app: Swift.String) async throws -> Components.Schemas.App {
+        public func get(app: Swift.String) async throws -> Operations.AppGet.Output.Ok.Body.JsonPayload {
             let input = Operations.AppGet.Input(path: .init(app: app))
             return try await client.perform { api in
                 try await api.appGet(input).ok.body.json
             }
         }
 
-        /// Invite a guest to an instance: `POST /apps/{app}/invites` (`app_invite_create`).
+        /// Invite someone to an instance: `POST /apps/{app}/invites` (`app_invite_create`).
         ///
-        /// A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+        /// A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
-        public func inviteCreate(app: Swift.String, ttlSecs: Swift.Int64? = nil, uses: Swift.Int64? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.AppInviteCreate.Output.Ok.Body.JsonPayload {
-            let input = Operations.AppInviteCreate.Input(path: .init(app: app), body: .json(.init(ttlSecs: ttlSecs, uses: uses)))
+        public func inviteCreate(app: Swift.String, ttlSecs: Swift.Int64? = nil, uses: Swift.Int64? = nil, scope: OpenAPIRuntime.OpenAPIValueContainer? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.AppInviteCreate.Output.Ok.Body.JsonPayload {
+            let input = Operations.AppInviteCreate.Input(path: .init(app: app), body: .json(.init(ttlSecs: ttlSecs, uses: uses, scope: scope)))
             return try await client.perform(passkey: passkey) { api in
                 try await api.appInviteCreate(input).ok.body.json
             }
@@ -133,7 +133,7 @@ extension CalimeroClient {
 
         /// An instance's invites: `GET /apps/{app}/invites` (`app_invite_list`).
         ///
-        /// For whoever manages its guests: keys and terms, never a token.
+        /// For whoever may change its access: keys, terms and scope, never a token.
         ///
         /// **Who:** a passkey session (an API key is refused).
         @discardableResult
@@ -146,7 +146,7 @@ extension CalimeroClient {
 
         /// Revoke an instance invite: `DELETE /apps/{app}/invites/{key}` (`app_invite_revoke`).
         ///
-        /// Its creator, or whoever manages the instance's guests; `412` first.
+        /// Its creator, or whoever may change the instance's access; `412` first.
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
@@ -1670,7 +1670,7 @@ extension CalimeroClient {
 
         /// Join with an invite: `POST /invites/{token}/redeem` (`invite_redeem`).
         ///
-        /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+        /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
         ///
         /// **Who:** a passkey session (an API key is refused).
         @discardableResult

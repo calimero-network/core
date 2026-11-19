@@ -112,9 +112,11 @@ def sync_detailed(
     with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks,
     else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
     version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
-    is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both
-    free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
-    component.
+    is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still
+    names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version
+    1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as
+    given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a
+    compute component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
@@ -155,9 +157,11 @@ def sync(
     with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks,
     else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
     version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
-    is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both
-    free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
-    component.
+    is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still
+    names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version
+    1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as
+    given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a
+    compute component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
@@ -193,9 +197,11 @@ async def asyncio_detailed(
     with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks,
     else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
     version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
-    is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both
-    free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
-    component.
+    is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still
+    names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version
+    1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as
+    given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a
+    compute component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
@@ -234,9 +240,11 @@ async def asyncio(
     with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks,
     else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
     version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
-    is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both
-    free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
-    component.
+    is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still
+    names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version
+    1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as
+    given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a
+    compute component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 

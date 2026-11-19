@@ -101,7 +101,7 @@ def sync_detailed(
 ) -> Response[Union[AppInviteRevokeResponse200, Error]]:
     """Revoke an instance invite
 
-     Its creator, or whoever manages the instance's guests; `412` first.
+     Its creator, or whoever may change the instance's access; `412` first.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -143,7 +143,7 @@ def sync(
 ) -> Optional[Union[AppInviteRevokeResponse200, Error]]:
     """Revoke an instance invite
 
-     Its creator, or whoever manages the instance's guests; `412` first.
+     Its creator, or whoever may change the instance's access; `412` first.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -180,7 +180,7 @@ async def asyncio_detailed(
 ) -> Response[Union[AppInviteRevokeResponse200, Error]]:
     """Revoke an instance invite
 
-     Its creator, or whoever manages the instance's guests; `412` first.
+     Its creator, or whoever may change the instance's access; `412` first.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -220,7 +220,7 @@ async def asyncio(
 ) -> Optional[Union[AppInviteRevokeResponse200, Error]]:
     """Revoke an instance invite
 
-     Its creator, or whoever manages the instance's guests; `412` first.
+     Its creator, or whoever may change the instance's access; `412` first.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

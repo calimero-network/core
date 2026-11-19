@@ -98,7 +98,7 @@ class OrgsFacade internal constructor(
     /**
      * Join with an invite
      *
-     * No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+     * No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
      *
      * **Who:** a passkey session (an API key is refused).
      *

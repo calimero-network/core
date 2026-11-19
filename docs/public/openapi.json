@@ -128,7 +128,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Create an app instance",
-        "description": "From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
+        "description": "From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version 1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
         "security": [
           {
             "session": []
@@ -177,6 +177,12 @@
                   },
                   "access": {
                     "$ref": "#/components/schemas/Access"
+                  },
+                  "grants": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Grant"
+                    }
                   },
                   "initArgs": {
                     "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
@@ -461,7 +467,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "One app",
-        "description": "`{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.\n\n**Who:** signed in (a session or an API key).",
+        "description": "`{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -488,7 +494,149 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/App"
+                  "type": "object",
+                  "properties": {
+                    "appId": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "group": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "bundle": {
+                      "type": "string"
+                    },
+                    "owner": {
+                      "type": "string"
+                    },
+                    "org": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "access": {
+                      "$ref": "#/components/schemas/Access"
+                    },
+                    "confirmMethods": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "executor": {
+                      "type": "string",
+                      "enum": [
+                        "component",
+                        "wasmer"
+                      ]
+                    },
+                    "replicas": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      }
+                    },
+                    "createdAt": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "initArgs": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    },
+                    "computeBundle": {
+                      "type": "string"
+                    },
+                    "components": {
+                      "type": "string",
+                      "enum": [
+                        "computeOnly"
+                      ]
+                    },
+                    "metadata": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    },
+                    "lastUpgrade": {
+                      "$ref": "#/components/schemas/Upgrade"
+                    },
+                    "deployment": {
+                      "type": "string"
+                    },
+                    "release": {
+                      "$ref": "#/components/schemas/PackageRef"
+                    },
+                    "restore": {
+                      "type": "object",
+                      "properties": {
+                        "seed": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "source": {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "sha256": {
+                              "type": "string"
+                            },
+                            "index": {
+                              "type": "integer",
+                              "format": "int64",
+                              "minimum": 0
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "sha256",
+                            "index"
+                          ]
+                        }
+                      }
+                    },
+                    "links": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "attached": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "grants": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Grant"
+                      }
+                    }
+                  },
+                  "required": [
+                    "appId",
+                    "name",
+                    "group",
+                    "bundle",
+                    "owner",
+                    "org",
+                    "access",
+                    "confirmMethods",
+                    "replicas",
+                    "createdAt",
+                    "initArgs",
+                    "metadata",
+                    "grants"
+                  ]
                 }
               }
             }
@@ -739,7 +887,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Set who may reach an app",
-        "description": "A package-bound session: only its own package's app, from one of its package's teams to another.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "`grants` replace the instance's grant list (#Grant; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`); the deprecated `access` sets one mode. Exactly one of them, else `400 BAD_REQUEST`. Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -766,11 +914,14 @@
                 "properties": {
                   "access": {
                     "$ref": "#/components/schemas/Access"
+                  },
+                  "grants": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Grant"
+                    }
                   }
-                },
-                "required": [
-                  "access"
-                ]
+                }
               }
             }
           }
@@ -3743,8 +3894,8 @@
           "Apps"
         ],
         "x-calimero-group": "apps",
-        "summary": "Invite a guest to an instance",
-        "description": "A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "summary": "Invite someone to an instance",
+        "description": "A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -3780,6 +3931,9 @@
                     "type": "integer",
                     "format": "int64",
                     "minimum": 0
+                  },
+                  "scope": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
                   },
                   "confirm": {
                     "$ref": "#/components/schemas/Confirm"
@@ -3865,7 +4019,7 @@
             ]
           },
           "409": {
-            "description": "`FEATURE_NOT_ACTIVE`; `GUESTS_NOT_ALLOWED`; `NOT_AN_ACCOUNTS_INSTANCE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "description": "`FEATURE_NOT_ACTIVE`; `GUESTS_NOT_ALLOWED`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3875,8 +4029,7 @@
             },
             "x-calimero-codes": [
               "FEATURE_NOT_ACTIVE",
-              "GUESTS_NOT_ALLOWED",
-              "NOT_AN_ACCOUNTS_INSTANCE"
+              "GUESTS_NOT_ALLOWED"
             ],
             "x-calimero-details": {
               "FEATURE_NOT_ACTIVE": {
@@ -3937,7 +4090,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "An instance's invites",
-        "description": "For whoever manages its guests: keys and terms, never a token.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "For whoever may change its access: keys, terms and scope, never a token.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -3991,6 +4144,9 @@
                             "type": "integer",
                             "format": "int64",
                             "minimum": 0
+                          },
+                          "scope": {
+                            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
                           }
                         },
                         "required": [
@@ -3999,7 +4155,8 @@
                           "expiresAt",
                           "expired",
                           "createdBy",
-                          "createdAt"
+                          "createdAt",
+                          "scope"
                         ]
                       }
                     }
@@ -4074,7 +4231,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Revoke an instance invite",
-        "description": "Its creator, or whoever manages the instance's guests; `412` first.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "Its creator, or whoever may change the instance's access; `412` first.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -16145,7 +16302,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Join with an invite",
-        "description": "No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -16176,6 +16333,9 @@
                     },
                     "app": {
                       "type": "string"
+                    },
+                    "member": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -16212,7 +16372,7 @@
             ]
           },
           "409": {
-            "description": "`GUESTS_NOT_ALLOWED`; `NOT_AN_ACCOUNTS_INSTANCE`",
+            "description": "`GUESTS_NOT_ALLOWED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -16221,8 +16381,7 @@
               }
             },
             "x-calimero-codes": [
-              "GUESTS_NOT_ALLOWED",
-              "NOT_AN_ACCOUNTS_INSTANCE"
+              "GUESTS_NOT_ALLOWED"
             ]
           },
           "421": {
@@ -30274,12 +30433,108 @@
               "kind",
               "team"
             ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "grants"
+                ]
+              },
+              "grants": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Grant"
+                }
+              }
+            },
+            "required": [
+              "kind",
+              "grants"
+            ]
           }
         ],
         "discriminator": {
           "propertyName": "kind"
         },
-        "description": "Who may reach an app at all."
+        "description": "Who may reach an app at all, as one mode (deprecated: see `grants`), or `grants`: the instance's grant list (see #Grant). Each mode is a grant list: `owner` none, `org` the organization, `team` that team, `accounts` those people, `public` `anyone`."
+      },
+      "Grant": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "org"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "team"
+                ]
+              },
+              "team": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "team"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "account"
+                ]
+              },
+              "account": {
+                "type": "string"
+              },
+              "scope": {
+                "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+              }
+            },
+            "required": [
+              "kind",
+              "account"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "anyone"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind"
+        },
+        "description": "One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link). At most 16 teams and 1000 accounts."
       },
       "OrgRole": {
         "type": "string",

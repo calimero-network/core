@@ -736,9 +736,7 @@ fn team_view(
     let apps: Vec<Value> = s
         .apps
         .values()
-        .filter(|a| {
-            a.org == o.org_id && matches!(&a.access, Access::Team { team: t } if t == team)
-        })
+        .filter(|a| a.org == o.org_id && a.access.teams().iter().any(|t| t.as_str() == team))
         .map(|a| json!({ "appId": a.app_id, "name": a.name, "contextId": hex::encode(sha256(a.app_id.as_bytes())) }))
         .collect();
     Some(json!({

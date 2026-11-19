@@ -23,12 +23,15 @@ class AppInviteCreateBody:
     Attributes:
         ttl_secs (Union[Unset, int]):
         uses (Union[Unset, int]):
+        scope (Union[Unset, Any]): Free-form JSON: its shape is not this API's (see the description around it for whose
+            it is).
         confirm (Union[Unset, Confirm]): A passkey assertion over the challenge a `412 CONFIRM_REQUIRED` named: the same
             request sent again with it approves exactly that request.
     """
 
     ttl_secs: Union[Unset, int] = UNSET
     uses: Union[Unset, int] = UNSET
+    scope: Union[Unset, Any] = UNSET
     confirm: Union[Unset, "Confirm"] = UNSET
 
     def to_dict(self) -> dict[str, Any]:
@@ -37,6 +40,8 @@ class AppInviteCreateBody:
         ttl_secs = self.ttl_secs
 
         uses = self.uses
+
+        scope = self.scope
 
         confirm: Union[Unset, dict[str, Any]] = UNSET
         if not isinstance(self.confirm, Unset):
@@ -49,6 +54,8 @@ class AppInviteCreateBody:
             field_dict["ttlSecs"] = ttl_secs
         if uses is not UNSET:
             field_dict["uses"] = uses
+        if scope is not UNSET:
+            field_dict["scope"] = scope
         if confirm is not UNSET:
             field_dict["confirm"] = confirm
 
@@ -63,6 +70,8 @@ class AppInviteCreateBody:
 
         uses = d.pop("uses", UNSET)
 
+        scope = d.pop("scope", UNSET)
+
         _confirm = d.pop("confirm", UNSET)
         confirm: Union[Unset, Confirm]
         if isinstance(_confirm, Unset):
@@ -73,6 +82,7 @@ class AppInviteCreateBody:
         app_invite_create_body = cls(
             ttl_secs=ttl_secs,
             uses=uses,
+            scope=scope,
             confirm=confirm,
         )
 

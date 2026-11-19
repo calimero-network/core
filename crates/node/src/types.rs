@@ -93,6 +93,12 @@ impl Caller {
 }
 
 /// Who may reach an app at all. Finer rules are the app's own code.
+///
+/// An instance's access is a list of grants ([`Self::Grants`], `Feature::AccessGrants`,
+/// 1.0.0-rc.32). The other variants are the single modes every release before wrote; they are
+/// kept as they were logged, read and judged as before, and each is the grant list
+/// [`Self::grants`] answers for it: `owner` none, `org` the organization, `team` that team,
+/// `accounts` those people, `public` [`Grant::Anyone`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Access {
@@ -108,6 +114,259 @@ pub enum Access {
     /// Members of a team of the app's organization: its direct members, and,
     /// for an open team, everyone who reaches its parent.
     Team { team: TeamId },
+    /// The owner and whoever one of these grants admits
+    /// ([`crate::system::SystemState::may_reach`]); none is [`Self::Owner`]. Written only
+    /// from the cluster version that brings `Feature::AccessGrants`, so every replica
+    /// decodes it.
+    Grants { grants: Vec<Grant> },
+}
+
+/// One way into an instance ([`Access::Grants`]).
+///
+/// Member grants (the whole organization, or teams of it) admit its members; an account grant
+/// names one person, a member (a named member) or not (a guest, admitted only while the
+/// instance's release and organization allow guests,
+/// [`crate::system::SystemState::guests_allowed`]); [`Self::Anyone`] admits everyone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum Grant {
+    /// Every member of the instance's organization (an `app_only` guest of the
+    /// organization only through its teams). Not beside a team grant.
+    Org,
+    /// Members of a team of the instance's organization, as `team` access admits them.
+    Team { team: TeamId },
+    /// One account: a member of the organization (a named member) or a guest.
+    Account {
+        account: AccountId,
+        /// What the app lets this person do inside it, in the app's own terms (for a chat:
+        /// `{"channel":"partners"}`): opaque JSON of at most [`MAX_GRANT_SCOPE_BYTES`], which
+        /// the platform carries and never reads. Absent: the app's whole.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<serde_json::Value>,
+    },
+    /// Anyone, signed in or not: the access `public` was. Not a public link, which admits
+    /// only the holders of its token and only to public methods.
+    Anyone,
+}
+
+/// The largest scope a grant or an instance invite carries ([`Grant::Account`]), as compact
+/// JSON.
+pub const MAX_GRANT_SCOPE_BYTES: usize = 256;
+/// Team grants one instance holds at most.
+pub const MAX_TEAM_GRANTS: usize = 16;
+/// Account grants one instance holds at most (members and guests together).
+pub const MAX_ACCOUNT_GRANTS: usize = 1_000;
+/// Grants one instance holds at most: its teams, its names, the organization and anyone.
+pub const MAX_GRANTS: usize = MAX_TEAM_GRANTS + MAX_ACCOUNT_GRANTS + 2;
+
+/// Whether `scope` is within [`MAX_GRANT_SCOPE_BYTES`].
+#[must_use]
+pub fn scope_fits(scope: &serde_json::Value) -> bool {
+    serde_json::to_vec(scope).is_ok_and(|b| b.len() <= MAX_GRANT_SCOPE_BYTES)
+}
+
+impl Access {
+    /// The grants this access amounts to: [`Self::Grants`]' own, or the one a single mode
+    /// stands for (`owner`: none).
+    #[must_use]
+    pub fn grants(&self) -> Vec<Grant> {
+        match self {
+            Self::Owner => Vec::new(),
+            Self::Org => vec![Grant::Org],
+            Self::Accounts { accounts } => accounts
+                .iter()
+                .map(|a| Grant::Account {
+                    account: a.clone(),
+                    scope: None,
+                })
+                .collect(),
+            Self::Public => vec![Grant::Anyone],
+            Self::Team { team } => vec![Grant::Team { team: team.clone() }],
+            Self::Grants { grants } => grants.clone(),
+        }
+    }
+
+    /// The teams it admits (`team` access, or [`Grant::Team`]s).
+    #[must_use]
+    pub fn teams(&self) -> Vec<&TeamId> {
+        match self {
+            Self::Team { team } => vec![team],
+            Self::Grants { grants } => grants
+                .iter()
+                .filter_map(|g| match g {
+                    Grant::Team { team } => Some(team),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The one team it admits, when it admits exactly one: the team whose leads manage it.
+    #[must_use]
+    pub fn the_team(&self) -> Option<&TeamId> {
+        match self.teams().as_slice() {
+            [team] => Some(team),
+            _ => None,
+        }
+    }
+
+    /// Whether it admits the whole organization (`org`, or [`Grant::Org`]).
+    #[must_use]
+    pub fn org_wide(&self) -> bool {
+        match self {
+            Self::Org => true,
+            Self::Grants { grants } => grants.contains(&Grant::Org),
+            _ => false,
+        }
+    }
+
+    /// Whether it admits anyone (`public`, or [`Grant::Anyone`]).
+    #[must_use]
+    pub fn anyone(&self) -> bool {
+        match self {
+            Self::Public => true,
+            Self::Grants { grants } => grants.contains(&Grant::Anyone),
+            _ => false,
+        }
+    }
+
+    /// Whether it names `account` (`accounts`, or a [`Grant::Account`]).
+    #[must_use]
+    pub fn names(&self, account: &str) -> bool {
+        match self {
+            Self::Accounts { accounts } => accounts.iter().any(|a| a == account),
+            Self::Grants { grants } => grants
+                .iter()
+                .any(|g| matches!(g, Grant::Account { account: a, .. } if a == account)),
+            _ => false,
+        }
+    }
+
+    /// How many accounts it names.
+    #[must_use]
+    pub fn named_count(&self) -> usize {
+        match self {
+            Self::Accounts { accounts } => accounts.len(),
+            Self::Grants { grants } => grants
+                .iter()
+                .filter(|g| matches!(g, Grant::Account { .. }))
+                .count(),
+            _ => 0,
+        }
+    }
+
+    /// Whether it admits named people only: `accounts`, or grants naming people with no
+    /// member grant (as a private list or a direct message is).
+    #[must_use]
+    pub fn named_only(&self) -> bool {
+        match self {
+            Self::Accounts { .. } => true,
+            Self::Grants { .. } => {
+                self.named_count() > 0 && !self.org_wide() && self.teams().is_empty()
+            }
+            _ => false,
+        }
+    }
+
+    /// The scope of `account`'s grant, if it names them with one.
+    #[must_use]
+    pub fn scope_of(&self, account: &str) -> Option<&serde_json::Value> {
+        let Self::Grants { grants } = self else {
+            return None;
+        };
+        grants.iter().find_map(|g| match g {
+            Grant::Account {
+                account: a,
+                scope: Some(scope),
+            } if a == account => Some(scope),
+            _ => None,
+        })
+    }
+
+    /// This access with `account` named (with `scope`), as grants. Already named: as it is.
+    #[must_use]
+    pub fn naming(&self, account: &str, scope: Option<serde_json::Value>) -> Self {
+        if self.names(account) {
+            return self.clone();
+        }
+        let mut grants = self.grants();
+        grants.push(Grant::Account {
+            account: account.to_owned(),
+            scope,
+        });
+        Self::Grants { grants }
+    }
+
+    /// This access with its member grants (the organization, teams) replaced by `team`:
+    /// what giving an instance an app team does. A single mode becomes `team` access, as it
+    /// always did; grants keep their people and `anyone`.
+    #[must_use]
+    pub fn onto_team(&self, team: TeamId) -> Self {
+        let Self::Grants { grants } = self else {
+            return Self::Team { team };
+        };
+        let mut grants: Vec<Grant> = grants
+            .iter()
+            .filter(|g| !matches!(g, Grant::Org | Grant::Team { .. }))
+            .cloned()
+            .collect();
+        grants.insert(0, Grant::Team { team });
+        Self::Grants { grants }
+    }
+
+    /// This access with its team grants replaced by the organization: what an instance on a
+    /// team keeps where that team means nothing (another organization). `team` access becomes
+    /// `org`, as it always did; other single modes stay.
+    #[must_use]
+    pub fn teams_to_org(&self) -> Self {
+        match self {
+            Self::Team { .. } => Self::Org,
+            Self::Grants { grants } if !self.teams().is_empty() => {
+                let mut grants: Vec<Grant> = grants
+                    .iter()
+                    .filter(|g| !matches!(g, Grant::Org | Grant::Team { .. }))
+                    .cloned()
+                    .collect();
+                grants.insert(0, Grant::Org);
+                Self::Grants { grants }
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// This access without the team grants in `gone` (teams deleted).
+    #[must_use]
+    pub fn without_teams(&self, gone: &[TeamId]) -> Self {
+        let Self::Grants { grants } = self else {
+            return self.clone();
+        };
+        Self::Grants {
+            grants: grants
+                .iter()
+                .filter(|g| !matches!(g, Grant::Team { team } if gone.contains(team)))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Only `account`'s own grant, as a guest sees the instance's access: none of the
+    /// organization's people.
+    #[must_use]
+    pub fn only(&self, account: &str) -> Self {
+        match self {
+            Self::Grants { grants } => Self::Grants {
+                grants: grants
+                    .iter()
+                    .filter(|g| matches!(g, Grant::Account { account: a, .. } if a == account))
+                    .cloned()
+                    .collect(),
+            },
+            _ => Self::Accounts {
+                accounts: vec![account.to_owned()],
+            },
+        }
+    }
 }
 
 /// What a registered node is for: a replica holds apps and the cluster key, a
@@ -809,8 +1068,9 @@ pub struct PublicLink {
 }
 
 /// An instance invite ([`crate::system::SystemCmd::CreateAppInvite`]): whoever redeems it
-/// is added to the instance's guest list (its `accounts` access), never to its
-/// organization. Kept under the token's Ed25519 public key, as an organization invite.
+/// is named on the instance (a [`Grant::Account`]: a guest, or a named member when they are
+/// a member of its organization), never added to its organization. Kept under the token's
+/// Ed25519 public key, as an organization invite.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppInvite {
@@ -823,6 +1083,10 @@ pub struct AppInvite {
     /// When it was made (Unix seconds, the creating node's clock).
     #[serde(default)]
     pub created_at: u64,
+    /// The scope the grant it makes carries ([`Grant::Account`]'s `scope`): opaque to the
+    /// platform, at most [`MAX_GRANT_SCOPE_BYTES`]. Left out when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<serde_json::Value>,
 }
 
 /// An organization's recovery key: whoever holds its seed can hand the

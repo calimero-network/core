@@ -78,7 +78,7 @@ def sync_detailed(
 ) -> Response[Union[AppInviteListResponse200, Error]]:
     """An instance's invites
 
-     For whoever manages its guests: keys and terms, never a token.
+     For whoever may change its access: keys, terms and scope, never a token.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -111,7 +111,7 @@ def sync(
 ) -> Optional[Union[AppInviteListResponse200, Error]]:
     """An instance's invites
 
-     For whoever manages its guests: keys and terms, never a token.
+     For whoever may change its access: keys, terms and scope, never a token.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -139,7 +139,7 @@ async def asyncio_detailed(
 ) -> Response[Union[AppInviteListResponse200, Error]]:
     """An instance's invites
 
-     For whoever manages its guests: keys and terms, never a token.
+     For whoever may change its access: keys, terms and scope, never a token.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -170,7 +170,7 @@ async def asyncio(
 ) -> Optional[Union[AppInviteListResponse200, Error]]:
     """An instance's invites
 
-     For whoever manages its guests: keys and terms, never a token.
+     For whoever may change its access: keys, terms and scope, never a token.
 
     **Who:** a passkey session (an API key is refused).
 

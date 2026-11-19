@@ -279,10 +279,18 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
 
     // A plain member is refused; an admin (not the app's owner) is not.
     refused(
-        &carol.apps().access(&app, access(&t1)).await.unwrap_err(),
+        &carol
+            .apps()
+            .access(&app, Some(access(&t1)), None)
+            .await
+            .unwrap_err(),
         "MANAGE_APPLICATION",
     );
-    let _ok = alice.apps().access(&app, access(&t1)).await.unwrap();
+    let _ok = alice
+        .apps()
+        .access(&app, Some(access(&t1)), None)
+        .await
+        .unwrap();
 
     // Carol leads team one: she moves its app only to a team she manages too,
     // and never to organization-wide access.
@@ -298,13 +306,17 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
         .map(wire)
         .unwrap();
     refused(
-        &carol.apps().access(&app, access(&t2)).await.unwrap_err(),
+        &carol
+            .apps()
+            .access(&app, Some(access(&t2)), None)
+            .await
+            .unwrap_err(),
         "MANAGE_APPLICATION",
     );
     refused(
         &carol
             .apps()
-            .access(&app, typed(json!({ "kind": "org" })))
+            .access(&app, Some(typed(json!({ "kind": "org" }))), None)
             .await
             .unwrap_err(),
         "MANAGE_APPLICATION",
@@ -319,12 +331,19 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
         )
         .await
         .unwrap();
-    let _ok = carol.apps().access(&app, access(&t2)).await.unwrap();
+    let _ok = carol
+        .apps()
+        .access(&app, Some(access(&t2)), None)
+        .await
+        .unwrap();
     // The owner, not in team two, holds no owner powers over an app on it;
     // once in it, they may change its access anywhere in the organization.
     let to_org = Access::Org;
     refused(
-        &bob.apps().access(&app, to_org.clone()).await.unwrap_err(),
+        &bob.apps()
+            .access(&app, Some(to_org.clone()), None)
+            .await
+            .unwrap_err(),
         "MANAGE_APPLICATION",
     );
     let _ok = alice
@@ -339,7 +358,7 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
         .unwrap();
     let _ok = bob
         .apps()
-        .access(&app, typed(json!({ "kind": "org" })))
+        .access(&app, Some(typed(json!({ "kind": "org" }))), None)
         .await
         .unwrap();
 }
@@ -1752,7 +1771,11 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
     assert!(!t.to_string().contains(&bob_id), "{t}");
     let _ok = site
         .apps()
-        .access(&room, typed(json!({ "kind": "team", "team": channel })))
+        .access(
+            &room,
+            Some(typed(json!({ "kind": "team", "team": channel }))),
+            None,
+        )
         .await
         .map(wire)
         .unwrap();
@@ -1850,14 +1873,22 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
     forbidden(
         "move its app to another package's team",
         site.apps()
-            .access(&room, typed(json!({ "kind": "team", "team": blocks_team })))
+            .access(
+                &room,
+                Some(typed(json!({ "kind": "team", "team": blocks_team }))),
+                None,
+            )
             .await
             .map(wire),
     );
     forbidden(
         "move its app to an org-wide team",
         site.apps()
-            .access(&room, typed(json!({ "kind": "team", "team": org_wide })))
+            .access(
+                &room,
+                Some(typed(json!({ "kind": "team", "team": org_wide }))),
+                None,
+            )
             .await
             .map(wire),
     );
@@ -1865,7 +1896,8 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
         .apps()
         .access(
             &blocks_app,
-            typed(json!({ "kind": "team", "team": chat_team })),
+            Some(typed(json!({ "kind": "team", "team": chat_team }))),
+            None,
         )
         .await
         .map(wire)

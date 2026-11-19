@@ -22,6 +22,13 @@
 #   pr    = 4999                                              # the PR that removes it
 #   why   = "..."                                             # what breaks, and for whom
 
+[[deprecated]]
+field = "access"
+since = "1.0.0-rc.32"
+date = 2026-11-19
+remove_after = "1.0.0-rc.35"
+replacement = "grants: an instance's access as a list of grants (POST /apps, POST /apps/{app}/access, GET /apps/{app}); every access mode is a grant list, and the node keeps taking it until then"
+
 [[cutover]]
 route = "POST /auth/releases"
 pr = 5015

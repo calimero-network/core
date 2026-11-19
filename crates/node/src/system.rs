@@ -16,8 +16,9 @@ use tracing::error;
 
 use crate::job_node::RUNS_PER_JOB_NODE;
 use crate::types::{
-    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Components, Invite,
-    NodeRecord, NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
+    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Components, Grant,
+    Invite, NodeRecord, NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin,
+    TeamRole,
 };
 
 mod accounts;
@@ -1067,14 +1068,19 @@ pub fn public_link_args(link_key: &str, link: &crate::types::PublicLink) -> Valu
     })
 }
 
-/// The arguments an instance invite's consent states: its key and terms.
+/// The arguments an instance invite's consent states: its key and terms, and its scope when
+/// it carries one.
 #[must_use]
 pub fn app_invite_args(invite_key: &str, invite: &crate::types::AppInvite) -> Value {
-    json!({
+    let mut args = json!({
         "inviteKey": invite_key,
         "expiresAt": invite.expires_at,
         "uses": invite.uses_left,
-    })
+    });
+    if let Some(scope) = &invite.scope {
+        args["scope"] = scope.clone();
+    }
+    args
 }
 
 /// Pending invites one instance holds at most ([`crate::types::AppInvite`]).
@@ -1085,16 +1091,10 @@ pub const MAX_APP_INVITES: usize = 10_000;
 pub const MAX_APP_INVITE_USES: u32 = 1_000;
 /// How long an instance invite lasts at most, from when it is made.
 pub const MAX_APP_INVITE_TTL_SECS: u64 = 90 * 24 * 3600;
-/// Accounts an instance's guest list (its `accounts` access) holds at most once an invite
-/// adds to it.
-pub const MAX_GUESTS_PER_APP: usize = 1_000;
 /// A refusal: the instance's release or its organization does not allow guests
 /// ([`SystemState::guests_allowed`]).
 pub const GUESTS_NOT_ALLOWED: &str =
     "this instance takes no guests: its release or its organization does not allow them";
-/// A refusal: only an instance with `accounts` access has a guest list.
-pub const NOT_AN_ACCOUNTS_INSTANCE: &str =
-    "only an instance with accounts access lists guests: set its access to accounts first";
 /// A refusal: an instance invite gone, used up or never made.
 pub const APP_INVITE_GONE: &str = "this invite was used up, revoked or never existed";
 
@@ -2162,10 +2162,9 @@ impl SystemState {
         self.apps
             .values()
             .filter(|a| a.org == org)
-            .filter(|a| match (&teams, &a.access) {
-                (None, _) => true,
-                (Some(ts), Access::Team { team }) => ts.contains(team),
-                (Some(_), _) => false,
+            .filter(|a| match &teams {
+                None => true,
+                Some(ts) => a.access.teams().into_iter().any(|t| ts.contains(t)),
             })
             .filter(|a| self.app_release(a).is_some_and(|r| r.package == package))
             .map(|a| a.app_id.clone())
@@ -2793,8 +2792,7 @@ impl SystemState {
             return false;
         }
         let holder = self.guest_holder(app);
-        matches!(&holder.access, Access::Accounts { accounts } if accounts.iter().any(|a| a == account))
-            && self.guests_allowed(holder)
+        holder.access.names(account) && self.guests_allowed(holder)
     }
 
     /// Whether `account` is a guest of `app` and not a member of its organization: it
@@ -2831,18 +2829,13 @@ impl SystemState {
             .then_some(link)
     }
 
-    /// Whether `actor` may change `app`'s guests (its `accounts` access, its invites):
-    /// whoever may change its access to `accounts`.
+    /// Whether `actor` may change `app`'s grants (who it names, its invites): whoever may
+    /// change its access ([`Self::owner_acts`], or [`Self::may_set_access`] keeping its member
+    /// grants: a team's leads on their team's instance, else who manages the organization's
+    /// apps).
     #[must_use]
-    pub fn manages_guests(&self, app: &AppRecord, actor: &str) -> bool {
-        self.owner_acts(app, actor)
-            || self.may_set_access(
-                app,
-                &Access::Accounts {
-                    accounts: Vec::new(),
-                },
-                actor,
-            )
+    pub fn manages_grants(&self, app: &AppRecord, actor: &str) -> bool {
+        self.owner_acts(app, actor) || self.may_set_access(app, &app.access, actor)
     }
 
     /// Whether `org` is kept apart as a personal organization: flagged so, and only
@@ -3125,11 +3118,22 @@ impl SystemState {
                 .upgraded_by_publisher(release)
                 .is_some_and(|p| self.manages_apps(p, account, None));
         }
-        let team = match &app.access {
-            Access::Team { team } => Some(team.as_str()),
-            _ => None,
-        };
-        self.owner_acts_as_logged(app, account, rule) || self.manages_apps(&app.org, account, team)
+        self.owner_acts_as_logged(app, account, rule)
+            || self.manages_access(&app.org, account, &app.access)
+    }
+
+    /// Whether `actor` manages the apps an instance with `access` is: on each team it admits
+    /// (`team` access, or every team grant), else organization-wide
+    /// ([`Self::manages_apps`]).
+    #[must_use]
+    pub fn manages_access(&self, org: &str, actor: &str, access: &Access) -> bool {
+        let teams = access.teams();
+        if teams.is_empty() {
+            return self.manages_apps(org, actor, None);
+        }
+        teams
+            .into_iter()
+            .all(|t| self.manages_apps(org, actor, Some(t)))
     }
 
     /// The package whose release `app` runs; `None` for a raw upload.
@@ -3157,16 +3161,13 @@ impl SystemState {
     /// Whether `actor`, not `app`'s owner, may change its access to `to`
     /// (G1): someone who manages the organization's apps (`MANAGE_APPLICATION`,
     /// [`Self::manages_apps`]) where the app is now and where it goes, on its
-    /// team for `Access::Team`, organization-wide for any other access. Org
-    /// admins and the owner hold it everywhere, a team's leads on their team.
+    /// team for `Access::Team` (on every team a grant list names), organization-wide for any
+    /// other access ([`Self::manages_access`]). Org admins and the owner hold it everywhere, a
+    /// team's leads on their team.
     #[must_use]
     pub fn may_set_access(&self, app: &AppRecord, to: &Access, actor: &str) -> bool {
         let org = app.org.as_str();
-        let manages = |a: &Access| match a {
-            Access::Team { team } => self.manages_apps(org, actor, Some(team)),
-            _ => self.manages_apps(org, actor, None),
-        };
-        manages(&app.access) && manages(to)
+        self.manages_access(org, actor, &app.access) && self.manages_access(org, actor, to)
     }
 
     /// Whether `account` holds `app`'s owner powers: it owns the app and, for
@@ -3203,12 +3204,13 @@ impl SystemState {
     /// Whether `app`'s team, if it is on one, holds `owner`: an owner reaches
     /// and manages an app on a team only while they are in it.
     fn owner_in_team(&self, app: &AppRecord, owner: &str) -> bool {
-        let Access::Team { team } = &app.access else {
+        let teams = app.access.teams();
+        if teams.is_empty() || app.access.org_wide() || app.access.names(owner) {
             return true;
-        };
+        }
         self.orgs
             .get(&app.org)
-            .is_some_and(|o| o.in_team(owner, team))
+            .is_some_and(|o| teams.into_iter().any(|t| o.in_team(owner, t)))
     }
 
     /// Whether `account` manages `app` as a whole (transfers or deletes it,
@@ -3464,7 +3466,7 @@ impl SystemState {
                 .apps
                 .values()
                 .filter(in_org)
-                .filter(|a| a.access == Access::Org)
+                .filter(|a| a.access.org_wide())
                 .filter_map(|a| self.instance_package(a, logged.by_release))
                 .collect::<BTreeSet<_>>()
                 .into_iter()
@@ -3558,7 +3560,7 @@ impl SystemState {
                     .apps
                     .values()
                     .filter(in_org)
-                    .filter(|a| a.access == Access::Org && of_package(a))
+                    .filter(|a| a.access.org_wide() && of_package(a))
                     .map(|a| a.app_id.clone())
                     .collect(),
             };
@@ -3743,9 +3745,7 @@ impl SystemState {
             }));
             for id in &plan.instances {
                 if let Some(a) = self.apps.get_mut(id) {
-                    a.access = Access::Team {
-                        team: team_id.clone(),
-                    };
+                    a.access = a.access.onto_team(team_id.clone());
                 }
             }
         }
@@ -3851,20 +3851,22 @@ impl SystemState {
         }
         let source = self.orgs.get(&from);
         let package = self.package_of(app).map(str::to_owned);
-        let source_team = match &app.access {
-            Access::Team { team } => {
+        // A team grant moves only as the package's app team, which the target has its own of.
+        let source_team = match app.access.teams().as_slice() {
+            [] => None,
+            [team] => {
                 let app_team = source
-                    .and_then(|o| o.teams.get(team))
+                    .and_then(|o| o.teams.get(*team))
                     .and_then(Team::app_package)
                     .is_some_and(|p| package.as_deref() == Some(p));
                 if !app_team {
                     return Err(MOVE_NEEDS_APP_TEAM);
                 }
-                Some(team.clone())
+                Some((*team).clone())
             }
-            _ => None,
+            _ => return Err(MOVE_NEEDS_APP_TEAM),
         };
-        let to_app_team = matches!(app.access, Access::Org | Access::Team { .. })
+        let to_app_team = (app.access.org_wide() || source_team.is_some())
             && package.is_some()
             && target.mode() != OrgMode::Legacy;
 
@@ -3986,18 +3988,15 @@ impl SystemState {
         // app team in the target is closed is reached there only by those in
         // that team: who comes along, and its owner, get a row on it, as
         // they would on the app team an `org` or `team` instance goes to.
-        let accounts_team = match (&app.access, package.as_deref()) {
-            (Access::Accounts { .. }, Some(p)) if accounts_in_app_team => target
+        let accounts_team = match (app.access.named_only(), package.as_deref()) {
+            (true, Some(p)) if accounts_in_app_team => target
                 .app_team(p)
                 .filter(|t| t.join == TeamJoin::Invite)
                 .map(|t| t.team_id.clone()),
             _ => None,
         };
         // App-team access without an app team to go to: the organization's.
-        let mut access = match &app.access {
-            Access::Team { .. } => Access::Org,
-            other => other.clone(),
-        };
+        let mut access = app.access.teams_to_org();
 
         // Everything is judged: apply.
         let o = self.orgs.get_mut(to_org).ok_or("no such organization")?;
@@ -4053,7 +4052,7 @@ impl SystemState {
                 let _back = t.removed.remove(m);
                 let _row = t.members.entry(m.clone()).or_insert(false);
             }
-            access = Access::Team { team: team_id };
+            access = access.onto_team(team_id);
         }
         if let Some(team_id) = accounts_team {
             let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
@@ -4077,9 +4076,10 @@ impl SystemState {
         let mut revoked = 0usize;
         if let Some(team) = leaves_team.as_deref() {
             let from = from.as_str();
-            let still = self.apps.values().any(|a| {
-                a.org == from && matches!(&a.access, Access::Team { team: t } if t == team)
-            });
+            let still = self
+                .apps
+                .values()
+                .any(|a| a.org == from && a.access.teams().iter().any(|t| t.as_str() == team));
             if !still {
                 let before = self.invites.len();
                 self.invites
@@ -4381,6 +4381,9 @@ impl SystemState {
         owner_in_team: bool,
         accounts_in_app_team: bool,
     ) -> bool {
+        if let Access::Grants { grants } = &app.access {
+            return self.grants_reach(app, grants, account);
+        }
         if let (org, Some(a)) = (&app.org, account) {
             let o = self.orgs.get(org);
             let member = o.and_then(|o| o.role(a)).is_some();
@@ -4428,7 +4431,97 @@ impl SystemState {
             (Access::Team { team }, Some(a)) => {
                 self.orgs.get(&app.org).is_some_and(|o| o.in_team(a, team))
             }
+            // Judged above ([`Self::grants_reach`]).
+            (Access::Grants { grants }, a) => self.grants_reach(app, grants, a),
         }
+    }
+
+    /// Refuses a grant list `org`'s instance cannot hold: a grant twice, the organization
+    /// beside a team (it covers them), a team not of `org`, an account the cluster does not
+    /// know (one name per account), a scope past [`crate::types::MAX_GRANT_SCOPE_BYTES`], or more than
+    /// [`crate::types::MAX_TEAM_GRANTS`] teams or [`crate::types::MAX_ACCOUNT_GRANTS`] names.
+    pub fn check_grants(&self, org: &str, grants: &[Grant]) -> Result<(), &'static str> {
+        if grants.len() > crate::types::MAX_GRANTS {
+            return Err("quota exceeded: an instance holds at most 1018 grants");
+        }
+        let o = self.orgs.get(org).ok_or("no such organization")?;
+        let mut named: BTreeSet<&str> = BTreeSet::new();
+        let mut teams: BTreeSet<&str> = BTreeSet::new();
+        let (mut whole, mut anyone) = (false, false);
+        for g in grants {
+            let fresh = match g {
+                Grant::Org => !std::mem::replace(&mut whole, true),
+                Grant::Anyone => !std::mem::replace(&mut anyone, true),
+                Grant::Team { team } => {
+                    if !o.teams.contains_key(team) {
+                        return Err("no such team in the app's organization");
+                    }
+                    teams.insert(team)
+                }
+                Grant::Account { account, scope } => {
+                    if !self.accounts.contains_key(account) {
+                        return Err("unknown account");
+                    }
+                    if scope.as_ref().is_some_and(|v| !crate::types::scope_fits(v)) {
+                        return Err("a grant's scope is at most 256 bytes of JSON");
+                    }
+                    named.insert(account)
+                }
+            };
+            if !fresh {
+                return Err("a grant is listed twice");
+            }
+        }
+        if whole && !teams.is_empty() {
+            return Err("a grant to the organization covers its teams: not both");
+        }
+        if teams.len() > crate::types::MAX_TEAM_GRANTS {
+            return Err("quota exceeded: an instance names at most 16 teams");
+        }
+        if named.len() > crate::types::MAX_ACCOUNT_GRANTS {
+            return Err("quota exceeded: an instance names at most 1000 accounts");
+        }
+        Ok(())
+    }
+
+    /// [`Self::may_reach`] of an instance whose access is a grant list ([`Access::Grants`],
+    /// only ever judged by the current rules): [`Grant::Anyone`] admits everyone; anyone else
+    /// is signed in. Someone outside the organization reaches it as a guest
+    /// ([`Self::guest_reaches`]: named here, or on the instance whose unit made it, while both
+    /// switches allow), or, named in an organization flagged personal, as a personal app's list
+    /// did. A member reaches it as its owner (while in a team it admits, when it admits teams
+    /// only) or through a grant: the organization (an `app_only` guest of it never), a team
+    /// they are in, or their name; a name, and the owner of an instance only names admit, only
+    /// while they are in the package's app team where it has one, as an `accounts` instance is.
+    fn grants_reach(&self, app: &AppRecord, grants: &[Grant], account: Option<&str>) -> bool {
+        if grants.contains(&Grant::Anyone) {
+            return true;
+        }
+        let Some(a) = account else {
+            return false;
+        };
+        let Some(o) = self.orgs.get(&app.org) else {
+            return false;
+        };
+        if o.role(a).is_none() {
+            return (o.personal && app.access.names(a)) || self.guest_reaches(app, a);
+        }
+        let in_app_team = || {
+            self.app_team_of(app)
+                .is_none_or(|(o, team)| o.in_team(a, &team.team_id))
+        };
+        if a == app.owner
+            && self.owner_in_team(app, a)
+            && (!app.access.named_only() || in_app_team())
+        {
+            return true;
+        }
+        grants.iter().any(|g| match g {
+            Grant::Org => !o.app_only(a),
+            Grant::Team { team } => o.in_team(a, team),
+            Grant::Account { account, .. } => account == a && in_app_team(),
+            Grant::Anyone => true,
+        })
     }
 
     /// The app team of `app`'s package in `app`'s organization, with the
@@ -4483,8 +4576,14 @@ impl SystemState {
         let gone = o.subtree(team);
         self.apps
             .values()
+            // Every team it admits is going: an instance that keeps another way in (another
+            // team, a grant to the organization) stays and loses only those grants.
             .filter(|a| {
-                a.org == org && matches!(&a.access, Access::Team { team } if gone.contains(team))
+                let teams = a.access.teams();
+                a.org == org
+                    && !teams.is_empty()
+                    && !a.access.org_wide()
+                    && teams.into_iter().all(|t| gone.contains(t))
             })
             .map(|a| a.app_id.clone())
             .collect()
@@ -6343,7 +6442,7 @@ pub enum SystemCmd {
         consent: Value,
     },
     /// Mint an instance invite ([`crate::types::AppInvite`]): whoever manages the instance's
-    /// guests ([`SystemState::manages_guests`]), with passkey consent over
+    /// guests ([`SystemState::manages_grants`]), with passkey consent over
     /// [`app_invite_args`] (`<app> / __create_app_invite`), while it takes guests and has
     /// `accounts` access. Only the token's public key is logged.
     CreateAppInvite {
@@ -6363,7 +6462,7 @@ pub enum SystemCmd {
         consent: Value,
     },
     /// Make a public link of an instance ([`crate::types::PublicLink`]): whoever may change
-    /// its access ([`SystemState::manages_guests`]), with passkey consent over
+    /// its access ([`SystemState::manages_grants`]), with passkey consent over
     /// [`public_link_args`] (`<app> / __create_public_link`), while its organization allows
     /// public links. Only the token's public key is logged.
     CreatePublicLink {

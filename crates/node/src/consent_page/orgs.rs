@@ -29,7 +29,7 @@ use crate::error::ApiError;
 use crate::node::Node;
 use crate::system::cluster_version::Feature;
 use crate::system::{SystemState, TeamRow};
-use crate::types::{caps, now_secs, Access, Org, OrgRole, TeamRole};
+use crate::types::{caps, now_secs, Org, OrgRole, TeamRole};
 
 /// The longest organization, account, team or invite id an organization
 /// request may name (ids are base64url of 16 bytes, invite keys 64 hex).
@@ -268,7 +268,7 @@ fn teams_of(o: &Org, account: &str) -> Vec<String> {
 fn member_apps(s: &SystemState, org: &str, account: &str) -> Vec<String> {
     s.apps
         .values()
-        .filter(|a| a.org == org && a.access != Access::Public)
+        .filter(|a| a.org == org && !a.access.anyone())
         .filter(|a| s.may_reach(a, Some(account)))
         .map(|a| a.name.clone())
         .collect()

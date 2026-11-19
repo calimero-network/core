@@ -1,8 +1,10 @@
 //! Guests (`Feature::Guests`, 1.0.0-rc.32): accounts listed on one instance (its
 //! `accounts` access) that are not members of its organization reach it where both the
 //! release's signed manifest (`guests: allowed`) and the organization (`allowGuests`)
-//! allow; they see nothing else of the organization and manage nothing. Instance invites
-//! (`POST /apps/{app}/invites`) add the redeemer to the list.
+//! allow; they see nothing else of the organization and manage nothing. An instance's access
+//! is a list of grants (`Feature::AccessGrants`): teams, named members and guests together,
+//! a guest's grant carrying a scope the app defines. Instance invites
+//! (`POST /apps/{app}/invites`), on any instance, name the redeemer on it.
 //!
 //! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
@@ -212,7 +214,7 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
     assert_eq!(listed, std::slice::from_ref(&open));
     let e = carol
         .apps()
-        .access(&open, typed(json!({ "kind": "public" })))
+        .access(&open, Some(typed(json!({ "kind": "public" }))), None)
         .await
         .unwrap_err();
     assert!(
@@ -228,7 +230,7 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
     // An invite of her own to the instance is a manager's.
     let e = carol
         .apps()
-        .invite_create(&open, None, None, None)
+        .invite_create(&open, None, None, None, None)
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
@@ -250,7 +252,8 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
         .apps()
         .access(
             &open,
-            typed(json!({ "kind": "accounts", "accounts": [bob_id] })),
+            Some(typed(json!({ "kind": "accounts", "accounts": [bob_id] }))),
+            None,
         )
         .await
         .unwrap();
@@ -258,9 +261,10 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
     assert_eq!(reads(&bob, &open).await.unwrap(), json!("v"));
 }
 
-/// An instance invite adds its redeemer to the instance's guest list (not to its
-/// organization); one already listed spends no use; a revoked invite admits nobody; an
-/// instance that takes no guests, or has no list, takes no invite.
+/// An instance invite names its redeemer on the instance (a guest, not a member of its
+/// organization); one already named spends no use; a revoked invite admits nobody; an
+/// instance that takes no guests takes no invite; an organization-wide instance takes one,
+/// whose scope its guest's grant carries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_instance_invite_makes_its_redeemer_a_guest() {
     use calimero_bundle::GuestPolicy;
@@ -297,7 +301,7 @@ async fn an_instance_invite_makes_its_redeemer_a_guest() {
 
     let token = s(&alice
         .apps()
-        .invite_create(&open, None, Some(2), Some(&mut a))
+        .invite_create(&open, None, Some(2), None, Some(&mut a))
         .await
         .map(wire)
         .unwrap()["token"]);
@@ -324,6 +328,9 @@ async fn an_instance_invite_makes_its_redeemer_a_guest() {
     // One use spent; again, listed already, no use spent.
     let listed = alice.apps().invite_list(&open).await.map(wire).unwrap();
     assert_eq!(listed["invites"][0]["usesLeft"], 1, "{listed}");
+    // A redemption is signed over the second it is made in, and each is spent once: the same
+    // one again within that second is a replay, so the second try comes a second later.
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
     let _again = dave.orgs().invite_redeem(&token).await.unwrap();
     let listed = alice.apps().invite_list(&open).await.map(wire).unwrap();
     assert_eq!(listed["invites"][0]["usesLeft"], 1, "{listed}");
@@ -341,14 +348,158 @@ async fn an_instance_invite_makes_its_redeemer_a_guest() {
     // No guests, or no list: no invite, before any passkey is asked for.
     let e = alice
         .apps()
-        .invite_create(&closed, None, None, None)
+        .invite_create(&closed, None, None, None, None)
         .await
         .unwrap_err();
     assert!(e.to_string().contains("GUESTS_NOT_ALLOWED"), "{e}");
+    let general = json!({ "channel": "general" });
+    let token = s(&alice
+        .apps()
+        .invite_create(&org_wide, None, None, Some(general.clone()), Some(&mut a))
+        .await
+        .map(wire)
+        .unwrap()["token"]);
+    let joined = erin.orgs().invite_redeem(&token).await.map(wire).unwrap();
+    assert_eq!(joined["member"], json!(false), "{joined}");
+    let record = erin.apps().get(&org_wide).await.map(wire).unwrap();
+    assert_eq!(
+        record["grants"],
+        json!([{ "kind": "account", "account": id(&erin).await, "scope": general }]),
+        "a guest sees only their own grant: {record}"
+    );
+    let all = alice.apps().get(&org_wide).await.map(wire).unwrap();
+    assert_eq!(all["grants"][0], json!({ "kind": "org" }), "{all}");
+}
+
+/// An instance admits a team and two partners from outside its organization at once (one
+/// with a scope the app defines), which no single access mode could say; each grant is judged
+/// on its own, so a member outside the team is refused. An invite on it names a member as a
+/// named member. The deprecated `access` still sets one mode, and a request naming both is
+/// refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_team_and_two_partners_reach_one_instance_by_their_grants() {
+    use calimero_bundle::GuestPolicy;
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (dan, _d) = signed_up(&c, 2, "dan").await;
+    let (carol, _c) = signed_up(&c, 0, "carol").await;
+    let (erin, _e) = signed_up(&c, 1, "erin").await;
+    let (carol_id, erin_id, dan_id) = (id(&carol).await, id(&erin).await, id(&dan).await);
+    let _ok = alice
+        .packages()
+        .upload(release(ALLOWS, Some(GuestPolicy::Allowed)))
+        .await
+        .unwrap();
+    let acme = s(&alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]);
+    let team = s(&alice
+        .orgs()
+        .team_create(&acme, "Deal", typed(json!("invite")), None)
+        .await
+        .map(wire)
+        .unwrap()["teamId"]);
+    for (who, teams) in [(&bob, vec![team.as_str()]), (&dan, vec![])] {
+        let token = s(&alice
+            .orgs()
+            .invite_create(
+                &acme,
+                typed(json!({ "role": "member", "teams": teams })),
+                Some(&mut a),
+            )
+            .await
+            .map(wire)
+            .unwrap()["token"]);
+        let _joined = who.orgs().invite_redeem(&token).await.unwrap();
+    }
+    let partners = json!({ "channel": "partners" });
+    let app = alice
+        .apps()
+        .create(typed(json!({
+            "name": "deal", "package": ALLOWS, "org": acme,
+            "grants": [
+                { "kind": "team", "team": team },
+                { "kind": "account", "account": carol_id },
+                { "kind": "account", "account": erin_id, "scope": partners },
+            ],
+        })))
+        .await
+        .unwrap()
+        .app_id;
+    let _set = alice
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    for (who, reached) in [(&bob, true), (&carol, true), (&erin, true), (&dan, false)] {
+        match reads(who, &app).await {
+            Ok(v) => assert!(reached && v == json!("v"), "{v}"),
+            Err(e) => {
+                assert!(!reached, "{e}");
+                refused(&e, "404");
+            }
+        }
+    }
+    let seen = erin.apps().get(&app).await.map(wire).unwrap();
+    assert_eq!(
+        seen["grants"],
+        json!([{ "kind": "account", "account": erin_id, "scope": partners }]),
+        "{seen}"
+    );
+    assert_eq!(
+        alice.apps().get(&app).await.map(wire).unwrap()["grants"]
+            .as_array()
+            .map(Vec::len),
+        Some(3)
+    );
+
+    // Dan, a member outside the team, is named by an invite: a member grant, not a guest.
+    let token = s(&alice
+        .apps()
+        .invite_create(&app, None, None, None, Some(&mut a))
+        .await
+        .map(wire)
+        .unwrap()["token"]);
+    let joined = dan.orgs().invite_redeem(&token).await.map(wire).unwrap();
+    assert_eq!(joined["member"], json!(true), "{joined}");
+    assert_eq!(reads(&dan, &app).await.unwrap(), json!("v"));
+    let grants = alice.apps().get(&app).await.map(wire).unwrap()["grants"].clone();
+    assert_eq!(
+        grants[3],
+        json!({ "kind": "account", "account": dan_id }),
+        "{grants}"
+    );
+
+    // The deprecated form sets one mode; both at once is refused.
+    let _ok = alice
+        .apps()
+        .access(
+            &app,
+            Some(typed(json!({ "kind": "accounts", "accounts": [carol_id] }))),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(reads(&carol, &app).await.unwrap(), json!("v"));
+    refused(&reads(&bob, &app).await.unwrap_err(), "404");
     let e = alice
         .apps()
-        .invite_create(&org_wide, None, None, None)
+        .access(
+            &app,
+            Some(typed(json!({ "kind": "org" }))),
+            Some(vec![typed(json!({ "kind": "org" }))]),
+        )
         .await
         .unwrap_err();
-    assert!(e.to_string().contains("NOT_AN_ACCOUNTS_INSTANCE"), "{e}");
+    refused(&e, "400");
 }

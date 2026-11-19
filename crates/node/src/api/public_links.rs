@@ -193,7 +193,7 @@ async fn public_link_create(
         if !s.may_reach(&app, Some(&actor)) {
             return Err(ApiError::not_found("no such app"));
         }
-        if !s.manages_guests(&app, &actor) {
+        if !s.manages_grants(&app, &actor) {
             return Err(ApiError::forbidden(
                 "only whoever may change the instance's access makes its public links",
             ));
@@ -292,7 +292,7 @@ async fn public_link_list(
     let app = node.app(&app_id).await?;
     let now = now_secs();
     node.sys(|s| {
-        if !s.may_reach(&app, Some(&actor)) || !s.manages_guests(&app, &actor) {
+        if !s.may_reach(&app, Some(&actor)) || !s.manages_grants(&app, &actor) {
             return Err(ApiError::not_found("no such app"));
         }
         let links: Vec<Value> = s
@@ -320,7 +320,7 @@ async fn public_link_revoke(
     let app = node.app(&app_id).await?;
     let visible = node.sys(|s| {
         s.public_links.get(&link).is_some_and(|l| {
-            l.app == app_id && (l.created_by == actor || s.manages_guests(&app, &actor))
+            l.app == app_id && (l.created_by == actor || s.manages_grants(&app, &actor))
         })
     });
     if !visible {

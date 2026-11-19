@@ -2539,12 +2539,13 @@ fn once_organizations_are_ordinary_a_personal_one_is_like_any_other() {
 /// that is not a member of its organization reaches it, and the apps its unit created for
 /// it, only from the logged version on and only while both the release it runs (`guests:
 /// allowed`) and its organization (`allowGuests`, its owner's or an admin's with a passkey)
-/// allow. Instance invites add the redeemer to the list with the token's key; a manager of
-/// the instance's access mints and revokes them; deleting the instance drops them.
+/// allow. Instance invites, on any instance, name the redeemer on it with the token's key (the
+/// instance's access becoming grants); a manager of the instance's access mints and revokes
+/// them; deleting the instance drops them.
 #[test]
 fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     use super::cluster_version::Feature;
-    use super::{OrgSettings, APP_INVITE_GONE, GUESTS_NOT_ALLOWED, NOT_AN_ACCOUNTS_INSTANCE};
+    use super::{OrgSettings, APP_INVITE_GONE, GUESTS_NOT_ALLOWED};
     use crate::types::AppInvite;
     let (mut m, mut alice, _bob, _carol) = proven_cluster();
     let _ok = m.run_unproven(account("erin")).unwrap();
@@ -2605,7 +2606,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
         "a release that says nothing forbids them"
     );
     assert!(!reaches(&m, "wide", "carol"));
-    assert!(!m.state.manages_guests(&m.state.apps["open"], "carol"));
+    assert!(!m.state.manages_grants(&m.state.apps["open"], "carol"));
 
     // The organization's switch: its owner, with a passkey, once; a member is refused.
     let settings = |allow: bool, actor: &str, consent: Value| SystemCmd::SetOrgSettings {
@@ -2647,6 +2648,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
         uses_left: uses,
         created_by: String::new(),
         created_at: 10,
+        scope: None,
     };
     let create = |key: &str, app: &str, actor: &str, consent: Value| SystemCmd::CreateAppInvite {
         invite_key: key.into(),
@@ -2656,7 +2658,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     };
     assert_eq!(
         create(&key, "open", "alice", Value::Null).features(),
-        [Feature::Guests]
+        [Feature::Guests, Feature::AccessGrants]
     );
     assert!(m
         .run_unproven(create(&key, "open", "bob", Value::Null))
@@ -2665,10 +2667,10 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
         m.run_unproven(create("k-closed", "closed", "alice", Value::Null)),
         Err(GUESTS_NOT_ALLOWED.to_owned())
     );
-    assert_eq!(
-        m.run_unproven(create("k-wide", "wide", "alice", Value::Null)),
-        Err(NOT_AN_ACCOUNTS_INSTANCE.to_owned())
-    );
+    // Any instance takes one, not only a list.
+    let _ok = m
+        .run_unproven(create("k-wide", "wide", "alice", Value::Null))
+        .unwrap();
     let args = super::app_invite_args(&key, &invite("open", 1));
     needs_consent(
         &mut m,
@@ -2691,8 +2693,9 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     );
     let signed = crate::proof::sign_invite_redeem(token, "erin", 20);
     let out = m.run(redeem(signed.clone())).unwrap();
-    assert_eq!(out, json!({ "app": "open", "org": "org" }));
+    assert_eq!(out, json!({ "app": "open", "org": "org", "member": false }));
     assert!(reaches(&m, "open", "erin"));
+    assert!(reaches(&m, "open", "carol"), "the list it had is kept");
     assert!(
         m.state.orgs["org"].role("erin").is_none(),
         "a guest, not a member"
@@ -2721,6 +2724,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
         .run_unproven(create("k3", "open", "alice", Value::Null))
         .unwrap();
     m.state.remove_app("open");
+    m.state.remove_app("wide");
     assert!(m.state.app_invites.is_empty());
 
     // A state without invites or the switch writes as it did.
@@ -2879,6 +2883,312 @@ fn a_visitors_proof_names_its_link_key_and_time() {
         "another key"
     );
     assert!(verify_visitor(&link, &key.to_uppercase(), 1_000, &sig, 1_000).is_err());
+}
+
+/// Access written as one mode, as every release before grants logged it, reads, writes back
+/// byte for byte and replays as it did: a state's records keep their mode (none is rewritten
+/// as grants), a `setAccess` entry an earlier release logged applies as then, without the
+/// grants feature, and each mode admits whom it always did. [`Access::grants`] answers the
+/// grant list each stands for.
+#[test]
+fn access_logged_as_one_mode_reads_writes_and_replays_as_before() {
+    use crate::types::{Access, Grant};
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let modes = [
+        (json!({ "kind": "owner" }), vec![]),
+        (json!({ "kind": "org" }), vec![Grant::Org]),
+        (
+            json!({ "kind": "accounts", "accounts": ["carol"] }),
+            vec![Grant::Account {
+                account: "carol".into(),
+                scope: None,
+            }],
+        ),
+        (json!({ "kind": "public" }), vec![Grant::Anyone]),
+        (
+            json!({ "kind": "team", "team": "t" }),
+            vec![Grant::Team { team: "t".into() }],
+        ),
+    ];
+    for (i, (mode, grants)) in modes.iter().enumerate() {
+        let access: Access = serde_json::from_value(mode.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&access).unwrap(), *mode);
+        assert_eq!(access.grants(), *grants, "{mode}");
+        let record = json!({
+            "appId": format!("m{i}"), "name": "m", "group": 2, "bundle": "b1", "owner": "alice",
+            "org": "org", "replicas": [1], "createdAt": 0, "access": mode,
+        });
+        let _prev = m
+            .state
+            .apps
+            .insert(format!("m{i}"), serde_json::from_value(record).unwrap());
+    }
+    // The state as a checkpoint holds it: read back, every mode is as it was written.
+    let bytes = serde_json::to_vec(&m.state).unwrap();
+    let back: SystemState = serde_json::from_slice(&bytes).unwrap();
+    for (i, (mode, _)) in modes.iter().enumerate() {
+        let a = serde_json::to_value(&back.apps[&format!("m{i}")]).unwrap();
+        assert_eq!(a["access"], *mode);
+    }
+    let _ok = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .teams
+        .get_mut("t")
+        .unwrap()
+        .members
+        .insert("bob".into(), false);
+    // Whom each admits, as before: owner only; the organization; the list (a guest not
+    // before rc.32); anyone; the team.
+    let reaches = |m: &SystemMachine, i: usize, who: Option<&str>| {
+        m.state.may_reach(&m.state.apps[&format!("m{i}")], who)
+    };
+    let table = [
+        (Some("alice"), [true, true, true, true, false]),
+        (Some("bob"), [false, true, false, true, true]),
+        (Some("carol"), [false, false, false, true, false]),
+        (None, [false, false, false, true, false]),
+    ];
+    for (who, want) in table {
+        let got: Vec<bool> = (0..5).map(|i| reaches(&m, i, who)).collect();
+        assert_eq!(got, want, "{who:?}");
+    }
+    // An entry an earlier release logged (no owner flags) uses no feature and applies as it
+    // did: the mode it names, as named.
+    let logged: SystemCmd = serde_json::from_value(json!({ "op": "setAccess", "app_id": "m0",
+        "access": { "kind": "accounts", "accounts": ["bob"] }, "actor": "alice" }))
+    .unwrap();
+    assert!(logged.features().is_empty());
+    let _ok = m.run_unproven(logged).unwrap();
+    assert_eq!(
+        m.state.apps["m0"].access,
+        Access::Accounts {
+            accounts: vec!["bob".into()]
+        }
+    );
+}
+
+/// An instance's access is a list of grants: a team, named members and guests together ("team
+/// t plus a partner"), each judged on its own; a guest's grant carries the app's scope; a list
+/// that cannot stand is refused where it applies. An invite names its redeemer on any
+/// instance: a guest, or a named member when they are a member, with the invite's scope.
+/// Deleting a team takes the instances only it admitted and its grant from the rest.
+#[test]
+fn an_instances_access_is_a_list_of_grants() {
+    use super::cluster_version::Feature;
+    use crate::types::{Access, AppInvite, Grant};
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    for who in ["dan", "erin"] {
+        let _ok = m.run_unproven(account(who)).unwrap();
+    }
+    let release = json!({
+        "version": "1.0.0", "mpk": "g-mpk", "mpkSize": 1, "source": "upload",
+        "services": { "": "b-g" }, "installedBy": "alice", "installedAt": 5, "guests": "allowed",
+    });
+    let _ok = m
+        .run_unproven(SystemCmd::InstallPackage {
+            package: "g".into(),
+            signer_id: "did:key:g".into(),
+            release: serde_json::from_value(release).unwrap(),
+        })
+        .unwrap();
+    let rc32 = "1.0.0-rc.32";
+    let _ok = m
+        .run_unproven(SystemCmd::SetClusterVersion {
+            version: rc32.into(),
+            nodes: (1..=4).map(|id| (id, rc32.to_owned())).collect(),
+        })
+        .unwrap();
+    {
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o
+            .members
+            .insert("dan".into(), crate::types::OrgRole::Member);
+        let mut u = o.teams["t"].clone();
+        u.team_id = "u".into();
+        u.members.clear();
+        let _prev = o.teams.insert("u".into(), u);
+        let _lead = o
+            .teams
+            .get_mut("t")
+            .unwrap()
+            .members
+            .insert("bob".into(), false);
+    }
+    for id in ["x", "y", "z", "w"] {
+        let record = json!({
+            "appId": id, "name": id, "group": 2, "bundle": "b-g", "owner": "alice",
+            "org": "org", "replicas": [1], "createdAt": 0, "access": { "kind": "owner" },
+            "release": { "package": "g", "version": "1.0.0" },
+        });
+        let _prev = m
+            .state
+            .apps
+            .insert(id.into(), serde_json::from_value(record).unwrap());
+    }
+    let set = |app: &str, grants: Value| SystemCmd::SetAccess {
+        app_id: app.into(),
+        access: serde_json::from_value(json!({ "kind": "grants", "grants": grants })).unwrap(),
+        actor: "alice".into(),
+        owner_in_org: true,
+        owner_in_team: true,
+    };
+    let partners = json!({ "channel": "partners" });
+    let x = set(
+        "x",
+        json!([{ "kind": "team", "team": "t" },
+            { "kind": "account", "account": "carol", "scope": partners },
+            { "kind": "account", "account": "dan" }]),
+    );
+    assert_eq!(x.features(), [Feature::AccessGrants]);
+    let _ok = m.run_unproven(x).unwrap();
+    let reaches =
+        |m: &SystemMachine, id: &str, who: Option<&str>| m.state.may_reach(&m.state.apps[id], who);
+    // The team, a named member outside it, a guest; not another outsider, nor anyone signed
+    // out, nor the owner outside the team (an owner is judged by the teams, as on `team`).
+    for (who, want) in [
+        (Some("alice"), false),
+        (Some("bob"), true),
+        (Some("dan"), true),
+        (Some("carol"), true),
+        (Some("erin"), false),
+        (None, false),
+    ] {
+        assert_eq!(reaches(&m, "x", who), want, "{who:?}");
+    }
+    let xa = &m.state.apps["x"];
+    assert!(m.state.is_guest(xa, "carol") && !m.state.is_guest(xa, "dan"));
+    assert_eq!(xa.access.scope_of("carol"), Some(&partners));
+    assert_eq!(xa.access.the_team().map(String::as_str), Some("t"));
+    // Anyone, as `public` was: signed out too.
+    let _ok = m
+        .run_unproven(set("w", json!([{ "kind": "anyone" }])))
+        .unwrap();
+    assert!(reaches(&m, "w", None));
+
+    // Lists that cannot stand.
+    let big = json!({ "note": "x".repeat(300) });
+    for (bad, why) in [
+        (
+            json!([{ "kind": "org" }, { "kind": "team", "team": "t" }]),
+            "a grant to the organization covers its teams: not both",
+        ),
+        (
+            json!([{ "kind": "team", "team": "t" }, { "kind": "team", "team": "t" }]),
+            "a grant is listed twice",
+        ),
+        (
+            json!([{ "kind": "account", "account": "dan" },
+                { "kind": "account", "account": "dan", "scope": 1 }]),
+            "a grant is listed twice",
+        ),
+        (
+            json!([{ "kind": "team", "team": "nope" }]),
+            "no such team in the app's organization",
+        ),
+        (
+            json!([{ "kind": "account", "account": "nobody" }]),
+            "unknown account",
+        ),
+        (
+            json!([{ "kind": "account", "account": "carol", "scope": big }]),
+            "a grant's scope is at most 256 bytes of JSON",
+        ),
+    ] {
+        assert_eq!(m.run_unproven(set("y", bad)), Err(why.to_owned()));
+    }
+    assert!(
+        serde_json::from_value::<Grant>(json!({ "kind": "team", "team": "t", "extra": 1 }))
+            .is_err(),
+        "closed input"
+    );
+
+    // An invite on a `team` instance, with a scope: a guest is named with it, a member too.
+    let _ok = m
+        .run_unproven(SystemCmd::SetAccess {
+            app_id: "y".into(),
+            access: Access::Team { team: "t".into() },
+            actor: "alice".into(),
+            owner_in_org: true,
+            owner_in_team: true,
+        })
+        .unwrap();
+    for token in ["inv_a", "inv_b"] {
+        let _ok = m
+            .run_unproven(SystemCmd::CreateAppInvite {
+                invite_key: crate::proof::invite_key(token),
+                invite: AppInvite {
+                    app: "y".into(),
+                    expires_at: 1_000,
+                    uses_left: 1,
+                    created_by: String::new(),
+                    created_at: 10,
+                    scope: Some(partners.clone()),
+                },
+                actor: "alice".into(),
+                consent: Value::Null,
+            })
+            .unwrap();
+    }
+    let redeem = |token: &str, who: &str| SystemCmd::RedeemAppInvite {
+        invite_key: crate::proof::invite_key(token),
+        account: who.into(),
+        now: 20,
+        signature: crate::proof::sign_invite_redeem(token, who, 20),
+    };
+    assert!(!reaches(&m, "y", Some("erin")));
+    let out = m.run(redeem("inv_a", "erin")).unwrap();
+    assert_eq!(out, json!({ "app": "y", "org": "org", "member": false }));
+    let out = m.run(redeem("inv_b", "dan")).unwrap();
+    assert_eq!(out, json!({ "app": "y", "org": "org", "member": true }));
+    let ya = &m.state.apps["y"];
+    assert_eq!(
+        ya.access.grants(),
+        [
+            Grant::Team { team: "t".into() },
+            Grant::Account {
+                account: "erin".into(),
+                scope: Some(partners.clone())
+            },
+            Grant::Account {
+                account: "dan".into(),
+                scope: Some(partners.clone())
+            },
+        ]
+    );
+    assert!(reaches(&m, "y", Some("erin")) && reaches(&m, "y", Some("dan")));
+    assert!(reaches(&m, "y", Some("bob")), "the team keeps its way in");
+
+    // Deleting team u: z (t and u) keeps t; w2 (only u, and a guest) goes with it.
+    let _ok = m
+        .run_unproven(set(
+            "z",
+            json!([{ "kind": "team", "team": "t" }, { "kind": "team", "team": "u" }]),
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(set(
+            "w",
+            json!([{ "kind": "team", "team": "u" }, { "kind": "account", "account": "carol" }]),
+        ))
+        .unwrap();
+    assert_eq!(m.state.team_apps("org", "u"), ["w"]);
+    let _ok = m
+        .run_unproven(SystemCmd::DeleteTeam {
+            org: "org".into(),
+            team: "u".into(),
+            actor: "alice".into(),
+            consent: Value::Null,
+            apps_need_consent: false,
+        })
+        .unwrap();
+    assert!(!m.state.apps.contains_key("w"));
+    assert_eq!(
+        m.state.apps["z"].access.grants(),
+        [Grant::Team { team: "t".into() }]
+    );
 }
 
 /// From the current-rules mark on, a `CreateOrg` without `name_fits` is

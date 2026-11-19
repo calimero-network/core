@@ -232,7 +232,8 @@ App instances.
 | `instance alias get [ALIAS]` | `GET /auth/aliases/{alias}` | Resolve an alias (default `default`). |
 | `instance alias list` (`ls`) | `GET /auth/aliases` | This account's aliases. |
 | `instance use INSTANCE` | `PUT /auth/aliases/default` | Make a context the default (the alias `default`). |
-| `instance access INSTANCE owner\|org\|team\|accounts\|public [--team TEAM] [--account ID]...` | `POST /apps/{app}/access` | Who reaches the context. `team` needs `--team`; `accounts` takes `--account` once per account. |
+| `instance access INSTANCE grants --grant GRANT...` | `POST /apps/{app}/access` | Who reaches the instance, as grants: each `--grant` is `org`, `team:TEAM`, `account:ID` (a member or a guest), `account:ID=SCOPE` (with the app's JSON scope) or `anyone`. |
+| `instance access INSTANCE owner\|org\|team\|accounts\|public [--team TEAM] [--account ID]...` | `POST /apps/{app}/access` | One access mode (deprecated for `grants`). `team` needs `--team`; `accounts` takes `--account` once per account. |
 | `instance metadata INSTANCE JSON` | `POST /apps/{app}/metadata` | Set the context's metadata; `null` clears it. |
 | `instance storage INSTANCE` | `GET /apps/{app}/storage` | Keys, bytes and blobs the context holds. |
 | `instance abi INSTANCE` | `GET /apps/{app}/abi` | The ABI of the bundle it runs. |

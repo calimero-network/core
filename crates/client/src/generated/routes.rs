@@ -45,9 +45,15 @@ impl Apps<'_> {
     /// Set who may reach an app.
     ///
     /// `POST /apps/{app}/access` (`app_access`). Who: a passkey session (an API key is refused).
-    pub async fn access(self, app: &str, access: Access) -> Result<Map<String, Value>> {
+    pub async fn access(
+        self,
+        app: &str,
+        access: Option<Access>,
+        grants: Option<Vec<Grant>>,
+    ) -> Result<Map<String, Value>> {
         let mut fields = Map::new();
-        route::put(&mut fields, "access", &access)?;
+        route::put_some(&mut fields, "access", access)?;
+        route::put_some(&mut fields, "grants", grants)?;
         let body = Value::Object(fields);
         let req =
             Request::new(Method::POST, format!("apps/{}/access", route::segment(app))).json(body);
@@ -319,12 +325,12 @@ impl Apps<'_> {
     /// One app.
     ///
     /// `GET /apps/{app}` (`app_get`). Who: signed in (a session or an API key).
-    pub async fn get(self, app: &str) -> Result<App> {
+    pub async fn get(self, app: &str) -> Result<AppGetResponse> {
         let req = Request::new(Method::GET, format!("apps/{}", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
 
-    /// Invite a guest to an instance.
+    /// Invite someone to an instance.
     ///
     /// `POST /apps/{app}/invites` (`app_invite_create`). Who: an account holder (a passkey session not bound to an app's frontend).
     ///
@@ -334,11 +340,13 @@ impl Apps<'_> {
         app: &str,
         ttl_secs: Option<u64>,
         uses: Option<u64>,
+        scope: Option<Value>,
         passkey: Option<&mut dyn Passkey>,
     ) -> Result<AppInviteCreateResponse> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "ttlSecs", ttl_secs)?;
         route::put_some(&mut fields, "uses", uses)?;
+        route::put_some(&mut fields, "scope", scope)?;
         let body = Value::Object(fields);
         let req = Request::new(
             Method::POST,

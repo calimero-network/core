@@ -18,16 +18,20 @@ class InviteRedeemResponse200:
     Attributes:
         org (str):
         app (Union[Unset, str]):
+        member (Union[Unset, bool]):
     """
 
     org: str
     app: Union[Unset, str] = UNSET
+    member: Union[Unset, bool] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         org = self.org
 
         app = self.app
+
+        member = self.member
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -38,6 +42,8 @@ class InviteRedeemResponse200:
         )
         if app is not UNSET:
             field_dict["app"] = app
+        if member is not UNSET:
+            field_dict["member"] = member
 
         return field_dict
 
@@ -48,9 +54,12 @@ class InviteRedeemResponse200:
 
         app = d.pop("app", UNSET)
 
+        member = d.pop("member", UNSET)
+
         invite_redeem_response_200 = cls(
             org=org,
             app=app,
+            member=member,
         )
 
         invite_redeem_response_200.additional_properties = d

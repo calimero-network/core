@@ -27,7 +27,6 @@ import java.io.IOException
 import okhttp3.Call
 import okhttp3.HttpUrl
 
-import com.calimero.mero.api.models.App
 import com.calimero.mero.api.models.AppAbi200Response
 import com.calimero.mero.api.models.AppAccessRequest
 import com.calimero.mero.api.models.AppAttestation200Response
@@ -37,6 +36,7 @@ import com.calimero.mero.api.models.AppDelegate200Response
 import com.calimero.mero.api.models.AppDelegateRequest
 import com.calimero.mero.api.models.AppDelegations200Response
 import com.calimero.mero.api.models.AppDelete200Response
+import com.calimero.mero.api.models.AppGet200Response
 import com.calimero.mero.api.models.AppInviteCreate200Response
 import com.calimero.mero.api.models.AppInviteCreateRequest
 import com.calimero.mero.api.models.AppInviteList200Response
@@ -205,7 +205,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/access
      * Set who may reach an app
-     * A package-bound session: only its own package&#39;s app, from one of its package&#39;s teams to another.  **Who:** a passkey session (an API key is refused).
+     * &#x60;grants&#x60; replace the instance&#39;s grant list (#Grant; cluster version 1.0.0-rc.32, else &#x60;409 FEATURE_NOT_ACTIVE&#x60;); the deprecated &#x60;access&#x60; sets one mode. Exactly one of them, else &#x60;400 BAD_REQUEST&#x60;. Its owner, or whoever manages the organization&#39;s apps (on each team it admits, before and after). A package-bound session: only its own package&#39;s app, from one of its package&#39;s teams to another.  **Who:** a passkey session (an API key is refused).
      * @param app 
      * @param appAccessRequest 
      * @return kotlinx.serialization.json.JsonObject
@@ -238,7 +238,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/access
      * Set who may reach an app
-     * A package-bound session: only its own package&#39;s app, from one of its package&#39;s teams to another.  **Who:** a passkey session (an API key is refused).
+     * &#x60;grants&#x60; replace the instance&#39;s grant list (#Grant; cluster version 1.0.0-rc.32, else &#x60;409 FEATURE_NOT_ACTIVE&#x60;); the deprecated &#x60;access&#x60; sets one mode. Exactly one of them, else &#x60;400 BAD_REQUEST&#x60;. Its owner, or whoever manages the organization&#39;s apps (on each team it admits, before and after). A package-bound session: only its own package&#39;s app, from one of its package&#39;s teams to another.  **Who:** a passkey session (an API key is refused).
      * @param app 
      * @param appAccessRequest 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
@@ -361,7 +361,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps
      * Create an app instance
-     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;grants&#x60; say who reaches it (#Grant; the deprecated &#x60;access&#x60; still names one mode; not both, &#x60;400 BAD_REQUEST&#x60;; neither: the organization; grants need cluster version 1.0.0-rc.32, &#x60;409 FEATURE_NOT_ACTIVE&#x60;). &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param appCreateRequest 
      * @return AppCreate200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -393,7 +393,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps
      * Create an app instance
-     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;grants&#x60; say who reaches it (#Grant; the deprecated &#x60;access&#x60; still names one mode; not both, &#x60;400 BAD_REQUEST&#x60;; neither: the organization; grants need cluster version 1.0.0-rc.32, &#x60;409 FEATURE_NOT_ACTIVE&#x60;). &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param appCreateRequest 
      * @return ApiResponse<AppCreate200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -661,9 +661,9 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}
      * One app
-     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route.  **Who:** signed in (a session or an API key).
+     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route. &#x60;grants&#x60; is its access as grants whichever shape it was set in; a guest sees only their own grant (and &#x60;access&#x60; naming only them).  **Who:** signed in (a session or an API key).
      * @param app 
-     * @return App
+     * @return AppGet200Response
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -672,11 +672,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appGet(app: kotlin.String) : App = withContext(Dispatchers.IO) {
+    suspend fun appGet(app: kotlin.String) : AppGet200Response = withContext(Dispatchers.IO) {
         val localVarResponse = appGetWithHttpInfo(app = app)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as App
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppGet200Response
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -693,18 +693,18 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}
      * One app
-     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route.  **Who:** signed in (a session or an API key).
+     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route. &#x60;grants&#x60; is its access as grants whichever shape it was set in; a guest sees only their own grant (and &#x60;access&#x60; naming only them).  **Who:** signed in (a session or an API key).
      * @param app 
-     * @return ApiResponse<App?>
+     * @return ApiResponse<AppGet200Response?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appGetWithHttpInfo(app: kotlin.String) : ApiResponse<App?> = withContext(Dispatchers.IO) {
+    suspend fun appGetWithHttpInfo(app: kotlin.String) : ApiResponse<AppGet200Response?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appGetRequestConfig(app = app)
 
-        return@withContext request<Unit, App>(
+        return@withContext request<Unit, AppGet200Response>(
             localVariableConfig
         )
     }
@@ -733,8 +733,8 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
 
     /**
      * POST /apps/{app}/invites
-     * Invite a guest to an instance
-     * A token whose redeemer becomes a guest of this instance only (added to its &#x60;accounts&#x60; list), &#x60;uses&#x60; times (1 to 1000, default 1) within &#x60;ttlSecs&#x60; (at most 90 days, default 7). Whoever may change the instance&#39;s access; only while it takes guests (its release&#39;s manifest and its organization&#39;s &#x60;allowGuests&#x60;, &#x60;409 GUESTS_NOT_ALLOWED&#x60;) and its access is &#x60;accounts&#x60; (&#x60;409 NOT_AN_ACCOUNTS_INSTANCE&#x60;). At most 64 pending per instance. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Invite someone to an instance
+     * A token whose redeemer is named on this instance only (an &#x60;account&#x60; grant: a guest, or a named member when they are a member of its organization; never added to the organization), &#x60;uses&#x60; times (1 to 1000, default 1) within &#x60;ttlSecs&#x60; (at most 90 days, default 7), on any instance. &#x60;scope&#x60; (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance&#39;s access; only while it takes guests (its release&#39;s manifest and its organization&#39;s &#x60;allowGuests&#x60;, &#x60;409 GUESTS_NOT_ALLOWED&#x60;). At most 64 pending per instance. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appInviteCreateRequest 
      * @return AppInviteCreate200Response
@@ -766,8 +766,8 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
 
     /**
      * POST /apps/{app}/invites
-     * Invite a guest to an instance
-     * A token whose redeemer becomes a guest of this instance only (added to its &#x60;accounts&#x60; list), &#x60;uses&#x60; times (1 to 1000, default 1) within &#x60;ttlSecs&#x60; (at most 90 days, default 7). Whoever may change the instance&#39;s access; only while it takes guests (its release&#39;s manifest and its organization&#39;s &#x60;allowGuests&#x60;, &#x60;409 GUESTS_NOT_ALLOWED&#x60;) and its access is &#x60;accounts&#x60; (&#x60;409 NOT_AN_ACCOUNTS_INSTANCE&#x60;). At most 64 pending per instance. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Invite someone to an instance
+     * A token whose redeemer is named on this instance only (an &#x60;account&#x60; grant: a guest, or a named member when they are a member of its organization; never added to the organization), &#x60;uses&#x60; times (1 to 1000, default 1) within &#x60;ttlSecs&#x60; (at most 90 days, default 7), on any instance. &#x60;scope&#x60; (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance&#39;s access; only while it takes guests (its release&#39;s manifest and its organization&#39;s &#x60;allowGuests&#x60;, &#x60;409 GUESTS_NOT_ALLOWED&#x60;). At most 64 pending per instance. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appInviteCreateRequest 
      * @return ApiResponse<AppInviteCreate200Response?>
@@ -811,7 +811,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/invites
      * An instance&#39;s invites
-     * For whoever manages its guests: keys and terms, never a token.  **Who:** a passkey session (an API key is refused).
+     * For whoever may change its access: keys, terms and scope, never a token.  **Who:** a passkey session (an API key is refused).
      * @param app 
      * @return AppInviteList200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -843,7 +843,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/invites
      * An instance&#39;s invites
-     * For whoever manages its guests: keys and terms, never a token.  **Who:** a passkey session (an API key is refused).
+     * For whoever may change its access: keys, terms and scope, never a token.  **Who:** a passkey session (an API key is refused).
      * @param app 
      * @return ApiResponse<AppInviteList200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -884,7 +884,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * DELETE /apps/{app}/invites/{key}
      * Revoke an instance invite
-     * Its creator, or whoever manages the instance&#39;s guests; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Its creator, or whoever may change the instance&#39;s access; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param key 
      * @param confirmOnly May be absent. (optional)
@@ -918,7 +918,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * DELETE /apps/{app}/invites/{key}
      * Revoke an instance invite
-     * Its creator, or whoever manages the instance&#39;s guests; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Its creator, or whoever may change the instance&#39;s access; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param key 
      * @param confirmOnly May be absent. (optional)

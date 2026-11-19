@@ -75,7 +75,12 @@ is a bug, and the CI checks below fail it.
 
 ## What is deprecated or cut over now
 
-`crates/node/api-deprecations.toml` deprecates nothing now. Its
+`crates/node/api-deprecations.toml` deprecates one field: `access`, an app
+instance's single access mode on `POST /apps`, `POST /apps/{app}/access` and
+`GET /apps/{app}`, since 1.0.0-rc.32 for `grants`, its list of grants ([App
+access](/protocol/organizations/#app-access)); the node takes it until
+1.0.0-rc.35, and every instance set as one mode keeps it and answers it as
+grants. Its
 `[[cutover]]` entries: the release after 1.0.0-rc.29 removes the sealed
 channel's paths `POST /sealed/v2/handshake` and `POST /sealed/v2`
 (deprecated since 1.0.0-rc.25 for `/sealed/handshake` and `/sealed`), and its

@@ -26,7 +26,7 @@ public protocol APIProtocol: Sendable {
     func appList(_ input: Operations.AppList.Input) async throws -> Operations.AppList.Output
     /// Create an app instance
     ///
-    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version 1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
     ///
     /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
     ///
@@ -35,7 +35,7 @@ public protocol APIProtocol: Sendable {
     func appCreate(_ input: Operations.AppCreate.Input) async throws -> Operations.AppCreate.Output
     /// One app
     ///
-    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.
+    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -62,7 +62,7 @@ public protocol APIProtocol: Sendable {
     func appAbi(_ input: Operations.AppAbi.Input) async throws -> Operations.AppAbi.Output
     /// Set who may reach an app
     ///
-    /// A package-bound session: only its own package's app, from one of its package's teams to another.
+    /// `grants` replace the instance's grant list (#Grant; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`); the deprecated `access` sets one mode. Exactly one of them, else `400 BAD_REQUEST`. Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -261,16 +261,16 @@ public protocol APIProtocol: Sendable {
     func intents(_ input: Operations.Intents.Input) async throws -> Operations.Intents.Output
     /// An instance's invites
     ///
-    /// For whoever manages its guests: keys and terms, never a token.
+    /// For whoever may change its access: keys, terms and scope, never a token.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
     /// - Remark: HTTP `GET /apps/{app}/invites`.
     /// - Remark: Generated from `#/paths//apps/{app}/invites/get(app_invite_list)`.
     func appInviteList(_ input: Operations.AppInviteList.Input) async throws -> Operations.AppInviteList.Output
-    /// Invite a guest to an instance
+    /// Invite someone to an instance
     ///
-    /// A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+    /// A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -279,7 +279,7 @@ public protocol APIProtocol: Sendable {
     func appInviteCreate(_ input: Operations.AppInviteCreate.Input) async throws -> Operations.AppInviteCreate.Output
     /// Revoke an instance invite
     ///
-    /// Its creator, or whoever manages the instance's guests; `412` first.
+    /// Its creator, or whoever may change the instance's access; `412` first.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -1023,7 +1023,7 @@ public protocol APIProtocol: Sendable {
     func health(_ input: Operations.Health.Input) async throws -> Operations.Health.Output
     /// Join with an invite
     ///
-    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -1609,7 +1609,7 @@ extension APIProtocol {
     }
     /// Create an app instance
     ///
-    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version 1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
     ///
     /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
     ///
@@ -1626,7 +1626,7 @@ extension APIProtocol {
     }
     /// One app
     ///
-    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.
+    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -1677,7 +1677,7 @@ extension APIProtocol {
     }
     /// Set who may reach an app
     ///
-    /// A package-bound session: only its own package's app, from one of its package's teams to another.
+    /// `grants` replace the instance's grant list (#Grant; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`); the deprecated `access` sets one mode. Exactly one of them, else `400 BAD_REQUEST`. Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -2084,7 +2084,7 @@ extension APIProtocol {
     }
     /// An instance's invites
     ///
-    /// For whoever manages its guests: keys and terms, never a token.
+    /// For whoever may change its access: keys, terms and scope, never a token.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -2099,9 +2099,9 @@ extension APIProtocol {
             headers: headers
         ))
     }
-    /// Invite a guest to an instance
+    /// Invite someone to an instance
     ///
-    /// A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+    /// A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -2120,7 +2120,7 @@ extension APIProtocol {
     }
     /// Revoke an instance invite
     ///
-    /// Its creator, or whoever manages the instance's guests; `412` first.
+    /// Its creator, or whoever may change the instance's access; `412` first.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -3540,7 +3540,7 @@ extension APIProtocol {
     }
     /// Join with an invite
     ///
-    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -5006,12 +5006,14 @@ public enum Components {
                 case signature
             }
         }
-        /// Who may reach an app at all.
+        /// Who may reach an app at all, as one mode (deprecated: see `grants`), or `grants`: the instance's grant list (see #Grant). Each mode is a grant list: `owner` none, `org` the organization, `team` that team, `accounts` those people, `public` `anyone`.
         ///
         /// - Remark: Generated from `#/components/schemas/Access`.
         @frozen public enum Access: Codable, Hashable, Sendable {
             /// - Remark: Generated from `#/components/schemas/Access/AccessAccounts`.
             case accounts(Components.Schemas.AccessAccounts)
+            /// - Remark: Generated from `#/components/schemas/Access/AccessGrants`.
+            case grants(Components.Schemas.AccessGrants)
             /// - Remark: Generated from `#/components/schemas/Access/AccessOrg`.
             case org(Components.Schemas.AccessOrg)
             /// - Remark: Generated from `#/components/schemas/Access/AccessOwner`.
@@ -5032,6 +5034,8 @@ public enum Components {
                 switch discriminator {
                 case "accounts":
                     self = .accounts(try .init(from: decoder))
+                case "grants":
+                    self = .grants(try .init(from: decoder))
                 case "org":
                     self = .org(try .init(from: decoder))
                 case "owner":
@@ -5052,11 +5056,64 @@ public enum Components {
                 switch self {
                 case let .accounts(value):
                     try value.encode(to: encoder)
+                case let .grants(value):
+                    try value.encode(to: encoder)
                 case let .org(value):
                     try value.encode(to: encoder)
                 case let .owner(value):
                     try value.encode(to: encoder)
                 case let ._public(value):
+                    try value.encode(to: encoder)
+                case let .team(value):
+                    try value.encode(to: encoder)
+                }
+            }
+        }
+        /// One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link). At most 16 teams and 1000 accounts.
+        ///
+        /// - Remark: Generated from `#/components/schemas/Grant`.
+        @frozen public enum Grant: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/Grant/GrantAccount`.
+            case account(Components.Schemas.GrantAccount)
+            /// - Remark: Generated from `#/components/schemas/Grant/GrantAnyone`.
+            case anyone(Components.Schemas.GrantAnyone)
+            /// - Remark: Generated from `#/components/schemas/Grant/GrantOrg`.
+            case org(Components.Schemas.GrantOrg)
+            /// - Remark: Generated from `#/components/schemas/Grant/GrantTeam`.
+            case team(Components.Schemas.GrantTeam)
+            public enum CodingKeys: String, CodingKey {
+                case kind
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                let discriminator = try container.decode(
+                    Swift.String.self,
+                    forKey: .kind
+                )
+                switch discriminator {
+                case "account":
+                    self = .account(try .init(from: decoder))
+                case "anyone":
+                    self = .anyone(try .init(from: decoder))
+                case "org":
+                    self = .org(try .init(from: decoder))
+                case "team":
+                    self = .team(try .init(from: decoder))
+                default:
+                    throw Swift.DecodingError.unknownOneOfDiscriminator(
+                        discriminatorKey: CodingKeys.kind,
+                        discriminatorValue: discriminator,
+                        codingPath: decoder.codingPath
+                    )
+                }
+            }
+            public func encode(to encoder: any Encoder) throws {
+                switch self {
+                case let .account(value):
+                    try value.encode(to: encoder)
+                case let .anyone(value):
+                    try value.encode(to: encoder)
+                case let .org(value):
                     try value.encode(to: encoder)
                 case let .team(value):
                     try value.encode(to: encoder)
@@ -6390,246 +6447,6 @@ public enum Components {
                 case failed
                 case finished
                 case targets
-            }
-        }
-        /// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.
-        ///
-        /// - Remark: Generated from `#/components/schemas/App`.
-        public struct App: Codable, Hashable, Sendable {
-            /// - Remark: Generated from `#/components/schemas/App/appId`.
-            public var appId: Swift.String
-            /// - Remark: Generated from `#/components/schemas/App/name`.
-            public var name: Swift.String
-            /// - Remark: Generated from `#/components/schemas/App/group`.
-            public var group: Swift.Int64
-            /// - Remark: Generated from `#/components/schemas/App/bundle`.
-            public var bundle: Swift.String
-            /// - Remark: Generated from `#/components/schemas/App/owner`.
-            public var owner: Swift.String
-            /// - Remark: Generated from `#/components/schemas/App/org`.
-            public var org: Swift.String?
-            /// - Remark: Generated from `#/components/schemas/App/access`.
-            public var access: Components.Schemas.Access
-            /// - Remark: Generated from `#/components/schemas/App/confirmMethods`.
-            public var confirmMethods: [Swift.String]
-            /// - Remark: Generated from `#/components/schemas/App/executor`.
-            @frozen public enum ExecutorPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                case component = "component"
-                case wasmer = "wasmer"
-            }
-            /// - Remark: Generated from `#/components/schemas/App/executor`.
-            public var executor: Components.Schemas.App.ExecutorPayload?
-            /// - Remark: Generated from `#/components/schemas/App/replicas`.
-            public var replicas: [Swift.Int64]
-            /// - Remark: Generated from `#/components/schemas/App/createdAt`.
-            public var createdAt: Swift.Int64
-            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-            ///
-            /// - Remark: Generated from `#/components/schemas/App/initArgs`.
-            public var initArgs: OpenAPIRuntime.OpenAPIValueContainer
-            /// - Remark: Generated from `#/components/schemas/App/computeBundle`.
-            public var computeBundle: Swift.String?
-            /// - Remark: Generated from `#/components/schemas/App/components`.
-            @frozen public enum ComponentsPayload: String, Codable, Hashable, Sendable, CaseIterable {
-                case computeOnly = "computeOnly"
-            }
-            /// - Remark: Generated from `#/components/schemas/App/components`.
-            public var components: Components.Schemas.App.ComponentsPayload?
-            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-            ///
-            /// - Remark: Generated from `#/components/schemas/App/metadata`.
-            public var metadata: OpenAPIRuntime.OpenAPIValueContainer
-            /// - Remark: Generated from `#/components/schemas/App/lastUpgrade`.
-            public var lastUpgrade: Components.Schemas.Upgrade?
-            /// - Remark: Generated from `#/components/schemas/App/deployment`.
-            public var deployment: Swift.String?
-            /// - Remark: Generated from `#/components/schemas/App/release`.
-            public var release: Components.Schemas.PackageRef?
-            /// - Remark: Generated from `#/components/schemas/App/restore`.
-            public struct RestorePayload: Codable, Hashable, Sendable {
-                /// - Remark: Generated from `#/components/schemas/App/restore/seed`.
-                public var seed: Swift.Int64?
-                /// - Remark: Generated from `#/components/schemas/App/restore/source`.
-                public struct SourcePayload: Codable, Hashable, Sendable {
-                    /// - Remark: Generated from `#/components/schemas/App/restore/source/name`.
-                    public var name: Swift.String
-                    /// - Remark: Generated from `#/components/schemas/App/restore/source/sha256`.
-                    public var sha256: Swift.String
-                    /// - Remark: Generated from `#/components/schemas/App/restore/source/index`.
-                    public var index: Swift.Int64
-                    /// Creates a new `SourcePayload`.
-                    ///
-                    /// - Parameters:
-                    ///   - name:
-                    ///   - sha256:
-                    ///   - index:
-                    public init(
-                        name: Swift.String,
-                        sha256: Swift.String,
-                        index: Swift.Int64
-                    ) {
-                        self.name = name
-                        self.sha256 = sha256
-                        self.index = index
-                    }
-                    public enum CodingKeys: String, CodingKey {
-                        case name
-                        case sha256
-                        case index
-                    }
-                }
-                /// - Remark: Generated from `#/components/schemas/App/restore/source`.
-                public var source: Components.Schemas.App.RestorePayload.SourcePayload?
-                /// Creates a new `RestorePayload`.
-                ///
-                /// - Parameters:
-                ///   - seed:
-                ///   - source:
-                public init(
-                    seed: Swift.Int64? = nil,
-                    source: Components.Schemas.App.RestorePayload.SourcePayload? = nil
-                ) {
-                    self.seed = seed
-                    self.source = source
-                }
-                public enum CodingKeys: String, CodingKey {
-                    case seed
-                    case source
-                }
-            }
-            /// - Remark: Generated from `#/components/schemas/App/restore`.
-            public var restore: Components.Schemas.App.RestorePayload?
-            /// - Remark: Generated from `#/components/schemas/App/links`.
-            public struct LinksPayload: Codable, Hashable, Sendable {
-                /// A container of undocumented properties.
-                public var additionalProperties: [String: Swift.String]
-                /// Creates a new `LinksPayload`.
-                ///
-                /// - Parameters:
-                ///   - additionalProperties: A container of undocumented properties.
-                public init(additionalProperties: [String: Swift.String] = .init()) {
-                    self.additionalProperties = additionalProperties
-                }
-                public init(from decoder: any Decoder) throws {
-                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                }
-                public func encode(to encoder: any Encoder) throws {
-                    try encoder.encodeAdditionalProperties(additionalProperties)
-                }
-            }
-            /// - Remark: Generated from `#/components/schemas/App/links`.
-            public var links: Components.Schemas.App.LinksPayload?
-            /// - Remark: Generated from `#/components/schemas/App/attached`.
-            public struct AttachedPayload: Codable, Hashable, Sendable {
-                /// A container of undocumented properties.
-                public var additionalProperties: [String: Swift.String]
-                /// Creates a new `AttachedPayload`.
-                ///
-                /// - Parameters:
-                ///   - additionalProperties: A container of undocumented properties.
-                public init(additionalProperties: [String: Swift.String] = .init()) {
-                    self.additionalProperties = additionalProperties
-                }
-                public init(from decoder: any Decoder) throws {
-                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
-                }
-                public func encode(to encoder: any Encoder) throws {
-                    try encoder.encodeAdditionalProperties(additionalProperties)
-                }
-            }
-            /// - Remark: Generated from `#/components/schemas/App/attached`.
-            public var attached: Components.Schemas.App.AttachedPayload?
-            /// Creates a new `App`.
-            ///
-            /// - Parameters:
-            ///   - appId:
-            ///   - name:
-            ///   - group:
-            ///   - bundle:
-            ///   - owner:
-            ///   - org:
-            ///   - access:
-            ///   - confirmMethods:
-            ///   - executor:
-            ///   - replicas:
-            ///   - createdAt:
-            ///   - initArgs: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-            ///   - computeBundle:
-            ///   - components:
-            ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-            ///   - lastUpgrade:
-            ///   - deployment:
-            ///   - release:
-            ///   - restore:
-            ///   - links:
-            ///   - attached:
-            public init(
-                appId: Swift.String,
-                name: Swift.String,
-                group: Swift.Int64,
-                bundle: Swift.String,
-                owner: Swift.String,
-                org: Swift.String? = nil,
-                access: Components.Schemas.Access,
-                confirmMethods: [Swift.String],
-                executor: Components.Schemas.App.ExecutorPayload? = nil,
-                replicas: [Swift.Int64],
-                createdAt: Swift.Int64,
-                initArgs: OpenAPIRuntime.OpenAPIValueContainer,
-                computeBundle: Swift.String? = nil,
-                components: Components.Schemas.App.ComponentsPayload? = nil,
-                metadata: OpenAPIRuntime.OpenAPIValueContainer,
-                lastUpgrade: Components.Schemas.Upgrade? = nil,
-                deployment: Swift.String? = nil,
-                release: Components.Schemas.PackageRef? = nil,
-                restore: Components.Schemas.App.RestorePayload? = nil,
-                links: Components.Schemas.App.LinksPayload? = nil,
-                attached: Components.Schemas.App.AttachedPayload? = nil
-            ) {
-                self.appId = appId
-                self.name = name
-                self.group = group
-                self.bundle = bundle
-                self.owner = owner
-                self.org = org
-                self.access = access
-                self.confirmMethods = confirmMethods
-                self.executor = executor
-                self.replicas = replicas
-                self.createdAt = createdAt
-                self.initArgs = initArgs
-                self.computeBundle = computeBundle
-                self.components = components
-                self.metadata = metadata
-                self.lastUpgrade = lastUpgrade
-                self.deployment = deployment
-                self.release = release
-                self.restore = restore
-                self.links = links
-                self.attached = attached
-            }
-            public enum CodingKeys: String, CodingKey {
-                case appId
-                case name
-                case group
-                case bundle
-                case owner
-                case org
-                case access
-                case confirmMethods
-                case executor
-                case replicas
-                case createdAt
-                case initArgs
-                case computeBundle
-                case components
-                case metadata
-                case lastUpgrade
-                case deployment
-                case release
-                case restore
-                case links
-                case attached
             }
         }
         /// An app as `GET /apps` lists it: `package` and `version` name the release its bundle came from (`null` for a raw upload), `deployment` the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1).
@@ -8734,6 +8551,133 @@ public enum Components {
                 case team
             }
         }
+        /// - Remark: Generated from `#/components/schemas/AccessGrants`.
+        public struct AccessGrants: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/AccessGrants/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case grants = "grants"
+            }
+            /// - Remark: Generated from `#/components/schemas/AccessGrants/kind`.
+            public var kind: Components.Schemas.AccessGrants.KindPayload
+            /// - Remark: Generated from `#/components/schemas/AccessGrants/grants`.
+            public var grants: [Components.Schemas.Grant]
+            /// Creates a new `AccessGrants`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - grants:
+            public init(
+                kind: Components.Schemas.AccessGrants.KindPayload,
+                grants: [Components.Schemas.Grant]
+            ) {
+                self.kind = kind
+                self.grants = grants
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case grants
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/GrantOrg`.
+        public struct GrantOrg: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/GrantOrg/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case org = "org"
+            }
+            /// - Remark: Generated from `#/components/schemas/GrantOrg/kind`.
+            public var kind: Components.Schemas.GrantOrg.KindPayload
+            /// Creates a new `GrantOrg`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            public init(kind: Components.Schemas.GrantOrg.KindPayload) {
+                self.kind = kind
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/GrantTeam`.
+        public struct GrantTeam: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/GrantTeam/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case team = "team"
+            }
+            /// - Remark: Generated from `#/components/schemas/GrantTeam/kind`.
+            public var kind: Components.Schemas.GrantTeam.KindPayload
+            /// - Remark: Generated from `#/components/schemas/GrantTeam/team`.
+            public var team: Swift.String
+            /// Creates a new `GrantTeam`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - team:
+            public init(
+                kind: Components.Schemas.GrantTeam.KindPayload,
+                team: Swift.String
+            ) {
+                self.kind = kind
+                self.team = team
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case team
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/GrantAccount`.
+        public struct GrantAccount: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/GrantAccount/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case account = "account"
+            }
+            /// - Remark: Generated from `#/components/schemas/GrantAccount/kind`.
+            public var kind: Components.Schemas.GrantAccount.KindPayload
+            /// - Remark: Generated from `#/components/schemas/GrantAccount/account`.
+            public var account: Swift.String
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/GrantAccount/scope`.
+            public var scope: OpenAPIRuntime.OpenAPIValueContainer?
+            /// Creates a new `GrantAccount`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - account:
+            ///   - scope: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            public init(
+                kind: Components.Schemas.GrantAccount.KindPayload,
+                account: Swift.String,
+                scope: OpenAPIRuntime.OpenAPIValueContainer? = nil
+            ) {
+                self.kind = kind
+                self.account = account
+                self.scope = scope
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case account
+                case scope
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/GrantAnyone`.
+        public struct GrantAnyone: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/GrantAnyone/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case anyone = "anyone"
+            }
+            /// - Remark: Generated from `#/components/schemas/GrantAnyone/kind`.
+            public var kind: Components.Schemas.GrantAnyone.KindPayload
+            /// Creates a new `GrantAnyone`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            public init(kind: Components.Schemas.GrantAnyone.KindPayload) {
+                self.kind = kind
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+            }
+        }
         /// - Remark: Generated from `#/components/schemas/AppScopeOrg`.
         public struct AppScopeOrg: Codable, Hashable, Sendable {
             /// - Remark: Generated from `#/components/schemas/AppScopeOrg/kind`.
@@ -10569,7 +10513,7 @@ public enum Operations {
     }
     /// Create an app instance
     ///
-    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version 1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
     ///
     /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
     ///
@@ -10625,6 +10569,8 @@ public enum Operations {
                     public var newOrg: Operations.AppCreate.Input.Body.JsonPayload.NewOrgPayload?
                     /// - Remark: Generated from `#/paths/apps/POST/requestBody/json/access`.
                     public var access: Components.Schemas.Access?
+                    /// - Remark: Generated from `#/paths/apps/POST/requestBody/json/grants`.
+                    public var grants: [Components.Schemas.Grant]?
                     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                     ///
                     /// - Remark: Generated from `#/paths/apps/POST/requestBody/json/initArgs`.
@@ -10646,6 +10592,7 @@ public enum Operations {
                     ///   - org:
                     ///   - newOrg:
                     ///   - access:
+                    ///   - grants:
                     ///   - initArgs: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                     ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                     ///   - deployment:
@@ -10658,6 +10605,7 @@ public enum Operations {
                         org: Swift.String? = nil,
                         newOrg: Operations.AppCreate.Input.Body.JsonPayload.NewOrgPayload? = nil,
                         access: Components.Schemas.Access? = nil,
+                        grants: [Components.Schemas.Grant]? = nil,
                         initArgs: OpenAPIRuntime.OpenAPIValueContainer? = nil,
                         metadata: OpenAPIRuntime.OpenAPIValueContainer? = nil,
                         deployment: Swift.String? = nil
@@ -10670,6 +10618,7 @@ public enum Operations {
                         self.org = org
                         self.newOrg = newOrg
                         self.access = access
+                        self.grants = grants
                         self.initArgs = initArgs
                         self.metadata = metadata
                         self.deployment = deployment
@@ -10683,6 +10632,7 @@ public enum Operations {
                         case org
                         case newOrg
                         case access
+                        case grants
                         case initArgs
                         case metadata
                         case deployment
@@ -10831,7 +10781,7 @@ public enum Operations {
     }
     /// One app
     ///
-    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.
+    /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in; a guest sees only their own grant (and `access` naming only them).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -10882,13 +10832,257 @@ public enum Operations {
             public struct Ok: Sendable, Hashable {
                 /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/appId`.
+                        public var appId: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/name`.
+                        public var name: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/group`.
+                        public var group: Swift.Int64
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/bundle`.
+                        public var bundle: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/owner`.
+                        public var owner: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/org`.
+                        public var org: Swift.String?
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/access`.
+                        public var access: Components.Schemas.Access
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/confirmMethods`.
+                        public var confirmMethods: [Swift.String]
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/executor`.
+                        @frozen public enum ExecutorPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                            case component = "component"
+                            case wasmer = "wasmer"
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/executor`.
+                        public var executor: Operations.AppGet.Output.Ok.Body.JsonPayload.ExecutorPayload?
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/replicas`.
+                        public var replicas: [Swift.Int64]
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/createdAt`.
+                        public var createdAt: Swift.Int64
+                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        ///
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/initArgs`.
+                        public var initArgs: OpenAPIRuntime.OpenAPIValueContainer
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/computeBundle`.
+                        public var computeBundle: Swift.String?
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/components`.
+                        @frozen public enum ComponentsPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                            case computeOnly = "computeOnly"
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/components`.
+                        public var components: Operations.AppGet.Output.Ok.Body.JsonPayload.ComponentsPayload?
+                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        ///
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/metadata`.
+                        public var metadata: OpenAPIRuntime.OpenAPIValueContainer
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/lastUpgrade`.
+                        public var lastUpgrade: Components.Schemas.Upgrade?
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/deployment`.
+                        public var deployment: Swift.String?
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/release`.
+                        public var release: Components.Schemas.PackageRef?
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/restore`.
+                        public struct RestorePayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/restore/seed`.
+                            public var seed: Swift.Int64?
+                            /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/restore/source`.
+                            public struct SourcePayload: Codable, Hashable, Sendable {
+                                /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/restore/source/name`.
+                                public var name: Swift.String
+                                /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/restore/source/sha256`.
+                                public var sha256: Swift.String
+                                /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/restore/source/index`.
+                                public var index: Swift.Int64
+                                /// Creates a new `SourcePayload`.
+                                ///
+                                /// - Parameters:
+                                ///   - name:
+                                ///   - sha256:
+                                ///   - index:
+                                public init(
+                                    name: Swift.String,
+                                    sha256: Swift.String,
+                                    index: Swift.Int64
+                                ) {
+                                    self.name = name
+                                    self.sha256 = sha256
+                                    self.index = index
+                                }
+                                public enum CodingKeys: String, CodingKey {
+                                    case name
+                                    case sha256
+                                    case index
+                                }
+                            }
+                            /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/restore/source`.
+                            public var source: Operations.AppGet.Output.Ok.Body.JsonPayload.RestorePayload.SourcePayload?
+                            /// Creates a new `RestorePayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - seed:
+                            ///   - source:
+                            public init(
+                                seed: Swift.Int64? = nil,
+                                source: Operations.AppGet.Output.Ok.Body.JsonPayload.RestorePayload.SourcePayload? = nil
+                            ) {
+                                self.seed = seed
+                                self.source = source
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case seed
+                                case source
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/restore`.
+                        public var restore: Operations.AppGet.Output.Ok.Body.JsonPayload.RestorePayload?
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/links`.
+                        public struct LinksPayload: Codable, Hashable, Sendable {
+                            /// A container of undocumented properties.
+                            public var additionalProperties: [String: Swift.String]
+                            /// Creates a new `LinksPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - additionalProperties: A container of undocumented properties.
+                            public init(additionalProperties: [String: Swift.String] = .init()) {
+                                self.additionalProperties = additionalProperties
+                            }
+                            public init(from decoder: any Decoder) throws {
+                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                            }
+                            public func encode(to encoder: any Encoder) throws {
+                                try encoder.encodeAdditionalProperties(additionalProperties)
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/links`.
+                        public var links: Operations.AppGet.Output.Ok.Body.JsonPayload.LinksPayload?
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/attached`.
+                        public struct AttachedPayload: Codable, Hashable, Sendable {
+                            /// A container of undocumented properties.
+                            public var additionalProperties: [String: Swift.String]
+                            /// Creates a new `AttachedPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - additionalProperties: A container of undocumented properties.
+                            public init(additionalProperties: [String: Swift.String] = .init()) {
+                                self.additionalProperties = additionalProperties
+                            }
+                            public init(from decoder: any Decoder) throws {
+                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                            }
+                            public func encode(to encoder: any Encoder) throws {
+                                try encoder.encodeAdditionalProperties(additionalProperties)
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/attached`.
+                        public var attached: Operations.AppGet.Output.Ok.Body.JsonPayload.AttachedPayload?
+                        /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/json/grants`.
+                        public var grants: [Components.Schemas.Grant]
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - appId:
+                        ///   - name:
+                        ///   - group:
+                        ///   - bundle:
+                        ///   - owner:
+                        ///   - org:
+                        ///   - access:
+                        ///   - confirmMethods:
+                        ///   - executor:
+                        ///   - replicas:
+                        ///   - createdAt:
+                        ///   - initArgs: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        ///   - computeBundle:
+                        ///   - components:
+                        ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        ///   - lastUpgrade:
+                        ///   - deployment:
+                        ///   - release:
+                        ///   - restore:
+                        ///   - links:
+                        ///   - attached:
+                        ///   - grants:
+                        public init(
+                            appId: Swift.String,
+                            name: Swift.String,
+                            group: Swift.Int64,
+                            bundle: Swift.String,
+                            owner: Swift.String,
+                            org: Swift.String? = nil,
+                            access: Components.Schemas.Access,
+                            confirmMethods: [Swift.String],
+                            executor: Operations.AppGet.Output.Ok.Body.JsonPayload.ExecutorPayload? = nil,
+                            replicas: [Swift.Int64],
+                            createdAt: Swift.Int64,
+                            initArgs: OpenAPIRuntime.OpenAPIValueContainer,
+                            computeBundle: Swift.String? = nil,
+                            components: Operations.AppGet.Output.Ok.Body.JsonPayload.ComponentsPayload? = nil,
+                            metadata: OpenAPIRuntime.OpenAPIValueContainer,
+                            lastUpgrade: Components.Schemas.Upgrade? = nil,
+                            deployment: Swift.String? = nil,
+                            release: Components.Schemas.PackageRef? = nil,
+                            restore: Operations.AppGet.Output.Ok.Body.JsonPayload.RestorePayload? = nil,
+                            links: Operations.AppGet.Output.Ok.Body.JsonPayload.LinksPayload? = nil,
+                            attached: Operations.AppGet.Output.Ok.Body.JsonPayload.AttachedPayload? = nil,
+                            grants: [Components.Schemas.Grant]
+                        ) {
+                            self.appId = appId
+                            self.name = name
+                            self.group = group
+                            self.bundle = bundle
+                            self.owner = owner
+                            self.org = org
+                            self.access = access
+                            self.confirmMethods = confirmMethods
+                            self.executor = executor
+                            self.replicas = replicas
+                            self.createdAt = createdAt
+                            self.initArgs = initArgs
+                            self.computeBundle = computeBundle
+                            self.components = components
+                            self.metadata = metadata
+                            self.lastUpgrade = lastUpgrade
+                            self.deployment = deployment
+                            self.release = release
+                            self.restore = restore
+                            self.links = links
+                            self.attached = attached
+                            self.grants = grants
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case appId
+                            case name
+                            case group
+                            case bundle
+                            case owner
+                            case org
+                            case access
+                            case confirmMethods
+                            case executor
+                            case replicas
+                            case createdAt
+                            case initArgs
+                            case computeBundle
+                            case components
+                            case metadata
+                            case lastUpgrade
+                            case deployment
+                            case release
+                            case restore
+                            case links
+                            case attached
+                            case grants
+                        }
+                    }
                     /// - Remark: Generated from `#/paths/apps/{app}/GET/responses/200/content/application\/json`.
-                    case json(Components.Schemas.App)
+                    case json(Operations.AppGet.Output.Ok.Body.JsonPayload)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Components.Schemas.App {
+                    public var json: Operations.AppGet.Output.Ok.Body.JsonPayload {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -11281,7 +11475,7 @@ public enum Operations {
     }
     /// Set who may reach an app
     ///
-    /// A package-bound session: only its own package's app, from one of its package's teams to another.
+    /// `grants` replace the instance's grant list (#Grant; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`); the deprecated `access` sets one mode. Exactly one of them, else `400 BAD_REQUEST`. Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -11320,16 +11514,24 @@ public enum Operations {
                 /// - Remark: Generated from `#/paths/apps/{app}/access/POST/requestBody/json`.
                 public struct JsonPayload: Codable, Hashable, Sendable {
                     /// - Remark: Generated from `#/paths/apps/{app}/access/POST/requestBody/json/access`.
-                    public var access: Components.Schemas.Access
+                    public var access: Components.Schemas.Access?
+                    /// - Remark: Generated from `#/paths/apps/{app}/access/POST/requestBody/json/grants`.
+                    public var grants: [Components.Schemas.Grant]?
                     /// Creates a new `JsonPayload`.
                     ///
                     /// - Parameters:
                     ///   - access:
-                    public init(access: Components.Schemas.Access) {
+                    ///   - grants:
+                    public init(
+                        access: Components.Schemas.Access? = nil,
+                        grants: [Components.Schemas.Grant]? = nil
+                    ) {
                         self.access = access
+                        self.grants = grants
                     }
                     public enum CodingKeys: String, CodingKey {
                         case access
+                        case grants
                     }
                 }
                 /// - Remark: Generated from `#/paths/apps/{app}/access/POST/requestBody/content/application\/json`.
@@ -15380,7 +15582,7 @@ public enum Operations {
     }
     /// An instance's invites
     ///
-    /// For whoever manages its guests: keys and terms, never a token.
+    /// For whoever may change its access: keys, terms and scope, never a token.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -15447,6 +15649,10 @@ public enum Operations {
                             public var createdBy: Swift.String
                             /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/createdAt`.
                             public var createdAt: Swift.Int64
+                            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                            ///
+                            /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/InvitesPayload/scope`.
+                            public var scope: OpenAPIRuntime.OpenAPIValueContainer
                             /// Creates a new `InvitesPayloadPayload`.
                             ///
                             /// - Parameters:
@@ -15456,13 +15662,15 @@ public enum Operations {
                             ///   - expired:
                             ///   - createdBy:
                             ///   - createdAt:
+                            ///   - scope: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                             public init(
                                 inviteKey: Swift.String,
                                 usesLeft: Swift.Int64,
                                 expiresAt: Swift.Int64,
                                 expired: Swift.Bool,
                                 createdBy: Swift.String,
-                                createdAt: Swift.Int64
+                                createdAt: Swift.Int64,
+                                scope: OpenAPIRuntime.OpenAPIValueContainer
                             ) {
                                 self.inviteKey = inviteKey
                                 self.usesLeft = usesLeft
@@ -15470,6 +15678,7 @@ public enum Operations {
                                 self.expired = expired
                                 self.createdBy = createdBy
                                 self.createdAt = createdAt
+                                self.scope = scope
                             }
                             public enum CodingKeys: String, CodingKey {
                                 case inviteKey
@@ -15478,6 +15687,7 @@ public enum Operations {
                                 case expired
                                 case createdBy
                                 case createdAt
+                                case scope
                             }
                         }
                         /// - Remark: Generated from `#/paths/apps/{app}/invites/GET/responses/200/content/json/invites`.
@@ -15574,9 +15784,9 @@ public enum Operations {
             }
         }
     }
-    /// Invite a guest to an instance
+    /// Invite someone to an instance
     ///
-    /// A token whose redeemer becomes a guest of this instance only (added to its `accounts` list), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`) and its access is `accounts` (`409 NOT_AN_ACCOUNTS_INSTANCE`). At most 64 pending per instance. `412` first.
+    /// A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -15618,6 +15828,10 @@ public enum Operations {
                     public var ttlSecs: Swift.Int64?
                     /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/requestBody/json/uses`.
                     public var uses: Swift.Int64?
+                    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                    ///
+                    /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/requestBody/json/scope`.
+                    public var scope: OpenAPIRuntime.OpenAPIValueContainer?
                     /// - Remark: Generated from `#/paths/apps/{app}/invites/POST/requestBody/json/confirm`.
                     public var confirm: Components.Schemas.Confirm?
                     /// Creates a new `JsonPayload`.
@@ -15625,19 +15839,23 @@ public enum Operations {
                     /// - Parameters:
                     ///   - ttlSecs:
                     ///   - uses:
+                    ///   - scope: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                     ///   - confirm:
                     public init(
                         ttlSecs: Swift.Int64? = nil,
                         uses: Swift.Int64? = nil,
+                        scope: OpenAPIRuntime.OpenAPIValueContainer? = nil,
                         confirm: Components.Schemas.Confirm? = nil
                     ) {
                         self.ttlSecs = ttlSecs
                         self.uses = uses
+                        self.scope = scope
                         self.confirm = confirm
                     }
                     public enum CodingKeys: String, CodingKey {
                         case ttlSecs
                         case uses
+                        case scope
                         case confirm
                     }
                     public init(from decoder: any Decoder) throws {
@@ -15650,6 +15868,10 @@ public enum Operations {
                             Swift.Int64.self,
                             forKey: .uses
                         )
+                        self.scope = try container.decodeIfPresent(
+                            OpenAPIRuntime.OpenAPIValueContainer.self,
+                            forKey: .scope
+                        )
                         self.confirm = try container.decodeIfPresent(
                             Components.Schemas.Confirm.self,
                             forKey: .confirm
@@ -15657,6 +15879,7 @@ public enum Operations {
                         try decoder.ensureNoAdditionalProperties(knownKeys: [
                             "ttlSecs",
                             "uses",
+                            "scope",
                             "confirm"
                         ])
                     }
@@ -15781,7 +16004,7 @@ public enum Operations {
     }
     /// Revoke an instance invite
     ///
-    /// Its creator, or whoever manages the instance's guests; `412` first.
+    /// Its creator, or whoever may change the instance's access; `412` first.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -31251,7 +31474,7 @@ public enum Operations {
     }
     /// Join with an invite
     ///
-    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, joined as a guest (not a member). An instance invite is refused `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+    /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -31308,21 +31531,27 @@ public enum Operations {
                         public var org: Swift.String
                         /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content/json/app`.
                         public var app: Swift.String?
+                        /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content/json/member`.
+                        public var member: Swift.Bool?
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
                         ///   - org:
                         ///   - app:
+                        ///   - member:
                         public init(
                             org: Swift.String,
-                            app: Swift.String? = nil
+                            app: Swift.String? = nil,
+                            member: Swift.Bool? = nil
                         ) {
                             self.org = org
                             self.app = app
+                            self.member = member
                         }
                         public enum CodingKeys: String, CodingKey {
                             case org
                             case app
+                            case member
                         }
                     }
                     /// - Remark: Generated from `#/paths/invites/{token}/redeem/POST/responses/200/content/application\/json`.

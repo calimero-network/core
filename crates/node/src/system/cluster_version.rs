@@ -160,6 +160,13 @@ pub enum Feature {
     /// others admit. Apply reads the logged version for the reach rule
     /// (`SystemState::guests_on`), so state before it reads as it did.
     Guests,
+    /// An instance's access as a list of grants (`Access::Grants`: the organization, teams,
+    /// named members and guests with an app-defined scope, anyone): `CreateApp` and
+    /// `SetAccess` writing one, and an instance invite carrying a `scope`. An earlier
+    /// release cannot decode the variant. A redemption makes the instance's access grants, so
+    /// the instance invites need it too. Access logged before it keeps its mode and is judged
+    /// as it was.
+    AccessGrants,
     /// Public links: `CreatePublicLink` and `RevokePublicLink` (an instance's link that
     /// lets anonymous visitors call its `#[app::public]` methods), and `SetOrgSettings`
     /// naming `allowPublicLinks`. An earlier release cannot decode the commands or drops
@@ -169,7 +176,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 38] = [
+pub const FEATURES: [Feature; 39] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -207,6 +214,7 @@ pub const FEATURES: [Feature; 38] = [
     Feature::UpgradeInDeployment,
     Feature::OrdinaryOrgs,
     Feature::Guests,
+    Feature::AccessGrants,
     Feature::PublicLinks,
 ];
 
@@ -252,6 +260,7 @@ impl Feature {
             Self::UpgradeInDeployment => "upgradeInDeployment",
             Self::OrdinaryOrgs => "ordinaryOrgs",
             Self::Guests => "guests",
+            Self::AccessGrants => "accessGrants",
             Self::PublicLinks => "publicLinks",
         }
     }
@@ -295,6 +304,7 @@ impl Feature {
             | Self::UpgradeInDeployment
             | Self::OrdinaryOrgs
             | Self::Guests
+            | Self::AccessGrants
             | Self::PublicLinks => "1.0.0-rc.32",
         }
     }
@@ -552,12 +562,16 @@ impl SystemCmd {
                 f
             }
             Self::CreatePublicLink { .. } | Self::RevokePublicLink { .. } => {
-                vec![Feature::PublicLinks]
+                vec![Feature::AccessGrants, Feature::PublicLinks]
             }
-            Self::SetOrgSettings { .. }
-            | Self::CreateAppInvite { .. }
-            | Self::RevokeAppInvite { .. }
-            | Self::RedeemAppInvite { .. } => vec![Feature::Guests],
+            Self::SetOrgSettings { .. } | Self::RevokeAppInvite { .. } => vec![Feature::Guests],
+            Self::CreateAppInvite { .. } | Self::RedeemAppInvite { .. } => {
+                vec![Feature::Guests, Feature::AccessGrants]
+            }
+            Self::SetAccess {
+                access: crate::types::Access::Grants { .. },
+                ..
+            } => vec![Feature::AccessGrants],
             Self::SetDelegation { .. } => vec![Feature::Delegation],
             Self::LinkApp { .. } => vec![Feature::AttachApp],
             Self::SetDeploymentSecret { used: true, .. } => {
@@ -644,6 +658,9 @@ impl SystemCmd {
                 }
                 if unit_offer.is_some() {
                     f.push(Feature::WholeUnits);
+                }
+                if matches!(app.access, crate::types::Access::Grants { .. }) {
+                    f.push(Feature::AccessGrants);
                 }
                 f
             }
@@ -1032,6 +1049,10 @@ mod tests {
             Feature::OrdinaryOrgs => install(json!({ "instanceOrg": "standalone" })),
             Feature::Guests => entry(json!({ "op": "setOrgSettings", "org": "org",
                 "settings": { "allowGuests": false }, "actor": "alice" })),
+            Feature::AccessGrants => entry(json!({ "op": "setAccess", "app_id": "app",
+                "access": { "kind": "grants", "grants": [{ "kind": "team", "team": "t" },
+                    { "kind": "account", "account": "carol", "scope": { "channel": "p" } }] },
+                "actor": "alice" })),
             Feature::PublicLinks => entry(json!({ "op": "setOrgSettings", "org": "org",
                 "settings": { "allowPublicLinks": false }, "actor": "alice" })),
             Feature::Pipelines => install(json!({
@@ -1454,7 +1475,8 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.32's (a deployment's secrets, whole units, secrets of used releases, an
-        // upgrade kept on its deployment's offer, a release's instance mode, guests, public links) wait for every node on rc.32.
+        // upgrade kept on its deployment's offer, a release's instance mode, guests, access
+        // grants, public links) wait for every node on rc.32.
         assert_eq!(
             rc32,
             [
@@ -1464,6 +1486,7 @@ mod tests {
                 Feature::UpgradeInDeployment,
                 Feature::OrdinaryOrgs,
                 Feature::Guests,
+                Feature::AccessGrants,
                 Feature::PublicLinks
             ]
         );

@@ -995,31 +995,60 @@ is its command line.
   `instance_orgs::an_instance_goes_where_its_release_says`,
   `instance_orgs::an_app_is_transferred_only_to_a_member_of_its_organization`, the
   `personal-org` and `ordinary-orgs` upgrade cases.
+- **Access grants** (`Feature::AccessGrants`, rc.32; `types::Grant`, `Access::Grants`,
+  `SystemState::grants_reach`, `check_grants`, `manages_access`, `manages_grants`; docs:
+  protocol organizations "App access"): an instance's access is a list of grants, `org`,
+  `team { team }` (at most `MAX_TEAM_GRANTS`), `account { account, scope? }` (a named member
+  or a guest, at most `MAX_ACCOUNT_GRANTS`; `scope` opaque JSON of at most
+  `MAX_GRANT_SCOPE_BYTES` the app defines) and `anyone` (signed in or not: `public`), each
+  judged on its own in `may_reach` (`grants_reach`); no grant is the owner alone, and an
+  owner of an instance only teams admit reaches it while in one of them. `SetAccess` and
+  `CreateApp` with `Access::Grants` need the feature (`SystemCmd::features`) and apply only a
+  list `check_grants` accepts (no grant twice, `org` not beside a team, known teams and
+  accounts, scopes within the limit). The single modes (`owner`, `org`, `accounts`, `public`,
+  `team`) stay as logged, never rewritten, and are judged by the rules they always had;
+  `Access::grants` answers the grant list each stands for (`GET /apps/{app}` adds `grants`).
+  The sites that read a mode read the list through `Access` helpers that answer a single mode
+  as before: `teams`/`the_team` (team-scoped management, `may_set_access` and
+  `may_upgrade` through `manages_access`, `owner_in_team`, read-only rows, team runs, the
+  report's `team`), `org_wide` (`ScopeApps`, which swaps the `org` grant for the app team's,
+  `onto_team`), `named_only` (`MoveApp`'s `accounts_in_app_team`), `teams_to_org` (`MoveApp`,
+  `TransferApp`), `anyone` (listing, `member_apps`). `DeleteTeam` takes the instances whose
+  every team grant goes (`team_apps`) and strips the team's grant from the rest
+  (`without_teams`). The API takes `grants` on `POST /apps` and `POST /apps/{app}/access`
+  (`api::apps::access_of`; with the deprecated `access`, `400`; `api-deprecations.toml`
+  deprecates `access` until rc.35). Regressions:
+  `system::tests::an_instances_access_is_a_list_of_grants`,
+  `system::tests::access_logged_as_one_mode_reads_writes_and_replays_as_before`,
+  `guests::a_team_and_two_partners_reach_one_instance_by_their_grants`.
 - **Guests** (`Feature::Guests`, rc.32; `SystemState::guest_reaches`, `guests_on`,
-  `guests_allowed`, `guest_holder`, `is_guest`, `manages_guests`; docs: protocol organizations
-  "Guests"): an account in an instance's `accounts` list that is not a member of its
-  organization reaches it (and its unit's members: `guest_holder` walks `unit_parent` up
-  at most `MAX_UNIT_LINKS_UP`) from the logged version on, while the release it runs says
-  `guests: allowed` (`calimero_bundle::GuestPolicy`, absent = forbidden; kept on
+  `guests_allowed`, `guest_holder`, `is_guest`, `manages_grants`; docs: protocol organizations
+  "Guests"): an account an instance names (an `account` grant, or its `accounts` list) that is
+  not a member of its organization reaches it (and its unit's members: `guest_holder` walks
+  `unit_parent` up at most `MAX_UNIT_LINKS_UP`) from the logged version on, while the release
+  it runs says `guests: allowed` (`calimero_bundle::GuestPolicy`, absent = forbidden; kept on
   `PackageVersion::guests`, recorded only under the feature and filled in by a reinstall; a
   release recorded without it, or a raw bundle, takes none) and its organization's
   `Org::allow_guests` is on (default; `SetOrgSettings { settings: OrgSettings }`, owner or
   admin, consent `org:<org> / __set_org_settings / settings`, `POST /orgs/{org}/settings`).
   Judged in `may_reach` before the membership check, so every gated route and `receives`
   follow it; a guest is no member, so org routes, `/files`, management and upgrades refuse
-  them; `GET /apps/{app}` shows a guest only themselves in the list. Guests are added and
-  removed with `SetAccess` by whoever may change the access, or by an instance invite
-  (`SystemState::app_invites`, `types::AppInvite` under the token's Ed25519 key):
-  `CreateAppInvite` (consent `<app> / __create_app_invite / app_invite_args`, refused unless
-  guests are allowed and the access is `accounts`; bounds `MAX_APP_INVITES_PER_APP`,
-  `MAX_APP_INVITES`, `MAX_APP_INVITE_USES`, `MAX_APP_INVITE_TTL_SECS`), `RevokeAppInvite`
-  (`__revoke_app_invite`), `RedeemAppInvite` (the token key's `sign_invite_redeem`; adds the
-  redeemer to the list up to `MAX_GUESTS_PER_APP`, free when listed already); `remove_app`
-  drops them. Routes `POST|GET /apps/{app}/invites`, `DELETE /apps/{app}/invites/{key}`; the
-  redemption is `POST /invites/{token}/redeem` (`api::orgs::redeem_invite` tells the kinds
-  apart), and the consent page's `acceptInvite` shows an instance invite as joining that app
-  as a guest (`consent_page::app_invite_model`). An organization flagged `personal` keeps its
-  `accounts` instances' reach whatever the switches say (legacy). Regressions:
+  them; `GET /apps/{app}` shows a guest only their own grant (`Access::only`). Grants change
+  with `SetAccess` by whoever may change the access (`manages_grants`), or by an instance
+  invite, on any instance (`SystemState::app_invites`, `types::AppInvite` under the token's
+  Ed25519 key, with an optional `scope`): `CreateAppInvite` (consent `<app> /
+  __create_app_invite / app_invite_args`, `scope` stated only when set; refused unless guests
+  are allowed; bounds `MAX_APP_INVITES_PER_APP`, `MAX_APP_INVITES`, `MAX_APP_INVITE_USES`,
+  `MAX_APP_INVITE_TTL_SECS`), `RevokeAppInvite` (`__revoke_app_invite`), `RedeemAppInvite`
+  (the token key's `sign_invite_redeem`; adds an `account` grant with the invite's scope,
+  `Access::naming`, turning a single mode into its grant list; a guest only while guests are
+  allowed, a member always, answered `member`; free when named already; both invite commands
+  need `Feature::AccessGrants` too); `remove_app` drops them. Routes `POST|GET
+  /apps/{app}/invites`, `DELETE /apps/{app}/invites/{key}`; the redemption is `POST
+  /invites/{token}/redeem` (`api::orgs::redeem_invite` tells the kinds apart), and the consent
+  page's `acceptInvite` shows an instance invite as joining that app as a guest, or as the
+  member they are (`consent_page::app_invite_model`). An organization flagged `personal`
+  keeps its named accounts' reach whatever the switches say (legacy). Regressions:
   `system::tests::a_guest_reaches_one_instance_while_its_release_and_its_organization_allow`,
   `guests::a_guest_reaches_one_instance_only_while_both_switches_allow`,
   `guests::an_instance_invite_makes_its_redeemer_a_guest`.

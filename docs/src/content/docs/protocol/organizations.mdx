@@ -14,12 +14,12 @@ or one made with it, as its package's manifest says ([Where an instance
 goes](#where-an-instance-goes)). An organization
 holds members with roles, nested **teams** (an **app team** per package it
 uses, with restricted child teams below for private channels) and the app
-instances, each with an access rule that names who reaches it.
+instances, each with a list of grants that names who reaches it.
 
 <OrgStructure />
 
 Access has two layers. The node decides **who reaches an app at all**, from the
-app's access rule and the system state, on every request. Everything finer —
+app's grants and the system state, on every request. Everything finer —
 who may edit which record — is the app's own code, which can read the caller's
 standing with `env::org()`, `env::org_role(account)` and `env::in_team(account, team)` ([Who a run acts as](/protocol/authorship/#the-org-the-app-sees)).
 
@@ -29,19 +29,48 @@ checks most of them first so a refused request records nothing.
 
 ## App access
 
-An app instance carries one `Access` rule (`types::Access`), set at creation
-and changed with `POST /apps/{app}/access` by its owner, an organization admin,
-or whoever manages its team's apps (`MANAGE_APPLICATION` on its team, which a
-team's leads hold) and, when it moves to another team, that team's apps too;
-any access but `team` needs `MANAGE_APPLICATION` organization-wide:
+An app instance's access is a **list of grants** (`types::Grant`, kept as
+`Access::Grants`), set at creation (`POST /apps { grants }`) and replaced with
+`POST /apps/{app}/access { grants }` by its owner, an organization admin, or
+whoever manages its teams' apps (`MANAGE_APPLICATION` on each team it admits,
+which a team's leads hold, before and after the change); a list with no team
+needs `MANAGE_APPLICATION` organization-wide. Each grant is one way in, judged
+on its own, so an instance can be "team X plus two partners from outside":
 
-| Rule | Who reaches the app |
+| Grant | Who it admits |
 | --- | --- |
-| `owner` | The owner only |
-| `accounts { accounts }` | The owner and these accounts; for an instance of a package with an app team in its organization, only those of them in that app team. Listed accounts outside the organization are [guests](#guests): they reach it only where its release and its organization allow guests |
-| `org` (default inside an organization) | Every member of the app's organization; a guest only while the organization has no app team |
-| `team { team }` | The team's members (direct rows, and inheritance into an open team), its owner included: an owner not in the team does not reach it |
-| `public` | Anyone, signed in or not (as `Caller::Public` when not) |
+| `org` | Every member of the app's organization; a guest of the organization only while it has no app team. Not beside a `team` grant, which it covers |
+| `team { team }` | The team's members (direct rows, and inheritance into an open team); at most 16 teams |
+| `account { account, scope? }` | One person. A member of the organization is a **named member**; anyone else is a [guest](#guests), admitted only where the instance's release and its organization allow guests. For an instance of a package with an app team in its organization, a named member must also be in that app team. `scope` is the app's own (below); at most 1 000 accounts |
+| `anyone` | Anyone, signed in or not (as `Caller::Public` when not): what `public` access was |
+
+No grant is the owner alone. The owner reaches their app too, except that an
+instance whose only member grants are teams is reached by its owner only while
+they are in one of them (or named). A list with a grant twice, an unknown team or
+account, `org` beside a team, or a scope over 256 bytes is refused where it
+applies. Grants are written from cluster version 1.0.0-rc.32
+(`Feature::AccessGrants`; `409 FEATURE_NOT_ACTIVE` before). `GET /apps/{app}`
+answers `grants` for every instance.
+
+**Single modes (deprecated).** Before grants, an instance carried one mode,
+which the node still takes in the request field `access` (deprecated for
+`grants` until 1.0.0-rc.35, `crates/node/api-deprecations.toml`) and keeps, as
+logged, for every instance set that way: nothing is rewritten, and each mode is
+judged as it always was. Each is a grant list, which `grants` answers for it:
+
+| Mode | The grants it is | Who reaches the app |
+| --- | --- | --- |
+| `owner` | none | The owner only |
+| `accounts { accounts }` | an `account` grant each | The owner and these accounts; for an instance of a package with an app team in its organization, only those of them in that app team. Listed accounts outside the organization are [guests](#guests) |
+| `org` (default inside an organization) | `org` | Every member of the app's organization; a guest only while the organization has no app team |
+| `team { team }` | `team` | The team's members (direct rows, and inheritance into an open team), its owner included: an owner not in the team does not reach it |
+| `public` | `anyone` | Anyone, signed in or not (as `Caller::Public` when not) |
+
+Whatever changes an instance's grants keeps the rest: giving an `org` instance
+an app team (`ScopeApps`) replaces its `org` grant with the app team's,
+deleting a team takes the instances it alone admitted (as for `team` access)
+and the team's grant from the others, and moving or handing an instance to
+another organization turns its team grant into the target's app team or `org`.
 
 The owner always reaches their app, except that an organization's app is
 reached only by the organization's current members: its owner and the accounts
@@ -533,20 +562,20 @@ below, the passkey for apps); the API marks new ones (`teams_seen`, `subtree`,
 ## Guests
 
 A **guest** of an instance is an account invited to that one instance (and the
-apps its unit created for it) without joining its organization. The guest list
-is the instance's `accounts` access list (`Access::Accounts`, the wire name
-kept): from cluster version 1.0.0-rc.32 (`Feature::Guests`) an account listed
-there that is not a member of the organization reaches the instance when both
-switches allow guests, the stricter winning:
+apps its unit created for it) without joining its organization: an `account`
+grant naming someone who is not a member (or, on an instance set as one mode,
+the `accounts` list). From cluster version 1.0.0-rc.32 (`Feature::Guests`) a
+guest reaches the instance when both switches allow guests, the stricter
+winning:
 
 | Switch | Where | Default |
 | --- | --- | --- |
 | The developer's | the release's signed manifest, `guests: "allowed" \| "forbidden"` (`meroctl app pack --guests`; kept on `PackageVersion::guests`: a release recorded before the node kept it, a raw bundle, takes none until the same `.mpk` is installed again) | `forbidden` |
-| The organization's | `allowGuests`, set by its owner or an admin with a passkey: `POST /orgs/{org}/guests { allow }` (`org:<org> / __set_allow_guests / { allow }`, `SystemCmd::SetOrgGuests`); `GET /orgs/{org}` shows `allowGuests: false` when off | allowed |
+| The organization's | `allowGuests`, an admin policy set by its owner or an admin with a passkey: `POST /orgs/{org}/settings { allowGuests }` (`org:<org> / __set_org_settings / settings`, `SystemCmd::SetOrgSettings`); `GET /orgs/{org}` shows `allowGuests: false` when off | allowed |
 
-A listed account that is a member keeps the `accounts` rule's member semantics
+A named account that is a member is a named member, with the member semantics
 above (its app team included). Access is judged fresh on every request, so
-removing a guest from the list (`POST /apps/{app}/access`, by whoever may change
+taking a guest's grant away (`POST /apps/{app}/access`, by whoever may change
 the instance's access), turning the organization's switch off, or an upgrade to
 a release that forbids guests holds from the guest's next request. An instance
 in an organization made as a personal one before 1.0.0-rc.32 keeps its listed
@@ -561,33 +590,48 @@ organization's members, teams, other apps, invites, settings, usage or reports
 (`env::org_role` is `None`), and they never manage the instance, approve its
 upgrades, set its secrets, list or export its sealed files (`/files` is the
 organization's members' and its owner's), or delegate, link or move it.
-`GET /apps/{app}` shows a guest the access list with only themselves in it.
+`GET /apps/{app}` shows a guest only their own grant (and `access` naming only them).
 Unit members: a guest of an instance reaches the apps its unit created for it
 (`AppRecord::links`, transitively), judged by the instance's list and switches;
 an attached app is not part of it.
 
 ### Instance invites
 
-An instance's managers (whoever may change its access) invite guests with a
-link, like an organization invite but for one instance: `POST
-/apps/{app}/invites { ttlSecs?, uses? }` returns a token `inv_…` once (`412
-CONFIRM_REQUIRED` first; the consent is `<app> / __create_app_invite /
-{ inviteKey, expiresAt, uses }`; only the token's Ed25519 public key is logged,
-`SystemCmd::CreateAppInvite`). It is refused `409 GUESTS_NOT_ALLOWED` unless both
-switches allow guests, and `409 NOT_AN_ACCOUNTS_INSTANCE` unless the instance's
-access is `accounts` (the guest list). `POST /invites/{token}/redeem` (the same
-route as an organization invite; the node tells them apart) adds the redeemer to
-the instance's list (`RedeemAppInvite`, signed with the token's key) and answers
-`{ app, org }`; one already listed spends no use; it is refused while guests are
-not allowed. `GET /apps/{app}/invites` lists the pending ones (key, uses left,
-expiry, creator; never a token) and `DELETE /apps/{app}/invites/{inviteKey}`
-revokes one with a passkey (`__revoke_app_invite { inviteKey }`). Deleting the
-instance drops its invites. Bounds: `MAX_APP_INVITES_PER_APP` (64) pending per
-instance, `MAX_APP_INVITES` (10 000) in the cluster, `MAX_APP_INVITE_USES`
-(1 000) uses and `MAX_APP_INVITE_TTL_SECS` (90 days) each, and an instance lists
-at most `MAX_GUESTS_PER_APP` (1 000) accounts. The consent page's
+An instance's managers (whoever may change its access) invite people with a
+link, like an organization invite but for one instance, on any instance: `POST
+/apps/{app}/invites { ttlSecs?, uses?, scope? }` returns a token `inv_…` once
+(`412 CONFIRM_REQUIRED` first; the consent is `<app> / __create_app_invite /
+{ inviteKey, expiresAt, uses, scope? }`; only the token's Ed25519 public key is
+logged, `SystemCmd::CreateAppInvite`, which needs `Feature::AccessGrants` too).
+It is refused `409 GUESTS_NOT_ALLOWED` unless both switches allow guests. `POST
+/invites/{token}/redeem` (the same route as an organization invite; the node
+tells them apart) adds an `account` grant for the redeemer, with the invite's
+`scope` (`RedeemAppInvite`, signed with the token's key): a guest, or a named
+member when they are a member of the organization, never a new member. An
+instance set as one mode becomes the grant list that mode is, plus the new
+grant. It answers `{ app, org, member }`; one already named spends no use; a
+guest's redemption is refused while guests are not allowed. `GET
+/apps/{app}/invites` lists the pending ones (key, uses left, expiry, creator,
+scope; never a token) and `DELETE /apps/{app}/invites/{inviteKey}` revokes one
+with a passkey (`__revoke_app_invite { inviteKey }`). Deleting the instance
+drops its invites. Bounds: `MAX_APP_INVITES_PER_APP` (64) pending per instance,
+`MAX_APP_INVITES` (10 000) in the cluster, `MAX_APP_INVITE_USES` (1 000) uses
+and `MAX_APP_INVITE_TTL_SECS` (90 days) each, `MAX_ACCOUNT_GRANTS` (1 000) names
+per instance and `MAX_GRANT_SCOPE_BYTES` (256) per scope. The consent page's
 `acceptInvite` shows an instance invite as joining the app of a package in an
-organization as a guest.
+organization, as a guest or, to a member, as the member they are.
+
+### The platform admits, the app scopes
+
+The node decides only who reaches an instance. Anything finer, such as which
+channel of a chat a partner may read, is the app's own rule, but the platform
+carries it for the app: an invite, and the `account` grant it makes, may carry a
+small opaque JSON `scope` the app defines (`{"channel":"partners"}`), which the
+node stores, shows to the instance's managers and never reads. To let a partner
+into one channel of a chat, its managers invite them with that scope; the chat
+reads the caller's scope and keeps them to that channel. A grant without a scope
+is the app's whole. Changing the scope is changing the grant (`POST
+/apps/{app}/access`).
 
 ## Public links
 

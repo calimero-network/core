@@ -229,9 +229,26 @@ within its organization. See [Organizations](/protocol/organizations/#moving-an-
 team's default lets its members make private channels, `CREATE_CHILD_TEAM`). See
 [Organizations](/protocol/organizations/#capabilities).
 
-**Access rule** — Who reaches an app: `owner`, `accounts`, `org`, `team`,
-`public`. In an organization, only its members; an `accounts` instance of a
-package with an app team, only those in the app team.
+**Access grants** — Who reaches an app instance, as a list of grants: the
+organization (`org`), teams of it (`team`), named people (`account`: a member, or
+a **guest**, each with an optional app-defined `scope`) and `anyone`. No grant
+is the owner alone. Not a blob **grant**. See
+[App access](/protocol/organizations/#app-access).
+
+**Access rule** — The single mode an instance had before **access grants**
+(deprecated: `owner`, `accounts`, `org`, `team`, `public`), kept and judged as
+set; each is a grant list (`public` is `anyone`).
+
+**Guest (of an instance)** — An account named on one app instance (an
+`account` grant) that is not a member of its organization: it reaches that
+instance only, while the instance's release and its organization allow guests.
+Not the organization role `guest`, which is a member's. See
+[Guests](/protocol/organizations/#guests).
+
+**Grant scope** — The small opaque JSON an `account` grant (and the instance
+invite that makes it) carries for the app, such as one channel of a chat: the
+platform admits, the app scopes. See
+[The platform admits, the app scopes](/protocol/organizations/#the-platform-admits-the-app-scopes).
 
 **Governance** — Who holds release approvals, app upgrades and outbound
 approvals, `owner` or `operator`, fixed at genesis. See
@@ -333,7 +350,7 @@ the node records for it and its state refers to with a `BlobRef`. See
 [Blobs](/protocol/blobs/).
 
 **Grant** — A time-limited download link for one of an app's blobs
-(`blobs.grant`, 1 s to 24 h), usable with no session.
+(`blobs.grant`, 1 s to 24 h), usable with no session. Not an **access grant**.
 
 **Private space** — An account's own part of an app's state: in
 `calimero-sdk`, a `PerUser<T>` value, which each account reads and writes only

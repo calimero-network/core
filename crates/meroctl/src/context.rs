@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use calimero_client::types::{Access, AppCreateRequest, AppUpgradeRequest};
+use calimero_client::types::{Access, AppCreateRequest, AppUpgradeRequest, Grant};
 use clap::{Subcommand, ValueEnum};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -122,7 +122,8 @@ pub enum ContextCmd {
         #[arg(value_name = "INSTANCE")]
         context: String,
     },
-    /// Who reaches the instance.
+    /// Who reaches the instance: `grants`, a list of `--grant`s; or one mode (deprecated:
+    /// `owner`, `org`, `team`, `accounts`, `public`).
     Access {
         #[arg(value_name = "INSTANCE")]
         context: String,
@@ -134,6 +135,10 @@ pub enum ContextCmd {
         /// For `accounts`: who.
         #[arg(long = "account")]
         accounts: Vec<String>,
+        /// For `grants`, each a way in: `org`, `team:<TEAM>`, `account:<ACCOUNT>` (a member
+        /// or a guest), `account:<ACCOUNT>=<SCOPE JSON>` (with the app's scope), `anyone`.
+        #[arg(long = "grant", value_name = "GRANT", value_parser = parse_grant)]
+        grants: Vec<Grant>,
     },
     /// Set the instance's metadata (JSON; `null` clears it).
     Metadata {
@@ -163,6 +168,35 @@ pub enum AccessKind {
     Team,
     Accounts,
     Public,
+    Grants,
+}
+
+/// A `--grant`: `org`, `anyone`, `team:<TEAM>`, `account:<ACCOUNT>[=<SCOPE JSON>]`.
+fn parse_grant(spec: &str) -> Result<Grant, String> {
+    match spec {
+        "org" => return Ok(Grant::Org),
+        "anyone" => return Ok(Grant::Anyone),
+        _ => {}
+    }
+    if let Some(team) = spec.strip_prefix("team:") {
+        return Ok(Grant::Team {
+            team: team.to_owned(),
+        });
+    }
+    let Some(rest) = spec.strip_prefix("account:") else {
+        return Err("a grant is org, anyone, team:<TEAM> or account:<ACCOUNT>[=<SCOPE>]".into());
+    };
+    let (account, scope) = match rest.split_once('=') {
+        Some((account, scope)) => (
+            account,
+            Some(serde_json::from_str(scope).map_err(|e| format!("scope is JSON: {e}"))?),
+        ),
+        None => (rest, None),
+    };
+    Ok(Grant::Account {
+        account: account.to_owned(),
+        scope,
+    })
 }
 
 #[derive(Debug, Subcommand)]
@@ -344,17 +378,21 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             kind,
             group,
             accounts,
+            grants,
         } => {
-            let access = match kind {
-                AccessKind::Owner => Access::Owner,
-                AccessKind::Org => Access::Org,
-                AccessKind::Public => Access::Public,
-                AccessKind::Team => Access::Team {
+            let app = env.app(&context).await?;
+            let mode = |a: Access| (Some(a), None);
+            let (access, grants) = match kind {
+                AccessKind::Grants => (None, Some(grants)),
+                AccessKind::Owner => mode(Access::Owner),
+                AccessKind::Org => mode(Access::Org),
+                AccessKind::Public => mode(Access::Public),
+                AccessKind::Team => mode(Access::Team {
                     team: group.ok_or_else(|| eyre::eyre!("which team? --team"))?,
-                },
-                AccessKind::Accounts => Access::Accounts { accounts },
+                }),
+                AccessKind::Accounts => mode(Access::Accounts { accounts }),
             };
-            to_json(&apps.access(&env.app(&context).await?, access).await?)?
+            to_json(&apps.access(&app, access, grants).await?)?
         }
         ContextCmd::Metadata { context, metadata } => to_json(
             &apps
