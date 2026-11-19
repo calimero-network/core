@@ -45,6 +45,10 @@ class DeploymentSecretsResponse200Secrets:
         d = dict(src_dict)
         deployment_secrets_response_200_secrets = cls()
 
+        from ..models.deployment_secrets_response_200_secrets_additional_property_declared_by_item import (
+            DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem,
+        )
+
         additional_properties = {}
         for prop_name, prop_dict in d.items():
             additional_property = (

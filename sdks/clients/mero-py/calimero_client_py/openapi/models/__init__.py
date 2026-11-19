@@ -271,6 +271,9 @@ from .deployment_secrets_response_200_secrets import DeploymentSecretsResponse20
 from .deployment_secrets_response_200_secrets_additional_property import (
     DeploymentSecretsResponse200SecretsAdditionalProperty,
 )
+from .deployment_secrets_response_200_secrets_additional_property_declared_by_item import (
+    DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem,
+)
 from .deployment_withdraw_response_200 import DeploymentWithdrawResponse200
 from .error import Error
 from .exports_export_body import ExportsExportBody
@@ -890,6 +893,7 @@ __all__ = (
     "DeploymentSecretsResponse200",
     "DeploymentSecretsResponse200Secrets",
     "DeploymentSecretsResponse200SecretsAdditionalProperty",
+    "DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem",
     "DeploymentWithdrawResponse200",
     "Error",
     "ExportsExportBody",
