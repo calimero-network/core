@@ -458,12 +458,30 @@ checks again where it applies that the deployment exists and offers the
 release the instance runs. Instances created without a deployment, and those
 from before, record none.
 
+**Upgrades**: the deployment's managers decide which release its instances
+run; an instance's owner only accepts it. `POST /apps/{app}/upgrade` of an
+instance from a deployment resolves its target from the deployment's offer
+for the package the instance runs (a `version`, when named, must be that
+release; naming none accepts it), whether or not the owner sees the release
+otherwise. Another version, another package or a raw bundle is refused
+`409 OUTSIDE_DEPLOYMENT` before the step-up, and an organization's,
+publisher's or unit's run notes such an instance as failed. `UpgradeApp`
+refuses the same where it applies (`SystemState::within_deployment`) for an
+entry that says so (`in_deployment`, set once the cluster version brings
+`upgradeInDeployment`, 1.0.0-rc.32) or once the logged cluster version brings
+the rule; an earlier entry replays as it applied.
+
 **Secrets**: a value a manager sets for a secret its offered releases declare
 fills `{{secret:NAME}}` for every instance created from the deployment that
 set no value of its own (`PUT /apps/{app}/secrets/{name}`), and goes before
 the operator's: the instance's value, then the deployment's, then the
-operator's. Only for a name the release the instance runs declares, and only
-into a request to that secret's declared hosts. It is kept in the system
+operator's. Only for a name the release the instance runs declares, only
+for a run of a release of a package the deployment offers (any version: a
+package's signer is pinned, so only its publisher signs releases of it;
+`SystemState::deployment_covers`), and only into a request to that secret's
+declared hosts. The managers set the value for the code they offer: an
+instance whose record somehow ran other code, a customer's own package
+declaring the same name for a host they chose, gets no deployment value. It is kept in the system
 group's state (sealed at rest, inside attested nodes, like an instance's own
 value, which travels in its app's log), read by the outbound gate on the node
 that runs the request, and never answered: `GET /deployments/{id}/secrets`

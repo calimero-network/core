@@ -130,10 +130,14 @@ pub enum Feature {
     /// an instance whose leader is on it would send the operator's value, or none, where
     /// another leader sends the deployment's.
     DeploymentSecrets,
+    /// `UpgradeApp` with `in_deployment`: an instance from a deployment moves only to the
+    /// release its deployment offers. An earlier release ignores the field and would move
+    /// it where a later one refuses.
+    UpgradeInDeployment,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 32] = [
+pub const FEATURES: [Feature; 33] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -166,6 +170,7 @@ pub const FEATURES: [Feature; 32] = [
     Feature::AttachApp,
     Feature::ExpireProofs,
     Feature::DeploymentSecrets,
+    Feature::UpgradeInDeployment,
 ];
 
 impl Feature {
@@ -205,6 +210,7 @@ impl Feature {
             Self::AttachApp => "attachApp",
             Self::ExpireProofs => "expireProofs",
             Self::DeploymentSecrets => "deploymentSecrets",
+            Self::UpgradeInDeployment => "upgradeInDeployment",
         }
     }
 
@@ -241,7 +247,7 @@ impl Feature {
             | Self::Delegation
             | Self::AttachApp
             | Self::ExpireProofs => "1.0.0-rc.31",
-            Self::DeploymentSecrets => "1.0.0-rc.32",
+            Self::DeploymentSecrets | Self::UpgradeInDeployment => "1.0.0-rc.32",
         }
     }
 }
@@ -495,6 +501,10 @@ impl SystemCmd {
             Self::SetDeploymentSecret { .. } | Self::ClearDeploymentSecret { .. } => {
                 vec![Feature::DeploymentSecrets]
             }
+            Self::UpgradeApp {
+                in_deployment: true,
+                ..
+            } => vec![Feature::UpgradeInDeployment],
             Self::SetPools { .. } => vec![Feature::ComputePools],
             Self::ScopeApps {
                 apps, by_release, ..
@@ -932,6 +942,8 @@ mod tests {
                 "target": "kv-app", "actor": "a" })),
             Feature::DeploymentSecrets => entry(json!({ "op": "setDeploymentSecret",
                 "deployment": "d", "name": "API_KEY", "value": "v", "actor": "a", "at": 1 })),
+            Feature::UpgradeInDeployment => entry(json!({ "op": "upgradeApp",
+                "app_id": "app", "bundle": "b", "actor": "a", "in_deployment": true })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1351,8 +1363,12 @@ mod tests {
         for &feature in &rc30 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.32's (a deployment's secrets) wait for every node on rc.32.
-        assert_eq!(rc32, [Feature::DeploymentSecrets]);
+        // rc.32's (a deployment's secrets, an upgrade kept on its deployment's
+        // offer) wait for every node on rc.32.
+        assert_eq!(
+            rc32,
+            [Feature::DeploymentSecrets, Feature::UpgradeInDeployment]
+        );
         for &feature in &rc32 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(

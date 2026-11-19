@@ -910,6 +910,14 @@ pub fn undeclared_secret() -> ApiError {
     ApiError::new(404, "UNDECLARED_SECRET", crate::system::UNDECLARED_SECRET)
 }
 
+/// `409 OUTSIDE_DEPLOYMENT`: an upgrade of an instance from a deployment to a
+/// release other than the one its deployment offers for it
+/// (`SystemState::within_deployment`).
+#[must_use]
+pub fn outside_deployment() -> ApiError {
+    ApiError::new(409, "OUTSIDE_DEPLOYMENT", crate::system::OUTSIDE_DEPLOYMENT)
+}
+
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
         ApiError::new(429, QUOTA_EXCEEDED, reason)
@@ -927,6 +935,8 @@ pub fn rejected(reason: &str) -> ApiError {
         unknown_capabilities()
     } else if reason == crate::system::UNDECLARED_SECRET {
         undeclared_secret()
+    } else if reason == crate::system::OUTSIDE_DEPLOYMENT {
+        outside_deployment()
     } else if reason == crate::system::NO_DEPLOYMENT_SECRET {
         ApiError::not_found(reason)
     } else if reason == crate::system::MODULE_IN_USE {
@@ -2552,10 +2562,11 @@ impl Node {
                     }),
                     // The owner's own values, then the deployment's (read from this
                     // node's system state at run time), for names the release still
-                    // declares.
+                    // declares; the deployment's only for a release of a package it
+                    // offers, whatever the record says the instance runs.
                     own: crate::component::run_secrets(
                         own,
-                        s.deployment_secrets_of(app_id),
+                        s.deployment_secrets_of(app_id, &release.at.package),
                         &release.version.secrets,
                     ),
                 },
