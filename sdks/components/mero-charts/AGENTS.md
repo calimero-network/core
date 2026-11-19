@@ -18,10 +18,10 @@
 - `test/`: vitest smoke tests (server-rendered, no DOM).
 - `sdk.json`: how core's CI treats this SDK (`scripts/sdks.py`).
 
-## mero-ui: the workspace's own
+## mero-design: the workspace's own
 
-`@calimero-network/mero-ui` is a `workspace:*` dependency (published as the
-exact version, VERSION), so a change to mero-ui (or to mero-icons or mero-tokens
+`@calimero-network/mero-design` is a `workspace:*` dependency (published as the
+exact version, VERSION), so a change to mero-design (or to mero-icons or mero-tokens
 under it) runs this package's CI too (`depends_on` in `sdk.json`). recharts and
 React stay external in the build.
 
@@ -34,7 +34,7 @@ pnpm and its version come from `sdks/package.json`; the one lockfile is
 ```bash
 cd sdks && pnpm install --frozen-lockfile
 pnpm --filter @calimero-network/mero-tokens --filter @calimero-network/mero-icons build
-pnpm --filter @calimero-network/mero-ui build
+pnpm --filter @calimero-network/mero-design build
 cd components/mero-charts
 pnpm build                # tsup: dist/ (esm and cjs, with types)
 pnpm test                 # vitest
@@ -42,8 +42,8 @@ pnpm typecheck
 pnpm lint                 # eslint src test (warnings allowed)
 ```
 
-The stories for these charts are in mero-ui's storybook
-(`sdks/components/mero-ui/examples/storybook/src/Charts`).
+The stories for these charts are in mero-design's storybook
+(`sdks/components/mero-design/examples/storybook/src/Charts`).
 
 ## Generated code
 

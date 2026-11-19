@@ -12,8 +12,8 @@
 spacing, radius, fonts) as data (`tokens.json`), as a typed object (`tokens`,
 `colors`, `spacing`, `radius`, `fonts`) and as CSS variables (`cssVariables`, a
 `:root { ... }` string). The package ships `dist/`, `src/` and `tokens.json`.
-mero-ui bundles it and writes its `styles.css` from `cssVariables`, so a change
-here runs mero-ui's and mero-charts' CI too.
+mero-design bundles it and writes its `styles.css` from `cssVariables`, so a change
+here runs mero-design's and mero-charts' CI too.
 
 ## Layout
 

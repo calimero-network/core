@@ -830,14 +830,14 @@ jobs:
       dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
     secrets: inherit
 
-  sdk-mero-ui:
-    name: Publish mero-ui
+  sdk-mero-design:
+    name: Publish mero-design
     needs: [prepare, sdk-mero-icons, sdk-mero-tokens]
     if: ${{ !cancelled() && needs.sdk-mero-icons.result == 'success' && needs.sdk-mero-tokens.result == 'success' }}
     permissions:
       contents: read
       id-token: write # npm provenance
-    uses: ./.github/workflows/sdk-mero-ui.yml
+    uses: ./.github/workflows/sdk-mero-design.yml
     with:
       publish: true
       dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
@@ -845,8 +845,8 @@ jobs:
 
   sdk-mero-charts:
     name: Publish mero-charts
-    needs: [prepare, sdk-mero-ui]
-    if: ${{ !cancelled() && needs.sdk-mero-ui.result == 'success' }}
+    needs: [prepare, sdk-mero-design]
+    if: ${{ !cancelled() && needs.sdk-mero-design.result == 'success' }}
     permissions:
       contents: read
       id-token: write # npm provenance

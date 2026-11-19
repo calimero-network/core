@@ -1,11 +1,11 @@
 name: SDK mero-charts
 
 # mero-charts (sdks/components/mero-charts, npm @calimero-network/mero-charts:
-# the chart components, on the workspace's mero-ui): tested on every change that
+# the chart components, on the workspace's mero-design): tested on every change that
 # reaches it (sdks.yml, from scripts/sdks.py scope), published by release.yml
-# from a core tag (`publish: true`) after mero-ui, at the version package.json
+# from a core tag (`publish: true`) after mero-design, at the version package.json
 # already states: VERSION (scripts/sdks.py version-check). Its
-# `@calimero-network/mero-ui: workspace:*` is published as that same version.
+# `@calimero-network/mero-design: workspace:*` is published as that same version.
 #
 # The publish job declares no permissions of its own: a called workflow's job
 # may not ask for more than its caller grants, and asking for `id-token: write`
@@ -65,9 +65,9 @@ jobs:
         working-directory: sdks
         run: pnpm --filter @calimero-network/mero-tokens --filter @calimero-network/mero-icons build
 
-      - name: Build mero-ui
+      - name: Build mero-design
         working-directory: sdks
-        run: pnpm --filter @calimero-network/mero-ui build
+        run: pnpm --filter @calimero-network/mero-design build
 
       - name: Build
         run: pnpm build
@@ -126,9 +126,9 @@ jobs:
         working-directory: sdks
         run: pnpm --filter @calimero-network/mero-tokens --filter @calimero-network/mero-icons build
 
-      - name: Build mero-ui
+      - name: Build mero-design
         working-directory: sdks
-        run: pnpm --filter @calimero-network/mero-ui build
+        run: pnpm --filter @calimero-network/mero-design build
 
       - name: Build
         working-directory: sdks/components/mero-charts
