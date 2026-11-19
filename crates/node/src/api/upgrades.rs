@@ -1349,9 +1349,100 @@ async fn refuse_off_unit_range(
     Ok(())
 }
 
+/// `GET /apps/{app}/update`: whether a newer release is there for the instance to
+/// move to, and whether the caller may approve the move. For whoever may read the app's
+/// own record (`GET /apps/{app}`'s rule, a session bound to its package included), so
+/// its frontend can say "an update is available" and open the consent page.
+///
+/// `available`: for an instance from a deployment, the release its deployment offers
+/// for the package it runs (the newest, when it offers several) where that is not the
+/// one it runs (`source: deployment`); for any other, the newest release of its package
+/// the caller sees (a session bound to the package sees them all) that is newer than
+/// the one it runs and that the upgrade would take (`report::newest_reachable`:
+/// authority and runtime; `source: release`). `mayApprove`: whether the caller may
+/// approve it under the rule in force ([`upgrade_refusal`]). `approvers`: `operator`
+/// where the cluster gives it app upgrades, `owner-and-admins` (the owner and admins of
+/// the app's organization) once `Feature::OwnerApprovedUpgrades` is in force, else
+/// `managers` (the rule before it: its owner or `MANAGE_APPLICATION` holders, or its
+/// publisher's).
+async fn app_update(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let p = principal(&node, &headers).await?;
+    // As `GET /apps/{app}`: an anonymous caller is judged on fresh state too.
+    if p.is_none() {
+        node.sys_fresh().await;
+    }
+    let app = node.app(&app_id).await?;
+    if let Some(p) = &p {
+        p.within(&node, &app)?;
+    }
+    let account = p.as_ref().and_then(|p| p.caller.account());
+    if !reaches(&node, &app, account) {
+        return Err(ApiError::not_found("no such app"));
+    }
+    let running = node.release_of_app(&app).map(|r| r.at);
+    let bound = p.as_ref().and_then(Principal::bound_app);
+    let runtimes = node.runtimes(&app.replicas).await;
+    let owner_approves = owner_approves(&node).await;
+    let by_operator =
+        node.sys(|s| s.governance().app_upgrades == crate::system::Authority::Operator);
+    let available = node.sys(|s| {
+        let r = running.as_ref()?;
+        if let Some(d) = &app.deployment {
+            let offered = s
+                .deployments
+                .get(d)?
+                .apps
+                .values()
+                .filter(|o| o.package == r.package)
+                .map(|o| o.version.as_str())
+                .max_by(|a, b| crate::system::compare_versions(a, b))?;
+            return (offered != r.version).then(|| {
+                json!({ "package": r.package, "version": offered, "source": "deployment" })
+            });
+        }
+        let current = crate::report::ReleaseName {
+            package: r.package.clone(),
+            version: r.version.clone(),
+            service: r.service.clone(),
+        };
+        let sees = |v: &crate::system::PackageVersion| {
+            bound == Some(r.package.as_str())
+                || account.is_some_and(|a| s.sees_release(v, a))
+                || s.sees_release(v, crate::system::OPERATOR)
+        };
+        let newer = crate::report::newer_versions(s, &current, sees);
+        let v = crate::report::newest_reachable(s, &app, &current, &newer, &runtimes)?;
+        Some(json!({ "package": r.package, "version": v.version, "source": "release" }))
+    });
+    let may_approve = !by_operator
+        && account.is_some_and(|a| {
+            node.sys(|s| upgrade_refusal(s, &app, a, owner_approves).is_none())
+        });
+    let approvers = if by_operator {
+        "operator"
+    } else if owner_approves {
+        "owner-and-admins"
+    } else {
+        "managers"
+    };
+    Ok(Json(json!({
+        "app": app.app_id,
+        "running": running.map(|r| json!({ "package": r.package, "version": r.version })),
+        "available": available,
+        "mayApprove": may_approve,
+        "approvers": approvers,
+    })))
+}
+
 pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/apps/{app}/upgrade", post(app_upgrade))
+        .route("/apps/{app}/update", get(app_update))
         .route("/apps/{app}/upgrade-unit", post(app_upgrade_unit))
         .route("/orgs/{org}/upgrade", post(org_upgrade))
         .route("/orgs/{org}/upgrades/{run}", get(org_upgrade_status))

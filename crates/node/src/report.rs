@@ -143,19 +143,21 @@ pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Opt
 }
 
 /// Every release of `current`'s package newer than it, shipping its service,
-/// that `account` may see and so upgrade to (one with the same WASM too: its
-/// frontend may differ), oldest first.
-fn newer_versions<'s>(
+/// that `sees` admits (one the reader may see and so upgrade to; one with the same
+/// WASM too: its frontend may differ), oldest first.
+pub fn newer_versions<'s>(
     s: &'s SystemState,
     current: &ReleaseName,
-    account: &'s str,
+    sees: impl Fn(&PackageVersion) -> bool,
 ) -> Vec<&'s PackageVersion> {
     let Some(p) = s.packages.get(&current.package) else {
         return Vec::new();
     };
     let service = current.service.clone().unwrap_or_default();
-    let mut newer: Vec<&PackageVersion> = s
-        .visible_versions(p, account)
+    let mut newer: Vec<&PackageVersion> = p
+        .versions
+        .values()
+        .filter(|v| sees(v))
         .filter(|v| v.app_parts().contains_key(&service))
         .filter(|v| compare_versions(&v.version, &current.version).is_gt())
         .collect();
@@ -215,6 +217,25 @@ fn blocked(
     }))
 }
 
+/// The newest of `newer` (oldest first, as [`newer_versions`] lists them) that `app`,
+/// running `current`, can be upgraded to as far as the system state and `runtimes`
+/// tell ([`blocked`]): what a report names `latestReachable`.
+#[must_use]
+pub fn newest_reachable<'v>(
+    s: &SystemState,
+    app: &AppRecord,
+    current: &ReleaseName,
+    newer: &[&'v PackageVersion],
+    runtimes: &BTreeMap<u64, NodeRuntime>,
+) -> Option<&'v PackageVersion> {
+    let service = current.service.clone().unwrap_or_default();
+    newer
+        .iter()
+        .rev()
+        .find(|r| blocked(s, app, &current.package, r, &service, runtimes).is_none())
+        .copied()
+}
+
 /// Set the entry `v` of `app` (running `current`) up with the releases
 /// `account` may upgrade it to: `availableVersions`, the newest
 /// [`MAX_AVAILABLE_VERSIONS`] newer ones, oldest first; `latestReachable`, the
@@ -228,7 +249,9 @@ fn upgrade_targets(
     runtimes: &BTreeMap<u64, NodeRuntime>,
     v: &mut Value,
 ) {
-    let newer = current.map_or_else(Vec::new, |r| newer_versions(s, r, account));
+    let newer = current.map_or_else(Vec::new, |r| {
+        newer_versions(s, r, |v| s.sees_release(v, account))
+    });
     let skip = newer.len().saturating_sub(MAX_AVAILABLE_VERSIONS);
     v["availableVersions"] = json!(newer
         .iter()
@@ -241,7 +264,7 @@ fn upgrade_targets(
     };
     let service = current.service.clone().unwrap_or_default();
     let why = |r: &PackageVersion| blocked(s, app, &current.package, r, &service, runtimes);
-    let reachable = newer.iter().rev().find(|r| why(r).is_none());
+    let reachable = newest_reachable(s, app, current, &newer, runtimes);
     v["latestReachable"] = json!(reachable.map(|r| r.version.as_str()));
     if let Some(latest) = newer.last() {
         if let Some(mut b) = why(latest) {
