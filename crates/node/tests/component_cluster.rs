@@ -6169,6 +6169,7 @@ async fn a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it() {
     let _ = node
         .sys_write(&SystemCmd::CreateApp {
             app: Box::new(member),
+            unit_offer: None,
         })
         .await
         .unwrap();
