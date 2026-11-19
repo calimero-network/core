@@ -740,7 +740,7 @@ impl Node {
         {
             eyre::bail!("segment store failed (probe)");
         }
-        self.engine
+        self.disk()
             .put_segment(&hex::encode(segment.hash), &segment.bytes)?;
         Ok(segment.hash)
     }

@@ -2425,6 +2425,8 @@ pub struct AppDeleteResponse {
     #[serde(rename = "appId")]
     pub app_id: String,
     pub deleted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<String>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

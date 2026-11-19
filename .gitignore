@@ -34,3 +34,8 @@ output/*
 apps/blobs/static/generated/
 
 __pycache__/
+
+# SwiftPM, building the root Package.swift (sdks/clients/mero-swift).
+/.build/
+/.swiftpm/
+/Package.resolved

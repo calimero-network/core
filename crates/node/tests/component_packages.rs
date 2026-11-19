@@ -4,6 +4,9 @@
 //! A package whose WASM is a component runs on the component executor like a raw
 //! component upload does.
 
+// Tests corrupt or drop a node's stored bytes directly, off any runtime path.
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 
 use std::collections::BTreeMap;

@@ -3,14 +3,14 @@
   "kind": "client",
   "language": "swift",
   "published": [
-    {"registry": "swiftpm", "name": "calimero-network/swift-sdk", "note": "read-only mirror: git subtree split of this directory, tagged VERSION"}
+    {"registry": "swiftpm", "name": "calimero-network/core", "note": "core's root Package.swift points at this directory; a core release tag is the version"}
   ],
   "version_files": [
-    {"path": "README.md", "format": "regex", "pattern": "calimero-network/swift-sdk\", exact: \"([^\"]+)\""},
-    {"path": "docs/src/content/docs/get-started/quickstart.mdx", "format": "regex", "pattern": "calimero-network/swift-sdk\", exact: \"([^\"]+)\""}
+    {"path": "README.md", "format": "regex", "pattern": "calimero-network/core\", exact: \"([^\"]+)\""},
+    {"path": "docs/src/content/docs/get-started/quickstart.mdx", "format": "regex", "pattern": "calimero-network/core\", exact: \"([^\"]+)\""}
   ],
   "depends_on": [],
-  "inputs": ["docs/public/openapi.json", "crates/client/tests/fixtures/receipt-vectors.json"],
+  "inputs": ["Package.swift", "docs/public/openapi.json", "crates/client/tests/fixtures/receipt-vectors.json"],
   "generate": "scripts/generate-openapi.sh && scripts/refresh-receipt-vectors.sh",
   "generated": ["Sources/MeroAPI/Generated", "Sources/MeroKit/Api/Generated", "Tests/MeroKitTests/Fixtures/receipts/receipt-vectors.json"],
   "workflow": ".github/workflows/sdk-mero-swift.yml"

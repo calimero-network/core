@@ -209,6 +209,11 @@ pub(super) struct CreateAppBody {
     /// and the instance runs exactly the release it offers.
     #[serde(default)]
     deployment: Option<String>,
+    /// For a unit's member created from its instance's deployment: the release the
+    /// deployment offers for the instance, which covers the member (`CreateApp {
+    /// unit_offer }`). The node's own, never a client's.
+    #[serde(skip)]
+    unit_offer: Option<PackageRef>,
 }
 
 async fn app_create(
@@ -252,10 +257,10 @@ async fn create_instance(
     depth: usize,
 ) -> Result<Value, ApiError> {
     let now = now_secs();
-    let (bundle, compute_bundle, release) = match &body.deployment {
+    let (bundle, compute_bundle, release) = match (&body.deployment, &body.unit_offer) {
         // From a deployment's offer: installed already, and the caller's
         // to run whether or not they see the release otherwise.
-        Some(d) => {
+        (Some(d), None) => {
             if body.bundle.is_some() {
                 return Err(ApiError::bad_request(
                     "BAD_REQUEST",
@@ -275,7 +280,8 @@ async fn create_instance(
             .await?;
             (bundle, compute, Some(release))
         }
-        None => {
+        // A unit's member, or an app from a release or a bundle.
+        _ => {
             bundle_named(
                 node,
                 body.bundle,
@@ -283,8 +289,10 @@ async fn create_instance(
                 body.version.as_deref(),
                 body.service.as_deref(),
                 &owner,
-                // Checked above: a bound session names its own package only.
-                p.bound_app().is_some(),
+                // Checked above: a bound session names its own package only. A member from
+                // a deployment runs the release its instance's offered release pins, whether
+                // or not its owner sees it otherwise, as the instance does.
+                p.bound_app().is_some() || body.unit_offer.is_some(),
             )
             .await?
         }
@@ -358,14 +366,28 @@ async fn create_instance(
                         &format!("apps a release creates nest at most {MAX_UNIT_DEPTH} deep"),
                     ));
                 }
-                node.require_features(&[crate::system::cluster_version::Feature::AppLinks])
-                    .await?;
+                // Members of an instance from a deployment carry the deployment.
+                let mut features = vec![crate::system::cluster_version::Feature::AppLinks];
+                if body.deployment.is_some() {
+                    features.push(crate::system::cluster_version::Feature::WholeUnits);
+                }
+                node.require_features(&features).await?;
                 if init_args.get("links").is_some() {
                     return Err(ApiError::bad_request(
                         "BAD_REQUEST",
                         "`links` in initArgs is the node's: it names the apps the release creates",
                     ));
                 }
+                // The deployment's offer covering the whole unit: the instance's own release
+                // at its top, handed down to the members' members.
+                let unit_offer = body.deployment.as_ref().map(|_| {
+                    body.unit_offer.clone().unwrap_or_else(|| PackageRef {
+                        package: release.package.clone(),
+                        version: release.version.clone(),
+                        service: None,
+                        compute: false,
+                    })
+                });
                 let mut links = BTreeMap::new();
                 for (name, (package, version)) in unit.members {
                     let member = CreateAppBody {
@@ -378,7 +400,8 @@ async fn create_instance(
                         access: body.access.clone(),
                         init_args: Value::Null,
                         metadata: json!({ "unit": { "of": body.name, "as": name } }),
-                        deployment: None,
+                        deployment: body.deployment.clone(),
+                        unit_offer: unit_offer.clone(),
                     };
                     let made = Box::pin(create_instance(node, p, owner.clone(), member, depth + 1))
                         .await?;
@@ -426,6 +449,7 @@ async fn create_instance(
                 links,
                 attached: BTreeMap::new(),
             }),
+            unit_offer: body.unit_offer,
         })
         .await?;
     // Wait for the app's first entry (init) to commit somewhere; a compute-only app's is empty,
@@ -638,7 +662,9 @@ async fn app_list(
     Ok(Json(json!({ "apps": apps })))
 }
 
-/// Delete an app instance: its owner, or an admin of its organization.
+/// Delete an app instance: its owner, or an admin of its organization. An instance whose
+/// release created apps with it goes with its whole unit (`members`); a unit's member is not
+/// deleted alone (`409 UNIT_MEMBER`).
 async fn app_delete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -649,15 +675,40 @@ async fn app_delete(
     let account = p.account()?;
     let app = node.app(&app_id).await?;
     p.within(&node, &app)?;
+    let (instance, unit, logged) = node.sys(|s| {
+        (
+            s.unit_parent(&app_id).map(str::to_owned),
+            s.unit_of(&app_id),
+            s.cluster_version.clone(),
+        )
+    });
+    if let Some(instance) = instance {
+        return Err(ApiError::new(
+            409,
+            "UNIT_MEMBER",
+            &format!("this app is a member of instance {instance}'s unit: delete the instance"),
+        ));
+    }
+    // The whole-unit rule once the cluster applies it; an instance with members waits for it
+    // (`409 FEATURE_NOT_ACTIVE`), and any other app is deleted alone either way.
+    let whole = !unit.is_empty()
+        || crate::system::cluster_version::check(
+            logged.as_deref(),
+            &[crate::system::cluster_version::Feature::WholeUnits],
+        )
+        .is_ok();
     let _ok = node
         .sys_write(&SystemCmd::DeleteApp {
             app_id: app_id.clone(),
             actor: account,
             owner_in_org: true,
             owner_in_team: true,
+            members: whole.then(|| unit.clone()),
         })
         .await?;
-    Ok(Json(json!({ "appId": app_id, "deleted": true })))
+    Ok(Json(
+        json!({ "appId": app_id, "deleted": true, "members": unit }),
+    ))
 }
 
 async fn app_get(

@@ -3,6 +3,9 @@
 //! collected when nothing refers to them. A guest reads a sealed file only inside a compute run
 //! (`compute_runs.rs`), so these tests read through the provider such a run uses.
 
+// Tests corrupt or drop a node's stored bytes directly, off any runtime path.
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 use common::UploadBytes as _;
 

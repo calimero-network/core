@@ -724,6 +724,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             }))
             .unwrap(),
         ),
+        unit_offer: None,
     }
     };
     let e = m.run_unproven(with_compute("bad", "j2")).unwrap_err();
@@ -850,6 +851,7 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             }))
             .unwrap(),
         ),
+        unit_offer: None,
     };
     let _ok = m.run_unproven(app).unwrap();
     let uninstall = |version: &str| SystemCmd::UninstallPackage {
@@ -3927,6 +3929,7 @@ fn delete_app(app: &str, actor: &str) -> SystemCmd {
         actor: actor.into(),
         owner_in_org: true,
         owner_in_team: true,
+        members: None,
     }
 }
 
@@ -5730,6 +5733,7 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
             }))
             .unwrap(),
         ),
+        unit_offer: None,
     };
     let upgrade = |id: &str, actor: &str, at: u64| SystemCmd::UpgradeApp {
         compute_bundle: None,
@@ -6033,6 +6037,7 @@ fn a_publisher_approves_the_releases_of_every_instance_of_its_packages() {
             }))
             .unwrap(),
         ),
+        unit_offer: None,
     };
     let e = m.run_unproven(create("second", "b1")).unwrap_err();
     assert!(e.starts_with(super::DEADLINE_PREFIX), "{e}");
@@ -6994,6 +6999,7 @@ fn instance(id: &str, owner: &str, bundle: &str, deployment: Option<&str>) -> Sy
             }))
             .unwrap(),
         ),
+        unit_offer: None,
     }
 }
 
@@ -7127,6 +7133,213 @@ fn deployments_are_their_managers_and_keep_what_they_offer() {
         .run_unproven(create_deployment("one-more", org(), "carol"))
         .unwrap_err();
     assert!(e.starts_with(QUOTA_PREFIX), "{e}");
+}
+
+/// `kv@0.1.0`, a member's release (bundle `kv-0.1.0`), installed by `by`.
+fn install_member_release(by: &str) -> SystemCmd {
+    SystemCmd::InstallPackage {
+        package: "kv".into(),
+        signer_id: "did:key:z".into(),
+        release: serde_json::from_value(json!({
+            "version": "0.1.0", "mpk": "kv", "mpkSize": 1, "source": "upload",
+            "services": { "": "kv-0.1.0" }, "installedBy": by, "installedAt": 5
+        }))
+        .unwrap(),
+    }
+}
+
+/// `owner`'s app `id` of `bundle`/`release` from `deployment`, its unit's `links`, as the
+/// log carries it; `unit_offer` (absent when `None`) names the offer covering it.
+fn unit_app(
+    id: &str,
+    owner: &str,
+    (bundle, release): (&str, Value),
+    deployment: Option<&str>,
+    links: Value,
+    unit_offer: Option<&str>,
+) -> SystemCmd {
+    let mut v = json!({ "op": "createApp", "app": {
+        "appId": id, "name": id, "group": 0, "bundle": bundle, "owner": owner, "org": p(owner),
+        "replicas": [1], "createdAt": 10, "deployment": deployment, "release": release,
+        "links": links,
+    }});
+    if let Some(version) = unit_offer {
+        v["unit_offer"] = json!({ "package": "p", "version": version });
+    }
+    serde_json::from_value(v).unwrap()
+}
+
+fn kv_member(id: &str, deployment: Option<&str>, links: Value, offer: Option<&str>) -> SystemCmd {
+    let release = json!({ "package": "kv", "version": "0.1.0" });
+    unit_app(id, "bob", ("kv-0.1.0", release), deployment, links, offer)
+}
+
+fn notes_instance(id: &str, deployment: Option<&str>, links: Value) -> SystemCmd {
+    let release = json!({ "package": "p", "version": "1.0.0" });
+    unit_app(id, "bob", ("b-1.0.0", release), deployment, links, None)
+}
+
+/// `DeleteApp` of `app` by `actor` under the whole-unit rule, naming `members`.
+fn delete_unit(app: &str, actor: &str, members: &[&str]) -> SystemCmd {
+    SystemCmd::DeleteApp {
+        app_id: app.into(),
+        actor: actor.into(),
+        owner_in_org: true,
+        owner_in_team: true,
+        members: Some(members.iter().map(|m| (*m).to_owned()).collect()),
+    }
+}
+
+/// A unit is one: a member of an instance from a deployment carries the deployment, which
+/// offers only the instance's release (`unit_offer` names that offer, checked at apply as
+/// an instance's own release is); deleting the instance deletes every member, the members'
+/// own included, when the entry names exactly those, by a manager of each; a member is
+/// never deleted alone while its instance stands. Both shapes are `Feature::WholeUnits`.
+#[test]
+fn a_units_members_carry_its_deployment_and_go_with_it() {
+    use super::cluster_version::Feature;
+    use super::{Deployer, Deployments, UNIT_MEMBER};
+    let mut m = deploying(Deployments::Open);
+    let _ok = m
+        .run_unproven(create_deployment(
+            "a",
+            Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+    let _ok = m.run_unproven(install_member_release("alice")).unwrap();
+    let _ok = m
+        .run_unproven(offer_app("a", "notes", "1.0.0", "alice"))
+        .unwrap();
+
+    // The member's own release is not offered: refused without the offer that covers it,
+    // with an offer the deployment does not make, or from another deployment.
+    let e = m
+        .run_unproven(kv_member("d2", Some("a"), json!({}), None))
+        .unwrap_err();
+    assert!(e.contains("does not offer"), "{e}");
+    let e = m
+        .run_unproven(kv_member("d2", Some("a"), json!({}), Some("9.9.9")))
+        .unwrap_err();
+    assert!(e.contains("does not offer"), "{e}");
+    assert!(m
+        .run_unproven(kv_member("d2", Some("zz"), json!({}), Some("1.0.0")))
+        .is_err());
+    // A unit two deep: d1 created d2, the instance created d1.
+    let deep = kv_member("d2", Some("a"), json!({}), Some("1.0.0"));
+    assert_eq!(deep.features(), vec![Feature::WholeUnits]);
+    let _ok = m.run_unproven(deep).unwrap();
+    let _ok = m
+        .run_unproven(kv_member(
+            "d1",
+            Some("a"),
+            json!({ "kv": "d2" }),
+            Some("1.0.0"),
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(notes_instance("i1", Some("a"), json!({ "kv": "d1" })))
+        .unwrap();
+    for id in ["i1", "d1", "d2"] {
+        assert_eq!(m.state.apps[id].deployment.as_deref(), Some("a"), "{id}");
+    }
+    let mut unit = m.state.unit_of("i1");
+    unit.sort();
+    assert_eq!(unit, ["d1", "d2"]);
+    assert_eq!(m.state.unit_parent("d2"), Some("d1"));
+    assert_eq!(m.state.unit_parent("i1"), None);
+
+    // A member alone, at either depth, is refused.
+    for member in ["d1", "d2"] {
+        assert_eq!(
+            m.run_unproven(delete_unit(member, "bob", &[])).unwrap_err(),
+            UNIT_MEMBER
+        );
+    }
+    // The entry names the whole unit, no more and no less.
+    assert!(m.run_unproven(delete_unit("i1", "bob", &["d1"])).is_err());
+    assert!(m
+        .run_unproven(delete_unit("i1", "bob", &["d1", "d2", "i1"]))
+        .is_err());
+    // Only who may delete the instance and each member.
+    assert!(m
+        .run_unproven(delete_unit("i1", "carol", &["d1", "d2"]))
+        .is_err());
+    // A member handed to carol in her own organization is not bob's to delete.
+    let d2 = m.state.apps.get_mut("d2").unwrap();
+    (d2.owner, d2.org) = ("carol".into(), p("carol"));
+    assert!(m
+        .run_unproven(delete_unit("i1", "bob", &["d2", "d1"]))
+        .is_err());
+    let d2 = m.state.apps.get_mut("d2").unwrap();
+    (d2.owner, d2.org) = ("bob".into(), p("bob"));
+    assert_eq!(m.state.apps.len(), 3);
+
+    let whole = delete_unit("i1", "bob", &["d2", "d1"]);
+    assert_eq!(whole.features(), vec![Feature::WholeUnits]);
+    let _ok = m.run_unproven(whole).unwrap();
+    assert!(m.state.apps.is_empty(), "{:?}", m.state.apps.keys());
+    // With its instances gone, the deployment withdraws its offer.
+    let _ok = m.run_unproven(withdraw_app("a", "notes", "alice")).unwrap();
+}
+
+/// Entries an earlier release logged replay as it applied them: a member made without the
+/// instance's deployment, and a `DeleteApp` without `members` that deletes a member alone
+/// or an instance without its unit. The entries this release logs without the rule read
+/// the same (`unit_offer` and `members` are left out when absent).
+#[test]
+fn unit_entries_logged_before_whole_units_replay_as_they_did() {
+    use super::{Deployer, Deployments};
+    let mut m = deploying(Deployments::Open);
+    let _ok = m
+        .run_unproven(create_deployment(
+            "a",
+            Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+    let _ok = m.run_unproven(install_member_release("alice")).unwrap();
+    let _ok = m
+        .run_unproven(offer_app("a", "notes", "1.0.0", "alice"))
+        .unwrap();
+    let old_member = kv_member("k1", None, json!({}), None);
+    assert!(old_member.features().is_empty());
+    let v = serde_json::to_value(&old_member).unwrap();
+    assert!(v.get("unit_offer").is_none(), "{v}");
+    let _ok = m.run_unproven(old_member).unwrap();
+    let _ok = m
+        .run_unproven(kv_member("k2", None, json!({}), None))
+        .unwrap();
+    let _ok = m
+        .run_unproven(notes_instance(
+            "i1",
+            Some("a"),
+            json!({ "a": "k1", "b": "k2" }),
+        ))
+        .unwrap();
+    assert_eq!(m.state.apps["k1"].deployment, None);
+
+    let old_delete = delete_app("k1", "bob");
+    assert!(old_delete.features().is_empty());
+    let v = serde_json::to_value(&old_delete).unwrap();
+    assert!(v.get("members").is_none(), "{v}");
+    let _ok = m.run_unproven(old_delete).unwrap();
+    assert!(!m.state.apps.contains_key("k1"));
+    assert_eq!(
+        m.state.apps["i1"].links["a"], "k1",
+        "the link stays as the record"
+    );
+    let _ok = m.run_unproven(delete_app("i1", "bob")).unwrap();
+    assert!(!m.state.apps.contains_key("i1"));
+    assert!(
+        m.state.apps.contains_key("k2"),
+        "an old delete keeps the members"
+    );
+    // An orphan, its instance gone, is deleted alone under the new rule too.
+    let _ok = m.run_unproven(delete_unit("k2", "bob", &[])).unwrap();
+    assert!(m.state.apps.is_empty());
 }
 
 /// Where deployments are granted, creating one and offering need a live
@@ -7919,6 +8132,7 @@ fn deleting_an_app_or_an_org_frees_its_files() {
             actor: "alice".into(),
             owner_in_org: true,
             owner_in_team: true,
+            members: None,
         })
         .unwrap();
     assert_eq!(m.state.file_bytes("org"), 10);
@@ -8010,6 +8224,7 @@ fn the_payer_totals_always_equal_the_sum_over_the_apps() {
             actor: "alice".into(),
             owner_in_org: true,
             owner_in_team: true,
+            members: None,
         })
         .unwrap();
     assert_totals_are_sums(&m.state);

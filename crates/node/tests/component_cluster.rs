@@ -6456,6 +6456,88 @@ async fn creating_an_instance_creates_the_apps_its_release_uses() {
     assert_eq!(got, json!("hi"));
 }
 
+/// A unit is deleted whole: deleting the instance deletes every app its release created with
+/// it, down to the members' own members (the answer names them), and a member is never
+/// deleted alone while its instance stands (`409 UNIT_MEMBER`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn deleting_an_instance_deletes_its_unit_and_never_a_member_alone() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let upload = |package: &'static str, uses: Value| {
+        mpk_using(package, "0.1.0", &kv_wasm(), &publisher, &[], uses)
+    };
+    // outer creates mid, which creates kv: a unit two deep.
+    for (package, uses) in [
+        ("com.calimero.del-kv", Value::Null),
+        (
+            "com.calimero.del-mid",
+            json!({ "kv": { "package": "com.calimero.del-kv", "range": "^0.1", "version": "0.1.0" } }),
+        ),
+        (
+            "com.calimero.del-outer",
+            json!({ "mid": { "package": "com.calimero.del-mid", "range": "^0.1", "version": "0.1.0" } }),
+        ),
+    ] {
+        let _ = alice
+            .packages()
+            .upload(upload(package, uses))
+            .await
+            .unwrap();
+    }
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "outer", "package": "com.calimero.del-outer" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let outer = made["appId"].as_str().unwrap().to_owned();
+    let mid = made["links"]["mid"].as_str().unwrap().to_owned();
+    let mid_record = alice.apps().get(&mid).await.map(wire).unwrap();
+    let kv = mid_record["links"]["kv"].as_str().unwrap().to_owned();
+    let names = |apps: Value| -> Vec<String> {
+        let mut n: Vec<String> = apps["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["appId"].as_str().unwrap().to_owned())
+            .collect();
+        n.sort();
+        n
+    };
+    let mut all = vec![outer.clone(), mid.clone(), kv.clone()];
+    all.sort();
+    assert_eq!(
+        names(alice.apps().list(None, None).await.map(wire).unwrap()),
+        all
+    );
+
+    // A member, at either depth, is not deleted alone.
+    for member in [&mid, &kv] {
+        let e = alice.apps().delete(member).await.unwrap_err();
+        assert_eq!(e.code(), Some("UNIT_MEMBER"), "{e}");
+    }
+    assert_eq!(
+        names(alice.apps().list(None, None).await.map(wire).unwrap()),
+        all
+    );
+
+    // The instance takes its whole unit with it.
+    let gone = alice.apps().delete(&outer).await.map(wire).unwrap();
+    let mut members: Vec<String> = serde_json::from_value(gone["members"].clone()).unwrap();
+    members.sort();
+    let mut expected = vec![mid.clone(), kv.clone()];
+    expected.sort();
+    assert_eq!(members, expected, "{gone}");
+    assert!(names(alice.apps().list(None, None).await.map(wire).unwrap()).is_empty());
+    for app in [&outer, &mid, &kv] {
+        let e = alice.apps().get(app).await.unwrap_err();
+        assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    }
+}
+
 /// A unit upgrades in one consent: `POST /apps/{app}/upgrade-unit` moves the instance to the
 /// new release of its package and each member to the release the new one pins for it, with
 /// one passkey assertion over all of them. A member is not moved on its own off the range

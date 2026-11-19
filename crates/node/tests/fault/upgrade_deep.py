@@ -88,6 +88,14 @@ NOT_COVERED = [
      "`links` is written only once every node runs this release (`Feature::AppLinks`); "
      "`creating_an_instance_creates_the_apps_its_release_uses` (`component_cluster.rs`) covers it on one "
      "build, and a record without it reads as before (`serde(default)`)"),
+    ("Apps", "A unit's members on its instance's deployment, and a unit deleted whole "
+     "(`CreateApp { unit_offer }`, `DeleteApp { members }`, `409 UNIT_MEMBER`)",
+     "needs a unit, which the old release cannot create (its meroctl packs no `uses`), made from a "
+     "deployment, which these cases do not seed yet; both entries are written only once the cluster version "
+     "is 1.0.0-rc.32 (`Feature::WholeUnits`). `a_units_members_are_billed_to_its_deployments_developer` "
+     "(`deployments.rs`) and `deleting_an_instance_deletes_its_unit_and_never_a_member_alone` "
+     "(`component_cluster.rs`) cover them on one build, and entries without the fields replay as before "
+     "(`system::tests::unit_entries_logged_before_whole_units_replay_as_they_did`)"),
     ("Apps", "A person's grant letting an app call another as them (`SetDelegation`, `env::via`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `uses` with `methods`, and a "
      "grant is written only once every node runs this release (`Feature::Delegation`); "
