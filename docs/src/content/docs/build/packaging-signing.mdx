@@ -183,6 +183,11 @@ detail.
      let kv = env::linked("kv").ok_or_else(|| Error::NoKv.into())?;
      ```
 
+     A member names the instance that created it with `env::unit_of()` (`None`
+     for an app created on its own): Confidential KV and Private Inference
+     releases take `app:<env::unit_of()>` as their admin, so the instance uses
+     them with no grant step.
+
      A unit upgrades in one consent: an app's frontend asks the node's consent
      page with `upgradeUnit { app, toVersion }` (every app's sheet on one page),
      or a client calls `POST /apps/{app}/upgrade-unit { version }`

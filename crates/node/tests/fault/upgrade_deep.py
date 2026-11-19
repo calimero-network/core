@@ -96,6 +96,11 @@ NOT_COVERED = [
      "(`deployments.rs`) and `deleting_an_instance_deletes_its_unit_and_never_a_member_alone` "
      "(`component_cluster.rs`) cover them on one build, and entries without the fields replay as before "
      "(`system::tests::unit_entries_logged_before_whole_units_replay_as_they_did`)"),
+    ("Apps", "A unit's member reading the instance that created it (`env::unit_of`, WIT `context.unit-of`)",
+     "nothing is stored: it is derived from the instance's `links` in the system state; it needs a unit, "
+     "which the old release cannot create (its meroctl packs no `uses`), and a component built for 0.5.5. "
+     "`a_member_names_the_instance_that_created_it_with_unit_of` (`component_cluster.rs`) covers it on one "
+     "build, and components built before 0.5.5 keep running without it"),
     ("Apps", "A person's grant letting an app call another as them (`SetDelegation`, `env::via`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `uses` with `methods`, and a "
      "grant is written only once every node runs this release (`Feature::Delegation`); "

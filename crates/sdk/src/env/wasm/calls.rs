@@ -40,6 +40,10 @@ pub fn linked(name: &str) -> Option<String> {
     context::linked(name)
 }
 
+pub fn unit_of() -> Option<String> {
+    context::unit_of()
+}
+
 pub fn app_owner() -> String {
     context::app_owner()
 }

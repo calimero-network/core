@@ -2066,6 +2066,18 @@ impl host::Directory for SysDirectory {
     fn linked(&self, name: &str) -> Option<String> {
         self.with(|_, a| a.links.get(name).or_else(|| a.attached.get(name)).cloned())
     }
+
+    /// The instance whose unit this app is a member of: the app whose `links` (the apps its
+    /// release created with it) hold this one, as the system state stands. An attached app
+    /// is no member; an instance deleted since names none.
+    fn unit_of(&self) -> Option<String> {
+        self.with(|s, a| {
+            s.apps
+                .values()
+                .find(|p| p.app_id != a.app_id && p.links.values().any(|l| *l == a.app_id))
+                .map(|p| p.app_id.clone())
+        })
+    }
 }
 
 /// The ABI JSON a component embeds (its top-level `calimero:abi` section), as the

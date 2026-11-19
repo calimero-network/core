@@ -19,9 +19,9 @@ use crate::types::{
 };
 
 /// The world the app component's ABI names.
-const WORLD: &str = "calimero:app@0.5.4";
+const WORLD: &str = "calimero:app@0.5.5";
 /// The world the compute component's ABI names.
-const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.4";
+const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.5";
 /// The ABI version this SDK writes (D51).
 const ABI_VERSION: u64 = 1;
 
@@ -997,12 +997,12 @@ mod tests {
         assert!(out.contains(&compute_methods), "{out}");
         assert!(
             out.contains(
-                r#",\"world\":\"calimero:app/compute@0.5.4\"}"#.replace(r#"\""#, "\"").as_str()
+                r#",\"world\":\"calimero:app/compute@0.5.5\"}"#.replace(r#"\""#, "\"").as_str()
             ),
             "{out}"
         );
         assert!(
-            out.contains(r#",\"world\":\"calimero:app@0.5.4\"}"#.replace(r#"\""#, "\"").as_str()),
+            out.contains(r#",\"world\":\"calimero:app@0.5.5\"}"#.replace(r#"\""#, "\"").as_str()),
             "{out}"
         );
     }

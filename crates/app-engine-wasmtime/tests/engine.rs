@@ -1391,7 +1391,7 @@ fn each_engine_refuses_an_abi_of_the_other_world() {
     });
     let compute_abi = serde_json::json!({
         "abiVersion": 1,
-        "world": "calimero:app/compute@0.5.4",
+        "world": "calimero:app/compute@0.5.5",
         "methods": {},
     });
     let job = calimero_app_build::with_abi(&guest("compute_probe"), &plain).expect("patch");

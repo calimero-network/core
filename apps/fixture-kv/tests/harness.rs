@@ -470,6 +470,25 @@ fn linked_reads_the_apps_linked_now() {
     assert_eq!(linked(&mut t, "calendar"), json!(null));
 }
 
+/// `env::unit_of`: the instance whose unit the app is a member of, none for an app on its own.
+#[test]
+fn unit_of_names_the_instance_that_created_the_app() {
+    let mut member = TestApp::new(
+        component(),
+        Org::new().unit_of("notes-app"),
+        1_700_000_000_000,
+    );
+    assert_eq!(
+        member.as_("owner").view("unitOf", json!({})).unwrap(),
+        json!("notes-app")
+    );
+    let mut alone = app();
+    assert_eq!(
+        alone.as_("owner").view("unitOf", json!({})).unwrap(),
+        json!(null)
+    );
+}
+
 #[test]
 fn joined_calls_go_to_the_node_in_one_batch() {
     use std::sync::{Arc, Mutex};

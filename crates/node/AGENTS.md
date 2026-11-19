@@ -901,6 +901,11 @@ is its command line.
   `deleting_an_instance_deletes_its_unit_and_never_a_member_alone`,
   `system::tests::a_units_members_carry_its_deployment_and_go_with_it`,
   `unit_entries_logged_before_whole_units_replay_as_they_did`.
+  A member names its instance with `env::unit_of()` (WIT `context.unit-of`, 0.5.5;
+  `SysDirectory::unit_of`: the app whose `links` hold it, derived from the system state,
+  so nothing new is stored and it is `None` once the instance is gone); Confidential KV
+  and Private Inference releases take `app:<unit_of>` as their admin. Regression:
+  `a_member_names_the_instance_that_created_it_with_unit_of`.
   A unit upgrades in one consent (`api/upgrades.rs`: `app_upgrade_unit`, `POST
   /apps/{app}/upgrade-unit`): a run whose consent (`org:<org> /
   __upgrade_unit / { app, package, version, targets }`) names each member's own
