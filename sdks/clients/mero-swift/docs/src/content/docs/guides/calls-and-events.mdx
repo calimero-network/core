@@ -41,7 +41,7 @@ iterating) to close the stream.
 | `orgs.setMember`, `orgs.removeMember`, `orgs.teamSetMember`, `orgs.teamRemoveMember`, `orgs.capabilities` (each with `passkey:`) | `/orgs/{org}/members`, `…/capabilities` |
 | `orgs.inviteCreate(org:role:teams:passkey:)` → `.token` (`inv_…`) | `POST /orgs/{org}/invites` |
 | `orgs.inviteRedeem(token:)` | `POST /invites/{token}/redeem` |
-| `apps.create(name:package:org:access:)` (`access: AppAccess.team(id).generated`) | `POST /apps` |
+| `apps.create(name:package:org:grants:)` (`grants: [try AppGrant.team(id).generated]`) | `POST /apps` |
 
 `auth.me()` lists the account's organizations; `orgs.get(org:)` answers the organization, its teams, members and their metadata; `OrgInfo(json: try JSONValue(encoding: org))` reads it as MeroKit's type.
 

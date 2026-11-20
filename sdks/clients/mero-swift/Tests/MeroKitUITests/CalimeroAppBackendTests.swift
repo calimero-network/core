@@ -54,11 +54,11 @@ final class CalimeroAppBackendTests: XCTestCase {
             groupId: team, applicationId: "com.calimero.chat", name: "general", initArgs: [:])
         let created = try XCTUnwrap(node.requests.last { $0.path == "/apps" }?.json)
         XCTAssertEqual(created["org"]?.stringValue, org)
-        XCTAssertEqual(created["access"], ["kind": "team", "team": .string(teamId)])
+        XCTAssertEqual(created["grants"], [["kind": "team", "team": .string(teamId)]])
         XCTAssertEqual(created["package"], "com.calimero.chat")
 
         let rootApp = try await backend.createContext(groupId: org, applicationId: "", name: "lobby", initArgs: [:])
-        XCTAssertEqual(node.requests.last { $0.path == "/apps" }?.json?["access"], ["kind": "org"])
+        XCTAssertEqual(node.requests.last { $0.path == "/apps" }?.json?["grants"], [["kind": "org"]])
 
         let subgroups = try await backend.listSubgroups(namespaceId: org)
         XCTAssertEqual(subgroups, [AppSubgroup(groupId: team, name: "general", contextIds: [app])])

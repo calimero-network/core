@@ -354,9 +354,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     }
                 }
             }
-            if let Access::Grants { grants } = &app.access {
-                s.check_grants(&app.org, grants)?;
-            }
+            s.check_grants(&app.org, app.access.grants())?;
             let o = s.orgs.get(&app.org);
             // A team's app is created by someone who writes the team (each team it admits).
             for team in app.access.teams() {
@@ -791,18 +789,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             {
                 return Err("only the app's owner, an organization admin, or whoever manages its team's apps (MANAGE_APPLICATION) may change its access");
             }
-            if let Access::Team { team } = &access {
-                let in_org = s
-                    .orgs
-                    .get(&app.org)
-                    .is_some_and(|o| o.teams.contains_key(team));
-                if !in_org {
-                    return Err("no such team in the app's organization");
-                }
-            }
-            if let Access::Grants { grants } = &access {
-                s.check_grants(&app.org, grants)?;
-            }
+            s.check_grants(&app.org, access.grants())?;
             let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
             app.access = access;
             Ok(Value::Null)
@@ -865,11 +852,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             // Whether guests are allowed is judged when someone redeems it (a member always
             // may): an invite is made whatever the switches say now.
-            // A redemption makes the access a grant list, which would shut out the callers
-            // without an account a legacy `public` instance admits.
-            if app.access.admits_signed_out() {
-                return Err(super::LEGACY_PUBLIC);
-            }
             if invite
                 .scope
                 .as_ref()
@@ -950,9 +932,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .is_some();
             if !member && !s.guests_allowed(app) {
                 return Err(super::GUESTS_NOT_ALLOWED);
-            }
-            if app.access.admits_signed_out() {
-                return Err(super::LEGACY_PUBLIC);
             }
             let answer = json!({ "app": app.app_id, "org": app.org, "member": member });
             // Named already: nothing changes, and the use is left for someone else.

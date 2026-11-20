@@ -15,7 +15,7 @@ import OpenAPIRuntime
 /// | ``isMember(contextId:)`` / ``joinContext(contextId:)`` | `GET /apps/{app}` (reachable or `NotFound`) |
 /// | ``foundNamespace(name:)`` | `POST /orgs`, `POST /orgs/{org}/metadata {package, name}` |
 /// | ``createSubgroup(namespaceId:name:isPublic:)`` | `POST /orgs/{org}/teams {join: everyone \| invite}` |
-/// | ``createContext(groupId:applicationId:name:initArgs:)`` / ``createServiceContext(groupId:applicationId:service:name:initArgs:)`` | `POST /apps {package (+ service) \| bundle, org, access: team \| org, initArgs}` |
+/// | ``createContext(groupId:applicationId:name:initArgs:)`` / ``createServiceContext(groupId:applicationId:service:name:initArgs:)`` | `POST /apps {package (+ service) \| bundle, org, grants: [team \| org], initArgs}` |
 /// | ``createInvitation(namespaceId:)`` / ``joinNamespace(namespaceId:invitation:)`` | `POST /orgs/{org}/invites`, `POST /invites/{token}/redeem` |
 /// | ``events(contextId:)`` | `GET /apps/{app}/events` (sealed SSE) |
 /// | contract `query` / `execute` | `POST /apps/{app}/views` / `POST /apps/{app}/intents` |
@@ -84,7 +84,7 @@ public final class CalimeroAppBackend: MeroAppBackend, Sendable {
     }
 
     func createApp(
-        _ name: String, source: AppSource, org: String, access: AppAccess, initArgs: JSONValue
+        _ name: String, source: AppSource, org: String, grants: [AppGrant], initArgs: JSONValue
     ) async throws -> String {
         var hash: String?
         var release: (package: String, version: String?)?
@@ -102,7 +102,7 @@ public final class CalimeroAppBackend: MeroAppBackend, Sendable {
         let args = try OpenAPIValueContainer(initArgs)
         return try await client.apps.create(
             name: name, bundle: bundle, package: package, version: version, service: named, org: org,
-            access: access.generated, initArgs: args
+            grants: try grants.map { try $0.generated }, initArgs: args
         ).appId
     }
 
@@ -234,7 +234,7 @@ public final class CalimeroAppBackend: MeroAppBackend, Sendable {
             ? .bundle(package)
             : .package(package, version: package == packageName ? packageVersion : nil, service: service)
         return try await createApp(
-            name, source: source, org: place.org, access: place.team.map { .team($0) } ?? .org, initArgs: initArgs)
+            name, source: source, org: place.org, grants: [place.team.map { .team($0) } ?? .org], initArgs: initArgs)
     }
 
     public func createServiceContext(

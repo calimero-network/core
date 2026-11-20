@@ -1637,7 +1637,7 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     // Amy's in an organization of her own (Alice installed it, Amy is not an
     // installer), listing Bob, a guest-role member there.
     let shared = amy
-        .apps().create(typed(json!({ "name": "shared", "package": "com.acme.secret", "newOrg": { "name": "Amy's" }, "access": { "kind": "accounts", "accounts": [bob_id] } })))
+        .apps().create(typed(json!({ "name": "shared", "package": "com.acme.secret", "newOrg": { "name": "Amy's" }, "grants": [{ "kind": "account", "account": bob_id }] })))
         .await.map(wire)
         .unwrap()["appId"]
         .as_str()
@@ -2145,7 +2145,7 @@ async fn the_nodes_own_commands_cannot_be_called_as_methods() {
         &alice,
         "public",
         kv.clone(),
-        json!({ "access": { "kind": "public" } }),
+        json!({ "grants": [{ "kind": "anyone" }] }),
     )
     .await;
     let other = alice
@@ -2229,7 +2229,7 @@ async fn a_write_too_large_for_the_log_is_refused_at_once_on_every_node() {
         &alice,
         "kv",
         kv_wasm(),
-        json!({ "access": { "kind": "public" } }),
+        json!({ "grants": [{ "kind": "anyone" }] }),
     )
     .await;
     // One past the arguments cap (a trapped entry if proposed), one past the log's.
@@ -2740,7 +2740,7 @@ async fn blobs_list_and_delete_and_storage_is_inspectable() {
         &alice,
         "one",
         kv_wasm(),
-        json!({ "access": { "kind": "public" } }),
+        json!({ "grants": [{ "kind": "anyone" }] }),
     )
     .await;
     let (a2, _) = deploy(&alice, "two", kv_wasm(), json!({})).await;
@@ -2887,7 +2887,7 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     let mut apps = BTreeMap::new();
     for (name, t) in [("top", &eng), ("below", &web), ("elsewhere", &ops)] {
         let app = alice
-            .apps().create(typed(json!({ "name": name, "package": "com.test.kv", "org": org, "access": { "kind": "team", "team": t } })))
+            .apps().create(typed(json!({ "name": name, "package": "com.test.kv", "org": org, "grants": [{ "kind": "team", "team": t }] })))
             .await.map(wire)
             .unwrap()["appId"]
             .as_str()
@@ -3049,7 +3049,7 @@ async fn presence_reaches_every_node_and_expires() {
         &alice,
         "doc",
         kv_wasm(),
-        json!({ "access": { "kind": "public" } }),
+        json!({ "grants": [{ "kind": "anyone" }] }),
     )
     .await;
     let alice_id = account_id(&alice).await;
@@ -3188,7 +3188,7 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
     let other = alice
         .apps()
         .create(typed(
-            json!({ "name": "other", "package": "com.test.other", "access": { "kind": "public" } }),
+            json!({ "name": "other", "package": "com.test.other", "grants": [{ "kind": "anyone" }] }),
         ))
         .await
         .map(wire)
@@ -3594,18 +3594,18 @@ async fn a_frontend_session_manages_no_organization_and_no_app() {
     forbidden(
         "change an app's access",
         site.apps()
-            .access(&app, Some(typed(json!({ "kind": "public" }))), None)
+            .access(&app, vec![typed(json!({ "kind": "anyone" }))])
             .await
             .map(wire),
     );
     forbidden("delete an app", site.apps().delete(&app).await.map(wire));
     let still = alice.apps().get(&app).await.map(wire).unwrap();
-    assert_ne!(still["access"]["kind"], json!("public"), "{still}");
+    assert_ne!(still["grants"], json!([{ "kind": "anyone" }]), "{still}");
 
     // On the cluster's own origin the same account still can.
     let _ = alice
         .apps()
-        .access(&app, Some(typed(json!({ "kind": "public" }))), None)
+        .access(&app, vec![typed(json!({ "kind": "anyone" }))])
         .await
         .map(wire)
         .unwrap();
@@ -4042,7 +4042,7 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
         &alice,
         "doc",
         kv_wasm(),
-        json!({ "access": { "kind": "public" } }),
+        json!({ "grants": [{ "kind": "anyone" }] }),
     )
     .await;
     let _ = alice
@@ -5327,11 +5327,7 @@ async fn access_changed_through_one_node_holds_at_once_through_another() {
         .to_owned();
     let _r = bob.orgs().invite_redeem(&token).await.unwrap();
     for round in 0..20 {
-        let _ok = alice
-            .apps()
-            .access(&app, Some(typed(json!({ "kind": "owner" }))), None)
-            .await
-            .unwrap();
+        let _ok = alice.apps().access(&app, vec![]).await.unwrap();
         let refused = bob
             .apps()
             .call(
@@ -5352,8 +5348,7 @@ async fn access_changed_through_one_node_holds_at_once_through_another() {
             .apps()
             .access(
                 &app,
-                Some(typed(json!({ "kind": "accounts", "accounts": [bob_id] }))),
-                None,
+                vec![typed(json!({ "kind": "account", "account": bob_id }))],
             )
             .await
             .unwrap();
@@ -6096,7 +6091,7 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
         .await
         .unwrap();
     let created = alice
-        .apps().create(typed(json!({ "name": "tracked-secret-name", "package": "com.test.track", "version": "1.0.0", "org": org, "access": { "kind": "org" } })))
+        .apps().create(typed(json!({ "name": "tracked-secret-name", "package": "com.test.track", "version": "1.0.0", "org": org, "grants": [{ "kind": "org" }] })))
         .await.map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
@@ -6481,7 +6476,7 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
     // An org app: a member without MANAGE_APPLICATION may not move it, even
     // to a release with the same WASM; the owner's org run does.
     let shared = alice
-        .apps().create(typed(json!({ "name": "shared", "package": "com.test.fe", "version": "1.0.0", "org": org, "access": { "kind": "org" } })))
+        .apps().create(typed(json!({ "name": "shared", "package": "com.test.fe", "version": "1.0.0", "org": org, "grants": [{ "kind": "org" }] })))
         .await.map(wire)
         .unwrap()["appId"]
         .as_str()

@@ -366,51 +366,49 @@ data class AppUpgradeTarget(
 )
 
 /**
- * Who may reach an app (`setAccess`, `createApp`): `{ "kind": "owner" | "org" | "public" }`,
- * `{ "kind": "accounts", "accounts": [...] }` or `{ "kind": "team", "team": id }` on the wire, the
- * spec's `Access` (the generated client's type for it).
+ * One way into an app instance (`setAccess`, `createApp`), the spec's `Grant`: an instance's
+ * grants are a list of them, and none is its owner alone. On the wire `{ "kind": "org" }`,
+ * `{ "kind": "team", "team": id }`, `{ "kind": "account", "account": id, "scope"?: json }` or
+ * `{ "kind": "anyone" }`.
  */
-@Serializable(with = AppAccessSerializer::class)
-sealed interface AppAccess {
-    /** Only the owner. */
-    data object Owner : AppAccess
-
-    /** Members of the app's organization. */
-    data object Org : AppAccess
-
-    /** Anyone, signed in or not. */
-    data object Public : AppAccess
-
-    /** The owner and these accounts. */
-    data class Accounts(
-        val accounts: List<String>,
-    ) : AppAccess
+@Serializable(with = AppGrantSerializer::class)
+sealed interface AppGrant {
+    /** Every member of the app's organization. */
+    data object Org : AppGrant
 
     /** Members of one team of the app's organization. */
     data class Team(
         val team: String,
-    ) : AppAccess
+    ) : AppGrant
+
+    /** One account: a member (a named member) or a guest, with the app's own [scope]. */
+    data class Account(
+        val account: String,
+        val scope: JsonElement? = null,
+    ) : AppGrant
+
+    /** Any signed-in account. */
+    data object Anyone : AppGrant
 }
 
-internal object AppAccessSerializer : KSerializer<AppAccess> {
+internal object AppGrantSerializer : KSerializer<AppGrant> {
     override val descriptor: SerialDescriptor = JsonObject.serializer().descriptor
 
     override fun serialize(
         encoder: Encoder,
-        value: AppAccess,
+        value: AppGrant,
     ) {
-        (encoder as JsonEncoder).encodeJsonElement(CalimeroClient.accessJson(value))
+        (encoder as JsonEncoder).encodeJsonElement(CalimeroClient.grantJson(value))
     }
 
-    override fun deserialize(decoder: Decoder): AppAccess {
-        val o = (decoder as JsonDecoder).decodeJsonElement() as? JsonObject ?: error("an access is an object")
+    override fun deserialize(decoder: Decoder): AppGrant {
+        val o = (decoder as JsonDecoder).decodeJsonElement() as? JsonObject ?: error("a grant is an object")
         return when (val kind = o.string("kind")) {
-            "owner" -> AppAccess.Owner
-            "org" -> AppAccess.Org
-            "public" -> AppAccess.Public
-            "accounts" -> AppAccess.Accounts((o["accounts"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content }.orEmpty())
-            "team" -> AppAccess.Team(o.string("team").orEmpty())
-            else -> error("unknown access kind $kind")
+            "org" -> AppGrant.Org
+            "team" -> AppGrant.Team(o.string("team").orEmpty())
+            "account" -> AppGrant.Account(o.string("account").orEmpty(), o["scope"])
+            "anyone" -> AppGrant.Anyone
+            else -> error("unknown grant kind $kind")
         }
     }
 }

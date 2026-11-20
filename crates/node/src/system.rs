@@ -506,7 +506,7 @@ impl PackageRecord {
 struct MoveRows {
     /// A new app team gives its members who get every app added later a row.
     all_apps_rows: bool,
-    /// An `Accounts` instance's people get a row on its closed app team.
+    /// An instance only named people reach gives them a row on its closed app team.
     accounts_in_app_team: bool,
     /// The target's quotas are its override where it has one.
     org_quotas: bool,
@@ -1060,14 +1060,6 @@ pub const MAX_APP_INVITE_TTL_SECS: u64 = 90 * 24 * 3600;
 /// ([`SystemState::guests_allowed`]).
 pub const GUESTS_NOT_ALLOWED: &str =
     "this instance takes no guests: its release or its organization does not allow them";
-/// A refusal: the instance's access is the legacy `public` mode (set before 1.0.0-rc.32),
-/// which admits callers without an account. Making it a grant list (an invite naming someone,
-/// a public link) would end that, as no grant admits them, so it is not done on the side:
-/// whoever manages it sets its grants first ([`crate::types::Access::admits_signed_out`]).
-pub const LEGACY_PUBLIC: &str = "this instance's access is public as set before 1.0.0-rc.32, which admits callers without an account; set its access as grants first (an `anyone` grant admits signed-in accounts only)";
-/// A refusal: a grant list admitting callers with no account. Only the legacy `public` mode
-/// does; anonymous visitors come in through public links.
-pub const NO_SIGNED_OUT_GRANT: &str = "a grant admits signed-in accounts only: callers without an account come in through public links";
 /// A refusal: an instance invite gone, used up or never made.
 pub const APP_INVITE_GONE: &str = "this invite was used up, revoked or never existed";
 
@@ -2708,7 +2700,7 @@ impl SystemState {
     /// brings [`cluster_version::Feature::OrdinaryOrgs`]. From then on a sign-up makes no
     /// organization, no personal one is made, and one made before is treated as any other
     /// (it counts against `maxOrgsPerAccount`, its apps go only to its members), except that
-    /// its `accounts` instances still reach their listed accounts ([`Self::may_reach`]).
+    /// its instances still reach the accounts they name ([`Self::may_reach`]).
     /// Before it, every entry applies as it was logged.
     #[must_use]
     pub fn ordinary_orgs(&self) -> bool {
@@ -3072,7 +3064,7 @@ impl SystemState {
     }
 
     /// Whether `actor` manages the apps an instance with `access` is: on each team it admits
-    /// (`team` access, or every team grant), else organization-wide
+    /// (every team grant), else organization-wide
     /// ([`Self::manages_apps`]).
     #[must_use]
     pub fn manages_access(&self, org: &str, actor: &str, access: &Access) -> bool {
@@ -3110,8 +3102,8 @@ impl SystemState {
     /// Whether `actor`, not `app`'s owner, may change its access to `to`
     /// (G1): someone who manages the organization's apps (`MANAGE_APPLICATION`,
     /// [`Self::manages_apps`]) where the app is now and where it goes, on its
-    /// team for `Access::Team` (on every team a grant list names), organization-wide for any
-    /// other access ([`Self::manages_access`]). Org admins and the owner hold it everywhere, a
+    /// each team its grants name, organization-wide for grants with no team
+    /// ([`Self::manages_access`]). Org admins and the owner hold it everywhere, a
     /// team's leads on their team.
     #[must_use]
     pub fn may_set_access(&self, app: &AppRecord, to: &Access, actor: &str) -> bool {
@@ -3364,10 +3356,6 @@ pub fn check_team_batch<'a>(
 /// flag is the entry's own, absent (`false`) in an earlier release's entry.
 #[derive(Clone, Copy, Debug)]
 struct ScopeAsLogged {
-    /// An owner reaches an app on a team only while in it.
-    owner_in_team: bool,
-    /// An `Accounts` instance is reached only through its app team.
-    accounts_in_app_team: bool,
     /// A new app team's default holds `CREATE_CHILD_TEAM`.
     member_child_teams: bool,
     /// A new app team gives its `all_apps` members a row.
@@ -3381,8 +3369,6 @@ impl ScopeAsLogged {
     /// Every rule as this release judges it: what a command this release
     /// writes and applies in the same entry (`CreateOrg { app_team }`) uses.
     const CURRENT: Self = Self {
-        owner_in_team: true,
-        accounts_in_app_team: true,
         member_child_teams: true,
         all_apps_rows: true,
         by_release: true,
@@ -3519,14 +3505,7 @@ impl SystemState {
                 .flat_map(|a| {
                     o.members
                         .keys()
-                        .filter(|m| {
-                            self.may_reach_as_logged(
-                                a,
-                                Some(m.as_str()),
-                                logged.owner_in_team,
-                                logged.accounts_in_app_team,
-                            )
-                        })
+                        .filter(|m| self.may_reach(a, Some(m.as_str())))
                         .cloned()
                         .collect::<Vec<_>>()
                 })
@@ -3741,14 +3720,14 @@ impl SystemState {
     ///   ([`Self::manages_app`]: a personal app's owner, an organization's
     ///   app's owner while a member, or an admin there) and is an admin or the
     ///   owner of `to_org`.
-    /// - **Access:** organization or app-team access becomes team access on
+    /// - **Grants:** an `org` or app-team grant becomes a `team` grant on
     ///   the target's app team of the app's package, made when missing: open,
     ///   unless every app team of the target is closed (shared), where it is
     ///   closed like the rest; an app team closed alone leaves it open. A legacy target (no app team) and a raw upload
-    ///   (no package) keep organization access, so moving an app in never
-    ///   changes how the target holds its other apps. Owner, public and
-    ///   accounts access stay as they are; an accounts instance whose package
-    ///   has a closed app team in the target is reached there only through
+    ///   (no package) get an `org` grant, so moving an app in never
+    ///   changes how the target holds its other apps. Named people and
+    ///   `anyone` stay as they are; an instance only named people reach whose
+    ///   package has a closed app team in the target is reached there only through
     ///   that team ([`Self::may_reach`]), so its owner and who it brings get
     ///   a row on that team (`accounts_in_app_team`; none in an entry an
     ///   earlier release logged). Any other team is refused
@@ -3933,7 +3912,7 @@ impl SystemState {
         } else {
             Vec::new()
         };
-        // An `Accounts` instance (a DM, a private list) of a package whose
+        // An instance only named people reach (a DM, a private list) of a package whose
         // app team in the target is closed is reached there only by those in
         // that team: who comes along, and its owner, get a row on it, as
         // they would on the app team an `org` or `team` instance goes to.
@@ -4040,7 +4019,7 @@ impl SystemState {
             "appId": app_id,
             "from": from,
             "org": to_org,
-            "access": access,
+            "grants": access,
             "created": created,
             "added": joins.iter().map(|(m, _)| m).collect::<Vec<_>>(),
             "revokedInvites": revoked,
@@ -4291,21 +4270,11 @@ impl SystemState {
         Some((account, cred))
     }
 
-    /// Whether `account` may reach `app` at all. An organization's app is
-    /// reached only by its current members, whatever names the account: its
-    /// owner, or an `Accounts` list, stop reaching it once they leave or are
-    /// removed (the organization itself gone: nobody but a public app's
-    /// callers). An app on a team is reached only by that team, its owner
-    /// included: an owner who leaves or is removed from the team (an app's
-    /// team, a private channel) stops reaching it, as they stop managing it
-    /// ([`Self::owner_acts`]). An `Accounts` instance of a package with an
-    /// app team in its organization (a private channel, a DM) is reached only
-    /// by those who reach that app team, its owner included
-    /// ([`Self::app_team_of`]): a person removed from the app is out of its
-    /// private channels too.
+    /// Whether `account` may reach `app` at all: through one of its grants
+    /// ([`Self::grants_reach`]). Nobody without an account does.
     #[must_use]
     pub fn may_reach(&self, app: &AppRecord, account: Option<&str>) -> bool {
-        self.may_reach_as_logged(app, account, true, true)
+        account.is_some_and(|a| self.grants_reach(app, a))
     }
 
     /// Whether `account` lets `source`'s runs for them call `method` of `target` as them.
@@ -4316,73 +4285,6 @@ impl SystemState {
             .and_then(|s| s.get(source))
             .and_then(|t| t.get(target))
             .is_some_and(|m| m.iter().any(|x| x == method))
-    }
-
-    /// [`Self::may_reach`], or, for a command an earlier release logged
-    /// with an app on a team reached by its owner whatever the team holds
-    /// (`owner_in_team: false`), or an `Accounts` instance reached by its
-    /// list whatever its app team holds (`accounts_in_app_team: false`), as
-    /// that release judged it.
-    fn may_reach_as_logged(
-        &self,
-        app: &AppRecord,
-        account: Option<&str>,
-        owner_in_team: bool,
-        accounts_in_app_team: bool,
-    ) -> bool {
-        if let Access::Grants { grants } = &app.access {
-            return self.grants_reach(app, grants, account);
-        }
-        if let (org, Some(a)) = (&app.org, account) {
-            let o = self.orgs.get(org);
-            let member = o.and_then(|o| o.role(a)).is_some();
-            // An app in a personal organization shared with listed accounts
-            // reaches them as a personal app's list did, without making them
-            // members. Only personal organizations, which exist from the
-            // release that judges this, so every replica decides alike.
-            let listed_in_personal =
-                o.is_some_and(|o| o.personal) && matches!(app.access, Access::Accounts { .. });
-            // A guest, not a member, reaches the instance (and its unit's members) by its
-            // list where both switches allow ([`Self::guest_reaches`]).
-            if !member && self.guest_reaches(app, a) {
-                return true;
-            }
-            if !member && app.access != Access::Public && !listed_in_personal {
-                return false;
-            }
-        }
-        if let (Access::Accounts { .. }, Some(a), true) =
-            (&app.access, account, accounts_in_app_team)
-        {
-            if let Some((o, team)) = self.app_team_of(app) {
-                if !o.in_team(a, &team.team_id) {
-                    return false;
-                }
-            }
-        }
-        match (&app.access, account) {
-            (Access::Public, _) => true,
-            (_, None) => false,
-            // On a team, the owner too is judged by the team (below).
-            (access, Some(a))
-                if a == app.owner && (!owner_in_team || !matches!(access, Access::Team { .. })) =>
-            {
-                true
-            }
-            (Access::Owner, Some(_)) => false,
-            (Access::Accounts { accounts }, Some(a)) => accounts.iter().any(|x| x == a),
-            // Where apps have app teams, a guest has only the apps of the
-            // teams they are in.
-            (Access::Org, Some(a)) => self
-                .orgs
-                .get(&app.org)
-                .is_some_and(|o| o.role(a).is_some() && !o.app_only(a)),
-            (Access::Team { team }, Some(a)) => {
-                self.orgs.get(&app.org).is_some_and(|o| o.in_team(a, team))
-            }
-            // Judged above ([`Self::grants_reach`]).
-            (Access::Grants { grants }, a) => self.grants_reach(app, grants, a),
-        }
     }
 
     /// Refuses a grant list `org`'s instance cannot hold: a grant twice, the organization
@@ -4400,8 +4302,7 @@ impl SystemState {
         for g in grants {
             let fresh = match g {
                 Grant::Org => !std::mem::replace(&mut whole, true),
-                Grant::Anyone { signed_out: true } => return Err(NO_SIGNED_OUT_GRANT),
-                Grant::Anyone { signed_out: false } => !std::mem::replace(&mut anyone, true),
+                Grant::Anyone => !std::mem::replace(&mut anyone, true),
                 Grant::Team { team } => {
                     if !o.teams.contains_key(team) {
                         return Err("no such team in the app's organization");
@@ -4434,21 +4335,17 @@ impl SystemState {
         Ok(())
     }
 
-    /// [`Self::may_reach`] of an instance whose access is a grant list ([`Access::Grants`],
-    /// only ever judged by the current rules): no grant admits a caller without an account
-    /// (they come in through public links); [`Grant::Anyone`] admits every signed-in account.
+    /// [`Self::may_reach`] for a signed-in `a`: [`Grant::Anyone`] admits every account.
     /// Someone outside the organization reaches it as a guest
     /// ([`Self::guest_reaches`]: named here, or on the instance whose unit made it, while both
     /// switches allow), or, named in an organization flagged personal, as a personal app's list
     /// did. A member reaches it as its owner (while in a team it admits, when it admits teams
     /// only) or through a grant: the organization (an `app_only` guest of it never), a team
     /// they are in, or their name; a name, and the owner of an instance only names admit, only
-    /// while they are in the package's app team where it has one, as an `accounts` instance is.
-    fn grants_reach(&self, app: &AppRecord, grants: &[Grant], account: Option<&str>) -> bool {
-        let Some(a) = account else {
-            return false;
-        };
-        if grants.iter().any(Grant::is_anyone) {
+    /// while they are in the package's app team where it has one.
+    fn grants_reach(&self, app: &AppRecord, a: &str) -> bool {
+        let grants = app.access.grants();
+        if app.access.anyone() {
             return true;
         }
         let Some(o) = self.orgs.get(&app.org) else {
@@ -4471,7 +4368,7 @@ impl SystemState {
             Grant::Org => !o.app_only(a),
             Grant::Team { team } => o.in_team(a, team),
             Grant::Account { account, .. } => account == a && in_app_team(),
-            Grant::Anyone { .. } => true,
+            Grant::Anyone => true,
         })
     }
 
@@ -4915,15 +4812,11 @@ impl SystemCmd {
                 *owner_in_team = true;
             }
             Self::ScopeApps {
-                owner_in_team,
-                accounts_in_app_team,
                 member_child_teams,
                 by_release,
                 all_apps_rows,
                 ..
             } => {
-                *owner_in_team = true;
-                *accounts_in_app_team = true;
                 *member_child_teams = true;
                 *by_release = true;
                 *all_apps_rows = true;
@@ -5356,7 +5249,7 @@ pub enum SystemCmd {
         /// release logged, which replays filling the rows it filled then.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         all_apps_rows: bool,
-        /// An `Accounts` instance whose package has a closed app team in the
+        /// An instance only named people reach whose package has a closed app team in the
         /// target is reached there only through that team
         /// ([`SystemState::may_reach`]): who comes along with it, and its
         /// owner, get a row on that team. The API always sets it; absent
@@ -5453,8 +5346,10 @@ pub enum SystemCmd {
         app_id: AppId,
         group: u64,
     },
+    /// Replace an app's grants ([`Access`], as `grants`).
     SetAccess {
         app_id: AppId,
+        #[serde(rename = "grants")]
         access: Access,
         actor: AccountId,
         /// An organization's app is managed by its owner only while they are
@@ -6414,8 +6309,8 @@ pub enum SystemCmd {
     },
     /// Mint an instance invite ([`crate::types::AppInvite`]): whoever manages the instance's
     /// guests ([`SystemState::manages_grants`]), with passkey consent over
-    /// [`app_invite_args`] (`<app> / __create_app_invite`), while it takes guests and has
-    /// `accounts` access. Only the token's public key is logged.
+    /// [`app_invite_args`] (`<app> / __create_app_invite`), on any instance. Only the token's
+    /// public key is logged.
     CreateAppInvite {
         invite_key: String,
         invite: crate::types::AppInvite,
@@ -6442,10 +6337,10 @@ pub enum SystemCmd {
         signature: String,
     },
     /// Give apps their own access lists in one step (G3): for each package
-    /// named (absent: every package with an organization-access instance
+    /// named (absent: every package with an instance an `org` grant admits
     /// here), find or make its app team ([`crate::types::Team::app_package`]),
-    /// give every person who reaches its instances now a row there, and move
-    /// the instances to `Access::Team` on it. `shared` (absent: whether the
+    /// give every person who reaches its instances now a row there, and give
+    /// the instances its `team` grant in place of `org`. `shared` (absent: whether the
     /// organization then holds two app teams or more) closes every app team,
     /// rows filled in first, so nobody loses an app. A package's own `join`
     /// opens or closes its team alone ([`ScopeApp::join`], `shared` absent
@@ -6463,19 +6358,6 @@ pub enum SystemCmd {
         nonce: String,
         actor: AccountId,
         consent: Value,
-        /// Who reaches an instance now is judged with an app on a team
-        /// reached by its owner only while in it ([`SystemState::may_reach`]).
-        /// The API always sets it; absent (`false`) in an entry an earlier
-        /// release logged, which replays as that release judged it.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        owner_in_team: bool,
-        /// Who reaches an instance now is judged with an `Accounts` instance
-        /// reached only through its package's app team
-        /// ([`SystemState::may_reach`]). The API always sets it; absent
-        /// (`false`) in an entry an earlier release logged, which replays as
-        /// that release judged it.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        accounts_in_app_team: bool,
         /// A new app team's default capabilities let its members create
         /// restricted teams below it (`caps::CREATE_CHILD_TEAM`). The API
         /// always sets it; absent (`false`) in an entry an earlier release

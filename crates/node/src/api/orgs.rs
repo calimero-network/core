@@ -1415,8 +1415,6 @@ async fn app_teams_scope(
             nonce: b64url(&random::<16>()),
             actor,
             consent,
-            owner_in_team: true,
-            accounts_in_app_team: true,
             member_child_teams: true,
             all_apps_rows: true,
             by_release: true,

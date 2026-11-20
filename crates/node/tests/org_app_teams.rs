@@ -15,7 +15,7 @@
 )]
 
 use calimero_client::types::{
-    Access, AppCreateRequest, MemberSetTeamsRequestTeamsItem, OrgRole, TeamJoin,
+    AppCreateRequest, Grant, MemberSetTeamsRequestTeamsItem, OrgRole, TeamJoin,
 };
 use calimero_client::{Client, Error};
 use calimero_identity::testing::SoftAuthenticator;
@@ -156,13 +156,13 @@ async fn join(c: &Client, token: &str) {
 }
 
 /// An instance of `package` in `org` (`access` as `POST /apps` takes it).
-async fn instance(c: &Client, org: &str, package: &str, access: Value) -> Result<String, Error> {
+async fn instance(c: &Client, org: &str, package: &str, grants: Value) -> Result<String, Error> {
     c.apps()
         .create(AppCreateRequest {
             name: Some(package.to_owned()),
             package: Some(package.to_owned()),
             org: Some(org.to_owned()),
-            access: (!access.is_null()).then(|| typed(access)),
+            grants: (!grants.is_null()).then(|| typed(grants)),
             ..AppCreateRequest::default()
         })
         .await
@@ -275,22 +275,14 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
         new_team(&alice, &org, "one").await,
         new_team(&alice, &org, "two").await,
     );
-    let access = |t: &str| Access::Team { team: t.to_owned() };
+    let access = |t: &str| vec![Grant::Team { team: t.to_owned() }];
 
     // A plain member is refused; an admin (not the app's owner) is not.
     refused(
-        &carol
-            .apps()
-            .access(&app, Some(access(&t1)), None)
-            .await
-            .unwrap_err(),
+        &carol.apps().access(&app, access(&t1)).await.unwrap_err(),
         "MANAGE_APPLICATION",
     );
-    let _ok = alice
-        .apps()
-        .access(&app, Some(access(&t1)), None)
-        .await
-        .unwrap();
+    let _ok = alice.apps().access(&app, access(&t1)).await.unwrap();
 
     // Carol leads team one: she moves its app only to a team she manages too,
     // and never to organization-wide access.
@@ -306,17 +298,13 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
         .map(wire)
         .unwrap();
     refused(
-        &carol
-            .apps()
-            .access(&app, Some(access(&t2)), None)
-            .await
-            .unwrap_err(),
+        &carol.apps().access(&app, access(&t2)).await.unwrap_err(),
         "MANAGE_APPLICATION",
     );
     refused(
         &carol
             .apps()
-            .access(&app, Some(typed(json!({ "kind": "org" }))), None)
+            .access(&app, vec![typed(json!({ "kind": "org" }))])
             .await
             .unwrap_err(),
         "MANAGE_APPLICATION",
@@ -331,19 +319,12 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
         )
         .await
         .unwrap();
-    let _ok = carol
-        .apps()
-        .access(&app, Some(access(&t2)), None)
-        .await
-        .unwrap();
+    let _ok = carol.apps().access(&app, access(&t2)).await.unwrap();
     // The owner, not in team two, holds no owner powers over an app on it;
     // once in it, they may change its access anywhere in the organization.
-    let to_org = Access::Org;
+    let to_org = vec![Grant::Org];
     refused(
-        &bob.apps()
-            .access(&app, Some(to_org.clone()), None)
-            .await
-            .unwrap_err(),
+        &bob.apps().access(&app, to_org).await.unwrap_err(),
         "MANAGE_APPLICATION",
     );
     let _ok = alice
@@ -358,7 +339,7 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
         .unwrap();
     let _ok = bob
         .apps()
-        .access(&app, Some(typed(json!({ "kind": "org" }))), None)
+        .access(&app, vec![typed(json!({ "kind": "org" }))])
         .await
         .unwrap();
 }
@@ -511,8 +492,8 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     let (chat_team, blocks_team) = (s(&chat_team["teamId"]), s(&blocks_team["teamId"]));
     let app = alice.apps().get(&chat).await.map(wire).unwrap();
     assert_eq!(
-        app["access"],
-        json!({ "kind": "team", "team": chat_team }),
+        app["grants"],
+        json!([{ "kind": "team", "team": chat_team }]),
         "{app}"
     );
     // Nobody lost an app.
@@ -631,7 +612,7 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
         &bob,
         &org,
         CHAT,
-        json!({ "kind": "team", "team": chat_team }),
+        json!([{ "kind": "team", "team": chat_team }]),
     )
     .await
     .unwrap();
@@ -669,8 +650,8 @@ async fn scoping_two_packages_that_ship_one_component_keeps_their_instances_apar
             let team = s(&app_team(&alice, &org, package).await["teamId"]);
             let record = alice.apps().get(app).await.map(wire).unwrap();
             assert_eq!(
-                record["access"],
-                json!({ "kind": "team", "team": team }),
+                record["grants"],
+                json!([{ "kind": "team", "team": team }]),
                 "{package}: {record}"
             );
         }
@@ -715,7 +696,7 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
     assert!(reaches(&bob, &org).await.contains(&chat));
     // A guest is not in an open team by inheritance, reaches no
     // organization-access app here, and sees no one but themselves.
-    let _legacy = instance(&alice, &org, CHAT, json!({ "kind": "org" }))
+    let _legacy = instance(&alice, &org, CHAT, json!([{ "kind": "org" }]))
         .await
         .unwrap();
     join(
@@ -860,7 +841,15 @@ async fn a_dm_is_reached_only_by_those_in_its_apps_team() {
     .await;
     let dave_id = id(&dave).await;
     let everyone = json!([bob_id, carol_id, dave_id, frank_id]);
-    let listing = |ids: &Value| json!({ "kind": "accounts", "accounts": ids });
+    let listing = |ids: &Value| {
+        Value::Array(
+            ids.as_array()
+                .unwrap()
+                .iter()
+                .map(|a| json!({ "kind": "account", "account": a }))
+                .collect(),
+        )
+    };
     let dm = instance(&alice, &org, CHAT, listing(&everyone))
         .await
         .unwrap();
@@ -1146,7 +1135,7 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
         &alice,
         &org,
         CHAT,
-        json!({ "kind": "team", "team": channel }),
+        json!([{ "kind": "team", "team": channel }]),
     )
     .await
     .unwrap();
@@ -1445,7 +1434,7 @@ async fn closing_an_app_team_takes_the_channels_of_whoever_loses_it() {
         &dave,
         &org,
         CHAT,
-        json!({ "kind": "team", "team": channel }),
+        json!([{ "kind": "team", "team": channel }]),
     )
     .await
     .unwrap();
@@ -1711,7 +1700,7 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
         &alice,
         &org,
         CHAT,
-        json!({ "kind": "team", "team": chat_team }),
+        json!([{ "kind": "team", "team": chat_team }]),
     )
     .await
     .unwrap();
@@ -1773,14 +1762,13 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
         .apps()
         .access(
             &room,
-            Some(typed(json!({ "kind": "team", "team": channel }))),
-            None,
+            vec![typed(json!({ "kind": "team", "team": channel }))],
         )
         .await
         .map(wire)
         .unwrap();
     assert_eq!(
-        alice.apps().get(&room).await.map(wire).unwrap()["access"]["team"],
+        alice.apps().get(&room).await.map(wire).unwrap()["grants"][0]["team"],
         json!(channel)
     );
 
@@ -1875,8 +1863,7 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
         site.apps()
             .access(
                 &room,
-                Some(typed(json!({ "kind": "team", "team": blocks_team }))),
-                None,
+                vec![typed(json!({ "kind": "team", "team": blocks_team }))],
             )
             .await
             .map(wire),
@@ -1886,8 +1873,7 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
         site.apps()
             .access(
                 &room,
-                Some(typed(json!({ "kind": "team", "team": org_wide }))),
-                None,
+                vec![typed(json!({ "kind": "team", "team": org_wide }))],
             )
             .await
             .map(wire),
@@ -1896,8 +1882,7 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
         .apps()
         .access(
             &blocks_app,
-            Some(typed(json!({ "kind": "team", "team": chat_team }))),
-            None,
+            vec![typed(json!({ "kind": "team", "team": chat_team }))],
         )
         .await
         .map(wire)

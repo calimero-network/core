@@ -1,6 +1,6 @@
 ---
 title: Organizations, teams & access
-description: Who reaches an app — organizations and where an instance goes, access rules, roles, nested open and restricted teams, capabilities, invites, recovery and backup keys — and how each rule is checked.
+description: Who reaches an app — organizations and where an instance goes, access grants, roles, nested open and restricted teams, capabilities, invites, recovery and backup keys — and how each rule is checked.
 sidebar:
   order: 14
 ---
@@ -30,7 +30,7 @@ checks most of them first so a refused request records nothing.
 ## App access
 
 An app instance's access is a **list of grants** (`types::Grant`, kept as
-`Access::Grants`), set at creation (`POST /apps { grants }`) and replaced with
+`types::Access`), set at creation (`POST /apps { grants }`; absent: `[org]`) and replaced with
 `POST /apps/{app}/access { grants }` by its owner, an organization admin, or
 whoever manages its teams' apps (`MANAGE_APPLICATION` on each team it admits,
 which a team's leads hold, before and after the change); a list with no team
@@ -50,62 +50,30 @@ they are in one of them (or named). A list with a grant twice, an unknown team o
 account, `org` beside a team, or a scope over 256 bytes is refused where it
 applies. Grants are written from cluster version 1.0.0-rc.32
 (`Feature::AccessGrants`; `409 FEATURE_NOT_ACTIVE` before). `GET /apps/{app}`
-answers `grants` for every instance.
-
-**`anyone` and the legacy `public`.** An `anyone` grant admits signed-in accounts
-only; no grant admits a caller without an account. An instance set `public`
-before 1.0.0-rc.32 keeps the mode and keeps admitting signed-out callers, as
-it always did (old records and log entries replay unchanged). `GET /apps/{app}`
-shows it honestly: `access` stays `{ kind: "public" }`, and its `grants` are
-`[{ kind: "anyone", signedOut: true }]`, the flag saying it admits signed-out
-callers too. `signedOut` is only ever answered: a grant list carrying it is
-`400 BAD_REQUEST`, so setting such an instance's access as grants (the list it
-reads, posted back without the flag) makes it signed-in only. From cluster
-version 1.0.0-rc.32 the deprecated `access: public` sets an `anyone` grant, so
-no new signed-out access is made outside public links; below it, it writes the
-legacy mode as before. An instance invite on a legacy `public` instance is
-refused (`409 LEGACY_PUBLIC`): the grant its redemption adds would turn the
-instance into a grant list and end its signed-out access on the side, so its
-grants are set first.
-
-**Single modes (deprecated).** Before grants, an instance carried one mode,
-which the node still takes in the request field `access` (deprecated for
-`grants` until 1.0.0-rc.35, `crates/node/api-deprecations.toml`) and keeps, as
-logged, for every instance set that way: nothing is rewritten, and each mode is
-judged as it always was. Each is a grant list, which `grants` answers for it:
-
-| Mode | The grants it is | Who reaches the app |
-| --- | --- | --- |
-| `owner` | none | The owner only |
-| `accounts { accounts }` | an `account` grant each | The owner and these accounts; for an instance of a package with an app team in its organization, only those of them in that app team. Listed accounts outside the organization are [guests](#guests) |
-| `org` (default inside an organization) | `org` | Every member of the app's organization; a guest only while the organization has no app team |
-| `team { team }` | `team` | The team's members (direct rows, and inheritance into an open team), its owner included: an owner not in the team does not reach it |
-| `public` | `anyone`, answered with `signedOut: true` | Anyone, signed in or not (as `Caller::Public` when not) |
+answers them as `grants`.
 
 Whatever changes an instance's grants keeps the rest: giving an `org` instance
 an app team (`ScopeApps`) replaces its `org` grant with the app team's,
-deleting a team takes the instances it alone admitted (as for `team` access)
+deleting a team takes the instances it alone admitted
 and the team's grant from the others (or keeps them too, without its grant,
 with `keepApps`, below), and moving or handing an instance to
 another organization turns its team grant into the target's app team or `org`.
 
 The owner does not always reach their app. An organization's app is
-reached only by the organization's current members: its owner and the accounts
-an `accounts` rule lists stop reaching it, and receiving its events, once they
-leave or are removed (the rule keeps their names, so being added back to the
+reached only by the organization's current members and its guests: its owner and
+the named members stop reaching it, and receiving its events, once they
+leave or are removed (the grants keep their names, so being added back to the
 organization restores it). An app on a team is reached by its owner only while
 they are in that team, as `owner_in_org` asks of the organization: an owner who
 leaves the team, is removed from it, or loses it when an open team is closed
 without them, stops reaching it (a person removed from Chat's app team no
 longer reaches the channels they created), and has it back once they are in
-the team again. Likewise an `accounts` instance (a DM, a private channel) of a
-package that has an app team in its organization is reached only by those of
-its owner and list who are in that app team (`SystemState::app_team_of`):
+the team again. Likewise an instance only named people reach (a DM, a private
+channel) of a package that has an app team in its organization is reached only
+by those of its owner and named members who are in that app team (`SystemState::app_team_of`):
 someone removed from Chat's team, who leaves it, or who loses it when it
 closes, is out of Chat's DMs too, and has them back once in the team again. An
-instance of a package with no app team there keeps its list alone. `ScopeApps`
-entries an earlier release logged (without `owner_in_team` or
-`accounts_in_app_team`) find who reaches an instance as that release did. A
+instance of a package with no app team there keeps its names alone. A
 caller who does not reach it gets `404`,
 so its existence is not disclosed; with no credential, `401`. The check reads
 fresh system state, so removing someone from an organization or team holds on
@@ -116,7 +84,7 @@ An organization's app is **managed** by its owner only while they are a member
 of the organization (`member` or above, as owning an app there takes;
 `SystemState::owner_acts`). An owner who leaves, is removed or is made a guest
 keeps their name on the record but none of its powers: changing its access
-(so they cannot make it `public` to reach it again), its metadata, transferring
+(so they cannot grant `anyone` to reach it again), its metadata, transferring
 or deleting it, upgrading it or making an upgrade key for it, uploading files
 to it or deleting its blobs. The organization's admins (and its owner) still
 transfer it to a member or delete it, so an organization cleans up an app whose
@@ -129,8 +97,7 @@ rules are judged where each command applies; `SetAccess`, `SetAppMetadata`,
 `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` entries an earlier
 release logged replay as that release judged them (ownership alone, and no
 admin transfer, without `owner_in_org`; the owner without the team, without
-`owner_in_team`), as do `ScopeApps` entries, which find who reaches an
-instance; the API marks new ones.
+`owner_in_team`); the API marks new ones.
 
 A member whose **direct row** in the app's team is **read-only** still reaches
 the app, but only its views run for them: any other call is refused with `403`
@@ -200,9 +167,9 @@ PERSONAL_ORGS_ENDED`, and a sign-up's seed is dropped), it counts against
 creating one more is refused), an app there is transferred only to a member
 (as everywhere: `400 REJECTED`), a deployment's report names it, and a consent
 request with no scope (`"scope": "account"`) stands for the account's only
-organization. One thing stays: an instance there with `accounts` access still
-reaches its listed accounts without making them members, whatever its package's
-manifest says about [guests](#guests) (legacy), so nothing that worked stops.
+organization. One thing stays: an instance there still reaches the accounts it
+names without making them members, whatever its package's manifest says about
+[guests](#guests).
 
 Apps outside any organization were removed in a hard cutover (1.0.0-rc.20):
 data holding one is not read.
@@ -448,23 +415,23 @@ app of one organization into another this way.
 - **Payer**: its file bytes, compute runs and quotas go to the target. A move
   past the target's file or compute quota is refused (`429 QUOTA_EXCEEDED`),
   as is one to a target that approves none of the releases holding the app now.
-- **Access**: `org` access, or `team` access on its package's app team,
-  becomes `team` access on the target's app team of the package. The target's
+- **Grants**: an `org` grant, or a `team` grant on its package's app team,
+  becomes a `team` grant on the target's app team of the package. The target's
   is used, or made when missing: open, unless every app team of the target
   is restricted (`shared: true`), where it is restricted like its others; an
   app team an admin closed alone leaves it open. The mover leads a new one,
   whose default capabilities are any new app team's (`CREATE_CHILD_TEAM`, and
   `INVITE_MEMBERS` while open). A `legacy` target, and a raw upload (no
-  package), get `org` access instead, so moving an app in never changes the
-  target's mode. `owner`, `accounts` and `public`
-  access stay as they are, though only the target's members reach a
-  non-public app from then on; an `accounts` instance whose package has a
-  closed app team in the target is reached there only through that team (see
-  App access), so its owner and the people it brings get a row on it (below).
+  package), get an `org` grant instead, so moving an app in never changes the
+  target's mode. Named people and `anyone` stay as they are, though only the
+  target's members (and its guests) reach it from then on; an instance only
+  named people reach whose package has a closed app team in the target is
+  reached there only through that team (see App access), so its owner and the
+  people it brings get a row on it (below).
   An app on any other team (a restricted team
   below the app team, a plain team) is refused: that team's leads, read-only
   rows and capabilities are grants of the source, which the target's admins
-  never saw. Give it `org` or app-team access first.
+  never saw. Give it an `org` or app-team grant first.
 - **Owner**: stays, and must be a member of the target once the move is done,
   or the move is refused: an organization's app is owned by one of its members,
   and only a transfer the owner or an admin consents to changes who that is.
@@ -474,18 +441,17 @@ app of one organization into another this way.
   target at their role there, capped at `member` (a guest stays a guest; an
   admin comes in as a member, and the target's admins grant more themselves),
   and gets a row on the target's app team: the one an `org` or `team`
-  instance moves to, or, for an `accounts` instance (a DM, a private
-  channel), its package's app team there when that team is closed, so they
+  instance moves to, or, for an instance only named people reach (a DM, a
+  private channel), its package's app team there when that team is closed, so they
   keep reaching it (an open one needs no row). Someone already in the target
   keeps their role. An app team made in the
   target gives its members who hold [every app added later](#every-app-added-later)
   a row too. A `MoveApp` an earlier release logged (without
-  `accounts_in_app_team`) replays giving an `accounts` instance's people no
-  such row.
+  `accounts_in_app_team`) replays giving its named people no such row.
 - **Invites**: the source's invites naming the team the app leaves are revoked
   once no app of the source is on that team.
 
-The answer is `{ appId, from, org, access, created, added, revokedInvites }`.
+The answer is `{ appId, from, org, grants, created, added, revokedInvites }`.
 A node from before this route answers `404`, which clients take as "not
 supported here".
 
@@ -593,8 +559,7 @@ below, the passkey for apps); the API marks new ones (`teams_seen`, `subtree`,
 
 A **guest** of an instance is an account invited to that one instance (and the
 apps its unit created for it) without joining its organization: an `account`
-grant naming someone who is not a member (or, on an instance set as one mode,
-the `accounts` list). From cluster version 1.0.0-rc.32 (`Feature::Guests`) a
+grant naming someone who is not a member. From cluster version 1.0.0-rc.32 (`Feature::Guests`) a
 guest reaches the instance when both switches allow guests, the stricter
 winning:
 
@@ -608,21 +573,21 @@ above (its app team included). Access is judged fresh on every request, so
 taking a guest's grant away (`POST /apps/{app}/access`, by whoever may change
 the instance's access), turning the organization's switch off, or an upgrade to
 a release that forbids guests holds from the guest's next request. An instance
-in an organization made as a personal one before 1.0.0-rc.32 keeps its listed
+in an organization made as a personal one before 1.0.0-rc.32 keeps its named
 accounts' reach whatever the switches say ([Personal
 organizations](#personal-organizations)).
 
 What a guest may do: what any account that reaches the instance may (call its
-methods and views, receive its events, read and upload its blobs, as a listed
+methods and views, receive its events, read and upload its blobs, as a named
 member could), nothing more. They are not a member: they see none of the
 organization's members, teams, other apps, invites, settings, usage or reports
 (`404` as to a stranger), the app's code sees no role for them
 (`env::org_role` is `None`), and they never manage the instance, approve its
 upgrades, set its secrets, list or export its sealed files (`/files` is the
 organization's members' and its owner's), or delegate, link or move it.
-`GET /apps/{app}` shows a guest only their own grant (and `access` naming only them).
+`GET /apps/{app}` shows a guest only their own grant.
 Unit members: a guest of an instance reaches the apps its unit created for it
-(`AppRecord::links`, transitively), judged by the instance's list and switches;
+(`AppRecord::links`, transitively), judged by the instance's grants and switches;
 an attached app is not part of it.
 
 ### Instance invites
@@ -634,14 +599,11 @@ link, like an organization invite but for one instance, on any instance: `POST
 { inviteKey, expiresAt, uses, scope? }`; only the token's Ed25519 public key is
 logged, `SystemCmd::CreateAppInvite`, which needs `Feature::AccessGrants` too).
 It is made whatever the guest switches say now: whether a guest may come in is
-judged when someone redeems it. It is refused only on an instance whose access
-is `public` as set before 1.0.0-rc.32 (`409 LEGACY_PUBLIC`, above). `POST
+judged when someone redeems it. `POST
 /invites/{token}/redeem` (the same route as an organization invite; the node
 tells them apart) adds an `account` grant for the redeemer, with the invite's
 `scope` (`RedeemAppInvite`, signed with the token's key): a guest, or a named
-member when they are a member of the organization, never a new member. An
-instance set as one mode becomes the grant list that mode is, plus the new
-grant. It answers `{ app, org, member }`; one already named spends no use. A
+member when they are a member of the organization, never a new member. It answers `{ app, org, member }`; one already named spends no use. A
 member of the organization (`member` or above) is always named; anyone else is
 admitted as a guest only while the instance's release says `guests: allowed`
 and the organization's `allowGuests` is on, judged on the state the redemption

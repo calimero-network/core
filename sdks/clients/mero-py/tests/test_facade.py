@@ -465,10 +465,10 @@ CASES = [
         {"appId": "a1"},
     ),
     (
-        lambda c: c.json.apps.access(app="a1", access={"kind": "public"}),
+        lambda c: c.json.apps.access(app="a1", grants=[{"kind": "anyone"}]),
         "POST",
         "/apps/a1/access",
-        {"access": {"kind": "public"}},
+        {"grants": [{"kind": "anyone"}]},
         {},
         {},
     ),

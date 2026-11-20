@@ -772,15 +772,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     s.remove_app(a);
                 }
             }
-            // An instance whose grants keep another way in loses only these teams' grants
-            // (only grant lists hold several, so an entry before them changes nothing here).
-            // Kept ones (`keep_apps`) lose them too, a `team` mode becoming the empty list:
-            // the owner alone.
+            // An instance that keeps another way in, or is kept (`keep_apps`), loses only these
+            // teams' grants: with none left, the owner alone reaches it.
             for a in s.apps.values_mut().filter(|a| a.org == org) {
-                let kept = keep_apps && apps.contains(&a.app_id);
-                if kept || matches!(a.access, crate::types::Access::Grants { .. }) {
-                    a.access = a.access.without_teams(&gone);
-                }
+                a.access = a.access.without_teams(&gone);
             }
             if keep_apps {
                 return Ok(json!({ "teams": gone, "apps": [], "keptApps": apps }));
@@ -1015,8 +1010,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             shared,
             nonce,
             actor,
-            owner_in_team,
-            accounts_in_app_team,
             member_child_teams,
             all_apps_rows,
             by_release,
@@ -1028,8 +1021,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             &nonce,
             &actor,
             ScopeAsLogged {
-                owner_in_team,
-                accounts_in_app_team,
                 member_child_teams,
                 all_apps_rows,
                 by_release,

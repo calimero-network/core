@@ -44,14 +44,14 @@ const { appId: app } = await client.apps.create({
   package: 'com.example.kv',
   version: '1.0.0',
   org,                     // an organization's app (else your own)
-  access: { kind: 'org' }, // who may reach it: owner, org, public, accounts, team
+  grants: [{ kind: 'org' }], // who may reach it: org, team, account, anyone (none: the owner)
   initArgs: { title: 'Notes' },
 });
 // A method that needs the caller's passkey says so in the app's ABI (`confirm`).
 
 await (await client.apps.list({ package: 'com.example.kv' })).apps;
 await client.apps.get({ app });
-await client.apps.access({ app, access: { kind: 'accounts', accounts: [bobId] } });
+await client.apps.access({ app, grants: [{ kind: 'account', account: bobId }] });
 await client.apps.metadata({ app, metadata: { colour: 'teal' } }); // at most 16 KiB
 await client.apps.storage({ app }); // { keys, bytes, blobs, blobBytes }
 await client.apps.abi({ app });     // the ABI the bundle embeds

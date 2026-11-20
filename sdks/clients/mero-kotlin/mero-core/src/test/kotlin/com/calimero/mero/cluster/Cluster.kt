@@ -1,6 +1,6 @@
 package com.calimero.mero.cluster
 
-import com.calimero.mero.AppAccess
+import com.calimero.mero.AppGrant
 import com.calimero.mero.CalimeroClient
 import com.calimero.mero.CalimeroClientOptions
 import com.calimero.mero.CloudPolicy
@@ -66,10 +66,10 @@ object Cluster {
         c: CalimeroClient,
         name: String,
         org: String? = null,
-        access: AppAccess? = null,
+        grants: List<AppGrant>? = null,
     ): String {
         val bundle = c.packages.bundlePut(body = kvWasm).hash
-        return c.apps.create(name = name, bundle = bundle, org = org, access = access).appId
+        return c.apps.create(name = name, bundle = bundle, org = org, grants = grants).appId
     }
 
     fun kv(

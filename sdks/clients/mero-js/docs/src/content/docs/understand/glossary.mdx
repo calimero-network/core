@@ -11,7 +11,7 @@ sidebar:
 | **Session** | A short-lived token from a passkey sign-in, with a single-use refresh token. | JWT |
 | **API key** | A scoped, revocable `cal_...` key for an agent or server. | client key |
 | **Organization** | Accounts with roles (`guest`, `member`, `admin`, `owner`) that own apps together. | namespace |
-| **Team** | A group inside an organization, nested, open or invite-only; an app with `access: team` is reached by its members. | group / subgroup |
+| **Team** | A group inside an organization, nested, open or invite-only; an app with a `team` grant is reached by its members. | group / subgroup |
 | **Capabilities** | Bits a member holds beyond their role (`ORG_CAPABILITIES`). | member capabilities |
 | **Package** | A signed `.mpk` release: manifest, WASM, ABI, optional frontend. | application |
 | **App** (instance) | A running instance of a package release or a bundle, on its own replicated log. Its context id is `hex(SHA-256(app id))`. | context |

@@ -43,7 +43,7 @@ class Teams(DeepCase):
         apps = {}
         for label, t in teams.items():
             app = tom.deploy(kv_wasm(w), f"team-{label}", org=org)
-            tom.raw("post", f"apps/{app}/access", {"access": {"kind": "team", "team": t}})
+            tom.raw("post", f"apps/{app}/access", {"grants": [{"kind": "team", "team": t}]})
             tom.call(app, "set", {"key": "k", "value": label})
             apps[label] = app
         s = {"org": org, "teams": teams, "apps": apps}

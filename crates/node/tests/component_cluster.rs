@@ -1183,7 +1183,7 @@ async fn teams_work_like_v1_subgroups() {
         let (alice, org, bundle) = (&alice, &org, &bundle);
         async move {
             alice
-                .apps().create(typed(json!({ "name": "folder", "bundle": bundle, "org": org, "access": { "kind": "team", "team": team } })))
+                .apps().create(typed(json!({ "name": "folder", "bundle": bundle, "org": org, "grants": [{ "kind": "team", "team": team }] })))
                 .await.map(|a| a.app_id)
                 .unwrap()
         }
@@ -1454,7 +1454,7 @@ async fn removal_from_an_organization_ends_account_listed_access() {
         .map(|b| b.hash)
         .unwrap();
     let listed = alice
-        .apps().create(typed(json!({ "name": "dm", "bundle": &bundle, "org": org, "access": { "kind": "accounts", "accounts": [bob_id] } })))
+        .apps().create(typed(json!({ "name": "dm", "bundle": &bundle, "org": org, "grants": [{ "kind": "account", "account": bob_id }] })))
         .await.map(|a| a.app_id)
         .unwrap();
     let bundle_b = bob
@@ -1464,8 +1464,12 @@ async fn removal_from_an_organization_ends_account_listed_access() {
         .map(|b| b.hash)
         .unwrap();
     let own = bob
-        .apps().create(typed(json!({ "name": "mine", "bundle": &bundle_b, "org": org, "access": { "kind": "owner" } })))
-        .await.map(|a| a.app_id)
+        .apps()
+        .create(typed(
+            json!({ "name": "mine", "bundle": &bundle_b, "org": org, "grants": [] }),
+        ))
+        .await
+        .map(|a| a.app_id)
         .unwrap();
     set(&bob, &listed, "in").await.unwrap();
     set(&bob, &own, "in").await.unwrap();
@@ -1541,7 +1545,7 @@ async fn removal_from_a_team_reaches_its_sub_teams() {
         .map(|b| b.hash)
         .unwrap();
     let channel = alice
-        .apps().create(typed(json!({ "name": "design", "bundle": &bundle, "org": org, "access": { "kind": "team", "team": private } })))
+        .apps().create(typed(json!({ "name": "design", "bundle": &bundle, "org": org, "grants": [{ "kind": "team", "team": private }] })))
         .await.map(|a| a.app_id)
         .unwrap();
     set(&bob, &channel, "in").await.unwrap();
@@ -1678,7 +1682,7 @@ async fn deleting_a_team_with_apps_takes_a_passkey_and_names_them() {
         .map(|b| b.hash)
         .unwrap();
     let channel = alice
-        .apps().create(typed(json!({ "name": "design", "bundle": &bundle, "org": org, "access": { "kind": "team", "team": private } })))
+        .apps().create(typed(json!({ "name": "design", "bundle": &bundle, "org": org, "grants": [{ "kind": "team", "team": private }] })))
         .await.map(|a| a.app_id)
         .unwrap();
     let err = alice
@@ -1704,10 +1708,10 @@ async fn deleting_a_team_with_apps_takes_a_passkey_and_names_them() {
 async fn set_access(
     who: &Client,
     app: &str,
-    access: Value,
+    grants: Value,
 ) -> Result<Value, Box<calimero_client::Error>> {
     who.apps()
-        .access(app, Some(typed(json!(access))), None)
+        .access(app, typed(grants))
         .await
         .map(wire)
         .map_err(Box::new)
@@ -1756,7 +1760,7 @@ async fn an_owner_removed_from_the_organization_no_longer_manages_its_app() {
         let app = bob
             .apps()
             .create(typed(
-                json!({ "name": name, "bundle": &bundle, "org": org, "access": { "kind": "org" } }),
+                json!({ "name": name, "bundle": &bundle, "org": org, "grants": [{ "kind": "org" }] }),
             ))
             .await
             .map(|a| a.app_id)
@@ -1774,7 +1778,7 @@ async fn an_owner_removed_from_the_organization_no_longer_manages_its_app() {
     all_applied(&c).await;
 
     for app in [&kept, &dropped] {
-        let err = set_access(&bob, app, json!({ "kind": "public" }))
+        let err = set_access(&bob, app, json!([{ "kind": "anyone" }]))
             .await
             .unwrap_err();
         assert_eq!(err.code(), Some("REJECTED"), "{app}: access: {err}");
@@ -1794,7 +1798,7 @@ async fn an_owner_removed_from_the_organization_no_longer_manages_its_app() {
         assert_eq!(err.code(), Some("REJECTED"), "{app}: delete: {err}");
     }
     let record = alice.apps().get(&kept).await.map(wire).unwrap();
-    assert_eq!(record["access"]["kind"], "org", "{record}");
+    assert_eq!(record["grants"], json!([{ "kind": "org" }]), "{record}");
     assert_eq!(record["metadata"], Value::Null, "{record}");
 
     // The organization's owner hands one to a member and deletes the other.
@@ -1835,8 +1839,12 @@ async fn a_member_owner_and_a_personal_owner_still_manage_their_apps() {
         .map(|b| b.hash)
         .unwrap();
     let in_org = bob
-        .apps().create(typed(json!({ "name": "team-app", "bundle": &bundle, "org": org, "access": { "kind": "owner" } })))
-        .await.map(|a| a.app_id)
+        .apps()
+        .create(typed(
+            json!({ "name": "team-app", "bundle": &bundle, "org": org, "grants": [] }),
+        ))
+        .await
+        .map(|a| a.app_id)
         .unwrap();
     let personal = bob
         .apps()
@@ -1847,7 +1855,7 @@ async fn a_member_owner_and_a_personal_owner_still_manage_their_apps() {
         .map(|a| a.app_id)
         .unwrap();
     for app in [&in_org, &personal] {
-        let _ok = set_access(&bob, app, json!({ "kind": "public" }))
+        let _ok = set_access(&bob, app, json!([{ "kind": "anyone" }]))
             .await
             .unwrap();
         let _ok = set_metadata(&bob, app, json!({ "pinned": true }))
@@ -1936,7 +1944,7 @@ async fn an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it() {
             .await
             .unwrap();
     }
-    let on = |t: &str| json!({ "org": org, "access": { "kind": "team", "team": t } });
+    let on = |t: &str| json!({ "org": org, "grants": [{ "kind": "team", "team": t }] });
     let mut apps = Vec::new();
     for (who, t) in [(&bob, &chat), (&carol, &chat), (&dave, &blocks)] {
         let bundle = who
@@ -1989,7 +1997,7 @@ async fn an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it() {
     }
     let err = set(&erin, &bobs, "outside").await.unwrap_err();
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
-    let err = set_access(&bob, &bobs, json!({ "kind": "public" }))
+    let err = set_access(&bob, &bobs, json!([{ "kind": "anyone" }]))
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("REJECTED"), "access: {err}");
@@ -2691,7 +2699,7 @@ async fn refusals_before_the_app_carry_the_platforms_codes() {
     let open = alice
         .apps()
         .create(typed(
-            json!({ "name": "kv", "bundle": &bundle, "access": { "kind": "public" } }),
+            json!({ "name": "kv", "bundle": &bundle, "grants": [{ "kind": "anyone" }] }),
         ))
         .await
         .map(|a| a.app_id)
@@ -3679,7 +3687,7 @@ async fn upgrades_through_intents_are_refused_for_everyone() {
     let public = alice
         .apps()
         .create(typed(
-            json!({ "name": "kv", "bundle": &v1, "access": { "kind": "public" } }),
+            json!({ "name": "kv", "bundle": &v1, "grants": [{ "kind": "anyone" }] }),
         ))
         .await
         .map(|a| a.app_id)
@@ -3883,7 +3891,7 @@ async fn a_read_only_members_emit_only_call_is_refused() {
         .map(|b| b.hash)
         .unwrap();
     let app = alice
-        .apps().create(typed(json!({ "name": "notes", "bundle": &bundle, "org": org, "access": { "kind": "team", "team": team } })))
+        .apps().create(typed(json!({ "name": "notes", "bundle": &bundle, "org": org, "grants": [{ "kind": "team", "team": team }] })))
         .await.map(|a| a.app_id)
         .unwrap();
     let leader = c.app_leader(&app).unwrap();
@@ -4017,7 +4025,7 @@ async fn the_leader_checks_upgrade_authority_again() {
     let personal = alice
         .apps()
         .create(typed(
-            json!({ "name": "kv", "bundle": &v1, "access": { "kind": "public" } }),
+            json!({ "name": "kv", "bundle": &v1, "grants": [{ "kind": "anyone" }] }),
         ))
         .await
         .map(|a| a.app_id)
@@ -8860,7 +8868,7 @@ async fn a_read_only_members_call_is_refused_before_it_runs() {
         .map(|b| b.hash)
         .unwrap();
     let app = alice
-        .apps().create(typed(json!({ "name": "kv", "bundle": &bundle, "org": org, "access": { "kind": "team", "team": team } })))
+        .apps().create(typed(json!({ "name": "kv", "bundle": &bundle, "org": org, "grants": [{ "kind": "team", "team": team }] })))
         .await.map(|a| a.app_id)
         .unwrap();
     let runs = |u: &Value| usage_totals(u).0;

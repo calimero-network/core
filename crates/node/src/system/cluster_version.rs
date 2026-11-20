@@ -160,12 +160,11 @@ pub enum Feature {
     /// others admit. Apply reads the logged version for the reach rule
     /// (`SystemState::guests_on`), so state before it reads as it did.
     Guests,
-    /// An instance's access as a list of grants (`Access::Grants`: the organization, teams,
-    /// named members and guests with an app-defined scope, anyone): `CreateApp` and
-    /// `SetAccess` writing one, and an instance invite carrying a `scope`. An earlier
-    /// release cannot decode the variant. A redemption makes the instance's access grants, so
-    /// the instance invites need it too. Access logged before it keeps its mode and is judged
-    /// as it was.
+    /// An instance's access as a list of grants (`Access`: the organization, teams, named
+    /// members and guests with an app-defined scope, anyone): every `SetAccess`, a `CreateApp`
+    /// with any grant, and the instance invites, whose redemption adds a grant. An earlier
+    /// release reads access as one mode: it cannot decode the list, and reads an instance
+    /// without one as its owner's alone.
     AccessGrants,
     /// `DeleteTeam` keeping the instances only the team admitted (`keep_apps`): they lose its
     /// grants and keep the rest. An earlier release ignores the field and deletes them.
@@ -555,10 +554,7 @@ impl SystemCmd {
             Self::CreateAppInvite { .. } | Self::RedeemAppInvite { .. } => {
                 vec![Feature::Guests, Feature::AccessGrants]
             }
-            Self::SetAccess {
-                access: crate::types::Access::Grants { .. },
-                ..
-            } => vec![Feature::AccessGrants],
+            Self::SetAccess { .. } => vec![Feature::AccessGrants],
             Self::DeleteTeam {
                 keep_apps: true, ..
             } => vec![Feature::KeepTeamApps],
@@ -649,7 +645,7 @@ impl SystemCmd {
                 if unit_offer.is_some() {
                     f.push(Feature::WholeUnits);
                 }
-                if matches!(app.access, crate::types::Access::Grants { .. }) {
+                if !app.access.grants().is_empty() {
                     f.push(Feature::AccessGrants);
                 }
                 f
@@ -683,7 +679,6 @@ impl SystemCmd {
             | Self::AcquireRun { .. }
             | Self::ReleaseRun { .. }
             | Self::SetReplicas { .. }
-            | Self::SetAccess { .. }
             | Self::AddPasskey { .. }
             | Self::RemovePasskey { .. }
             | Self::RevokeAllSessions { .. }
@@ -921,8 +916,6 @@ mod tests {
                 nonce: "n".into(),
                 actor: "alice".into(),
                 consent: Value::Null,
-                owner_in_team: true,
-                accounts_in_app_team: true,
                 member_child_teams: true,
                 by_release: false,
                 all_apps_rows: false,
@@ -934,8 +927,6 @@ mod tests {
                 nonce: "n".into(),
                 actor: "alice".into(),
                 consent: Value::Null,
-                owner_in_team: true,
-                accounts_in_app_team: true,
                 member_child_teams: true,
                 by_release: true,
                 all_apps_rows: false,
@@ -954,8 +945,6 @@ mod tests {
                 nonce: "n".into(),
                 actor: "alice".into(),
                 consent: Value::Null,
-                owner_in_team: true,
-                accounts_in_app_team: true,
                 member_child_teams: true,
                 by_release: false,
                 all_apps_rows: false,
@@ -1021,7 +1010,7 @@ mod tests {
                     "targets": { "kv-app": { "package": "kv", "version": "0.2.0" } } } })),
             Feature::AppLinks => entry(json!({ "op": "createApp", "app": {
                 "appId": "app", "name": "notes", "group": 0, "bundle": "b", "owner": "a",
-                "org": "org", "access": { "kind": "org" }, "confirmMethods": [], "replicas": [1],
+                "org": "org", "confirmMethods": [], "replicas": [1],
                 "createdAt": 1, "initArgs": null, "metadata": null,
                 "links": { "kv": "kv-app" },
             } })),
@@ -1040,8 +1029,8 @@ mod tests {
             Feature::Guests => entry(json!({ "op": "setOrgSettings", "org": "org",
                 "settings": { "allowGuests": false }, "actor": "alice" })),
             Feature::AccessGrants => entry(json!({ "op": "setAccess", "app_id": "app",
-                "access": { "kind": "grants", "grants": [{ "kind": "team", "team": "t" },
-                    { "kind": "account", "account": "carol", "scope": { "channel": "p" } }] },
+                "grants": [{ "kind": "team", "team": "t" },
+                    { "kind": "account", "account": "carol", "scope": { "channel": "p" } }],
                 "actor": "alice" })),
             Feature::KeepTeamApps => entry(json!({ "op": "deleteTeam", "org": "org",
                 "team": "t", "actor": "alice", "apps_need_consent": true, "keep_apps": true })),

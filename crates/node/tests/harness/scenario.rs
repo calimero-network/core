@@ -1538,14 +1538,13 @@ impl<'a> Runner<'a> {
 
     fn app_options(&self, step: &Map<String, Value>) -> Value {
         let mut opts = Map::new();
-        let mut access = step.get("access").cloned();
-        if let Some(Value::Object(a)) = &mut access {
-            if let Some(Value::Array(list)) = a.get("accounts").cloned() {
-                let ids = list
-                    .iter()
-                    .map(|v| Value::String(self.account_id(&py::str_of(v))))
-                    .collect();
-                let _p = a.insert("accounts".into(), Value::Array(ids));
+        // An `account` grant names a scenario account: its id.
+        let mut grants = step.get("grants").cloned();
+        if let Some(Value::Array(list)) = &mut grants {
+            for g in list {
+                if let Some(Value::String(name)) = g.get("account").cloned() {
+                    g["account"] = Value::String(self.account_id(&name));
+                }
             }
         }
         let mut init = step.get("init_args").cloned();
@@ -1557,7 +1556,7 @@ impl<'a> Runner<'a> {
         for (key, field, v) in [
             ("init_args", "initArgs", init),
             ("org", "org", step.get("org").cloned()),
-            ("access", "access", access),
+            ("grants", "grants", grants),
             (
                 "confirm_methods",
                 "confirmMethods",

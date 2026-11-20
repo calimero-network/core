@@ -373,12 +373,9 @@ pub(super) struct CreateAppBody {
     /// `either`). Not with `org`.
     #[serde(default)]
     new_org: Option<NewOrgBody>,
-    /// Deprecated for `grants` (`api-deprecations.toml`): one access mode, still taken.
-    #[serde(default)]
-    access: Option<Access>,
     /// Who reaches the instance, as grants (`types::Grant`): the organization or teams of
-    /// it, named members and guests (each with an app-defined `scope`), anyone. Not with
-    /// `access`; neither: the organization.
+    /// it, named members and guests (each with an app-defined `scope`), anyone. Absent: the
+    /// organization; empty: the owner alone.
     #[serde(default)]
     grants: Option<Vec<crate::types::Grant>>,
     /// Arguments for the app's `init`, as JSON.
@@ -402,9 +399,11 @@ pub(super) struct CreateAppBody {
 async fn app_create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
-    Json(mut body): Json<CreateAppBody>,
+    Json(body): Json<CreateAppBody>,
 ) -> ApiResult {
-    body.access = access_of(&node, body.access.take(), body.grants.take()).await?;
+    if let Some(grants) = &body.grants {
+        grants_fit(grants)?;
+    }
     let p = signed_in(&node, &headers).await?;
     match p.bound_app() {
         // A frontend makes instances of its own package, already installed.
@@ -582,8 +581,7 @@ async fn create_instance(
                         service: None,
                         org: Some(org.clone()),
                         new_org: None,
-                        access: body.access.clone(),
-                        grants: None,
+                        grants: body.grants.clone(),
                         init_args: Value::Null,
                         metadata: json!({ "unit": { "of": body.name, "as": name } }),
                         deployment: body.deployment.clone(),
@@ -609,7 +607,7 @@ async fn create_instance(
     let app_id = typed_id::<16>();
     let has_compute = compute_bundle.is_some();
     let components = node.sys(|s| s.components_of(release.as_ref()));
-    let access = body.access.unwrap_or(Access::Org);
+    let access = body.grants.map_or_else(Access::org, Access::new);
     let out = node
         .sys_write(&SystemCmd::CreateApp {
             app: Box::new(crate::types::AppRecord {
@@ -920,14 +918,10 @@ async fn app_get(
         return Err(ApiError::not_found("no such app"));
     }
     let mut v = serde_json::to_value(&app).unwrap_or_default();
-    // Every instance's access as grants, whichever shape it was set in.
-    v["grants"] = json!(app.access.grants());
     // A guest sees none of the organization's people: only their own grant.
     if let Some(a) = account {
         if node.sys(|s| s.is_guest(&app, a)) {
-            let own = app.access.only(a);
-            v["grants"] = json!(own.grants());
-            v["access"] = json!(own);
+            v["grants"] = json!(app.access.only(a));
         }
     }
     Ok(Json(v))
@@ -966,9 +960,6 @@ fn refuse_app_invite(
             return Err(ApiError::forbidden(
                 "only whoever may change the instance's access invites its guests",
             ));
-        }
-        if app.access.admits_signed_out() {
-            return Err(crate::node::rejected(crate::system::LEGACY_PUBLIC));
         }
         Ok(())
     })
@@ -1156,59 +1147,20 @@ async fn app_invite_revoke(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AccessBody {
-    /// Deprecated for `grants` (`api-deprecations.toml`): one access mode, still taken.
-    #[serde(default)]
-    access: Option<Access>,
-    /// Who reaches the instance, as grants (`types::Grant`). Exactly one of the two.
-    #[serde(default)]
-    grants: Option<Vec<crate::types::Grant>>,
+    /// Who reaches the instance, as grants (`types::Grant`); empty: the owner alone.
+    grants: Vec<crate::types::Grant>,
 }
 
-/// The access a request names: `grants` (an [`Access::Grants`], judged where it applies), or
-/// the deprecated `access`, or neither (`None`); both is `400 BAD_REQUEST`. A grant list
-/// larger than an instance holds, or one admitting callers without an account (`signedOut`,
-/// which only answers carry), is refused here, before it is proposed.
-///
-/// The deprecated `access: public` from cluster version 1.0.0-rc.32 on (`AccessGrants`) is an
-/// `anyone` grant, which admits signed-in accounts only: no new access for callers without an
-/// account is made outside public links. Below that version it is the legacy mode, as before.
-async fn access_of(
-    node: &Node,
-    access: Option<Access>,
-    grants: Option<Vec<crate::types::Grant>>,
-) -> Result<Option<Access>, ApiError> {
-    match (access, grants) {
-        (Some(_), Some(_)) => Err(ApiError::bad_request(
-            "BAD_REQUEST",
-            "name either grants or the deprecated access, not both",
-        )),
-        (_, Some(grants)) if grants.len() > crate::types::MAX_GRANTS => Err(ApiError::bad_request(
+/// `400` for a grant list larger than an instance holds, before it is proposed; the rest is
+/// judged where it applies (`SystemState::check_grants`).
+fn grants_fit(grants: &[crate::types::Grant]) -> Result<(), ApiError> {
+    if grants.len() > crate::types::MAX_GRANTS {
+        return Err(ApiError::bad_request(
             "BAD_REQUEST",
             "an instance holds at most 1018 grants",
-        )),
-        (_, Some(grants))
-            if grants
-                .iter()
-                .any(|g| matches!(g, crate::types::Grant::Anyone { signed_out: true })) =>
-        {
-            Err(ApiError::bad_request(
-                "BAD_REQUEST",
-                crate::system::NO_SIGNED_OUT_GRANT,
-            ))
-        }
-        (_, Some(grants)) => Ok(Some(Access::Grants { grants })),
-        (Some(Access::Public), None)
-            if node
-                .require_features(&[Feature::AccessGrants])
-                .await
-                .is_ok() =>
-        {
-            Ok(Some(Access::Grants {
-                grants: vec![crate::types::Grant::ANYONE],
-            }))
-        }
-        (access, None) => Ok(access),
+        ));
     }
+    Ok(())
 }
 
 async fn app_access(
@@ -1217,9 +1169,8 @@ async fn app_access(
     Path(app_id): Path<String>,
     Json(body): Json<AccessBody>,
 ) -> ApiResult {
-    let access = access_of(&node, body.access, body.grants)
-        .await?
-        .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "name the instance's grants"))?;
+    grants_fit(&body.grants)?;
+    let access = Access::new(body.grants);
     let app_id = node.canonical_app_id(&app_id);
     let p = person(&node, &headers).await?;
     let account = p.account()?;
@@ -1227,8 +1178,12 @@ async fn app_access(
     p.within(&node, &app)?;
     // A package-bound session moves its package's app between its package's
     // teams only (a channel made private, or back to the app team).
-    match (&app.org, &app.access, &access) {
-        (org, Access::Team { team: from }, Access::Team { team: to }) => {
+    match (&app.org, app.access.grants(), access.grants()) {
+        (
+            org,
+            [crate::types::Grant::Team { team: from }],
+            [crate::types::Grant::Team { team: to }],
+        ) => {
             p.within_team(&node, org, from, OwnTeam::AppTeamOrBelow)?;
             p.within_team(&node, org, to, OwnTeam::AppTeamOrBelow)?;
         }

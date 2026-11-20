@@ -1,5 +1,5 @@
-//! Guests (`Feature::Guests`, 1.0.0-rc.32): accounts listed on one instance (its
-//! `accounts` access) that are not members of its organization reach it where both the
+//! Guests (`Feature::Guests`, 1.0.0-rc.32): accounts named on one instance (an `account`
+//! grant) that are not members of its organization reach it where both the
 //! release's signed manifest (`guests: allowed`) and the organization (`allowGuests`)
 //! allow; they see nothing else of the organization and manage nothing. An instance's access
 //! is a list of grants (`Feature::AccessGrants`): teams, named members and guests together,
@@ -106,13 +106,16 @@ async fn id(c: &Client) -> String {
     s(&c.auth().me().await.map(wire).unwrap()["accountId"])
 }
 
-/// An instance of `package` in `org` listing `accounts`, with `k = v` set by its owner.
+/// An instance of `package` in `org` naming `accounts`, with `k = v` set by its owner.
 async fn instance(owner: &Client, org: &str, package: &str, accounts: &[&str]) -> String {
     let app = owner
         .apps()
         .create(typed(json!({
             "name": package, "package": package, "org": org,
-            "access": { "kind": "accounts", "accounts": accounts },
+            "grants": accounts
+                .iter()
+                .map(|a| json!({ "kind": "account", "account": a }))
+                .collect::<Vec<_>>(),
         })))
         .await
         .unwrap()
@@ -195,7 +198,11 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
     // The release allows guests: carol reaches it, and sees only herself listed.
     assert_eq!(reads(&carol, &open).await.unwrap(), json!("v"));
     let record = carol.apps().get(&open).await.map(wire).unwrap();
-    assert_eq!(record["access"]["accounts"], json!([carol_id]), "{record}");
+    assert_eq!(
+        record["grants"],
+        json!([{ "kind": "account", "account": carol_id }]),
+        "{record}"
+    );
     // The release forbids them (absent in its manifest): not even listed.
     refused(&reads(&carol, &closed).await.unwrap_err(), "404");
     // Nothing else of the organization, and she manages nothing.
@@ -214,7 +221,7 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
     assert_eq!(listed, std::slice::from_ref(&open));
     let e = carol
         .apps()
-        .access(&open, Some(typed(json!({ "kind": "public" }))), None)
+        .access(&open, vec![typed(json!({ "kind": "anyone" }))])
         .await
         .unwrap_err();
     assert!(
@@ -252,8 +259,7 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
         .apps()
         .access(
             &open,
-            Some(typed(json!({ "kind": "accounts", "accounts": [bob_id] }))),
-            None,
+            vec![typed(json!({ "kind": "account", "account": bob_id }))],
         )
         .await
         .unwrap();
@@ -408,10 +414,9 @@ async fn an_instance_invite_makes_its_redeemer_a_guest() {
 }
 
 /// An instance admits a team and two partners from outside its organization at once (one
-/// with a scope the app defines), which no single access mode could say; each grant is judged
-/// on its own, so a member outside the team is refused. An invite on it names a member as a
-/// named member. The deprecated `access` still sets one mode, and a request naming both is
-/// refused.
+/// with a scope the app defines); each grant is judged on its own, so a member outside the
+/// team is refused. An invite on it names a member as a named member, and grants set anew
+/// replace the list.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_team_and_two_partners_reach_one_instance_by_their_grants() {
     use calimero_bundle::GuestPolicy;
@@ -516,26 +521,15 @@ async fn a_team_and_two_partners_reach_one_instance_by_their_grants() {
         "{grants}"
     );
 
-    // The deprecated form sets one mode; both at once is refused.
+    // Grants set anew replace the list.
     let _ok = alice
         .apps()
         .access(
             &app,
-            Some(typed(json!({ "kind": "accounts", "accounts": [carol_id] }))),
-            None,
+            vec![typed(json!({ "kind": "account", "account": carol_id }))],
         )
         .await
         .unwrap();
     assert_eq!(reads(&carol, &app).await.unwrap(), json!("v"));
     refused(&reads(&bob, &app).await.unwrap_err(), "404");
-    let e = alice
-        .apps()
-        .access(
-            &app,
-            Some(typed(json!({ "kind": "org" }))),
-            Some(vec![typed(json!({ "kind": "org" }))]),
-        )
-        .await
-        .unwrap_err();
-    refused(&e, "400");
 }

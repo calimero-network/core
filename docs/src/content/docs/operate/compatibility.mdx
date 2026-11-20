@@ -75,13 +75,22 @@ is a bug, and the CI checks below fail it.
 
 ## What is deprecated or cut over now
 
-`crates/node/api-deprecations.toml` deprecates one field: `access`, an app
-instance's single access mode on `POST /apps`, `POST /apps/{app}/access` and
-`GET /apps/{app}`, since 1.0.0-rc.32 for `grants`, its list of grants ([App
-access](/protocol/organizations/#app-access)); the node takes it until
-1.0.0-rc.35, and every instance set as one mode keeps it and answers it as
-grants. Its
-`[[cutover]]` entries: the release after 1.0.0-rc.29 removes the sealed
+`crates/node/api-deprecations.toml` deprecates nothing now.
+
+**1.0.0-rc.32: an instance's access is its grants (#5194).** An instance's
+access is a list of grants and nothing else ([App
+access](/protocol/organizations/#app-access)): the earlier single access mode
+is gone, and with it the field `access` on
+`POST /apps`, `POST /apps/{app}/access`, `GET /apps/{app}` and a move's answer
+(its `[[cutover]]` entry); requests and answers carry `grants`. No reader of the
+earlier shape is kept: an instance record or a `setAccess` entry an earlier
+release wrote is not read, so a cluster on an earlier release is recreated on
+1.0.0-rc.32, not rolled (`.github/upgrade-from` says `hard-cutover: 5194`, and
+mdma's `CUTOVERS` starts an epoch at 1.0.0-rc.32). Clients move to `grants`;
+nothing admits a caller without an account any more (`anyone` is any signed-in
+account).
+
+The other `[[cutover]]` entries: the release after 1.0.0-rc.29 removes the sealed
 channel's paths `POST /sealed/v2/handshake` and `POST /sealed/v2`
 (deprecated since 1.0.0-rc.25 for `/sealed/handshake` and `/sealed`), and its
 clients and peers no longer fall back to them
@@ -92,13 +101,13 @@ requests to `/sealed/v2`, so it is declared a hard cutover for clients:
 they upgrade to an SDK release that posts to `/sealed`. Nodes of 1.0.0-rc.25
 and later serve the new paths, so a cluster rolls from any of them. The
 same release's `meroctl` calls the app registry and the Cloud's manager at
-`/api/...` only. The other `[[cutover]]` entries are the ones 1.0.0-rc.20 made when
+`/api/...` only. The remaining `[[cutover]]` entries are the ones 1.0.0-rc.20 made when
 every app moved into an organization (#5015): `POST /auth/releases` and
 `POST /auth/outbound` are gone (approve on the personal organization,
 `POST /orgs/{org}/releases` and `/orgs/{org}/outbound`), and so is
 `outboundApprovals` in `/auth/me`. The same release is a hard cutover of
 stored data: a cluster on an earlier release is recreated, not rolled
-(`.github/upgrade-from` says `hard-cutover: 5015`).
+(`.github/upgrade-from` said `hard-cutover: 5015` until the next release).
 
 ## Declaring a deprecation
 
