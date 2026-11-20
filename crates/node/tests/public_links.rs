@@ -1,4 +1,4 @@
-//! Public links (`Feature::PublicLinks`, 1.0.0-rc.32): an instance's managers make a link
+//! Public links (`Feature::PublicLinks`, 1.0.0-rc.33): an instance's managers make a link
 //! whose token lets anonymous visitors, each with its own Ed25519 key, call the instance's
 //! `#[app::public]` methods as `Caller::Visitor { link, key }`, whatever the instance's access,
 //! and nothing else; the organization's `allowPublicLinks`, revocation, expiry and a per-link

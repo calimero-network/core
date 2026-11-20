@@ -31,9 +31,9 @@ class Org:
     """An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and
     `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id;
     `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later,
-    `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version
+    `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version
     it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets
-    it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.32).
+    it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).
 
         Attributes:
             org_id (str):

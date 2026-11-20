@@ -48,7 +48,7 @@ No grant is the owner alone. The owner reaches their app too, except that an
 instance whose only member grants are teams is reached by its owner only while
 they are in one of them (or named). A list with a grant twice, an unknown team or
 account, `org` beside a team, or a scope over 256 bytes is refused where it
-applies. Grants are written from cluster version 1.0.0-rc.32
+applies. Grants are written from cluster version 1.0.0-rc.33
 (`Feature::AccessGrants`; `409 FEATURE_NOT_ACTIVE` before). `GET /apps/{app}`
 answers them as `grants`.
 
@@ -286,7 +286,7 @@ it (`member_child_teams`).
   names exactly those, so an app added since is not deleted on an old approval.
 - **Keeping the apps** (`DELETE /orgs/{org}/teams/{team} { keepApps: true }`,
   `meroctl team delete --keep-apps`, `DeleteTeam { keep_apps }`,
-  `Feature::KeepTeamApps`, cluster version 1.0.0-rc.32, else `409
+  `Feature::KeepTeamApps`, cluster version 1.0.0-rc.33, else `409
   FEATURE_NOT_ACTIVE`): those instances stay. Each loses the deleted teams'
   grants and keeps its others (named members, guests, `anyone`, public links);
   one with no grant left has an empty grant list, which only its owner reaches
@@ -559,7 +559,7 @@ below, the passkey for apps); the API marks new ones (`teams_seen`, `subtree`,
 
 A **guest** of an instance is an account invited to that one instance (and the
 apps its unit created for it) without joining its organization: an `account`
-grant naming someone who is not a member. From cluster version 1.0.0-rc.32 (`Feature::Guests`) a
+grant naming someone who is not a member. From cluster version 1.0.0-rc.33 (`Feature::Guests`) a
 guest reaches the instance when both switches allow guests, the stricter
 winning:
 

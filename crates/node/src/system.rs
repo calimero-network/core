@@ -6268,7 +6268,7 @@ pub enum SystemCmd {
         /// they lose its team grants and keep their other grants (named members, guests,
         /// `anyone`, links); with none left, the owner alone (an empty grant list). Absent
         /// (`false`), as every entry before it: they are deleted. Stated in the consent
-        /// (`keepApps: true`). Proposed only from cluster version 1.0.0-rc.32
+        /// (`keepApps: true`). Proposed only from cluster version 1.0.0-rc.33
         /// (`Feature::KeepTeamApps`), as an earlier release would delete them.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         keep_apps: bool,

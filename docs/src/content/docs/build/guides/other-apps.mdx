@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import UnitModel from '../../../../components/diagrams/UnitModel.astro';
 
 **Task:** build an app on top of others: an app that brings its own database app,
 or a plugin, such as a booking page, that works on a calendar its user already runs.
@@ -35,6 +36,13 @@ calendar = { package = "com.example.calendar", range = "^2", mode = "attach", me
 - `mode = "attach"`: the owner points the reference at an app they already run.
 - `methods`: what your app calls there **as the person** it serves, once they allow
   it ([step 5](#5-act-as-the-person)). Leave it out to call only as your app.
+
+<UnitModel />
+
+Left, a `create` reference: its app is made with each instance and belongs to
+it, in life, upgrades and deletion. Right, an `attach` reference: its app is
+one the owner already runs, linked by hand and left alone by everything that
+happens to your instance.
 
 `meroctl app pack` signs them into the release and checks every method against the
 target's vendored ABI. The node checks the rest at install (`400 BAD_USES`), shows

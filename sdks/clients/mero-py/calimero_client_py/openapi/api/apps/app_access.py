@@ -84,7 +84,7 @@ def sync_detailed(
     """Set who may reach an app
 
      `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version
-    1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
+    1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
     (on each team it admits, before and after). A package-bound session: only its own package's app,
     from one of its package's teams to another.
 
@@ -123,7 +123,7 @@ def sync(
     """Set who may reach an app
 
      `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version
-    1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
+    1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
     (on each team it admits, before and after). A package-bound session: only its own package's app,
     from one of its package's teams to another.
 
@@ -157,7 +157,7 @@ async def asyncio_detailed(
     """Set who may reach an app
 
      `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version
-    1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
+    1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
     (on each team it admits, before and after). A package-bound session: only its own package's app,
     from one of its package's teams to another.
 
@@ -194,7 +194,7 @@ async def asyncio(
     """Set who may reach an app
 
      `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version
-    1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
+    1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
     (on each team it admits, before and after). A package-bound session: only its own package's app,
     from one of its package's teams to another.
 

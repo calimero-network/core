@@ -827,7 +827,7 @@ pub(super) struct TeamDeleteBody {
     /// Keep the instances only the team (and the teams below it) admit, without its grants:
     /// they keep their other grants (named members, guests, `anyone`, public links), or with
     /// none left only their owner reaches them. Absent or `false`: they are deleted with the
-    /// team. Needs cluster version 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
+    /// team. Needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`).
     #[serde(default)]
     keep_apps: bool,
     #[serde(default)]

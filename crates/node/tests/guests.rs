@@ -1,4 +1,4 @@
-//! Guests (`Feature::Guests`, 1.0.0-rc.32): accounts named on one instance (an `account`
+//! Guests (`Feature::Guests`, 1.0.0-rc.33): accounts named on one instance (an `account`
 //! grant) that are not members of its organization reach it where both the
 //! release's signed manifest (`guests: allowed`) and the organization (`allowGuests`)
 //! allow; they see nothing else of the organization and manage nothing. An instance's access

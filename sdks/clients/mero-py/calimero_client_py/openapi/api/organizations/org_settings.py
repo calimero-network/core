@@ -109,7 +109,7 @@ def sync_detailed(
     request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off,
     creating one is refused and existing ones admit nobody at the visitor's next call. A setting left
     out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below
-    cluster version 1.0.0-rc.32.
+    cluster version 1.0.0-rc.33.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
@@ -152,7 +152,7 @@ def sync(
     request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off,
     creating one is refused and existing ones admit nobody at the visitor's next call. A setting left
     out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below
-    cluster version 1.0.0-rc.32.
+    cluster version 1.0.0-rc.33.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
@@ -190,7 +190,7 @@ async def asyncio_detailed(
     request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off,
     creating one is refused and existing ones admit nobody at the visitor's next call. A setting left
     out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below
-    cluster version 1.0.0-rc.32.
+    cluster version 1.0.0-rc.33.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
@@ -231,7 +231,7 @@ async def asyncio(
     request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off,
     creating one is refused and existing ones admit nobody at the visitor's next call. A setting left
     out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below
-    cluster version 1.0.0-rc.32.
+    cluster version 1.0.0-rc.33.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.

@@ -116,7 +116,7 @@ def sync_detailed(
     PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node;
     `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public
     key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    1.0.0-rc.33.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -162,7 +162,7 @@ def sync(
     PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node;
     `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public
     key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    1.0.0-rc.33.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -203,7 +203,7 @@ async def asyncio_detailed(
     PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node;
     `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public
     key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    1.0.0-rc.33.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -247,7 +247,7 @@ async def asyncio(
     PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node;
     `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public
     key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    1.0.0-rc.33.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
