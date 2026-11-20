@@ -43,6 +43,7 @@ import kotlinx.serialization.Contextual
  * @param newMethods 
  * @param removedMethods 
  * @param signerChanged 
+ * @param summary 
  * @param approvedBy 
  */
 @Serializable
@@ -81,6 +82,9 @@ data class AppUpdate200ResponseAvailable (
 
     @SerialName(value = "signerChanged")
     val signerChanged: kotlin.Boolean? = null,
+
+    @SerialName(value = "summary")
+    val summary: kotlin.String? = null,
 
     @SerialName(value = "approvedBy")
     val approvedBy: kotlin.String? = null

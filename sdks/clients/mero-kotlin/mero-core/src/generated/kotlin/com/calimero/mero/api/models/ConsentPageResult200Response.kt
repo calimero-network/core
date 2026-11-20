@@ -62,7 +62,7 @@ data class ConsentPageResult200Response (
     /**
      * 
      *
-     * Values: RELEASE,UPGRADE,UPGRADE_UNIT,DELEGATE,OUTBOUND,CREATE_ORG,CREATE_INVITE,ACCEPT_INVITE,LEAVE_ORG,REMOVE_MEMBER,SET_MEMBER_ROLE,SET_MEMBER_TEAMS,REMOVE_MEMBER_TEAMS,REVOKE_INVITE,RENAME_ORG,DELETE_ORG,SET_CAPABILITIES,SET_ALL_APPS
+     * Values: RELEASE,UPGRADE,UPGRADE_UNIT,DELEGATE,OUTBOUND,CREATE_ORG,CREATE_INVITE,ACCEPT_INVITE,LEAVE_ORG,REMOVE_MEMBER,SET_MEMBER_ROLE,SET_MEMBER_TEAMS,REMOVE_MEMBER_TEAMS,REVOKE_INVITE,RENAME_ORG,DELETE_ORG,SET_CAPABILITIES,SET_ALL_APPS,INSTALL,UPDATE_POLICY,UPDATES
      */
     @Serializable
     enum class Kind(val value: kotlin.String) {
@@ -83,7 +83,10 @@ data class ConsentPageResult200Response (
         @SerialName(value = "renameOrg") RENAME_ORG("renameOrg"),
         @SerialName(value = "deleteOrg") DELETE_ORG("deleteOrg"),
         @SerialName(value = "setCapabilities") SET_CAPABILITIES("setCapabilities"),
-        @SerialName(value = "setAllApps") SET_ALL_APPS("setAllApps");
+        @SerialName(value = "setAllApps") SET_ALL_APPS("setAllApps"),
+        @SerialName(value = "install") INSTALL("install"),
+        @SerialName(value = "updatePolicy") UPDATE_POLICY("updatePolicy"),
+        @SerialName(value = "updates") UPDATES("updates");
     }
     /**
      * 

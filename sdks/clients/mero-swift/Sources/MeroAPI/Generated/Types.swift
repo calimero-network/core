@@ -556,7 +556,7 @@ public protocol APIProtocol: Sendable {
     func appTransfer(_ input: Operations.AppTransfer.Input) async throws -> Operations.AppTransfer.Output
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -932,7 +932,7 @@ public protocol APIProtocol: Sendable {
     func bundlePut(_ input: Operations.BundlePut.Input) async throws -> Operations.BundlePut.Output
     /// Ask the account's owner to approve
     ///
-    /// From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.
+    /// From an app's frontend: an instance of a release or a deployment's offer (`install`: the install sheet, what gets created, where data can go and that updates wait for an approval; `outcome` names the `appId` and its `links`), an update policy (`updatePolicy`, an owner or admin of the organization), the node's updates page (`updates`, at `/updates/{request}`: the person unlocks it with their passkey, then it lists the updates waiting across the apps they approve and their organizations' policies), a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -2751,7 +2751,7 @@ extension APIProtocol {
     }
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -3443,7 +3443,7 @@ extension APIProtocol {
     }
     /// Ask the account's owner to approve
     ///
-    /// From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.
+    /// From an app's frontend: an instance of a release or a deployment's offer (`install`: the install sheet, what gets created, where data can go and that updates wait for an approval; `outcome` names the `appId` and its `links`), an update policy (`updatePolicy`, an owner or admin of the organization), the node's updates page (`updates`, at `/updates/{request}`: the person unlocks it with their passkey, then it lists the updates waiting across the apps they approve and their organizations' policies), a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -11405,6 +11405,313 @@ public enum Components {
                 )
                 self.subject = try container.decode(
                     Components.Schemas.ConsentPageCreateBodySetAllApps.SubjectPayload.self,
+                    forKey: .subject
+                )
+                self.returnTo = try container.decode(
+                    Swift.String.self,
+                    forKey: .returnTo
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "kind",
+                    "subject",
+                    "returnTo"
+                ])
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall`.
+        public struct ConsentPageCreateBodyInstall: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case install = "install"
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/kind`.
+            public var kind: Components.Schemas.ConsentPageCreateBodyInstall.KindPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/subject`.
+            public struct SubjectPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/subject/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/subject/version`.
+                public var version: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/subject/deployment`.
+                public var deployment: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/subject/name`.
+                public var name: Swift.String
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/subject/org`.
+                public var org: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/subject/newOrg`.
+                public struct NewOrgPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/subject/newOrg/name`.
+                    public var name: Swift.String
+                    /// Creates a new `NewOrgPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - name:
+                    public init(name: Swift.String) {
+                        self.name = name
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case name
+                    }
+                }
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/subject/newOrg`.
+                public var newOrg: Components.Schemas.ConsentPageCreateBodyInstall.SubjectPayload.NewOrgPayload?
+                /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                ///
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/subject/initArgs`.
+                public var initArgs: OpenAPIRuntime.OpenAPIValueContainer?
+                /// Creates a new `SubjectPayload`.
+                ///
+                /// - Parameters:
+                ///   - package:
+                ///   - version:
+                ///   - deployment:
+                ///   - name:
+                ///   - org:
+                ///   - newOrg:
+                ///   - initArgs: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                public init(
+                    package: Swift.String,
+                    version: Swift.String? = nil,
+                    deployment: Swift.String? = nil,
+                    name: Swift.String,
+                    org: Swift.String? = nil,
+                    newOrg: Components.Schemas.ConsentPageCreateBodyInstall.SubjectPayload.NewOrgPayload? = nil,
+                    initArgs: OpenAPIRuntime.OpenAPIValueContainer? = nil
+                ) {
+                    self.package = package
+                    self.version = version
+                    self.deployment = deployment
+                    self.name = name
+                    self.org = org
+                    self.newOrg = newOrg
+                    self.initArgs = initArgs
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case package
+                    case version
+                    case deployment
+                    case name
+                    case org
+                    case newOrg
+                    case initArgs
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/subject`.
+            public var subject: Components.Schemas.ConsentPageCreateBodyInstall.SubjectPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyInstall/returnTo`.
+            public var returnTo: Swift.String
+            /// Creates a new `ConsentPageCreateBodyInstall`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - subject:
+            ///   - returnTo:
+            public init(
+                kind: Components.Schemas.ConsentPageCreateBodyInstall.KindPayload,
+                subject: Components.Schemas.ConsentPageCreateBodyInstall.SubjectPayload,
+                returnTo: Swift.String
+            ) {
+                self.kind = kind
+                self.subject = subject
+                self.returnTo = returnTo
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case subject
+                case returnTo
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.kind = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodyInstall.KindPayload.self,
+                    forKey: .kind
+                )
+                self.subject = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodyInstall.SubjectPayload.self,
+                    forKey: .subject
+                )
+                self.returnTo = try container.decode(
+                    Swift.String.self,
+                    forKey: .returnTo
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "kind",
+                    "subject",
+                    "returnTo"
+                ])
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy`.
+        public struct ConsentPageCreateBodyUpdatePolicy: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case updatePolicy = "updatePolicy"
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/kind`.
+            public var kind: Components.Schemas.ConsentPageCreateBodyUpdatePolicy.KindPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/subject`.
+            public struct SubjectPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/subject/org`.
+                public var org: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/subject/app`.
+                public var app: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/subject/policy`.
+                public struct PolicyPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/subject/policy/autoApply`.
+                    @frozen public enum AutoApplyPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                        case never = "never"
+                        case noDestinations = "noDestinations"
+                    }
+                    /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/subject/policy/autoApply`.
+                    public var autoApply: Components.Schemas.ConsentPageCreateBodyUpdatePolicy.SubjectPayload.PolicyPayload.AutoApplyPayload?
+                    /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/subject/policy/holdHours`.
+                    public var holdHours: Swift.Int64?
+                    /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/subject/policy/secondApprover`.
+                    public var secondApprover: Swift.Bool?
+                    /// Creates a new `PolicyPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - autoApply:
+                    ///   - holdHours:
+                    ///   - secondApprover:
+                    public init(
+                        autoApply: Components.Schemas.ConsentPageCreateBodyUpdatePolicy.SubjectPayload.PolicyPayload.AutoApplyPayload? = nil,
+                        holdHours: Swift.Int64? = nil,
+                        secondApprover: Swift.Bool? = nil
+                    ) {
+                        self.autoApply = autoApply
+                        self.holdHours = holdHours
+                        self.secondApprover = secondApprover
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case autoApply
+                        case holdHours
+                        case secondApprover
+                    }
+                }
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/subject/policy`.
+                public var policy: Components.Schemas.ConsentPageCreateBodyUpdatePolicy.SubjectPayload.PolicyPayload?
+                /// Creates a new `SubjectPayload`.
+                ///
+                /// - Parameters:
+                ///   - org:
+                ///   - app:
+                ///   - policy:
+                public init(
+                    org: Swift.String? = nil,
+                    app: Swift.String? = nil,
+                    policy: Components.Schemas.ConsentPageCreateBodyUpdatePolicy.SubjectPayload.PolicyPayload? = nil
+                ) {
+                    self.org = org
+                    self.app = app
+                    self.policy = policy
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case org
+                    case app
+                    case policy
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/subject`.
+            public var subject: Components.Schemas.ConsentPageCreateBodyUpdatePolicy.SubjectPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdatePolicy/returnTo`.
+            public var returnTo: Swift.String
+            /// Creates a new `ConsentPageCreateBodyUpdatePolicy`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - subject:
+            ///   - returnTo:
+            public init(
+                kind: Components.Schemas.ConsentPageCreateBodyUpdatePolicy.KindPayload,
+                subject: Components.Schemas.ConsentPageCreateBodyUpdatePolicy.SubjectPayload,
+                returnTo: Swift.String
+            ) {
+                self.kind = kind
+                self.subject = subject
+                self.returnTo = returnTo
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case subject
+                case returnTo
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.kind = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodyUpdatePolicy.KindPayload.self,
+                    forKey: .kind
+                )
+                self.subject = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodyUpdatePolicy.SubjectPayload.self,
+                    forKey: .subject
+                )
+                self.returnTo = try container.decode(
+                    Swift.String.self,
+                    forKey: .returnTo
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "kind",
+                    "subject",
+                    "returnTo"
+                ])
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdates`.
+        public struct ConsentPageCreateBodyUpdates: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdates/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case updates = "updates"
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdates/kind`.
+            public var kind: Components.Schemas.ConsentPageCreateBodyUpdates.KindPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdates/subject`.
+            public struct SubjectPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdates/subject/org`.
+                public var org: Swift.String?
+                /// Creates a new `SubjectPayload`.
+                ///
+                /// - Parameters:
+                ///   - org:
+                public init(org: Swift.String? = nil) {
+                    self.org = org
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case org
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdates/subject`.
+            public var subject: Components.Schemas.ConsentPageCreateBodyUpdates.SubjectPayload?
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpdates/returnTo`.
+            public var returnTo: Swift.String
+            /// Creates a new `ConsentPageCreateBodyUpdates`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - subject:
+            ///   - returnTo:
+            public init(
+                kind: Components.Schemas.ConsentPageCreateBodyUpdates.KindPayload,
+                subject: Components.Schemas.ConsentPageCreateBodyUpdates.SubjectPayload? = nil,
+                returnTo: Swift.String
+            ) {
+                self.kind = kind
+                self.subject = subject
+                self.returnTo = returnTo
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case subject
+                case returnTo
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.kind = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodyUpdates.KindPayload.self,
+                    forKey: .kind
+                )
+                self.subject = try container.decodeIfPresent(
+                    Components.Schemas.ConsentPageCreateBodyUpdates.SubjectPayload.self,
                     forKey: .subject
                 )
                 self.returnTo = try container.decode(
@@ -22693,7 +23000,7 @@ public enum Operations {
     }
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -22840,6 +23147,8 @@ public enum Operations {
                             public var removedMethods: [Swift.String]?
                             /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/signerChanged`.
                             public var signerChanged: Swift.Bool?
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/summary`.
+                            public var summary: Swift.String?
                             /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/approvalsNeeded`.
                             public var approvalsNeeded: Swift.Int64
                             /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/approvedBy`.
@@ -22857,6 +23166,7 @@ public enum Operations {
                             ///   - newMethods:
                             ///   - removedMethods:
                             ///   - signerChanged:
+                            ///   - summary:
                             ///   - approvalsNeeded:
                             ///   - approvedBy:
                             public init(
@@ -22870,6 +23180,7 @@ public enum Operations {
                                 newMethods: [Swift.String]? = nil,
                                 removedMethods: [Swift.String]? = nil,
                                 signerChanged: Swift.Bool? = nil,
+                                summary: Swift.String? = nil,
                                 approvalsNeeded: Swift.Int64,
                                 approvedBy: Swift.String? = nil
                             ) {
@@ -22883,6 +23194,7 @@ public enum Operations {
                                 self.newMethods = newMethods
                                 self.removedMethods = removedMethods
                                 self.signerChanged = signerChanged
+                                self.summary = summary
                                 self.approvalsNeeded = approvalsNeeded
                                 self.approvedBy = approvedBy
                             }
@@ -22897,12 +23209,15 @@ public enum Operations {
                                 case newMethods
                                 case removedMethods
                                 case signerChanged
+                                case summary
                                 case approvalsNeeded
                                 case approvedBy
                             }
                         }
                         /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available`.
                         public var available: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload?
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/unit`.
+                        public var unit: Swift.Bool
                         /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/mayApprove`.
                         public var mayApprove: Swift.Bool
                         /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/approvers`.
@@ -22969,6 +23284,7 @@ public enum Operations {
                         ///   - app:
                         ///   - running:
                         ///   - available:
+                        ///   - unit:
                         ///   - mayApprove:
                         ///   - approvers:
                         ///   - policy:
@@ -22977,6 +23293,7 @@ public enum Operations {
                             app: Swift.String,
                             running: Operations.AppUpdate.Output.Ok.Body.JsonPayload.RunningPayload? = nil,
                             available: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload? = nil,
+                            unit: Swift.Bool,
                             mayApprove: Swift.Bool,
                             approvers: Operations.AppUpdate.Output.Ok.Body.JsonPayload.ApproversPayload,
                             policy: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload,
@@ -22985,6 +23302,7 @@ public enum Operations {
                             self.app = app
                             self.running = running
                             self.available = available
+                            self.unit = unit
                             self.mayApprove = mayApprove
                             self.approvers = approvers
                             self.policy = policy
@@ -22994,6 +23312,7 @@ public enum Operations {
                             case app
                             case running
                             case available
+                            case unit
                             case mayApprove
                             case approvers
                             case policy
@@ -30145,7 +30464,7 @@ public enum Operations {
     }
     /// Ask the account's owner to approve
     ///
-    /// From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.
+    /// From an app's frontend: an instance of a release or a deployment's offer (`install`: the install sheet, what gets created, where data can go and that updates wait for an approval; `outcome` names the `appId` and its `links`), an update policy (`updatePolicy`, an owner or admin of the organization), the node's updates page (`updates`, at `/updates/{request}`: the person unlocks it with their passkey, then it lists the updates waiting across the apps they approve and their organizations' policies), a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -30180,6 +30499,8 @@ public enum Operations {
                     case delegate(Components.Schemas.ConsentPageCreateBodyDelegate)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyDeleteOrg`.
                     case deleteOrg(Components.Schemas.ConsentPageCreateBodyDeleteOrg)
+                    /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyInstall`.
+                    case install(Components.Schemas.ConsentPageCreateBodyInstall)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyLeaveOrg`.
                     case leaveOrg(Components.Schemas.ConsentPageCreateBodyLeaveOrg)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyOutbound`.
@@ -30202,6 +30523,10 @@ public enum Operations {
                     case setMemberRole(Components.Schemas.ConsentPageCreateBodySetMemberRole)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodySetMemberTeams`.
                     case setMemberTeams(Components.Schemas.ConsentPageCreateBodySetMemberTeams)
+                    /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyUpdatePolicy`.
+                    case updatePolicy(Components.Schemas.ConsentPageCreateBodyUpdatePolicy)
+                    /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyUpdates`.
+                    case updates(Components.Schemas.ConsentPageCreateBodyUpdates)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyUpgrade`.
                     case upgrade(Components.Schemas.ConsentPageCreateBodyUpgrade)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyUpgradeUnit`.
@@ -30226,6 +30551,8 @@ public enum Operations {
                             self = .delegate(try .init(from: decoder))
                         case "deleteOrg":
                             self = .deleteOrg(try .init(from: decoder))
+                        case "install":
+                            self = .install(try .init(from: decoder))
                         case "leaveOrg":
                             self = .leaveOrg(try .init(from: decoder))
                         case "outbound":
@@ -30248,6 +30575,10 @@ public enum Operations {
                             self = .setMemberRole(try .init(from: decoder))
                         case "setMemberTeams":
                             self = .setMemberTeams(try .init(from: decoder))
+                        case "updatePolicy":
+                            self = .updatePolicy(try .init(from: decoder))
+                        case "updates":
+                            self = .updates(try .init(from: decoder))
                         case "upgrade":
                             self = .upgrade(try .init(from: decoder))
                         case "upgradeUnit":
@@ -30272,6 +30603,8 @@ public enum Operations {
                             try value.encode(to: encoder)
                         case let .deleteOrg(value):
                             try value.encode(to: encoder)
+                        case let .install(value):
+                            try value.encode(to: encoder)
                         case let .leaveOrg(value):
                             try value.encode(to: encoder)
                         case let .outbound(value):
@@ -30293,6 +30626,10 @@ public enum Operations {
                         case let .setMemberRole(value):
                             try value.encode(to: encoder)
                         case let .setMemberTeams(value):
+                            try value.encode(to: encoder)
+                        case let .updatePolicy(value):
+                            try value.encode(to: encoder)
+                        case let .updates(value):
                             try value.encode(to: encoder)
                         case let .upgrade(value):
                             try value.encode(to: encoder)
@@ -30513,6 +30850,9 @@ public enum Operations {
                             case deleteOrg = "deleteOrg"
                             case setCapabilities = "setCapabilities"
                             case setAllApps = "setAllApps"
+                            case install = "install"
+                            case updatePolicy = "updatePolicy"
+                            case updates = "updates"
                         }
                         /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/kind`.
                         public var kind: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.KindPayload
@@ -30540,6 +30880,28 @@ public enum Operations {
                             public var name: Swift.String?
                             /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/apps`.
                             public var apps: [Swift.String]?
+                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/appId`.
+                            public var appId: Swift.String?
+                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/links`.
+                            public struct LinksPayload: Codable, Hashable, Sendable {
+                                /// A container of undocumented properties.
+                                public var additionalProperties: [String: Swift.String]
+                                /// Creates a new `LinksPayload`.
+                                ///
+                                /// - Parameters:
+                                ///   - additionalProperties: A container of undocumented properties.
+                                public init(additionalProperties: [String: Swift.String] = .init()) {
+                                    self.additionalProperties = additionalProperties
+                                }
+                                public init(from decoder: any Decoder) throws {
+                                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                                }
+                                public func encode(to encoder: any Encoder) throws {
+                                    try encoder.encodeAdditionalProperties(additionalProperties)
+                                }
+                            }
+                            /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome/links`.
+                            public var links: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.OutcomePayload.LinksPayload?
                             /// Creates a new `OutcomePayload`.
                             ///
                             /// - Parameters:
@@ -30549,13 +30911,17 @@ public enum Operations {
                             ///   - org:
                             ///   - name:
                             ///   - apps:
+                            ///   - appId:
+                            ///   - links:
                             public init(
                                 orgId: Swift.String? = nil,
                                 teamId: Swift.String? = nil,
                                 token: Swift.String? = nil,
                                 org: Swift.String? = nil,
                                 name: Swift.String? = nil,
-                                apps: [Swift.String]? = nil
+                                apps: [Swift.String]? = nil,
+                                appId: Swift.String? = nil,
+                                links: Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.OutcomePayload.LinksPayload? = nil
                             ) {
                                 self.orgId = orgId
                                 self.teamId = teamId
@@ -30563,6 +30929,8 @@ public enum Operations {
                                 self.org = org
                                 self.name = name
                                 self.apps = apps
+                                self.appId = appId
+                                self.links = links
                             }
                             public enum CodingKeys: String, CodingKey {
                                 case orgId
@@ -30571,6 +30939,8 @@ public enum Operations {
                                 case org
                                 case name
                                 case apps
+                                case appId
+                                case links
                             }
                         }
                         /// - Remark: Generated from `#/paths/consent/{request}/result/GET/responses/200/content/json/outcome`.
