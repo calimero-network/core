@@ -232,8 +232,8 @@ App instances.
 | `instance alias get [ALIAS]` | `GET /auth/aliases/{alias}` | Resolve an alias (default `default`). |
 | `instance alias list` (`ls`) | `GET /auth/aliases` | This account's aliases. |
 | `instance use INSTANCE` | `PUT /auth/aliases/default` | Make a context the default (the alias `default`). |
-| `instance access INSTANCE grants --grant GRANT...` | `POST /apps/{app}/access` | Who reaches the instance, as grants: each `--grant` is `org`, `team:TEAM`, `account:ID` (a member or a guest), `account:ID=SCOPE` (with the app's JSON scope) or `anyone`. |
-| `instance access INSTANCE owner\|org\|team\|accounts\|public [--team TEAM] [--account ID]...` | `POST /apps/{app}/access` | One access mode (deprecated for `grants`). `team` needs `--team`; `accounts` takes `--account` once per account. |
+| `instance access INSTANCE grants --grant GRANT...` | `POST /apps/{app}/access` | Who reaches the instance, as grants: each `--grant` is `org`, `team:TEAM`, `account:ID` (a member or a guest), `account:ID=SCOPE` (with the app's JSON scope) or `anyone` (any signed-in account; nobody signed out, who comes in only through a public link). |
+| `instance access INSTANCE owner\|org\|team\|accounts\|public [--team TEAM] [--account ID]...` | `POST /apps/{app}/access` | One access mode (deprecated for `grants`). `team` needs `--team`; `accounts` takes `--account` once per account. From cluster version 1.0.0-rc.32 `public` sets an `anyone` grant: signed-in accounts only. |
 | `instance metadata INSTANCE JSON` | `POST /apps/{app}/metadata` | Set the context's metadata; `null` clears it. |
 | `instance storage INSTANCE` | `GET /apps/{app}/storage` | Keys, bytes and blobs the context holds. |
 | `instance abi INSTANCE` | `GET /apps/{app}/abi` | The ABI of the bundle it runs. |
@@ -334,7 +334,7 @@ An organization's teams. `ROLE` is `lead`, `member` or
 | --- | --- | --- |
 | `team get ORG TEAM` | `GET /orgs/{org}/teams/{team}` | One team. |
 | `team update ORG TEAM [--name NAME] [--join JOIN]` | `POST /orgs/{org}/teams/{team}` | Rename it or change who may join. |
-| `team delete ORG TEAM [--dev-passkey FILE]` | `DELETE /orgs/{org}/teams/{team}` | Delete it with the teams below it and their contexts; with contexts there, approved with a passkey (`412` names them). |
+| `team delete ORG TEAM [--keep-apps] [--dev-passkey FILE]` | `DELETE /orgs/{org}/teams/{team}` | Delete it with the teams below it and the contexts only they admit; with contexts there, approved with a passkey (`412` names them). `--keep-apps` keeps those contexts without the team's grants (their other grants stay; with none left, only the owner reaches them). |
 | `team reparent ORG TEAM (PARENT \| --top)` | `POST /orgs/{org}/teams/{team}` | Move it under another team, or to the top. |
 | `team subteams ORG TEAM` | `GET /orgs/{org}` | The teams directly below it. |
 | `team members list ORG TEAM` (`ls`) | `GET /orgs/{org}/teams/{team}` | Its members and read-only members. |

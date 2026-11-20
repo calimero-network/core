@@ -890,8 +890,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !s.manages_grants(app, &actor) {
                 return Err("only whoever may change the instance's access invites its guests");
             }
-            if !s.guests_allowed(app) {
-                return Err(super::GUESTS_NOT_ALLOWED);
+            // Whether guests are allowed is judged when someone redeems it (a member always
+            // may): an invite is made whatever the switches say now.
+            // A redemption makes the access a grant list, which would shut out the callers
+            // without an account a legacy `public` instance admits.
+            if app.access.admits_signed_out() {
+                return Err(super::LEGACY_PUBLIC);
             }
             if invite
                 .scope
@@ -941,6 +945,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             if !s.orgs.get(&app.org).is_some_and(|o| o.allow_public_links) {
                 return Err(super::PUBLIC_LINKS_OFF);
+            }
+            // A link makes the access a grant list, which would shut out the callers without an
+            // account a legacy `public` instance admits.
+            if app.access.admits_signed_out() {
+                return Err(super::LEGACY_PUBLIC);
             }
             if link.rate_per_minute == 0 || link.rate_per_minute > super::MAX_PUBLIC_LINK_RATE {
                 return Err("a public link admits 1 to 600 calls a minute per visitor");
@@ -1034,6 +1043,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .is_some();
             if !member && !s.guests_allowed(app) {
                 return Err(super::GUESTS_NOT_ALLOWED);
+            }
+            if app.access.admits_signed_out() {
+                return Err(super::LEGACY_PUBLIC);
             }
             let answer = json!({ "app": app.app_id, "org": app.org, "member": member });
             // Named already: nothing changes, and the use is left for someone else.

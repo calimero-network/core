@@ -7,6 +7,8 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 from ..models.grant_type_3_kind import GrantType3Kind
+from ..types import UNSET, Unset
+from typing import Union
 
 T = TypeVar("T", bound="GrantType3")
 
@@ -16,13 +18,17 @@ class GrantType3:
     """
     Attributes:
         kind (GrantType3Kind):
+        signed_out (Union[Unset, bool]):
     """
 
     kind: GrantType3Kind
+    signed_out: Union[Unset, bool] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         kind = self.kind.value
+
+        signed_out = self.signed_out
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -31,6 +37,8 @@ class GrantType3:
                 "kind": kind,
             }
         )
+        if signed_out is not UNSET:
+            field_dict["signedOut"] = signed_out
 
         return field_dict
 
@@ -39,8 +47,11 @@ class GrantType3:
         d = dict(src_dict)
         kind = GrantType3Kind(d.pop("kind"))
 
+        signed_out = d.pop("signedOut", UNSET)
+
         grant_type_3 = cls(
             kind=kind,
+            signed_out=signed_out,
         )
 
         grant_type_3.additional_properties = d

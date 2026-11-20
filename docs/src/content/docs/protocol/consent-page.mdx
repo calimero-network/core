@@ -205,8 +205,9 @@ of 1 second to 90 days and at most 64 teams (`400`), and for
 (`404`); an [instance invite](/protocol/organizations/#instance-invites) is
 shown as joining that app (its package and organization named) as a guest,
 or, to a member of its organization, as the member they are (`invite.guest`,
-with the invite's `scope`), and refused a guest `409 GUESTS_NOT_ALLOWED` while
-the instance takes no guests. The log judges the rest (`INVITE_MEMBERS`, teams the inviter sees)
+with the invite's `scope`), and, to someone outside its organization while the
+instance takes no guests (its release or its organization's switch), refused
+`409 GUESTS_NOT_ALLOWED` before any passkey is asked for. The log judges the rest (`INVITE_MEMBERS`, teams the inviter sees)
 when the approval is written.
 
 What the approval made reaches only the account and app that asked, through

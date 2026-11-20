@@ -126,6 +126,7 @@ pub(super) fn authorize(
             actor,
             consent,
             apps_need_consent: true,
+            keep_apps,
         } => {
             let apps = s.team_apps(org, team);
             if apps.is_empty() {
@@ -135,7 +136,7 @@ pub(super) fn authorize(
                 return Err(DELETE_TEAM_NEEDS_CONSENT);
             }
             let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
-            let args = json!({ "team": team, "apps": apps });
+            let args = super::delete_team_args(team, &apps, *keep_apps);
             proofs.states(&st, &format!("org:{org}"), "__delete_team", &|a| *a == args)?;
             Ok(Some(used))
         }
@@ -746,7 +747,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             Ok(Value::Null)
         }
         SystemCmd::DeleteTeam {
-            org, team, actor, ..
+            org,
+            team,
+            actor,
+            keep_apps,
+            ..
         } => {
             let apps = s.team_apps(&org, &team);
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
@@ -762,15 +767,23 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             for t in &gone {
                 let _removed = o.teams.remove(t);
             }
-            for a in &apps {
-                s.remove_app(a);
+            if !keep_apps {
+                for a in &apps {
+                    s.remove_app(a);
+                }
             }
             // An instance whose grants keep another way in loses only these teams' grants
             // (only grant lists hold several, so an entry before them changes nothing here).
+            // Kept ones (`keep_apps`) lose them too, a `team` mode becoming the empty list:
+            // the owner alone.
             for a in s.apps.values_mut().filter(|a| a.org == org) {
-                if matches!(a.access, crate::types::Access::Grants { .. }) {
+                let kept = keep_apps && apps.contains(&a.app_id);
+                if kept || matches!(a.access, crate::types::Access::Grants { .. }) {
                     a.access = a.access.without_teams(&gone);
                 }
+            }
+            if keep_apps {
+                return Ok(json!({ "teams": gone, "apps": [], "keptApps": apps }));
             }
             Ok(json!({ "teams": gone, "apps": apps }))
         }

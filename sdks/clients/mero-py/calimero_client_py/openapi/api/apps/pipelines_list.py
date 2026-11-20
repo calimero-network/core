@@ -93,7 +93,8 @@ def sync_detailed(
      The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for
     callers who may list the app's files.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -130,7 +131,8 @@ def sync(
      The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for
     callers who may list the app's files.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -162,7 +164,8 @@ async def asyncio_detailed(
      The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for
     callers who may list the app's files.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -197,7 +200,8 @@ async def asyncio(
      The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for
     callers who may list the app's files.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):

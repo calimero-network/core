@@ -23,7 +23,8 @@ use calimero_client::types::ViewsRequestConsistency;
 use calimero_client::{Client, Policy};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::node::{CallRequest, NOT_REACHED};
-use calimero_node::types::Caller;
+use calimero_node::system::SystemCmd;
+use calimero_node::types::{Access, Caller};
 use calimero_node::{run, Running};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -223,6 +224,172 @@ async fn shared_org(owner: &Client, pk: &mut SoftAuthenticator, who: &Client) ->
     org
 }
 
+/// `k` as `cl` reads it, through a strong view, or the refusal as text.
+async fn read_k(cl: &Client, app: &str) -> Result<serde_json::Value, String> {
+    cl.apps()
+        .view(
+            app,
+            "get",
+            Some(json!({ "key": "k" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
+        .await
+        .map(|v| v.result)
+        .map_err(|e| e.to_string())
+}
+
+async fn account_id(c: &Client) -> String {
+    c.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Sets `app`'s access to the legacy `public` mode as a release before 1.0.0-rc.32 logged it
+/// (`SetAccess` naming the mode). The API no longer writes it: from that cluster version
+/// `access: public` is an `anyone` grant, which admits signed-in accounts only.
+async fn legacy_public(c: &ProxiedCluster, app: &str, owner: &str) {
+    let _ok = c.nodes[c.system_leader()]
+        .node
+        .sys_write(&SystemCmd::SetAccess {
+            app_id: app.to_owned(),
+            access: Access::Public,
+            actor: owner.to_owned(),
+            owner_in_org: true,
+            owner_in_team: true,
+        })
+        .await
+        .unwrap();
+}
+
+/// An `anyone` grant admits every signed-in account, a member of the instance's organization
+/// or not, and never a caller without an account (`401`): those come in only through public
+/// links. The deprecated `access: public` sets that grant now, and the record says so. An
+/// instance set `public` before 1.0.0-rc.32 keeps admitting signed-out callers, as it did,
+/// and answers `public` with an `anyone` grant marked `signedOut`. A grant asking for
+/// signed-out callers is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn anyone_means_any_signed_in_account_and_only_legacy_public_admits_signed_out_callers() {
+    let c = ProxiedCluster::start().await;
+    let leader = c.system_leader();
+    let (alice, _a) = signed_up(&c, leader, "alice").await;
+    let (bob, _b) = signed_up(&c, (leader + 1) % 3, "bob").await;
+    let alice_id = account_id(&alice).await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let make = |name: &'static str, access: serde_json::Value| {
+        let alice = &alice;
+        let bundle = bundle.clone();
+        async move {
+            let mut body = json!({ "name": name, "bundle": bundle });
+            body.as_object_mut().unwrap().extend(
+                access
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            );
+            let app = alice.apps().create(typed(body)).await.map(wire).unwrap()["appId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let _set = alice
+                .apps()
+                .call(
+                    &app,
+                    "set",
+                    Some(json!({ "key": "k", "value": "v" })),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            app
+        }
+    };
+    let granted = make("granted", json!({ "grants": [{ "kind": "anyone" }] })).await;
+    let deprecated = make("deprecated", json!({ "access": { "kind": "public" } })).await;
+    for app in [&granted, &deprecated] {
+        // Bob is a member of none of alice's organizations: signed in, he is admitted.
+        assert_eq!(read_k(&bob, app).await.unwrap(), json!("v"));
+        for i in 0..3 {
+            // Refused by the platform's gate, before the app runs.
+            let e = read_k(&c.client(i), app).await.unwrap_err();
+            assert!(
+                e.starts_with("401") && e.contains("sign in to use this app"),
+                "node {i}: {e}"
+            );
+            let e = c.client(i).apps().get(app).await.unwrap_err();
+            assert!(e.to_string().starts_with("404"), "node {i}: {e}");
+        }
+    }
+    let record = alice.apps().get(&deprecated).await.map(wire).unwrap();
+    assert_eq!(
+        (&record["access"], &record["grants"]),
+        (
+            &json!({ "kind": "grants", "grants": [{ "kind": "anyone" }] }),
+            &json!([{ "kind": "anyone" }])
+        ),
+        "the deprecated `public` is an `anyone` grant now: {record}"
+    );
+
+    // An instance set `public` as an earlier release logged it admits signed-out callers.
+    let legacy = make("legacy", json!({ "access": { "kind": "owner" } })).await;
+    legacy_public(&c, &legacy, &alice_id).await;
+    for i in 0..3 {
+        // The gate admits them: the record reads, and a view reaches the app, whose own
+        // `get` asks for a signed-in caller.
+        let record = c.client(i).apps().get(&legacy).await.map(wire).unwrap();
+        assert_eq!(record["appId"], json!(legacy), "node {i}");
+        let e = read_k(&c.client(i), &legacy).await.unwrap_err();
+        assert!(!e.contains("sign in to use this app"), "node {i}: {e}");
+    }
+    assert_eq!(read_k(&bob, &legacy).await.unwrap(), json!("v"));
+    let record = c
+        .client(leader)
+        .apps()
+        .get(&legacy)
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        (&record["access"], &record["grants"]),
+        (
+            &json!({ "kind": "public" }),
+            &json!([{ "kind": "anyone", "signedOut": true }])
+        ),
+        "{record}"
+    );
+    // Answered, never set: a grant list asking for signed-out callers is refused.
+    let e = alice
+        .apps()
+        .access(
+            &granted,
+            None,
+            Some(vec![typed(json!({ "kind": "anyone", "signedOut": true }))]),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("400"), "{e}");
+    // Setting it as grants ends signed-out access: an `anyone` grant is signed-in only.
+    let _ok = alice
+        .apps()
+        .access(
+            &legacy,
+            None,
+            Some(vec![typed(json!({ "kind": "anyone" }))]),
+        )
+        .await
+        .unwrap();
+    let e = read_k(&c.client(leader), &legacy).await.unwrap_err();
+    assert!(e.contains("sign in to use this app"), "{e}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_grant_is_honoured_by_a_follower_that_has_not_applied_it_yet() {
     let c = ProxiedCluster::start().await;
@@ -416,11 +583,8 @@ async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behi
         .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
-    let _ok = alice
-        .apps()
-        .access(&app, Some(typed(json!({ "kind": "public" }))), None)
-        .await
-        .unwrap();
+    // Only the legacy `public` mode admits an anonymous caller.
+    legacy_public(&c, &app, &account_id(&alice).await).await;
     let follower_node = &c.nodes[follower].node;
     let public_here =
         || follower_node.sys(|s| s.apps.get(&app).is_some_and(|a| s.may_reach(a, None)));
@@ -510,11 +674,8 @@ async fn attestation_names_no_app_an_anonymous_caller_cannot_reach() {
         assert_eq!(private, unknown, "node {i}: a private app reads as no app");
     }
 
-    let _ok = alice
-        .apps()
-        .access(&app, Some(typed(json!({ "kind": "public" }))), None)
-        .await
-        .unwrap();
+    // Only the legacy `public` mode admits an anonymous caller.
+    legacy_public(&c, &app, &account_id(&alice).await).await;
     for i in 0..3 {
         let (status, doc) = attest(i, app.clone()).await;
         assert_eq!(status, 200, "node {i}: {doc}");

@@ -404,7 +404,7 @@ async fn app_create(
     headers: HeaderMap,
     Json(mut body): Json<CreateAppBody>,
 ) -> ApiResult {
-    body.access = access_of(body.access.take(), body.grants.take())?;
+    body.access = access_of(&node, body.access.take(), body.grants.take()).await?;
     let p = signed_in(&node, &headers).await?;
     match p.bound_app() {
         // A frontend makes instances of its own package, already installed.
@@ -973,12 +973,8 @@ fn refuse_app_invite(
                 "only whoever may change the instance's access invites its guests",
             ));
         }
-        if !s.guests_allowed(app) {
-            return Err(ApiError::new(
-                409,
-                GUESTS_NOT_ALLOWED,
-                crate::system::GUESTS_NOT_ALLOWED,
-            ));
+        if app.access.admits_signed_out() {
+            return Err(crate::node::rejected(crate::system::LEGACY_PUBLIC));
         }
         Ok(())
     })
@@ -1176,8 +1172,14 @@ pub(super) struct AccessBody {
 
 /// The access a request names: `grants` (an [`Access::Grants`], judged where it applies), or
 /// the deprecated `access`, or neither (`None`); both is `400 BAD_REQUEST`. A grant list
-/// larger than an instance holds is refused here, before it is proposed.
-fn access_of(
+/// larger than an instance holds, or one admitting callers without an account (`signedOut`,
+/// which only answers carry), is refused here, before it is proposed.
+///
+/// The deprecated `access: public` from cluster version 1.0.0-rc.32 on (`AccessGrants`) is an
+/// `anyone` grant, which admits signed-in accounts only: no new access for callers without an
+/// account is made outside public links. Below that version it is the legacy mode, as before.
+async fn access_of(
+    node: &Node,
     access: Option<Access>,
     grants: Option<Vec<crate::types::Grant>>,
 ) -> Result<Option<Access>, ApiError> {
@@ -1190,7 +1192,27 @@ fn access_of(
             "BAD_REQUEST",
             "an instance holds at most 1018 grants",
         )),
+        (_, Some(grants))
+            if grants
+                .iter()
+                .any(|g| matches!(g, crate::types::Grant::Anyone { signed_out: true })) =>
+        {
+            Err(ApiError::bad_request(
+                "BAD_REQUEST",
+                crate::system::NO_SIGNED_OUT_GRANT,
+            ))
+        }
         (_, Some(grants)) => Ok(Some(Access::Grants { grants })),
+        (Some(Access::Public), None)
+            if node
+                .require_features(&[Feature::AccessGrants])
+                .await
+                .is_ok() =>
+        {
+            Ok(Some(Access::Grants {
+                grants: vec![crate::types::Grant::ANYONE],
+            }))
+        }
         (access, None) => Ok(access),
     }
 }
@@ -1201,7 +1223,8 @@ async fn app_access(
     Path(app_id): Path<String>,
     Json(body): Json<AccessBody>,
 ) -> ApiResult {
-    let access = access_of(body.access, body.grants)?
+    let access = access_of(&node, body.access, body.grants)
+        .await?
         .ok_or_else(|| ApiError::bad_request("BAD_REQUEST", "name the instance's grants"))?;
     let app_id = node.canonical_app_id(&app_id);
     let p = person(&node, &headers).await?;

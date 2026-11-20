@@ -1090,6 +1090,14 @@ pub const MAX_APP_INVITE_TTL_SECS: u64 = 90 * 24 * 3600;
 /// ([`SystemState::guests_allowed`]).
 pub const GUESTS_NOT_ALLOWED: &str =
     "this instance takes no guests: its release or its organization does not allow them";
+/// A refusal: the instance's access is the legacy `public` mode (set before 1.0.0-rc.32),
+/// which admits callers without an account. Making it a grant list (an invite naming someone,
+/// a public link) would end that, as no grant admits them, so it is not done on the side:
+/// whoever manages it sets its grants first ([`crate::types::Access::admits_signed_out`]).
+pub const LEGACY_PUBLIC: &str = "this instance's access is public as set before 1.0.0-rc.32, which admits callers without an account; set its access as grants first (an `anyone` grant admits signed-in accounts only)";
+/// A refusal: a grant list admitting callers with no account. Only the legacy `public` mode
+/// does; anonymous visitors come in through public links.
+pub const NO_SIGNED_OUT_GRANT: &str = "a grant admits signed-in accounts only: callers without an account come in through public links";
 /// A refusal: an instance invite gone, used up or never made.
 pub const APP_INVITE_GONE: &str = "this invite was used up, revoked or never existed";
 
@@ -4474,7 +4482,8 @@ impl SystemState {
         for g in grants {
             let fresh = match g {
                 Grant::Org => !std::mem::replace(&mut whole, true),
-                Grant::Anyone => !std::mem::replace(&mut anyone, true),
+                Grant::Anyone { signed_out: true } => return Err(NO_SIGNED_OUT_GRANT),
+                Grant::Anyone { signed_out: false } => !std::mem::replace(&mut anyone, true),
                 Grant::Link(_) => {
                     return Err("a public link is made with its own consent, not as a grant");
                 }
@@ -4511,8 +4520,9 @@ impl SystemState {
     }
 
     /// [`Self::may_reach`] of an instance whose access is a grant list ([`Access::Grants`],
-    /// only ever judged by the current rules): [`Grant::Anyone`] admits everyone; anyone else
-    /// is signed in. Someone outside the organization reaches it as a guest
+    /// only ever judged by the current rules): no grant admits a caller without an account
+    /// (they come in through public links); [`Grant::Anyone`] admits every signed-in account.
+    /// Someone outside the organization reaches it as a guest
     /// ([`Self::guest_reaches`]: named here, or on the instance whose unit made it, while both
     /// switches allow), or, named in an organization flagged personal, as a personal app's list
     /// did. A member reaches it as its owner (while in a team it admits, when it admits teams
@@ -4520,12 +4530,12 @@ impl SystemState {
     /// they are in, or their name; a name, and the owner of an instance only names admit, only
     /// while they are in the package's app team where it has one, as an `accounts` instance is.
     fn grants_reach(&self, app: &AppRecord, grants: &[Grant], account: Option<&str>) -> bool {
-        if grants.contains(&Grant::Anyone) {
-            return true;
-        }
         let Some(a) = account else {
             return false;
         };
+        if grants.iter().any(Grant::is_anyone) {
+            return true;
+        }
         let Some(o) = self.orgs.get(&app.org) else {
             return false;
         };
@@ -4546,7 +4556,7 @@ impl SystemState {
             Grant::Org => !o.app_only(a),
             Grant::Team { team } => o.in_team(a, team),
             Grant::Account { account, .. } => account == a && in_app_team(),
-            Grant::Anyone => true,
+            Grant::Anyone { .. } => true,
             // A link admits its visitors, never an account.
             Grant::Link(_) => false,
         })
@@ -4595,7 +4605,8 @@ impl SystemState {
     }
 
     /// The apps deleting `team` takes with it: those of `org` on `team` or a
-    /// team below it, in id order. None for a team `org` does not hold.
+    /// team below it, in id order. None for a team `org` does not hold. With
+    /// `DeleteTeam { keep_apps }` the same apps stay, without those teams' grants.
     #[must_use]
     pub fn team_apps(&self, org: &str, team: &str) -> Vec<AppId> {
         let Some(o) = self.orgs.get(org).filter(|o| o.teams.contains_key(team)) else {
@@ -5128,6 +5139,19 @@ pub struct TeamRow {
     /// and the team's default; an existing row keeps its own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<u32>,
+}
+
+/// What a person consents to when deleting a team whose subtree holds `apps`
+/// (`org:<org> / __delete_team`): `{ team, apps }`, plus `keepApps: true` when those
+/// apps stay without the team's grants (`DeleteTeam { keep_apps }`), so a deletion
+/// consented as before reads as it did.
+#[must_use]
+pub fn delete_team_args(team: &str, apps: &[AppId], keep_apps: bool) -> Value {
+    if keep_apps {
+        json!({ "team": team, "apps": apps, "keepApps": true })
+    } else {
+        json!({ "team": team, "apps": apps })
+    }
 }
 
 /// What a person consents to when setting one account's rows in several
@@ -6346,6 +6370,14 @@ pub enum SystemCmd {
         /// which replays deleting without one, as that release did.
         #[serde(default)]
         apps_need_consent: bool,
+        /// Keep the instances the team's subtree alone admits ([`SystemState::team_apps`]):
+        /// they lose its team grants and keep their other grants (named members, guests,
+        /// `anyone`, links); with none left, the owner alone (an empty grant list). Absent
+        /// (`false`), as every entry before it: they are deleted. Stated in the consent
+        /// (`keepApps: true`). Proposed only from cluster version 1.0.0-rc.32
+        /// (`Feature::KeepTeamApps`), as an earlier release would delete them.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_apps: bool,
     },
     /// A member's capabilities, organization-wide (`team: None`) or in a team.
     SetCapabilities {

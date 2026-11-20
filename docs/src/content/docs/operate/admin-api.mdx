@@ -253,7 +253,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `GET /orgs/{org}/invites` | session | `{ invites: [{ inviteKey, role, teams, usesLeft, expiresAt, expired, createdBy, createdAt, allApps }] }`: the invites the caller may see, never a token | |
 | `DELETE /orgs/{org}/invites/{key}` | session | Revoke an invite by its key; `412` first | |
 | `POST /orgs/{org}/settings` | account holder | `{ allowGuests?, allowPublicLinks?, confirm? }` → `{ org, allowGuests, allowPublicLinks }`: the owner or an admin; `412` first ([Guests](/protocol/organizations/#guests)) | |
-| `POST /apps/{app}/invites` | account holder | `{ ttlSecs?, uses?, scope?, confirm? }` → a token whose redeemer is named on the instance (a guest, or a named member), with `scope` on the grant; any instance; whoever may change its access; `409 GUESTS_NOT_ALLOWED`; `412` first | |
+| `POST /apps/{app}/invites` | account holder | `{ ttlSecs?, uses?, scope?, confirm? }` → a token whose redeemer is named on the instance (a guest, or a named member), with `scope` on the grant; any instance, whatever its guest switches (a guest's redemption is refused `409 GUESTS_NOT_ALLOWED` while they forbid guests); whoever may change its access; `409 LEGACY_PUBLIC` on an instance set `public` before 1.0.0-rc.32; `412` first | |
 | `GET /apps/{app}/invites` | session | `{ invites: [{ inviteKey, usesLeft, expiresAt, expired, createdBy, createdAt, scope }] }`, never a token | |
 | `DELETE /apps/{app}/invites/{key}` | account holder | Revoke an instance invite; `412` first | |
 | `POST /apps/{app}/public-links` | account holder | `{ label?, expiresAt?, ratePerMinute?, confirm? }` → `{ link, token }` (the token once): whoever may change the instance's access; `409 PUBLIC_LINKS_OFF`; `412` first ([Public links](/protocol/organizations/#public-links)) | |
@@ -267,7 +267,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/teams` | account holder | `{ name, parent?, join: everyone \| invite }`: an admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who writes `parent` and holds `CREATE_CHILD_TEAM` there (a restricted team only) | `org create-team` |
 | `GET /orgs/{org}/teams/{team}` | signed in | One team | `team get`, `team members list` |
 | `POST /orgs/{org}/teams/{team}` | account holder | `{ name?, join?, parent?, metadata? }` | `team update`, `reparent`, `metadata` |
-| `DELETE /orgs/{org}/teams/{team}` | account holder | Delete with the teams and apps below | `team delete` |
+| `DELETE /orgs/{org}/teams/{team}` | account holder | Delete with the teams below and the apps only they admit; `{ keepApps: true, confirm? }` keeps those apps without the teams' grants (cluster version 1.0.0-rc.32). `412` first when apps are concerned, its details naming `apps` and `keepApps` | `team delete [--keep-apps]` |
 | `POST /orgs/{org}/teams/{team}/members` | account holder | `{ account, lead?, role?, capabilities?, confirm? }`. `412` first. A session on a package's frontend may do this on its own package's teams only | `team members add` |
 | `DELETE /orgs/{org}/teams/{team}/members/{account}` | account holder | Remove, or leave. `412` first; the retry's JSON body is `{ confirm }` | `team members remove`, `team leave` |
 | `GET /orgs/{org}/app-teams` | signed in (a member) | `{ mode, appTeams }`: each app team's package, id, name, `join`, member count, default capabilities, and whether the caller is in it or manages it (a guest: only their own) | |

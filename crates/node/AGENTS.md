@@ -1000,7 +1000,10 @@ is its command line.
   protocol organizations "App access"): an instance's access is a list of grants, `org`,
   `team { team }` (at most `MAX_TEAM_GRANTS`), `account { account, scope? }` (a named member
   or a guest, at most `MAX_ACCOUNT_GRANTS`; `scope` opaque JSON of at most
-  `MAX_GRANT_SCOPE_BYTES` the app defines) and `anyone` (signed in or not: `public`), each
+  `MAX_GRANT_SCOPE_BYTES` the app defines) and `anyone` (any signed-in account, never a
+  caller without one: `Grant::Anyone { signed_out }` is `true` only in `Access::grants` of the
+  legacy `public` mode, which still admits them, `Access::admits_signed_out`; `check_grants`
+  refuses it, `NO_SIGNED_OUT_GRANT`), each
   judged on its own in `may_reach` (`grants_reach`); no grant is the owner alone, and an
   owner of an instance only teams admit reaches it while in one of them. `SetAccess` and
   `CreateApp` with `Access::Grants` need the feature (`SystemCmd::features`) and apply only a
@@ -1015,9 +1018,15 @@ is its command line.
   `onto_team`), `named_only` (`MoveApp`'s `accounts_in_app_team`), `teams_to_org` (`MoveApp`,
   `TransferApp`), `anyone` (listing, `member_apps`). `DeleteTeam` takes the instances whose
   every team grant goes (`team_apps`) and strips the team's grant from the rest
-  (`without_teams`). The API takes `grants` on `POST /apps` and `POST /apps/{app}/access`
-  (`api::apps::access_of`; with the deprecated `access`, `400`; `api-deprecations.toml`
-  deprecates `access` until rc.35). Regressions:
+  (`without_teams`); with `keep_apps` (`Feature::KeepTeamApps`, rc.32; API `keepApps`, stated in
+  the consent, `delete_team_args`) it keeps them too, without the team's grants (a `team` mode
+  or a list left empty: the owner alone), answered as `keptApps`; absent, as every entry
+  before it, they are deleted. The API takes `grants` on `POST /apps` and `POST
+  /apps/{app}/access` (`api::apps::access_of`; with the deprecated `access`, `400`; from the
+  cluster version that brings the feature the deprecated `public` is `[anyone]`, below it the
+  legacy mode; a `signedOut` grant `400`; `api-deprecations.toml` deprecates `access` until
+  rc.35). A legacy `public` instance takes no instance invite (`LEGACY_PUBLIC`, `409`): a
+  redemption would make it a grant list and end its signed-out access on the side. Regressions:
   `system::tests::an_instances_access_is_a_list_of_grants`,
   `system::tests::access_logged_as_one_mode_reads_writes_and_replays_as_before`,
   `guests::a_team_and_two_partners_reach_one_instance_by_their_grants`.
@@ -1037,8 +1046,8 @@ is its command line.
   with `SetAccess` by whoever may change the access (`manages_grants`), or by an instance
   invite, on any instance (`SystemState::app_invites`, `types::AppInvite` under the token's
   Ed25519 key, with an optional `scope`): `CreateAppInvite` (consent `<app> /
-  __create_app_invite / app_invite_args`, `scope` stated only when set; refused unless guests
-  are allowed; bounds `MAX_APP_INVITES_PER_APP`, `MAX_APP_INVITES`, `MAX_APP_INVITE_USES`,
+  __create_app_invite / app_invite_args`, `scope` stated only when set; made whatever the guest switches
+  say, which are judged at redemption; refused on a legacy `public` instance; bounds `MAX_APP_INVITES_PER_APP`, `MAX_APP_INVITES`, `MAX_APP_INVITE_USES`,
   `MAX_APP_INVITE_TTL_SECS`), `RevokeAppInvite` (`__revoke_app_invite`), `RedeemAppInvite`
   (the token key's `sign_invite_redeem`; adds an `account` grant with the invite's scope,
   `Access::naming`, turning a single mode into its grant list; a guest only while guests are

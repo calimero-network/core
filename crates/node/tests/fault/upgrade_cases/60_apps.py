@@ -79,9 +79,10 @@ class AccessKinds(DeepCase):
     area = "Apps"
     seeds = "an organization's app of each access kind: owner, organization, listed accounts, public, team"
     verifies = ("who reads and writes each (the owner, a member, a listed account, an outsider, no "
-                "credential), allowed and refused as before; on the new release each keeps its mode and answers "
-                "the grants it stands for (owner none, org, the listed account, anyone, the team), and access "
-                "changed there, in the old form and as grants")
+                "credential), allowed and refused as before (the public one still admits no credential); on the "
+                "new release each keeps its mode and answers the grants it stands for (owner none, org, the listed "
+                "account, `anyone` marked `signedOut`, the team), and access changed there, in the old form and as "
+                "grants")
 
     def populate(self, w):
         ace, mo, lis, oz = people(w, "ace", "mo", "lis", "oz")
@@ -125,10 +126,15 @@ class AccessKinds(DeepCase):
         team = ace.get(f"apps/{s['apps']['team']}")["access"]["team"]
         stands_for = {
             "owner": [], "org": [{"kind": "org"}], "accounts": [{"kind": "account", "account": lis.id}],
-            "public": [{"kind": "anyone"}], "team": [{"kind": "team", "team": team}],
+            "public": [{"kind": "anyone", "signedOut": True}], "team": [{"kind": "team", "team": team}],
         }
         for kind, grants in stands_for.items():
             record = ace.get(f"apps/{s['apps'][kind]}")
+            if kind == "public" and record["access"]["kind"] == "grants":
+                # Seeded on a cluster at 1.0.0-rc.32 or later, where the deprecated `public` sets an
+                # `anyone` grant (signed-in accounts only).
+                eq(record.get("grants"), [{"kind": "anyone"}], "the deprecated public as a grant")
+                continue
             eq(record["access"]["kind"], kind, f"the {kind} instance keeps its mode")
             eq(record.get("grants"), grants, f"the grants the {kind} instance stands for")
         app = s["apps"]["accounts"]
@@ -198,6 +204,69 @@ class AccessGrants(DeepCase):
               lambda: person(w, "gem").view(s["app"], "get", {"key": "k"}))
         gus.view(s["app"], "get", {"key": "k"})
         s["decisions"] = self._decide(w, s)
+
+
+@case
+class TeamDeletedKeepingApps(DeepCase):
+    name = "team-deleted-keeping-apps"
+    area = "Teams"
+    since = "1.0.0-rc.32"
+    seeds = ("an organization's two instances only a team admits, one also naming a member outside the team; the "
+             "team deleted with `keepApps`, which waits for the cluster version that brings it, so it is done "
+             "after the roll")
+    verifies = ("both instances kept with their data: the one naming a member keeps that grant alone, the other an "
+                "empty grant list; who reads each (the owner, the named member, the team's former member, no "
+                "credential); on the new release another team deleted without the flag takes its instance")
+
+    def populate(self, w):
+        kora, kurt, kobi = people(w, "kora", "kurt", "kobi")
+        org = new_org(kora, "Keep Org")
+        team = team_id(kora.raw("post", f"orgs/{org}/teams", {"name": "keep", "join": "invite"}))
+        join(kora, org, kurt, teams=(team,))
+        join(kora, org, kobi)
+        named = kora.deploy(kv_wasm(w), "kept-named", org=org)
+        alone = kora.deploy(kv_wasm(w), "kept-alone", org=org)
+        for app in (named, alone):
+            kora.call(app, "set", {"key": "k", "value": "kept"})
+        until("the cluster version takes grants", lambda: kora.raw("post", f"apps/{named}/access", {
+            "grants": [{"kind": "team", "team": team}, {"kind": "account", "account": kobi.id}]}), timeout=120)
+        kora.raw("post", f"apps/{alone}/access", {"grants": [{"kind": "team", "team": team}]})
+        out = kora.raw("delete", f"orgs/{org}/teams/{team}", {"keepApps": True})
+        eq(sorted(out.get("keptApps") or []), sorted([named, alone]), "the instances kept")
+        s = {"org": org, "named": named, "alone": alone, "kobi": kobi.id}
+        s["decisions"] = self._decide(w, s)
+        for want in ("kora reads kept-named", "kobi reads kept-named", "kora reads kept-alone"):
+            check(s["decisions"][want] == "ok", f"{want}: {s['decisions'][want]}")
+        for want in ("kurt reads kept-named", "kurt reads kept-alone", "kobi reads kept-alone"):
+            check(s["decisions"][want] != "ok", f"{want} was allowed")
+        return s
+
+    def _decide(self, w, s):
+        out = {}
+        for key in ("named", "alone"):
+            app = s[key]
+            for who in ("kora", "kurt", "kobi"):
+                p = person(w, who)
+                out[f"{who} reads kept-{key}"] = decision(lambda p=p, app=app: p.view(app, "get", {"key": "k"}))
+            out[f"anonymous reads kept-{key}"] = decision(
+                lambda app=app: anyone(w, "POST", f"apps/{app}/views", {"method": "get", "args": {"key": "k"}}))
+        return out
+
+    def check(self, w, s):
+        kora = person(w, "kora")
+        eq(kora.get(f"apps/{s['named']}").get("grants"), [{"kind": "account", "account": s["kobi"]}],
+           "the kept instance's other grant")
+        eq(kora.get(f"apps/{s['alone']}").get("grants"), [], "the kept instance with none left")
+        eq(kora.view(s["alone"], "get", {"key": "k"}), "kept", "its data")
+        same_decisions(self._decide(w, s), s["decisions"], "instances kept with their team deleted")
+
+    def exercise(self, w, s):
+        kora = person(w, "kora")
+        team = team_id(kora.raw("post", f"orgs/{s['org']}/teams", {"name": "gone", "join": "invite"}))
+        app = kora.deploy(kv_wasm(w), "goes", org=s["org"])
+        kora.raw("post", f"apps/{app}/access", {"grants": [{"kind": "team", "team": team}]})
+        out = kora.raw("delete", f"orgs/{s['org']}/teams/{team}")
+        eq(out.get("apps"), [app], "the default deletes the instance only the team admitted")
 
 
 def _xcalls(w, s, node=None):

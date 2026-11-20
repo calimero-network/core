@@ -80,8 +80,10 @@ def sync_detailed(
 
      No passkey prompt: the node signs the redemption with the token's key. Answers the organization
     joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the
-    redeemer was named as a member of it (else a guest, never made a member). An instance invite is
-    refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+    redeemer was named as a member of it (else a guest, never made a member). An instance invite always
+    names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the
+    instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the
+    redemption applies.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -116,8 +118,10 @@ def sync(
 
      No passkey prompt: the node signs the redemption with the token's key. Answers the organization
     joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the
-    redeemer was named as a member of it (else a guest, never made a member). An instance invite is
-    refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+    redeemer was named as a member of it (else a guest, never made a member). An instance invite always
+    names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the
+    instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the
+    redemption applies.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -147,8 +151,10 @@ async def asyncio_detailed(
 
      No passkey prompt: the node signs the redemption with the token's key. Answers the organization
     joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the
-    redeemer was named as a member of it (else a guest, never made a member). An instance invite is
-    refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+    redeemer was named as a member of it (else a guest, never made a member). An instance invite always
+    names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the
+    instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the
+    redemption applies.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -181,8 +187,10 @@ async def asyncio(
 
      No passkey prompt: the node signs the redemption with the token's key. Answers the organization
     joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the
-    redeemer was named as a member of it (else a guest, never made a member). An instance invite is
-    refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+    redeemer was named as a member of it (else a guest, never made a member). An instance invite always
+    names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the
+    instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the
+    redemption applies.
 
     **Who:** a passkey session (an API key is refused).
 

@@ -208,6 +208,9 @@ async fn public_link_create(
                 crate::system::PUBLIC_LINKS_OFF,
             ));
         }
+        if app.access.admits_signed_out() {
+            return Err(crate::node::rejected(crate::system::LEGACY_PUBLIC));
+        }
         Ok(())
     })?;
     let rate = body
