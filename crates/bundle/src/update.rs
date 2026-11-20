@@ -1,7 +1,7 @@
 //! Whether an update of an app instance changes where its data can go: **green** or
 //! **red**, judged from the signed manifests and embedded ABIs of the releases it runs and
 //! would run, over its whole unit (the app and every app it created with `uses` in mode
-//! `create`, transitively), against the cluster's list of sealed endpoints.
+//! `create`, transitively).
 //!
 //! The one classifier the node (`GET /apps/{app}/update`, the consent page's upgrade
 //! sheet) and the command line (an app's check against an earlier release) call: pure, so
@@ -17,9 +17,10 @@
 //! the same `https://` authority and its path is the other's or below it at a `/`
 //! ([`covers`], the rule `calimero-outbound` applies to each request).
 //!
-//! A unit is **sealed** when every destination of its egress is covered by an entry of the
-//! cluster's sealed-endpoint list (endpoints its operator vouches keep data inside a TEE,
-//! such as private inference); a unit with no egress is sealed.
+//! An empty egress means no data leaves Calimero. Any destination outside the cluster is
+//! just a destination, whatever runs there: the platform never vouches for an external
+//! endpoint, a TEE (such as a private-inference service) included. An app that wants to
+//! trust one verifies its attestation in its own code; it is still listed.
 //!
 //! ## Red and green
 //!
@@ -29,8 +30,7 @@
 //! - **`signerChanged`**: the app or a member that is in the unit on both sides is signed
 //!   by another key: the code is no longer from whoever was trusted with it.
 //! - **`egressAdded`**: a destination after the update is covered by none before (members
-//!   counted): data may go somewhere it could not. Leaving the sealed set implies this
-//!   (with the same sealed list, only a new destination can be unsealed).
+//!   counted): data may go somewhere it could not.
 //! - **`stateVersionChanged`**: the app or a member declares another state version
 //!   (`#[app::state(version = N)]`; a side whose component embeds no ABI counts as a
 //!   version of its own): an update runs no migration, so the new code reads data the old
@@ -166,25 +166,10 @@ impl Unit {
             .collect()
     }
 
-    /// Whether every destination of the unit's egress is a sealed endpoint ([`sealed`]).
-    #[must_use]
-    pub fn sealed(&self, endpoints: &[String]) -> bool {
-        sealed(&self.egress(), endpoints)
-    }
-
     /// The app (`""`) and each member by path, with its release.
     fn parts(&self) -> impl Iterator<Item = (&str, &Release)> {
         std::iter::once(("", &self.app)).chain(self.members.iter().map(|(k, r)| (k.as_str(), r)))
     }
-}
-
-/// Whether every destination in `egress` is covered by one of `endpoints` (no egress at
-/// all is sealed).
-#[must_use]
-pub fn sealed(egress: &BTreeSet<String>, endpoints: &[String]) -> bool {
-    egress
-        .iter()
-        .all(|d| endpoints.iter().any(|e| covers(e, d)))
 }
 
 /// An `https://` prefix taken apart: its authority (lowercase, without the default port)
@@ -303,9 +288,8 @@ pub struct Classification {
     pub class: Class,
     /// Every rule that makes it red; empty when green.
     pub reasons: Vec<Reason>,
+    /// The unit's destinations before and after (empty: no data leaves Calimero).
     pub egress: EgressDiff,
-    pub sealed_before: bool,
-    pub sealed_after: bool,
     /// The app or a member that stays declares another state version.
     pub state_version_changed: bool,
     /// Methods the target ABIs declare that the running ones do not: the app's by name,
@@ -317,10 +301,9 @@ pub struct Classification {
     pub signer_changed: bool,
 }
 
-/// Judge the update of a unit from `before` to `after` against the cluster's sealed
-/// `endpoints` (the module's rules).
+/// Judge the update of a unit from `before` to `after` (the module's rules).
 #[must_use]
-pub fn classify(before: &Unit, after: &Unit, endpoints: &[String]) -> Classification {
+pub fn classify(before: &Unit, after: &Unit) -> Classification {
     let mut reasons = Vec::new();
     let mut signer_changed = false;
     let mut state_version_changed = false;
@@ -427,8 +410,6 @@ pub fn classify(before: &Unit, after: &Unit, endpoints: &[String]) -> Classifica
     Classification {
         class,
         reasons,
-        sealed_before: sealed(&from, endpoints),
-        sealed_after: sealed(&to, endpoints),
         egress: EgressDiff {
             before: from.into_iter().collect(),
             after: to.into_iter().collect(),
@@ -481,8 +462,11 @@ mod tests {
         }
     }
 
-    fn sealed_list() -> Vec<String> {
-        vec!["https://inference.near.ai/".to_owned()]
+    /// `notes` with only its `store` member: no egress.
+    fn local_unit(version: &str) -> Unit {
+        let mut u = unit(version);
+        let _ = u.members.remove("ai");
+        u
     }
 
     fn codes(c: &Classification) -> Vec<String> {
@@ -498,11 +482,10 @@ mod tests {
     }
 
     #[test]
-    fn the_same_unit_again_is_green_and_sealed() {
-        let c = classify(&unit("1.0.0"), &unit("1.1.0"), &sealed_list());
+    fn the_same_unit_again_is_green() {
+        let c = classify(&unit("1.0.0"), &unit("1.1.0"));
         assert_eq!(c.class, Class::Green, "{c:?}");
         assert!(c.reasons.is_empty());
-        assert!(c.sealed_before && c.sealed_after);
         assert_eq!(c.egress.before, vec![AI.to_owned()]);
         assert_eq!(c.egress.after, c.egress.before);
         assert!(c.egress.added.is_empty() && c.egress.removed.is_empty());
@@ -513,23 +496,19 @@ mod tests {
     fn egress_counts_every_member() {
         let u = unit("1.0.0");
         assert_eq!(u.egress(), BTreeSet::from([AI.to_owned()]));
-        assert!(u.sealed(&sealed_list()));
-        assert!(!u.sealed(&[]), "a destination no sealed endpoint covers");
-        assert!(
-            Unit::of(release("p", "1.0.0")).sealed(&[]),
-            "no egress is sealed"
-        );
+        assert!(local_unit("1.0.0").egress().is_empty());
+        assert!(Unit::of(release("p", "1.0.0")).egress().is_empty());
     }
 
     #[test]
-    fn a_new_destination_on_the_app_is_red_and_not_sealed() {
-        let mut after = unit("1.1.0");
+    fn a_new_destination_on_the_app_is_red() {
+        let mut after = local_unit("1.1.0");
         after.app = with_outbound(after.app, &[ACME]);
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&local_unit("1.0.0"), &after);
         assert_eq!(c.class, Class::Red);
         assert_eq!(codes(&c), ["egressAdded"]);
         assert_eq!(c.egress.added, vec![ACME.to_owned()]);
-        assert!(c.sealed_before && !c.sealed_after);
+        assert!(c.egress.before.is_empty());
     }
 
     #[test]
@@ -537,7 +516,7 @@ mod tests {
         let mut after = unit("1.1.0");
         let ai = after.members.get_mut("ai").unwrap();
         *ai = with_outbound(ai.clone(), &[AI, "https://telemetry.acme.com/"]);
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&unit("1.0.0"), &after);
         assert_eq!(codes(&c), ["egressAdded"]);
         assert_eq!(
             c.egress.added,
@@ -552,7 +531,7 @@ mod tests {
         after.app = with_outbound(after.app, &["https://inference.near.ai/v1/chat/"]);
         let ai = after.members.get_mut("ai").unwrap();
         *ai = with_outbound(ai.clone(), &[]);
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&unit("1.0.0"), &after);
         assert_eq!(c.class, Class::Green, "{c:?}");
         assert!(c.egress.added.is_empty());
         // The wider prefix went: the narrower one no longer covers all of it.
@@ -561,12 +540,18 @@ mod tests {
 
     #[test]
     fn less_egress_is_green_and_reports_what_went() {
-        let mut before = unit("1.0.0");
+        let mut before = local_unit("1.0.0");
         before.app = with_outbound(before.app, &[ACME]);
-        let c = classify(&before, &unit("1.1.0"), &sealed_list());
+        let c = classify(&before, &local_unit("1.1.0"));
         assert_eq!(c.class, Class::Green, "{c:?}");
         assert_eq!(c.egress.removed, vec![ACME.to_owned()]);
-        assert!(!c.sealed_before && c.sealed_after);
+        assert!(c.egress.after.is_empty(), "no data leaves Calimero after");
+        // Dropping one destination of two leaves the other.
+        let mut before = unit("1.0.0");
+        before.app = with_outbound(before.app, &[ACME]);
+        let c = classify(&before, &unit("1.1.0"));
+        assert_eq!(c.class, Class::Green, "{c:?}");
+        assert_eq!(c.egress.after, vec![AI.to_owned()]);
     }
 
     #[test]
@@ -575,7 +560,7 @@ mod tests {
         before.app = with_outbound(before.app, &["https://api.acme.com/v1/"]);
         let mut after = unit("1.1.0");
         after.app = with_outbound(after.app, &[ACME]);
-        let c = classify(&before, &after, &[]);
+        let c = classify(&before, &after);
         assert_eq!(codes(&c), ["egressAdded"]);
         assert_eq!(c.egress.added, vec![ACME.to_owned()]);
     }
@@ -604,7 +589,7 @@ mod tests {
     fn a_new_signer_is_red_on_the_app_or_a_member() {
         let mut after = unit("1.1.0");
         after.app.signer = "did:key:other".into();
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&unit("1.0.0"), &after);
         assert!(c.signer_changed);
         assert_eq!(
             c.reasons,
@@ -616,7 +601,7 @@ mod tests {
         );
         let mut after = unit("1.1.0");
         after.members.get_mut("store").unwrap().signer = "did:key:other".into();
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&unit("1.0.0"), &after);
         assert_eq!(c.class, Class::Red);
         assert!(
             matches!(&c.reasons[..], [Reason::SignerChanged { member: Some(m), .. }] if m == "store")
@@ -627,12 +612,12 @@ mod tests {
     fn another_state_version_is_red_and_unknown_counts_as_one() {
         let mut after = unit("1.1.0");
         after.app.state_version = Some(2);
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&unit("1.0.0"), &after);
         assert!(c.state_version_changed);
         assert_eq!(codes(&c), ["stateVersionChanged"]);
         let mut after = unit("1.1.0");
         after.members.get_mut("ai").unwrap().state_version = None;
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&unit("1.0.0"), &after);
         assert_eq!(c.class, Class::Red);
         assert!(c.state_version_changed);
     }
@@ -644,27 +629,21 @@ mod tests {
             "search".into(),
             with_outbound(release("com.acme.search", "1.0.0"), &[AI]),
         );
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&unit("1.0.0"), &after);
         assert_eq!(codes(&c), ["memberAdded"], "{c:?}");
         assert!(
             c.egress.added.is_empty(),
             "the destination was there already"
         );
-        let c = classify(&after, &unit("1.2.0"), &sealed_list());
+        let c = classify(&after, &unit("1.2.0"));
         assert_eq!(codes(&c), ["memberRemoved"]);
 
         let mut after = unit("1.1.0");
         let _ = after
             .members
             .insert("cache".into(), release("com.calimero.kv", "1.0.0"));
-        assert_eq!(
-            classify(&unit("1.0.0"), &after, &sealed_list()).class,
-            Class::Green
-        );
-        assert_eq!(
-            classify(&after, &unit("1.0.0"), &sealed_list()).class,
-            Class::Green
-        );
+        assert_eq!(classify(&unit("1.0.0"), &after).class, Class::Green);
+        assert_eq!(classify(&after, &unit("1.0.0")).class, Class::Green);
     }
 
     #[test]
@@ -674,7 +653,7 @@ mod tests {
             "ai".into(),
             with_outbound(release("com.other.ai", "1.0.0"), &[AI]),
         );
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&unit("1.0.0"), &after);
         assert_eq!(codes(&c), ["memberAdded", "memberRemoved"]);
         assert!(!c.signer_changed, "two packages are not a signer change");
     }
@@ -689,7 +668,7 @@ mod tests {
             "com.cal".to_owned(),
             BTreeSet::from(["read".to_owned(), "book".to_owned()]),
         )]);
-        let c = classify(&before, &after, &sealed_list());
+        let c = classify(&before, &after);
         assert_eq!(
             c.reasons,
             [Reason::DelegatedMethodsAdded {
@@ -699,10 +678,7 @@ mod tests {
             }]
         );
         // Fewer is green.
-        assert_eq!(
-            classify(&after, &before, &sealed_list()).class,
-            Class::Green
-        );
+        assert_eq!(classify(&after, &before).class, Class::Green);
     }
 
     #[test]
@@ -711,7 +687,7 @@ mod tests {
         after.app.methods = Some(["get".to_owned(), "pin".to_owned()].into());
         after.members.get_mut("store").unwrap().methods =
             Some(["get".to_owned(), "set".to_owned(), "scan".to_owned()].into());
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&unit("1.0.0"), &after);
         assert_eq!(c.class, Class::Green);
         assert_eq!(c.new_methods, ["pin", "store.scan"]);
         assert_eq!(c.removed_methods, ["set"]);
@@ -719,7 +695,7 @@ mod tests {
         let mut after = unit("1.1.0");
         after.app.methods = None;
         after.app.state_version = Some(1);
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&unit("1.0.0"), &after);
         assert!(c.new_methods.is_empty() && c.removed_methods.is_empty());
     }
 
@@ -730,7 +706,7 @@ mod tests {
         after.app.signer = "did:key:other".into();
         after.app.state_version = Some(3);
         let _ = after.members.remove("ai");
-        let c = classify(&unit("1.0.0"), &after, &sealed_list());
+        let c = classify(&unit("1.0.0"), &after);
         assert_eq!(
             codes(&c),
             [
@@ -744,7 +720,7 @@ mod tests {
         assert_eq!(wire["class"], "red");
         assert_eq!(wire["reasons"][3]["member"], "ai");
         assert_eq!(wire["egress"]["removed"], json!([AI]));
-        assert_eq!(wire["sealedAfter"], false);
+        assert!(wire.get("sealedAfter").is_none());
     }
 
     #[test]

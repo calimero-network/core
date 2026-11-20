@@ -180,15 +180,10 @@ pub enum Feature {
     /// the setting; a visitor's call names `Caller::Visitor` in the app's log, which an
     /// earlier replica cannot decode, so visitors are admitted only at this version too.
     PublicLinks,
-    /// `SetSealedEndpoints`, the operator's list of endpoints a unit's egress may reach and
-    /// still be Sealed (`SystemState::sealed_endpoints`): an earlier release cannot decode
-    /// it, so its replicas would keep no list and call a unit unsealed that the others call
-    /// sealed.
-    SealedEndpoints,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 42] = [
+pub const FEATURES: [Feature; 41] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -230,7 +225,6 @@ pub const FEATURES: [Feature; 42] = [
     Feature::AccessGrants,
     Feature::KeepTeamApps,
     Feature::PublicLinks,
-    Feature::SealedEndpoints,
 ];
 
 impl Feature {
@@ -279,7 +273,6 @@ impl Feature {
             Self::AccessGrants => "accessGrants",
             Self::KeepTeamApps => "keepTeamApps",
             Self::PublicLinks => "publicLinks",
-            Self::SealedEndpoints => "sealedEndpoints",
         }
     }
 
@@ -326,7 +319,6 @@ impl Feature {
             | Self::AccessGrants
             | Self::KeepTeamApps
             | Self::PublicLinks => "1.0.0-rc.33",
-            Self::SealedEndpoints => "1.0.0-rc.34",
         }
     }
 }
@@ -626,7 +618,6 @@ impl SystemCmd {
                 vec![Feature::DeploymentSecrets]
             }
             Self::SetPools { .. } => vec![Feature::ComputePools],
-            Self::SetSealedEndpoints { .. } => vec![Feature::SealedEndpoints],
             Self::ScopeApps {
                 apps, by_release, ..
             } => {
@@ -861,7 +852,6 @@ mod tests {
     const RC31: &str = "1.0.0-rc.31";
     const RC32: &str = "1.0.0-rc.32";
     const RC33: &str = "1.0.0-rc.33";
-    const RC34: &str = "1.0.0-rc.34";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1096,10 +1086,6 @@ mod tests {
                 "app_id": "app", "bundle": "b", "actor": "a", "owner_approves": true })),
             Feature::PublicLinks => entry(json!({ "op": "setOrgSettings", "org": "org",
                 "settings": { "allowPublicLinks": false }, "actor": "alice" })),
-            Feature::SealedEndpoints => SystemCmd::SetSealedEndpoints {
-                endpoints: vec!["https://inference.near.ai/".into()],
-                proof: Value::Null,
-            },
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1386,9 +1372,9 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES.iter().partition(|f| {
-            ![RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34].contains(&f.since())
-        });
+        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
+            .iter()
+            .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33].contains(&f.since()));
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -1461,10 +1447,8 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC29);
         let (rc30, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC31);
-        let (rc32, later): (Vec<Feature>, Vec<Feature>) =
+        let (rc32, rc33): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC32);
-        let (rc33, rc34): (Vec<Feature>, Vec<Feature>) =
-            later.into_iter().partition(|f| f.since() == RC33);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -1554,8 +1538,6 @@ mod tests {
                 Feature::PublicLinks
             ]
         );
-        // rc.34's (the operator's sealed endpoints) for every node on rc.34.
-        assert_eq!(rc34, [Feature::SealedEndpoints]);
         for &feature in rc32.iter().chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
@@ -1604,24 +1586,6 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc33 {
-            propose(&mut nodes, &uses(feature)).unwrap();
-        }
-        for &feature in &rc34 {
-            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
-            assert_eq!(
-                (refused.feature, refused.active.as_deref()),
-                (feature, Some(RC33))
-            );
-        }
-        for n in &mut nodes {
-            n.release = RC34;
-        }
-        let raise = SystemCmd::SetClusterVersion {
-            version: RC34.into(),
-            nodes: (1..=3).map(|id| (id, RC34.to_owned())).collect(),
-        };
-        propose(&mut nodes, &raise).unwrap();
-        for &feature in &rc34 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

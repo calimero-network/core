@@ -1577,28 +1577,33 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
 }
 
 /// The plain sentence a page says of where the unit's data can go after the update
-/// (`calimero_bundle::update`): Sealed, or the destinations that are not.
-fn sealed_point(c: &calimero_bundle::update::Classification) -> String {
-    let destinations = hosts(c.egress.after.iter().map(String::as_str));
-    match (c.sealed_after, destinations.is_empty()) {
-        (true, true) => {
-            "Sealed: the app and the apps it created send data nowhere outside this cluster."
-                .to_owned()
-        }
-        (true, false) => format!(
-            "Sealed: the app and the apps it created send data only to sealed endpoints ({}).",
-            phrase(&destinations)
-        ),
-        (false, _) => format!(
-            "Not Sealed: the app and the apps it created may send data to {}.",
-            phrase(&destinations)
-        ),
+/// (`calimero_bundle::update`): the destinations it adds, else that the data stays in
+/// Calimero, else where it can go. Only destinations: an external endpoint, a TEE
+/// included, is named like any other, never vouched for. The apps it created are named
+/// only when it has some (`members`).
+fn destinations_point(c: &calimero_bundle::update::Classification, members: bool) -> String {
+    let point = if !c.egress.added.is_empty() {
+        format!(
+            "This update can send data to a new place: {}.",
+            phrase(&hosts(c.egress.added.iter().map(String::as_str)))
+        )
+    } else if c.egress.after.is_empty() {
+        "Your data stays in Calimero.".to_owned()
+    } else {
+        format!(
+            "This app can send data to: {}.",
+            phrase(&hosts(c.egress.after.iter().map(String::as_str)))
+        )
+    };
+    if members {
+        format!("{point} That includes the apps it created.")
+    } else {
+        point
     }
 }
 
 /// What the unit's classification adds to the page's attention: destinations the members
-/// add (the app's own are `sendsData` already), and that the update is red, so no
-/// automatic policy would apply it.
+/// add (`newDestinations`; the app's own are `sendsData` already).
 fn unit_attention(c: &calimero_bundle::update::Classification, sheet: &Value) -> Vec<Value> {
     let own = strings(&sheet["outbound"]["added"]);
     let others: Vec<&str> = c
@@ -1608,23 +1613,14 @@ fn unit_attention(c: &calimero_bundle::update::Classification, sheet: &Value) ->
         .filter(|d| !own.contains(d))
         .map(String::as_str)
         .collect();
-    let mut out = Vec::new();
-    if !others.is_empty() {
-        out.push(attention(
-            "unitSendsData",
-            "The apps it created can send data to new addresses:".to_owned(),
-            hosts(others),
-        ));
+    if others.is_empty() {
+        return Vec::new();
     }
-    if c.sealed_before && !c.sealed_after {
-        out.push(attention(
-            "leavesSealed",
-            "It is no longer Sealed: data can leave for addresses no sealed endpoint covers."
-                .to_owned(),
-            vec![],
-        ));
-    }
-    out
+    vec![attention(
+        "newDestinations",
+        "The apps it created can send data to new places:".to_owned(),
+        hosts(others),
+    )]
 }
 
 async fn release_request(
@@ -2030,7 +2026,7 @@ async fn upgrade_request(
     ];
     let mut attention = upgrade_attention(&sheet);
     if let Some(c) = &unit {
-        points.push(json!(sealed_point(c)));
+        points.push(json!(destinations_point(c, !app.links.is_empty())));
         attention.extend(unit_attention(c, &sheet));
     }
     let model = json!({
@@ -2154,11 +2150,11 @@ async fn unit_upgrade_request(
     // The whole unit moves: its egress after is the members' targets', classified once.
     let unit = crate::egress::update(node, &plan.app, &version, true).await?;
     if let Some(c) = &unit {
-        points.insert(points.len() - 1, json!(sealed_point(c)));
+        points.insert(points.len() - 1, json!(destinations_point(c, true)));
     }
     let mut attention = attention;
     if let Some(c) = &unit {
-        attention.retain(|a| a["flag"] != "unitSendsData" && a["flag"] != "leavesSealed");
+        attention.retain(|a| a["flag"] != "newDestinations");
         attention.extend(unit_attention(c, &root["upgrade"]));
     }
     let mut model = root.clone();

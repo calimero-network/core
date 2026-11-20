@@ -44,7 +44,6 @@ app's upgrade, replica move or restore), `org:<id>` (an organization's run) or
 `__register_node` (`{ id, addr, zone }`), `__remove_node` (`{ id }`),
 `__set_quotas` (`{ quotas }`, every limit after the change),
 `__set_org_quotas` (`{ payer, quotas }`), `__set_pools`, `__set_price_table`,
-`__set_sealed_endpoints` (`{ endpoints }`, the list sorted),
 `__set_replicas` (`{ replicas }`, the target set sorted; one signature covers
 both writes of the move), `__restore_app` (`{ backup, sha256 }`),
 `__set_backup_key` (`{ publicKey }`) and `__recover_holder`
@@ -75,7 +74,6 @@ refused by the log. With no key recorded, operator decisions are refused
 | `GET /ops/nodes/{id}/receipt-key` | The receipt key this node holds for a peer, to check an account proof from any node |
 | `GET` / `POST /ops/quotas` | Read or set the quotas (per account, per organization, and the developer's fuel per day); `{ org, … }` sets one organization's override. Setting is signed (`428` first; `operatorProof` beside the limits) |
 | `GET` / `POST /ops/pools`, `GET` / `POST /ops/prices` | Compute pools and the price table, setting signed ([Compute actions](/protocol/compute-actions/)) |
-| `GET` / `POST /ops/sealed-endpoints` | The sealed endpoints: `https://` prefixes the operator vouches keep what is sent there inside a TEE (such as private inference), at most 64; setting is signed (`428` first) and needs cluster version 1.0.0-rc.34. A unit whose every egress destination one of them covers is Sealed ([Where an update may send data](/protocol/upgrades/#where-an-update-may-send-data)) |
 | `GET /ops/served-origins` | Custom domains packages registered as served origins (`{ origin, host, label, addedAt }`, no package names), for certificates and routing |
 | `POST /ops/sign-up`, `/ops/sign-up/invites[/{key}]` | The sign-up policy and cluster sign-up invites, signed, until the cluster's owner is named ([Sign-up](/protocol/governance/#sign-up)) |
 | `POST /ops/backup` | Write sealed snapshots of the app groups this node leads (below) |
@@ -104,6 +102,11 @@ Elsewhere, the operator configures the node: the outbound policy (which hosts
 any app may reach, and the secrets requests may carry), the registry releases
 are installed from, the domain app frontends are served under, and the
 measurement policy for peers.
+
+Allowing a host does not vouch for it: an app's destinations are every host it
+and the apps it created declare, listed to the people who use it, and the
+operator has no list of trusted external endpoints, a TEE included
+([Where an update may send data](/protocol/upgrades/#where-an-update-may-send-data)).
 
 ## What runs where
 
