@@ -31,18 +31,14 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param access 
  * @param grants 
  */
 @Serializable
 
 data class AppAccessRequest (
 
-    @SerialName(value = "access")
-    val access: com.calimero.mero.AppAccess? = null,
-
     @SerialName(value = "grants")
-    val grants: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>? = null
+    val grants: kotlin.collections.List<@Contextual com.calimero.mero.AppGrant>
 
 ) {
 

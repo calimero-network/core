@@ -74,8 +74,7 @@ def sync_detailed(
     range (`null` with nothing linked). A link the release no longer names is listed with `package`,
     `range` and `mode` `null`.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -112,8 +111,7 @@ def sync(
     range (`null` with nothing linked). A link the release no longer names is listed with `package`,
     `range` and `mode` `null`.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -145,8 +143,7 @@ async def asyncio_detailed(
     range (`null` with nothing linked). A link the release no longer names is listed with `package`,
     `range` and `mode` `null`.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -181,8 +178,7 @@ async def asyncio(
     range (`null` with nothing linked). A link the release no longer names is listed with `package`,
     `range` and `mode` `null`.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):

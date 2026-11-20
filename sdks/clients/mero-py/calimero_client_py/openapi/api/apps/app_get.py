@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_get_response_200 import AppGetResponse200
+from ...models.app import App
 from ...models.error import Error
 from typing import cast
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppGetResponse200, Error]]:
+) -> Optional[Union[App, Error]]:
     if response.status_code == 200:
-        response_200 = AppGetResponse200.from_dict(response.json())
+        response_200 = App.from_dict(response.json())
 
         return response_200
 
@@ -57,7 +57,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppGetResponse200, Error]]:
+) -> Response[Union[App, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -70,14 +70,11 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppGetResponse200, Error]]:
-    r"""One app
+) -> Response[Union[App, Error]]:
+    """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route. `grants` is its access as grants whichever shape it was set in (absent from a node before
-    1.0.0-rc.32): an instance set `public` before 1.0.0-rc.32 keeps `access: { kind: \"public\" }` and
-    answers `[{ kind: \"anyone\", signedOut: true }]`, as it admits callers without an account too; a
-    guest sees only their own grant (and `access` naming only them).
+    route. A guest sees only their own grant in `grants`.
 
     **Who:** signed in (a session or an API key).
 
@@ -89,7 +86,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppGetResponse200, Error]]
+        Response[Union[App, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -107,14 +104,11 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppGetResponse200, Error]]:
-    r"""One app
+) -> Optional[Union[App, Error]]:
+    """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route. `grants` is its access as grants whichever shape it was set in (absent from a node before
-    1.0.0-rc.32): an instance set `public` before 1.0.0-rc.32 keeps `access: { kind: \"public\" }` and
-    answers `[{ kind: \"anyone\", signedOut: true }]`, as it admits callers without an account too; a
-    guest sees only their own grant (and `access` naming only them).
+    route. A guest sees only their own grant in `grants`.
 
     **Who:** signed in (a session or an API key).
 
@@ -126,7 +120,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppGetResponse200, Error]
+        Union[App, Error]
     """
 
     return sync_detailed(
@@ -139,14 +133,11 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppGetResponse200, Error]]:
-    r"""One app
+) -> Response[Union[App, Error]]:
+    """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route. `grants` is its access as grants whichever shape it was set in (absent from a node before
-    1.0.0-rc.32): an instance set `public` before 1.0.0-rc.32 keeps `access: { kind: \"public\" }` and
-    answers `[{ kind: \"anyone\", signedOut: true }]`, as it admits callers without an account too; a
-    guest sees only their own grant (and `access` naming only them).
+    route. A guest sees only their own grant in `grants`.
 
     **Who:** signed in (a session or an API key).
 
@@ -158,7 +149,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppGetResponse200, Error]]
+        Response[Union[App, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -174,14 +165,11 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppGetResponse200, Error]]:
-    r"""One app
+) -> Optional[Union[App, Error]]:
+    """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route. `grants` is its access as grants whichever shape it was set in (absent from a node before
-    1.0.0-rc.32): an instance set `public` before 1.0.0-rc.32 keeps `access: { kind: \"public\" }` and
-    answers `[{ kind: \"anyone\", signedOut: true }]`, as it admits callers without an account too; a
-    guest sees only their own grant (and `access` naming only them).
+    route. A guest sees only their own grant in `grants`.
 
     **Who:** signed in (a session or an API key).
 
@@ -193,7 +181,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppGetResponse200, Error]
+        Union[App, Error]
     """
 
     return (

@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use calimero_client::types::{Access, AppCreateRequest, AppUpgradeRequest, Grant};
-use clap::{Subcommand, ValueEnum};
+use calimero_client::types::{AppCreateRequest, AppUpgradeRequest, Grant};
+use clap::Subcommand;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 
@@ -122,21 +122,13 @@ pub enum ContextCmd {
         #[arg(value_name = "INSTANCE")]
         context: String,
     },
-    /// Who reaches the instance: `grants`, a list of `--grant`s; or one mode (deprecated:
-    /// `owner`, `org`, `team`, `accounts`, `public`).
+    /// Who reaches the instance: its grants, which replace the ones it has (none: only its
+    /// owner).
     Access {
         #[arg(value_name = "INSTANCE")]
         context: String,
-        #[arg(value_enum)]
-        kind: AccessKind,
-        /// For `team`: the team.
-        #[arg(long = "team", value_name = "TEAM")]
-        group: Option<String>,
-        /// For `accounts`: who.
-        #[arg(long = "account")]
-        accounts: Vec<String>,
-        /// For `grants`, each a way in: `org`, `team:<TEAM>`, `account:<ACCOUNT>` (a member
-        /// or a guest), `account:<ACCOUNT>=<SCOPE JSON>` (with the app's scope), `anyone`.
+        /// Each a way in: `org`, `team:<TEAM>`, `account:<ACCOUNT>` (a member or a guest),
+        /// `account:<ACCOUNT>=<SCOPE JSON>` (with the app's scope), `anyone`.
         #[arg(long = "grant", value_name = "GRANT", value_parser = parse_grant)]
         grants: Vec<Grant>,
     },
@@ -161,21 +153,11 @@ pub enum ContextCmd {
     Presence(PresenceCmd),
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum AccessKind {
-    Owner,
-    Org,
-    Team,
-    Accounts,
-    Public,
-    Grants,
-}
-
 /// A `--grant`: `org`, `anyone`, `team:<TEAM>`, `account:<ACCOUNT>[=<SCOPE JSON>]`.
 fn parse_grant(spec: &str) -> Result<Grant, String> {
     match spec {
         "org" => return Ok(Grant::Org),
-        "anyone" => return Ok(Grant::Anyone { signed_out: None }),
+        "anyone" => return Ok(Grant::Anyone),
         _ => {}
     }
     if let Some(team) = spec.strip_prefix("team:") {
@@ -283,7 +265,7 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
                 bundle,
                 org: namespace,
                 init_args: params.as_deref().map(json_arg).transpose()?,
-                access: group.map(|team| Access::Team { team }),
+                grants: group.map(|team| vec![Grant::Team { team }]),
                 ..AppCreateRequest::default()
             };
             let created = apps.create(body).await?;
@@ -373,26 +355,8 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
                 .alias_set("default", &env.app(&context).await?)
                 .await?,
         )?,
-        ContextCmd::Access {
-            context,
-            kind,
-            group,
-            accounts,
-            grants,
-        } => {
-            let app = env.app(&context).await?;
-            let mode = |a: Access| (Some(a), None);
-            let (access, grants) = match kind {
-                AccessKind::Grants => (None, Some(grants)),
-                AccessKind::Owner => mode(Access::Owner),
-                AccessKind::Org => mode(Access::Org),
-                AccessKind::Public => mode(Access::Public),
-                AccessKind::Team => mode(Access::Team {
-                    team: group.ok_or_else(|| eyre::eyre!("which team? --team"))?,
-                }),
-                AccessKind::Accounts => mode(Access::Accounts { accounts }),
-            };
-            to_json(&apps.access(&app, access, grants).await?)?
+        ContextCmd::Access { context, grants } => {
+            to_json(&apps.access(&env.app(&context).await?, grants).await?)?
         }
         ContextCmd::Metadata { context, metadata } => to_json(
             &apps

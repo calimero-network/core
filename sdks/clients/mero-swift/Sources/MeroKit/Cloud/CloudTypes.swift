@@ -244,35 +244,37 @@ public enum TeamJoin: String, Codable, Sendable {
     case everyone, invite
 }
 
-/// Who may reach an app. (== mero-js `setAccess`'s `{ kind, … }`.)
-public enum AppAccess: Sendable, Equatable {
-    /// Only the owner.
-    case owner
-    /// Members of the app's organization.
+/// One way into an app instance: an instance's grants are a list of them, and none is its owner
+/// alone. (== the API's `Grant`, `{ kind, … }`.)
+public enum AppGrant: Sendable, Equatable {
+    /// Every member of the app's organization.
     case org
-    /// The owner and these accounts.
-    case accounts([String])
-    /// Anyone, signed in or not.
-    case `public`
     /// Members of one team of the app's organization.
     case team(String)
+    /// One account, a member or a guest, with the app's own scope (JSON).
+    case account(String, scope: JSONValue? = nil)
+    /// Any signed-in account.
+    case anyone
 
     public var json: JSONValue {
         switch self {
-        case .owner: return ["kind": "owner"]
         case .org: return ["kind": "org"]
-        case .accounts(let accounts): return ["kind": "accounts", "accounts": .array(accounts.map { .string($0) })]
-        case .public: return ["kind": "public"]
         case .team(let team): return ["kind": "team", "team": .string(team)]
+        case .account(let account, let scope):
+            var fields: [String: JSONValue] = ["kind": "account", "account": .string(account)]
+            if let scope { fields["scope"] = scope }
+            return .object(fields)
+        case .anyone: return ["kind": "anyone"]
         }
     }
 
     public init?(json: JSONValue?) {
         switch json?["kind"]?.stringValue {
-        case "owner": self = .owner
         case "org": self = .org
-        case "public": self = .public
-        case "accounts": self = .accounts((json?["accounts"]?.arrayValue ?? []).compactMap(\.stringValue))
+        case "anyone": self = .anyone
+        case "account":
+            guard let account = json?["account"]?.stringValue else { return nil }
+            self = .account(account, scope: json?["scope"])
         case "team":
             guard let team = json?["team"]?.stringValue else { return nil }
             self = .team(team)

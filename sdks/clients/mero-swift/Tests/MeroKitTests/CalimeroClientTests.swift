@@ -348,12 +348,12 @@ final class CalimeroClientTests: XCTestCase {
         XCTAssertEqual(team, "t1")
         let app = try await cloud.answerJSON {
             try await cloud.apps.create(
-                name: "chat", package: "com.calimero.chat", org: "o1", access: AppAccess.team("t1").generated)
+                name: "chat", package: "com.calimero.chat", org: "o1", grants: [try AppGrant.team("t1").generated])
         }["appId"]
         XCTAssertEqual(app, "a1")
         let created = try XCTUnwrap(node.requests.last?.json)
         XCTAssertEqual(created["package"], "com.calimero.chat")
-        XCTAssertEqual(created["access"], ["kind": "team", "team": "t1"])
+        XCTAssertEqual(created["grants"], [["kind": "team", "team": "t1"]])
         let token = try await cloud.orgs.inviteCreate(org: "o1", role: .member, passkey: SoftPasskey()).token
         XCTAssertEqual(token, "inv_x")
         _ = try await cloud.answerJSON { try await cloud.orgs.inviteRedeem(token: "inv_x") }

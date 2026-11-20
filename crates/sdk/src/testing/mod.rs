@@ -1127,8 +1127,8 @@ impl TestApp {
     /// The checks a node makes before `handle`, with its codes (Rulings 32, 35). First the
     /// platform's access gate: the harness app is an org app, so an account the org does not
     /// hold (never in it, or removed) is `404 NOT_FOUND`, and every anonymous caller is
-    /// `401 UNAUTHENTICATED`, whatever the method's `public` flag (on a node only a public app
-    /// lets anonymous callers reach the ABI); a visitor through a public link reaches only
+    /// `401 UNAUTHENTICATED`, whatever the method's `public` flag (on a node no access grant
+    /// admits a caller without an account); a visitor through a public link reaches only
     /// `#[app::public]` methods (`403 FORBIDDEN` for any other). Then the ABI's, as the node makes them: a method
     /// the ABI does not name (or a reserved `__` name) `UnknownMethod`, `init` and timers
     /// `WrongKind`, a `confirm` method as a view `ConfirmNotAView`, any other non-view as a

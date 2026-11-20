@@ -80,8 +80,7 @@ def sync_detailed(
     and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and
     `progress` as the leader last polled it.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -119,8 +118,7 @@ def sync(
     and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and
     `progress` as the leader last polled it.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -153,8 +151,7 @@ async def asyncio_detailed(
     and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and
     `progress` as the leader last polled it.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -190,8 +187,7 @@ async def asyncio(
     and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and
     `progress` as the leader last polled it.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):

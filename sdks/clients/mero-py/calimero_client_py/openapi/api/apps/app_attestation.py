@@ -83,8 +83,7 @@ def sync_detailed(
     documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any
     other query parameter is ignored.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -123,8 +122,7 @@ def sync(
     documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any
     other query parameter is ignored.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -158,8 +156,7 @@ async def asyncio_detailed(
     documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any
     other query parameter is ignored.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -196,8 +193,7 @@ async def asyncio(
     documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any
     other query parameter is ignored.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):

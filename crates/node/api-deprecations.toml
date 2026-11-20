@@ -22,13 +22,6 @@
 #   pr    = 4999                                              # the PR that removes it
 #   why   = "..."                                             # what breaks, and for whom
 
-[[deprecated]]
-field = "access"
-since = "1.0.0-rc.32"
-date = 2026-11-19
-remove_after = "1.0.0-rc.35"
-replacement = "grants: an instance's access as a list of grants (POST /apps, POST /apps/{app}/access, GET /apps/{app}); every access mode is a grant list, and the node keeps taking it until then"
-
 [[cutover]]
 route = "POST /auth/releases"
 pr = 5015
@@ -53,3 +46,8 @@ why = "deprecated since 1.0.0-rc.25 for POST /sealed/handshake: clients and peer
 route = "POST /sealed/v2"
 pr = 5102
 why = "deprecated since 1.0.0-rc.25 for POST /sealed: every SDK released before this one (mero-js up to 35.7.0, MeroKit and mero-kotlin up to 6.1.0) posts its sealed requests here and must upgrade to one that posts to /sealed"
+
+[[cutover]]
+field = "access"
+pr = 5194
+why = "an instance's access is its list of grants: POST /apps and POST /apps/{app}/access take only grants, and GET /apps/{app} and the move answer it as grants; clients that send or read the single access mode must move to grants, and clusters are recreated (no earlier access record is read)"

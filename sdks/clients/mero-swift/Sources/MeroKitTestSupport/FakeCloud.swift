@@ -187,10 +187,10 @@ public final class FakeCloud: @unchecked Sendable {
             return .json(["org": .string(org), "orgId": .string(org)])
         case on("POST", "apps") != nil:
             let app = id("app")
-            let access = body["access"]
+            let grant = body["grants"]?.arrayValue?.first
             apps[app] = (
                 body["name"]?.stringValue ?? "", body["org"]?.stringValue,
-                access?["kind"] == "team" ? access?["team"]?.stringValue : nil, body["package"]?.stringValue ?? ""
+                grant?["kind"] == "team" ? grant?["team"]?.stringValue : nil, body["package"]?.stringValue ?? ""
             )
             return .json([
                 "appId": .string(app), "contextId": .string(app), "group": 1, "replicas": [1], "compute": false,
@@ -224,7 +224,7 @@ extension FakeCloud {
         [
             "appId": .string(id), "name": .string(name), "group": 1, "bundle": "b", "owner": .string(me),
             "org": org.map { .string($0) } ?? .null,
-            "access": team.map { ["kind": "team", "team": .string($0)] } ?? ["kind": "org"],
+            "grants": [team.map { ["kind": "team", "team": .string($0)] } ?? ["kind": "org"]],
             "confirmMethods": [], "replicas": [1], "createdAt": 1, "initArgs": [:], "metadata": .null,
             "release": ["package": .string(package), "version": "1.0.0"], "package": .string(package),
         ]

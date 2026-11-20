@@ -317,12 +317,12 @@ final class ClusterE2ETests: XCTestCase {
         let (bob, _) = try await person(1, "bob-access")
         let bobMe = try await me(bob)
         let bobId = try XCTUnwrap(bobMe["accountId"]?.stringValue)
-        // Owner-only, in an organization made with it: an `accounts` list reaches only the
-        // organization's members, and an app goes only to one, so bob joins it; joining
+        // Owner-only, in an organization made with it: a named account reaches it only as a
+        // member of the organization, and an app goes only to one, so bob joins it; joining
         // alone still leaves him out.
         let hash = try await alice.packages.bundlePut(body: try bundle()).hash
         let app = try await alice.apps.create(
-            name: "shared", bundle: hash, access: .owner(.init(kind: .owner))
+            name: "shared", bundle: hash, grants: []
         ).appId
         let made = try JSONValue(encoding: try await alice.apps.get(app: app))
         let shared = try XCTUnwrap(made["org"]?.stringValue, "\(made)")
@@ -336,7 +336,7 @@ final class ClusterE2ETests: XCTestCase {
         let hidden = await refusal { _ = try await bob.call(app, "set", ["key": "x", "value": "y"]) }
         XCTAssertTrue(hidden is NotFound, "\(String(describing: hidden))")
         _ = try await alice.apps.access(
-            app: app, access: .accounts(.init(kind: .accounts, accounts: [bobId])))
+            app: app, grants: [.account(.init(kind: .account, account: bobId))])
         await pause()
         _ = try await bob.call(app, "set", ["key": "x", "value": "y"])
 
@@ -394,7 +394,7 @@ final class ClusterE2ETests: XCTestCase {
         let backend = try await alice.orgs.teamCreate(org: org, name: "backend", parent: eng, join: .invite).teamId
         let hash = try await alice.packages.bundlePut(body: try bundle()).hash
         let teamApp = try await alice.apps.create(
-            name: "eng-kv", bundle: hash, org: org, access: .team(.init(kind: .team, team: backend))
+            name: "eng-kv", bundle: hash, org: org, grants: [.team(.init(kind: .team, team: backend))]
         ).appId
         let asked = await refusal { _ = try await alice.orgs.teamDelete(org: org, team: eng) }
         let required = try XCTUnwrap(asked as? ConfirmRequired, "\(String(describing: asked))")

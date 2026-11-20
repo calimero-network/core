@@ -83,7 +83,8 @@ async fn a_visitor_calls_only_the_public_methods_of_its_links_instance() {
         .app_id;
     let record = alice.apps().get(&app).await.map(wire).unwrap();
     assert_eq!(
-        record["access"]["kind"], "org",
+        record["grants"],
+        json!([{ "kind": "org" }]),
         "a private instance: {record}"
     );
 

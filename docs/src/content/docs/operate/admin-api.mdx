@@ -69,7 +69,7 @@ The **Who** column below uses these terms:
 | session | a passkey session; an API key is refused (`403`) |
 | account holder | a passkey session not bound to an app's frontend |
 | installer | an account holder, or an API key scoped to no app and no method and not read-only |
-| app access | whoever the app's access setting admits (`public` admits anyone); an API key's app, method and read-only scope apply |
+| app access | whoever the app's grants admit (`anyone`: any signed-in account); an API key's app, method and read-only scope apply |
 | ops | the ops token |
 | peer | another node of the cluster |
 
@@ -182,7 +182,7 @@ the release fetches and verifies it again.
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /apps` | installer | `{ name, package?, version?, service?, bundle?, deployment?, org?, newOrg?: { name }, grants?, access? (deprecated), initArgs?, metadata? }` → `{ appId, contextId, group, replicas, compute }`. The organization is the release's `instanceOrg` choice: `org`, the caller's only one, or a new one made with it (`newOrg`; [Where an instance goes](/protocol/organizations/#where-an-instance-goes)); `deployment` creates from a deployment's offer. Confirm methods are the ones the app's ABI declares (`#[app::confirm]`) | `instance create` |
+| `POST /apps` | installer | `{ name, package?, version?, service?, bundle?, deployment?, org?, newOrg?: { name }, grants?, initArgs?, metadata? }` → `{ appId, contextId, group, replicas, compute }`. The organization is the release's `instanceOrg` choice: `org`, the caller's only one, or a new one made with it (`newOrg`; [Where an instance goes](/protocol/organizations/#where-an-instance-goes)); `deployment` creates from a deployment's offer. Confirm methods are the ones the app's ABI declares (`#[app::confirm]`) | `instance create` |
 | `GET /apps[?package=P]` | signed in or anyone | Apps the caller reaches | `instance list` |
 | `GET /apps/{app}` | signed in or anyone | One app | `instance get` |
 | `DELETE /apps/{app}` | account holder | Delete (owner or org admin) | `instance delete` |
@@ -192,8 +192,8 @@ the release fetches and verifies it again.
 | `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones | `instance watch` |
 | `POST /apps/{app}/upgrade` | account holder | `{ bundle? \| package?, version?, service?, migrate?, confirm? }`; where the owner holds app upgrades | `instance update` |
 | `POST /apps/{app}/transfer` | account holder | `{ to, confirm? }`: hand the app to another account (the owner, or for an organization's app its owner while a member, and in the app's team for an app on a team, or an organization admin, with a passkey step-up; an organization's app only to a member) | `instance transfer` |
-| `POST /apps/{app}/move` | account holder | `{ toOrg, bringMembers?, confirm? }`: move the app to another organization, its data where it is (whoever manages it now, as an admin or the owner of `toOrg`, with a passkey step-up). Its files, runs and quotas go to the target; `org` or app-team access becomes the target's app team of its package (made when missing, closed when every app team of the target is; `org` access in a legacy target). `bringMembers` adds the source's members who reach it, capped at `member`. Answers `{ appId, from, org, access, created, added, revokedInvites }`; a node without the route answers `404` | `instance move` |
-| `POST /apps/{app}/access` | account holder | `{ grants: [{ kind: org \| team \| account \| anyone, … }] }`, the instance's grant list ([App access](/protocol/organizations/#app-access)); the deprecated `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` sets one mode | `instance access` |
+| `POST /apps/{app}/move` | account holder | `{ toOrg, bringMembers?, confirm? }`: move the app to another organization, its data where it is (whoever manages it now, as an admin or the owner of `toOrg`, with a passkey step-up). Its files, runs and quotas go to the target; its `org` or app-team grant becomes the target's app team of its package (made when missing, closed when every app team of the target is; an `org` grant in a legacy target). `bringMembers` adds the source's members who reach it, capped at `member`. Answers `{ appId, from, org, grants, created, added, revokedInvites }`; a node without the route answers `404` | `instance move` |
+| `POST /apps/{app}/access` | account holder | `{ grants: [{ kind: org \| team \| account \| anyone, … }] }`, the instance's grant list ([App access](/protocol/organizations/#app-access)); empty: only the owner | `instance access` |
 | `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `instance metadata` |
 | `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one) | `instance storage` |
 | `GET /apps/{app}/usage` | owner or org admin | A component's runs per UTC day: `today` and the 30 `days` before it, each `{ date, runs, fuel, wallMs, writes, bytesWritten, events }`, figures as decimal strings; `wallMs` is information only | |
@@ -253,7 +253,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `GET /orgs/{org}/invites` | session | `{ invites: [{ inviteKey, role, teams, usesLeft, expiresAt, expired, createdBy, createdAt, allApps }] }`: the invites the caller may see, never a token | |
 | `DELETE /orgs/{org}/invites/{key}` | session | Revoke an invite by its key; `412` first | |
 | `POST /orgs/{org}/settings` | account holder | `{ allowGuests?, allowPublicLinks?, confirm? }` → `{ org, allowGuests, allowPublicLinks }`: the owner or an admin; `412` first ([Guests](/protocol/organizations/#guests)) | |
-| `POST /apps/{app}/invites` | account holder | `{ ttlSecs?, uses?, scope?, confirm? }` → a token whose redeemer is named on the instance (a guest, or a named member), with `scope` on the grant; any instance, whatever its guest switches (a guest's redemption is refused `409 GUESTS_NOT_ALLOWED` while they forbid guests); whoever may change its access; `409 LEGACY_PUBLIC` on an instance set `public` before 1.0.0-rc.32; `412` first | |
+| `POST /apps/{app}/invites` | account holder | `{ ttlSecs?, uses?, scope?, confirm? }` → a token whose redeemer is named on the instance (a guest, or a named member), with `scope` on the grant; any instance, whatever its guest switches (a guest's redemption is refused `409 GUESTS_NOT_ALLOWED` while they forbid guests); whoever may change its access; `412` first | |
 | `GET /apps/{app}/invites` | session | `{ invites: [{ inviteKey, usesLeft, expiresAt, expired, createdBy, createdAt, scope }] }`, never a token | |
 | `DELETE /apps/{app}/invites/{key}` | account holder | Revoke an instance invite; `412` first | |
 | `POST /apps/{app}/public-links` | account holder | `{ label?, expiresAt?, ratePerMinute?, confirm? }` → `{ link, token }` (the token once): whoever may change the instance's access; `409 PUBLIC_LINKS_OFF`; `412` first ([Public links](/protocol/organizations/#public-links)) | |

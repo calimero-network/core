@@ -778,7 +778,7 @@ async fn only_those_who_handle_the_apps_files_start_cancel_or_retry_a_pipeline()
     let rig = Rig::start(&[JOB_A]).await;
     let public = rig
         .alice
-        .apps().create(typed(json!({ "name": "open", "package": "com.test.job", "version": "1.0.0", "access": { "kind": "public" } })))
+        .apps().create(typed(json!({ "name": "open", "package": "com.test.job", "version": "1.0.0", "grants": [{ "kind": "anyone" }] })))
         .await.map(|a| a.app_id)
         .unwrap();
     let doc = rig
@@ -2023,7 +2023,7 @@ async fn a_stranger_cannot_read_a_receipt() {
     let rig = Rig::start(&[JOB_A]).await;
     let public = rig
         .alice
-        .apps().create(typed(json!({ "name": "open", "package": "com.test.job", "version": "1.0.0", "access": { "kind": "public" } })))
+        .apps().create(typed(json!({ "name": "open", "package": "com.test.job", "version": "1.0.0", "grants": [{ "kind": "anyone" }] })))
         .await.map(|a| a.app_id)
         .unwrap();
     let doc = rig
@@ -2440,7 +2440,7 @@ async fn a_stranger_cannot_estimate_on_a_public_app() {
     let rig = Rig::start(&[]).await;
     let public = rig
         .alice
-        .apps().create(typed(json!({ "name": "open", "package": "com.test.job", "version": "1.0.0", "access": { "kind": "public" } })))
+        .apps().create(typed(json!({ "name": "open", "package": "com.test.job", "version": "1.0.0", "grants": [{ "kind": "anyone" }] })))
         .await.map(|a| a.app_id)
         .unwrap();
     let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;

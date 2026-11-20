@@ -1,6 +1,6 @@
 package com.calimero.mero.sample.explorer
 
-import com.calimero.mero.AppAccess
+import com.calimero.mero.AppGrant
 import com.calimero.mero.ConsentRequest
 import com.calimero.mero.ConsentScope
 import com.calimero.mero.ConsentTeamMembership
@@ -102,7 +102,7 @@ private val appOps =
         },
         op("deleteApp", "Apps", "apps.delete", "Delete an app instance", app) { e, v -> e.client.apps.delete(app = v.v("app")) },
         op("setAccess", "Apps", "apps.access", "Who may reach the app: owner, org, public or a team", app, OpField.line("team", "Team id (blank: org)")) { e, v ->
-            e.client.apps.access(app = v.v("app"), access = v.opt("team")?.let { AppAccess.Team(it) } ?: AppAccess.Org)
+            e.client.apps.access(app = v.v("app"), grants = listOf(v.opt("team")?.let { AppGrant.Team(it) } ?: AppGrant.Org))
         },
         op("setAppMetadata", "Apps", "apps.metadata", "Set the app instance's metadata", app, OpField.json("metadata", "Metadata (JSON)")) { e, v -> e.client.apps.metadata(app = v.v("app"), metadata = json(v.v("metadata"))) },
         op("appStorage", "Apps", "apps.storage", "What the app's storage holds", app) { e, v -> e.client.apps.storage(app = v.v("app")) },

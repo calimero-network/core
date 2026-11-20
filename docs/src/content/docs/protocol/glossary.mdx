@@ -237,11 +237,6 @@ links (`link`, whose token's holders call its public methods as visitors, the
 only way in without an account). No grant is the owner alone. Not a blob **grant**. See
 [App access](/protocol/organizations/#app-access).
 
-**Access rule** — The single mode an instance had before **access grants**
-(deprecated: `owner`, `accounts`, `org`, `team`, `public`), kept and judged as
-set; each is a grant list (`public` is `anyone` marked `signedOut`: unlike any
-grant, it admits signed-out callers too, as it always did).
-
 **Guest (of an instance)** — An account named on one app instance (an
 `account` grant) that is not a member of its organization: it reaches that
 instance only, while the instance's release and its organization allow guests.
@@ -275,7 +270,7 @@ upgrades nothing. See [Release deadlines](/protocol/governance/#release-deadline
 ## Apps
 
 **App instance** — One running copy of a bundle, with an id, an owner, an
-organization, an access rule and its own group. [Context]
+organization, its access grants and its own group. [Context]
 
 **Context id** — `hex(SHA-256(app_id))`, the id SDK 0.12 apps saw as their
 context; accepted wherever the API takes an app id. A component app reads its

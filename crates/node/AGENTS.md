@@ -617,7 +617,7 @@ is its command line.
   `wrap_for_job` re-wraps a secret to a job node: ephemeral X25519, then HKDF over both public keys, the kind (file key or noise seed), the length-prefixed app and run ids, attempt and index.
   The job node opens it through `SealedTransport::derive`, which never returns the raw DH output and labels its HKDF (`calimero_sealed::derive_shared`, shared with the wrap side).
   `noise_seed` and `run_token` derive a run's seed and capability from the file key.
-  **Exporting a file** (`api/exports.rs`; tests `component_files.rs`, `pipeline_runs.rs`): `POST /apps/{app}/files/{id}/export { recipient }` (64 hex, an X25519 public key) and `GET /apps/{app}/files/{id}/segments/{k}` take the `/files` gate (`files_gate`: `api::may_handle_files`, fresh system read, even on a public app) and judge the file on the app's leader (`Node::file_record_strong`: `internal/blob/held` with `record`, which answers the size and `FileSeal`), else `404`; a segment past the last is `404 NO_SUCH_SEGMENT`, and one is read from this node's store or a replica (`segment_from`).
+  **Exporting a file** (`api/exports.rs`; tests `component_files.rs`, `pipeline_runs.rs`): `POST /apps/{app}/files/{id}/export { recipient }` (64 hex, an X25519 public key) and `GET /apps/{app}/files/{id}/segments/{k}` take the `/files` gate (`files_gate`: `api::may_handle_files`, fresh system read, even where an `anyone` grant admits others) and judge the file on the app's leader (`Node::file_record_strong`: `internal/blob/held` with `record`, which answers the size and `FileSeal`), else `404`; a segment past the last is `404 NO_SUCH_SEGMENT`, and one is read from this node's store or a replica (`segment_from`).
   The export answer is `{ app, id, size, sha256, segments, ephemeral, wrapped }`; `wrapped` is `nonce || AES-256-GCM` of the data key (unwrapped from the `FileSeal` with the app file key, then zeroized) under `HKDF(X25519(ephemeral secret, recipient))`, salt `calimero.export-wrap.v1`, info `ephemeral public || recipient public || u32 length-prefixed app id || u32 length-prefixed hex file id` (`calimero_sealed::wrap::wrap_export`, over `derive_shared`, which refuses a low-order key: `400 BAD_RECIPIENT`, as does a recipient that is not 64 hex).
   The construction lives in `calimero-sealed` (`wrap.rs`, with the AES-GCM helpers `wrap_for_job` shares, and `file.rs`, the file STREAM format that used to be `files/seal.rs`) so `calimero_client::Client::export_file_to` opens it with `unwrap_export`, checks the segment list against the file id, each segment against its hash, and the size and plaintext SHA-256 with `finish_expecting`, and succeeds only when all match.
   An account may export `MAX_EXPORTS_PER_MINUTE` (30) times a minute per node (`ExportLimits`, an in-memory token bucket over at most `MAX_TRACKED_ACCOUNTS` accounts): `429 TOO_MANY_EXPORTS`.
@@ -663,7 +663,7 @@ is its command line.
 - **Access is judged fresh**: every request carrying a credential, every gated request, an anonymous
   `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
   (a read index), so a removal committed elsewhere holds before the next request. Regression:
-  `an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behind`.
+  `a_revocation_holds_on_a_follower_that_has_not_applied_it_yet`.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
@@ -852,7 +852,7 @@ is its command line.
   It keeps only caches of immutable data, a pipeline by hash (`Node::pipeline_by_hash`) and a compute component's caps (`caps_of_component`).
   A step's args are its `args` with `params.x` replaced by the run's value or the default and `<step>.result` by that step's result as JSON; no args is no bytes; its inputs are `inputs.x` and `<step>.outputs`, deduplicated, at most `MAX_PIPELINE_RUN_INPUTS` (10,000, which the job node's admission and `MAX_ASSIGNMENT_BYTES` (8 MiB) allow; a run an app starts keeps `MAX_RUN_INPUTS`).
   A `forEach` step makes one run per batch of items; its inputs are the step's `inputs` references in the order written with the run's item files where `item` stands (first when it is not listed), and `item` in `args` is the item (a file id or a result value; a list for a batch above 1). `collect: <step>.outputs` is one run over all of that step's outputs in item order, then its other `inputs`. A step's `pool` is carried on `StepRun::pool` into `RunRecord::pool`; `AcquireRun { pool }` then puts the slot in that pool (`RUN_NO_POOL` when the cluster lacks it or its `maxMemoryMib` is below the run's memory), so `pick_job` uses only its job nodes. A step without `pool` keeps `pool_for`. The leader proposes `pool` only while `Node::nodes_behind_release` is empty (an older node would drop it), else `None`. Regression: `a_steps_pool_places_its_runs_on_that_pools_job_node`, `a_named_pool_waits_until_every_node_runs_this_release`.
-  Only those who may handle the app's files (`api::may_handle_files`: its owner, its organization's members) start, cancel or retry a run, even on a public app (`403 FORBIDDEN`); anyone who reaches the app reads it without results or file hashes. Regression: `only_those_who_handle_the_apps_files_start_cancel_or_retry_a_pipeline`.
+  Only those who may handle the app's files (`api::may_handle_files`: its owner, its organization's members) start, cancel or retry a run, even where an `anyone` grant admits others (`403 FORBIDDEN`); anyone who reaches the app reads it without results or file hashes. Regression: `only_those_who_handle_the_apps_files_start_cancel_or_retry_a_pipeline`.
   The routes judge the request against the pinned pipeline first (`NO_SUCH_PIPELINE`, `BAD_INPUTS`, `BAD_PARAMS`, `TOO_MANY_PIPELINE_RUNS`, `PIPELINES_NEED_ONE_SERVICE`, `CLUSTER_NOT_UPGRADED`); start and cancel travel as the host commands `__pipeline_start` and `__pipeline_cancel` to the leader, reads as the reserved view `__pipeline_run` (`PIPELINE_VIEW`).
   A run with no result method ends with an empty result outcome and prepares nothing on the replica engine.
   **Receipts**: a linked run's final writes a `StepRunProof` (`component/proofs.rs`, hidden row `rows::CPROOF` by step run id: attempt, node, job key, assignment digest, SHA-256 of the signed report message, the job's signature, outputs, usage; no report fields for a leader-ended run) and the proofs go with the pipeline run's record when it is dropped (`drop_step_proofs`), so they outlive the `RunRecord`s (`FINISHED_RUNS_KEPT`). A cached run has no proof: its item row keeps its cache key (`StepState::cached_keys` once read). `PipelineRun::input_files` records each input's size and hash at start. `GET /apps/{app}/pipeline-runs/{run}/receipt` (`api/pipeline_receipt.rs`; `may_handle_files`, else `403`; `409 RUN_NOT_ENDED`) reads both through `__pipeline_run` with `receipt: true` and answers `{ receipt, node, signature }`: `calimero_client::receipt::PipelineReceipt` (`modules` is the module name to compute hash with `self` for the package's own, `pipelineHash` maps steps to modules), signed by `Node::sign_pipeline_receipt` over `receipt_message` (`"calimero.pipeline.receipt.v1\0" || JCS(receipt)`). `?version=2` (`ReceiptQuery`; `400 BAD_VERSION` for another) adds each proof's `job` evidence (`JobEvidence`, from the final's report, kept in its own row `rows::CREPORT` by run id so the proof row keeps the shape a release before reads) and `jobAttestations`: `computeAttempt` carries the job node's attestation the leader admitted it on (`AttemptEntry::job_attestation`, kept on `Attempt`; proposed only for a pipeline's run, only while every replica runs this release, `Node::replicas_take_logs`, as a run's log is (job nodes apply no log, so one that is down does not hold it back), and only while the pipeline run keeps none for that job key yet, so a fan-out logs it about once per job node), and a linked run's final writes it once per pipeline run and job key (`rows::CJOB`, `<pipeline run>/<job key>`); both go with the proofs. The view adds evidence only when asked (`evidence: true`), so an API node on the release before still reads the leader's answer. The client checks it all (`calimero_client::receipt::verify_job_reports`, `Client::verify_receipt`). Module logs are not in the receipt. Tests: `component/tests/pipelines.rs`, `pipeline_runs.rs` (`a_finished_run_has_a_receipt_signed_by_an_attested_node`, `a_running_run_has_no_receipt_yet`, `a_fan_out_with_cached_items_marks_them_cached_in_its_receipt`, `a_stranger_cannot_read_a_receipt`).
@@ -986,7 +986,7 @@ is its command line.
   REJECTED`, checked by `app_transfer` before the passkey), `personal_org_of` answers
   none, `deployment_orgs` names it, the consent page's `scope: account` is the
   account's only org, and `/auth/apps` reads that org's approvals. `may_reach` still
-  lets an `Accounts` instance in an org flagged `personal` reach its listed accounts
+  lets an instance in an org flagged `personal` reach the accounts it names
   without membership. There are no account approvals (`ReleaseScope` is `Org` or
   `Cluster`); `release_may_serve_account` reads the account's organizations.
   Regressions: `system::tests::an_account_has_one_personal_organization_outside_its_quota`,
@@ -995,44 +995,36 @@ is its command line.
   `instance_orgs::an_instance_goes_where_its_release_says`,
   `instance_orgs::an_app_is_transferred_only_to_a_member_of_its_organization`, the
   `personal-org` and `ordinary-orgs` upgrade cases.
-- **Access grants** (`Feature::AccessGrants`, rc.32; `types::Grant`, `Access::Grants`,
-  `SystemState::grants_reach`, `check_grants`, `manages_access`, `manages_grants`; docs:
-  protocol organizations "App access"): an instance's access is a list of grants, `org`,
-  `team { team }` (at most `MAX_TEAM_GRANTS`), `account { account, scope? }` (a named member
-  or a guest, at most `MAX_ACCOUNT_GRANTS`; `scope` opaque JSON of at most
-  `MAX_GRANT_SCOPE_BYTES` the app defines) and `anyone` (any signed-in account, never a
-  caller without one: `Grant::Anyone { signed_out }` is `true` only in `Access::grants` of the
-  legacy `public` mode, which still admits them, `Access::admits_signed_out`; `check_grants`
-  refuses it, `NO_SIGNED_OUT_GRANT`), each
+- **Access grants** (`Feature::AccessGrants`, rc.32; `types::Access`, a list of `types::Grant`,
+  serialized as the record's `grants`; `SystemState::grants_reach`, `check_grants`,
+  `manages_access`, `manages_grants`; docs: protocol organizations "App access"): an
+  instance's access is a list of grants and nothing else, `org`, `team { team }` (at most
+  `MAX_TEAM_GRANTS`), `account { account, scope? }` (a named member or a guest, at most
+  `MAX_ACCOUNT_GRANTS`; `scope` opaque JSON of at most `MAX_GRANT_SCOPE_BYTES` the app
+  defines) and `anyone` (any signed-in account; no grant admits a caller without one), each
   judged on its own in `may_reach` (`grants_reach`); no grant is the owner alone, and an
-  owner of an instance only teams admit reaches it while in one of them. `SetAccess` and
-  `CreateApp` with `Access::Grants` need the feature (`SystemCmd::features`) and apply only a
+  owner of an instance only teams admit reaches it while in one of them. Every `SetAccess`
+  and a `CreateApp` with any grant need the feature (`SystemCmd::features`) and apply only a
   list `check_grants` accepts (no grant twice, `org` not beside a team, known teams and
-  accounts, scopes within the limit). The single modes (`owner`, `org`, `accounts`, `public`,
-  `team`) stay as logged, never rewritten, and are judged by the rules they always had;
-  `Access::grants` answers the grant list each stands for (`GET /apps/{app}` adds `grants`).
-  The sites that read a mode read the list through `Access` helpers that answer a single mode
-  as before: `teams`/`the_team` (team-scoped management, `may_set_access` and
-  `may_upgrade` through `manages_access`, `owner_in_team`, read-only rows, team runs, the
-  report's `team`), `org_wide` (`ScopeApps`, which swaps the `org` grant for the app team's,
-  `onto_team`), `named_only` (`MoveApp`'s `accounts_in_app_team`), `teams_to_org` (`MoveApp`,
-  `TransferApp`), `anyone` (listing, `member_apps`). `DeleteTeam` takes the instances whose
-  every team grant goes (`team_apps`) and strips the team's grant from the rest
-  (`without_teams`); with `keep_apps` (`Feature::KeepTeamApps`, rc.32; API `keepApps`, stated in
-  the consent, `delete_team_args`) it keeps them too, without the team's grants (a `team` mode
-  or a list left empty: the owner alone), answered as `keptApps`; absent, as every entry
-  before it, they are deleted. The API takes `grants` on `POST /apps` and `POST
-  /apps/{app}/access` (`api::apps::access_of`; with the deprecated `access`, `400`; from the
-  cluster version that brings the feature the deprecated `public` is `[anyone]`, below it the
-  legacy mode; a `signedOut` grant `400`; `api-deprecations.toml` deprecates `access` until
-  rc.35). A legacy `public` instance takes no instance invite (`LEGACY_PUBLIC`, `409`): a
-  redemption would make it a grant list and end its signed-out access on the side. Regressions:
-  `system::tests::an_instances_access_is_a_list_of_grants`,
-  `system::tests::access_logged_as_one_mode_reads_writes_and_replays_as_before`,
-  `guests::a_team_and_two_partners_reach_one_instance_by_their_grants`.
+  accounts, scopes within the limit). The sites that read access go through `Access`
+  helpers: `teams`/`the_team` (team-scoped management, `may_set_access` and `may_upgrade`
+  through `manages_access`, `owner_in_team`, read-only rows, team runs, the report's
+  `team`), `org_wide` (`ScopeApps`, which swaps the `org` grant for the app team's,
+  `onto_team`), `named_only` (`MoveApp`'s `accounts_in_app_team`), `teams_to_org`
+  (`MoveApp`, `TransferApp`), `anyone` (listing, `member_apps`). `DeleteTeam` takes the
+  instances whose every team grant goes (`team_apps`) and strips the team's grants from the
+  rest (`without_teams`); with `keep_apps` (`Feature::KeepTeamApps`, rc.32; API `keepApps`,
+  stated in the consent, `delete_team_args`) it keeps them too, without the team's grants (a
+  list left empty: the owner alone), answered as `keptApps`; absent, they are deleted. The
+  API takes `grants` on `POST /apps` (absent: `[org]`) and `POST /apps/{app}/access`, and
+  answers them on `GET /apps/{app}` and a move. A hard cutover (#5194, `hard-cutover:` in
+  `.github/upgrade-from`): no earlier access shape is read, so clusters are recreated.
+  Regressions: `system::tests::an_instances_access_is_a_list_of_grants`,
+  `guests::a_team_and_two_partners_reach_one_instance_by_their_grants`,
+  `access_gate::anyone_means_any_signed_in_account`.
 - **Guests** (`Feature::Guests`, rc.32; `SystemState::guest_reaches`, `guests_on`,
   `guests_allowed`, `guest_holder`, `is_guest`, `manages_grants`; docs: protocol organizations
-  "Guests"): an account an instance names (an `account` grant, or its `accounts` list) that is
+  "Guests"): an account an instance names (an `account` grant) that is
   not a member of its organization reaches it (and its unit's members: `guest_holder` walks
   `unit_parent` up at most `MAX_UNIT_LINKS_UP`) from the logged version on, while the release
   it runs says `guests: allowed` (`calimero_bundle::GuestPolicy`, absent = forbidden; kept on
@@ -1047,26 +1039,25 @@ is its command line.
   invite, on any instance (`SystemState::app_invites`, `types::AppInvite` under the token's
   Ed25519 key, with an optional `scope`): `CreateAppInvite` (consent `<app> /
   __create_app_invite / app_invite_args`, `scope` stated only when set; made whatever the guest switches
-  say, which are judged at redemption; refused on a legacy `public` instance; bounds `MAX_APP_INVITES_PER_APP`, `MAX_APP_INVITES`, `MAX_APP_INVITE_USES`,
+  say, which are judged at redemption; bounds `MAX_APP_INVITES_PER_APP`, `MAX_APP_INVITES`, `MAX_APP_INVITE_USES`,
   `MAX_APP_INVITE_TTL_SECS`), `RevokeAppInvite` (`__revoke_app_invite`), `RedeemAppInvite`
   (the token key's `sign_invite_redeem`; adds an `account` grant with the invite's scope,
-  `Access::naming`, turning a single mode into its grant list; a guest only while guests are
+  `Access::naming`; a guest only while guests are
   allowed, a member always, answered `member`; free when named already; both invite commands
   need `Feature::AccessGrants` too); `remove_app` drops them. Routes `POST|GET
   /apps/{app}/invites`, `DELETE /apps/{app}/invites/{key}`; the redemption is `POST
   /invites/{token}/redeem` (`api::orgs::redeem_invite` tells the kinds apart), and the consent
   page's `acceptInvite` shows an instance invite as joining that app as a guest, or as the
   member they are (`consent_page::app_invite_model`). An organization flagged `personal`
-  keeps its named accounts' reach whatever the switches say (legacy). Regressions:
+  keeps its named accounts' reach whatever the switches say. Regressions:
   `system::tests::a_guest_reaches_one_instance_while_its_release_and_its_organization_allow`,
   `guests::a_guest_reaches_one_instance_only_while_both_switches_allow`,
   `guests::an_instance_invite_makes_its_redeemer_a_guest`.
 - **Public links and visitors** (`Feature::PublicLinks`, rc.32; `api/public_links.rs`,
   `types::Grant::Link`, `types::LinkGrant`, `SystemState::public_link`, `public_link_admits`,
   `public_link_count`; docs: protocol organizations "Public links"): a link is a grant of the
-  instance (`Grant::Link`, in `Access::Grants`; a single mode becomes the grants it is plus
-  the link, `Access::with_link`), which admits no account in `may_reach`, only its visitors;
-  `public_link` finds it by key among the instances that have grants (a visitor's request and
+  instance (`Grant::Link`, in its `Access`, `Access::with_link`), which admits no account in
+  `may_reach`, only its visitors; `public_link` finds it by key among the instances (a visitor's request and
   making one are the only callers). `SetAccess` keeps an instance's links as they are
   (`Access::keeping_links`) and refuses one it does not hold, and `check_grants` refuses any
   in a list, so a link is made only with its consent; `GET /apps/{app}` shows link grants only
@@ -1095,7 +1086,7 @@ is its command line.
   `system::tests::a_public_link_admits_visitors_while_it_and_its_organization_allow`,
   `a_visitors_proof_names_its_link_key_and_time`, `public_links.rs`.
 - **An org app's owner, while a member** (`SystemState::owner_acts`): an organization's app gives its owner the owner's powers (access, metadata, transfer, delete, upgrade, upgrade keys, files, blob deletes, usage) only while they are a member (`member` or above) of its organization; its admins keep transfer and delete (`manages_app`). Judged at apply; `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` carry `owner_in_org`, which the API always sets; absent in an entry an earlier release logged, which replays judging ownership alone. Regressions: `an_owner_removed_from_the_organization_no_longer_manages_its_app`, `a_member_owner_and_a_personal_owner_still_manage_their_apps`, `system::tests` (`an_org_apps_owner_manages_it_only_while_a_member`, `an_org_admin_transfers_or_deletes_an_app_whose_owner_left`, `app_commands_logged_before_the_membership_rule_replay_as_they_did`).
-- **An app on a team, its owner while in the team** (`SystemState::owner_acts`, `may_reach`): an app with `team` access is reached and managed by its owner only while they are in that team (`Org::in_team`), so an owner kicked from, leaving, or closed out of an app's team (or a private channel) loses the channels they created there; admins transfer them. The six owner commands above and `ScopeApps` (which finds who reaches an instance) carry `owner_in_team`, which the API always sets; absent, an entry replays judging the owner without the team (`OwnerRule`). Regressions: `an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it`, `system::tests::an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it`.
+- **An app on a team, its owner while in the team** (`SystemState::owner_acts`, `may_reach`): an app only teams admit is reached and managed by its owner only while they are in one of them (`Org::in_team`), so an owner kicked from, leaving, or closed out of an app's team (or a private channel) loses the channels they created there; admins transfer them. The six owner commands above carry `owner_in_team`, which the API always sets; absent, an entry replays judging the owner without the team (`OwnerRule`). Regressions: `an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it`, `system::tests::an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it`.
 - **A stopped group** (`calimero-log` restarts it): a group whose Raft core stopped
   (a disk error, a machine that panicked, an entry it could not apply) reads its
   state back from the disk and restarts on its own, after 1 s, up to 5 min as it
@@ -1684,7 +1675,7 @@ is its command line.
   open-team inheritance; a new row takes them too); set by `SetDefaultCapabilities
   { team }` (`POST /orgs/{org}/capabilities { team, capabilities }`, the team's
   managers or `MANAGE_MEMBERS`). In an org with app teams a guest inherits no
-  open top-level team and reaches no `Access::Org` app (`Org::app_only`, used
+  open top-level team and reaches no app through an `org` grant (`Org::app_only`, used
   by `in_team_at` and `may_reach`); a legacy org's guests are as before.
 - **App teams and modes** (`Team::app_package`: `metadata.app.package` on a
   top-level team; `Org::app_team`, `Org::mode` = legacy | standalone | shared,
@@ -1696,7 +1687,7 @@ is its command line.
   (id from the entry's `nonce`, `app_team_id`; an instance's package is the one
   its release names, `SystemState::instance_package`, since two packages may
   ship one component, unless the entry predates `by_release`), gives a row to every member who
-  `may_reach` the instances first, moves them to `Access::Team`, and with
+  `may_reach` the instances first, gives them its `team` grant in place of `org` (`Access::onto_team`), and with
   `shared` (default: two app teams or more) closes every app team after
   writing its inherited people as rows and drops `INVITE_MEMBERS` from its
   default (standalone teams it makes default to `INVITE_MEMBERS`); a package's

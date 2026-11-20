@@ -260,8 +260,8 @@ internal class FakeOrgCluster {
                 )
             method == "POST" && path == "/apps" -> {
                 val app = id("app")
-                val access = body["access"] as? JsonObject
-                apps[app] = App(str("name").orEmpty(), str("org"), (access?.get("team") as? JsonPrimitive)?.content, str("package").orEmpty())
+                val grant = (body["grants"] as? JsonArray)?.firstOrNull() as? JsonObject
+                apps[app] = App(str("name").orEmpty(), str("org"), (grant?.get("team") as? JsonPrimitive)?.content, str("package").orEmpty())
                 json(200, """{"appId":"$app"}""")
             }
             else -> error(404, "NOT_FOUND")

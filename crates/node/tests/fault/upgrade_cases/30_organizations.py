@@ -101,7 +101,7 @@ class Invites(DeepCase):
         team = team_id(ivy.raw("post", f"orgs/{org}/teams", {"name": "support", "join": "invite"}))
         app = ivy.deploy(kv_wasm(w), "support-app", org=org)
         other = ivy.deploy(kv_wasm(w), "org-wide", org=org)
-        ivy.raw("post", f"apps/{app}/access", {"access": {"kind": "team", "team": team}})
+        ivy.raw("post", f"apps/{app}/access", {"grants": [{"kind": "team", "team": team}]})
         for a in (app, other):
             ivy.call(a, "set", {"key": "t", "value": "1"})
         multi = invite(ivy, org, uses=3)
@@ -276,8 +276,8 @@ class PersonalOrg(DeepCase):
     area = "Organizations"
     since = "1.0.0-rc.20"
     seeds = ("instances created without naming an organization, which go to the personal organization made at "
-             "sign-up; one of them shared with a listed account outside it (`accounts` access)")
-    verifies = ("both instances in the one personal organization, marked personal, with their data; the listed "
+             "sign-up; one of them shared with a named account outside it (an `account` grant)")
+    verifies = ("both instances in the one personal organization, marked personal, with their data; the named "
                 "account still reaches the shared one without being a member (organizations made ordinary in "
                 "1.0.0-rc.32 keep that); another instance made without one joins the same organization, now its "
                 "owner's only one")
@@ -291,7 +291,7 @@ class PersonalOrg(DeepCase):
         check(org, f"no personal organization after an instance named none: {yan.get('auth/me')}")
         for app in (first, second):
             yan.call(app, "set", {"key": "k", "value": app})
-        yan.raw("post", f"apps/{second}/access", {"access": {"kind": "accounts", "accounts": [xia.id]}})
+        yan.raw("post", f"apps/{second}/access", {"grants": [{"kind": "account", "account": xia.id}]})
         return {"org": org, "apps": [first, second]}
 
     def check(self, w, s):
@@ -304,7 +304,7 @@ class PersonalOrg(DeepCase):
         refused(("FORBIDDEN", "NOT_FOUND"), lambda: zed.view(s["apps"][0], "get", {"key": "k"}),
                 "an outsider reads the instance")
         eq(xia.result(s["apps"][1], "get", {"key": "k"}), s["apps"][1],
-           "a listed account reaches the shared instance without being a member")
+           "a named account reaches the shared instance without being a member")
 
     def exercise(self, w, s):
         yan = person(w, "yan")

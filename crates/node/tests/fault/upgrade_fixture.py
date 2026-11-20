@@ -92,7 +92,7 @@ def main(argv=None) -> int:
         bundle = alice.raw("get", f"apps/{app}")["bundle"]
         team_app = alice.cli("instance", "create", "--name", "replay-team", "--bundle", bundle,
                              "--org", org)["appId"]
-        alice.raw("post", f"apps/{team_app}/access", {"access": {"kind": "team", "team": team}})
+        alice.raw("post", f"apps/{team_app}/access", {"grants": [{"kind": "team", "team": team}]})
         bob.call(team_app, "set", {"key": "t", "value": "team"})
         own = alice.cli("instance", "create", "--name", "replay-own", "--bundle", bundle)["appId"]
         alice.call(own, "set", {"key": "o", "value": "own"})

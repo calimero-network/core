@@ -91,8 +91,7 @@ def sync_detailed(
      The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts
     it.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -129,8 +128,7 @@ def sync(
      The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts
     it.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -162,8 +160,7 @@ async def asyncio_detailed(
      The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts
     it.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -198,8 +195,7 @@ async def asyncio(
      The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts
     it.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):

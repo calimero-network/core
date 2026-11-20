@@ -381,25 +381,7 @@ pub struct SealedRefusal {
 
 pub use crate::attest::Receipt;
 
-/// Who may reach an app at all, as one mode (deprecated: see `grants`), or `grants`: the instance's grant list (see #Grant). Each mode is a grant list: `owner` none, `org` the organization, `team` that team, `accounts` those people, `public` `anyone` with `signedOut: true` (it admits callers without an account too, which no grant does). From cluster version 1.0.0-rc.32 the deprecated `public` sets an `anyone` grant (signed-in accounts only); an instance set `public` before keeps the mode and answers `public`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind")]
-pub enum Access {
-    #[serde(rename = "owner")]
-    Owner,
-    #[serde(rename = "org")]
-    Org,
-    #[serde(rename = "public")]
-    Public,
-    #[serde(rename = "accounts")]
-    Accounts { accounts: Vec<String> },
-    #[serde(rename = "team")]
-    Team { team: String },
-    #[serde(rename = "grants")]
-    Grants { grants: Vec<Grant> },
-}
-
-/// One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account, who comes in only through a public link. `signedOut: true` is only ever answered, for an instance whose access is `public` as set before 1.0.0-rc.32, which admits callers without an account too; a request carrying it is `400 BAD_REQUEST`; `link`: a public link, whose token's holders call the instance's public methods as anonymous visitors (its key, never a token; made and revoked on `/apps/{app}/public-links` only, shown to whoever may change the instance's access, and kept as they are by `POST /apps/{app}/access`). At most 16 teams and 1000 accounts.
+/// One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account, who comes in only through a public link; `link`: a public link, whose token's holders call the instance's public methods as anonymous visitors (its key, never a token; made and revoked on `/apps/{app}/public-links` only, shown to whoever may change the instance's access, and kept as they are by `POST /apps/{app}/access`). At most 16 teams and 1000 accounts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Grant {
@@ -419,11 +401,7 @@ pub enum Grant {
         account: String,
     },
     #[serde(rename = "anyone")]
-    Anyone {
-        #[serde(rename = "signedOut")]
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        signed_out: Option<bool>,
-    },
+    Anyone,
     #[serde(rename = "link")]
     Link {
         #[serde(rename = "createdAt")]
@@ -1431,6 +1409,9 @@ pub struct AppRestoreSource {
     pub name: String,
     pub sha256: String,
     pub index: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1439,10 +1420,13 @@ pub struct AppRestore {
     pub seed: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<AppRestoreSource>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct App {
     #[serde(rename = "appId")]
     pub app_id: String,
@@ -1451,7 +1435,7 @@ pub struct App {
     pub bundle: String,
     pub owner: String,
     pub org: Option<String>,
-    pub access: Access,
+    pub grants: Vec<Grant>,
     #[serde(rename = "confirmMethods")]
     pub confirm_methods: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1482,6 +1466,9 @@ pub struct App {
     pub links: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attached: Option<BTreeMap<String, String>>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// An app as `GET /apps` lists it: `package` and `version` name the release its bundle came from (`null` for a raw upload), `deployment` the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1).
@@ -2427,8 +2414,6 @@ pub struct AppCreateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_org: Option<AppCreateRequestNewOrg>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access: Option<Access>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grants: Option<Vec<Grant>>,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     #[serde(rename = "initArgs")]
@@ -2466,146 +2451,6 @@ pub struct AppCreateResponse {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppListResponse {
     pub apps: Vec<AppEntry>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AppGetResponseExecutor {
-    /// `component`.
-    Component,
-    /// `wasmer`.
-    Wasmer,
-    /// A value this client does not know yet.
-    Other(String),
-}
-
-impl AppGetResponseExecutor {
-    /// The value on the wire.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Component => "component",
-            Self::Wasmer => "wasmer",
-            Self::Other(s) => s,
-        }
-    }
-}
-
-impl Serialize for AppGetResponseExecutor {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for AppGetResponseExecutor {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(match String::deserialize(d)?.as_str() {
-            "component" => Self::Component,
-            "wasmer" => Self::Wasmer,
-            other => Self::Other(other.to_owned()),
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AppGetResponseComponents {
-    /// `computeOnly`.
-    ComputeOnly,
-    /// A value this client does not know yet.
-    Other(String),
-}
-
-impl AppGetResponseComponents {
-    /// The value on the wire.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::ComputeOnly => "computeOnly",
-            Self::Other(s) => s,
-        }
-    }
-}
-
-impl Serialize for AppGetResponseComponents {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for AppGetResponseComponents {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(match String::deserialize(d)?.as_str() {
-            "computeOnly" => Self::ComputeOnly,
-            other => Self::Other(other.to_owned()),
-        })
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct AppGetResponseRestoreSource {
-    pub name: String,
-    pub sha256: String,
-    pub index: u64,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct AppGetResponseRestore {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<AppGetResponseRestoreSource>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AppGetResponse {
-    #[serde(rename = "appId")]
-    pub app_id: String,
-    pub name: String,
-    pub group: u64,
-    pub bundle: String,
-    pub owner: String,
-    pub org: Option<String>,
-    pub access: Access,
-    #[serde(rename = "confirmMethods")]
-    pub confirm_methods: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub executor: Option<AppGetResponseExecutor>,
-    pub replicas: Vec<u64>,
-    #[serde(rename = "createdAt")]
-    pub created_at: u64,
-    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-    #[serde(rename = "initArgs")]
-    pub init_args: Value,
-    #[serde(rename = "computeBundle")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compute_bundle: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub components: Option<AppGetResponseComponents>,
-    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-    pub metadata: Value,
-    #[serde(rename = "lastUpgrade")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_upgrade: Option<Upgrade>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deployment: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub release: Option<PackageRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub restore: Option<AppGetResponseRestore>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub links: Option<BTreeMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attached: Option<BTreeMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grants: Option<Vec<Grant>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3029,13 +2874,13 @@ pub struct AppMethodResponse {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppMoveResponse {
     #[serde(rename = "appId")]
     pub app_id: String,
     pub from: Option<String>,
     pub org: String,
-    pub access: Access,
+    pub grants: Vec<Grant>,
     pub created: bool,
     pub added: Vec<String>,
     #[serde(rename = "revokedInvites")]

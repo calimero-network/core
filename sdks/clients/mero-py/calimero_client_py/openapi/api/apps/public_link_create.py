@@ -113,11 +113,10 @@ def sync_detailed(
     vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing
     `\"calimero.visitor.v1\0\" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's
     clock. Whoever may change the instance's access, while its organization allows public links (`409
-    PUBLIC_LINKS_OFF`). Not on an instance set `public` before 1.0.0-rc.32 (`409 LEGACY_PUBLIC`): it
-    admits callers without an account already, and a link would make its access a grant list, which does
-    not. `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt`
-    (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`).
-    At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node;
+    `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public
+    key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version
+    1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -160,11 +159,10 @@ def sync(
     vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing
     `\"calimero.visitor.v1\0\" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's
     clock. Whoever may change the instance's access, while its organization allows public links (`409
-    PUBLIC_LINKS_OFF`). Not on an instance set `public` before 1.0.0-rc.32 (`409 LEGACY_PUBLIC`): it
-    admits callers without an account already, and a link would make its access a grant list, which does
-    not. `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt`
-    (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`).
-    At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node;
+    `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public
+    key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version
+    1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -202,11 +200,10 @@ async def asyncio_detailed(
     vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing
     `\"calimero.visitor.v1\0\" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's
     clock. Whoever may change the instance's access, while its organization allows public links (`409
-    PUBLIC_LINKS_OFF`). Not on an instance set `public` before 1.0.0-rc.32 (`409 LEGACY_PUBLIC`): it
-    admits callers without an account already, and a link would make its access a grant list, which does
-    not. `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt`
-    (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`).
-    At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node;
+    `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public
+    key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version
+    1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -247,11 +244,10 @@ async def asyncio(
     vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing
     `\"calimero.visitor.v1\0\" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's
     clock. Whoever may change the instance's access, while its organization allows public links (`409
-    PUBLIC_LINKS_OFF`). Not on an instance set `public` before 1.0.0-rc.32 (`409 LEGACY_PUBLIC`): it
-    admits callers without an account already, and a link would make its access a grant list, which does
-    not. `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt`
-    (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`).
-    At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node;
+    `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public
+    key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version
+    1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

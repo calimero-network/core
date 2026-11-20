@@ -19,7 +19,7 @@ before anything is written. Two layers enforce it:
 | Attribute | The node refuses |
 | --- | --- |
 | none | Callers who are not signed in (`401`). |
-| `#[app::public]` | Nothing: anyone may call it on a public app, optionally rate-limited (`rate = "10/min"`), and a visitor through one of the instance's [public links](/protocol/organizations/#public-links) may call it on an instance of any access, as `Caller::Visitor { link, key }`. |
+| `#[app::public]` | Nothing: no access grant admits a caller without an account, but a visitor through one of the instance's [public links](/protocol/organizations/#public-links) may call it on an instance of any access, as `Caller::Visitor { link, key }`, optionally rate-limited (`rate = "10/min"`). |
 | `#[app::confirm]` | A call without a fresh passkey assertion. |
 | `#[app::allow(system)]` | Only the node itself calls it (timers imply it). |
 | `#[app::allow(app = "<id>")]` | Cross-app calls from any other app. |

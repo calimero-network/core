@@ -244,7 +244,7 @@ async fn an_admin_moves_an_app_with_its_people_and_its_data() {
         .await
         .map(wire)
         .unwrap();
-    let team = s(&alice.apps().get(&app).await.map(wire).unwrap()["access"]["team"]);
+    let team = s(&alice.apps().get(&app).await.map(wire).unwrap()["grants"][0]["team"]);
     let _into_team = invite(&alice, &mut a, &src, "member", &[&team]).await;
     let _org_wide = invite(&alice, &mut a, &src, "member", &[]).await;
     // The target holds another app on an open app team: standalone.
@@ -269,7 +269,7 @@ async fn an_admin_moves_an_app_with_its_people_and_its_data() {
 
     let record = alice.apps().get(&app).await.map(wire).unwrap();
     assert_eq!(record["org"], json!(dst), "{record}");
-    assert_eq!(record["access"]["kind"], "team", "{record}");
+    assert_eq!(record["grants"][0]["kind"], "team", "{record}");
     let members = alice.orgs().get(&dst).await.map(wire).unwrap()["members"].clone();
     assert_eq!(members[&bob_id], "member", "{members}");
     assert_eq!(
@@ -317,7 +317,7 @@ async fn a_dm_moved_into_a_closed_app_team_keeps_its_people() {
     }
     let (bob_id, carol_id, dave_id) = (id(&bob).await, id(&carol).await, id(&dave).await);
     let dm = alice
-        .apps().create(typed(json!({ "name": CHAT, "package": CHAT, "org": src, "access": { "kind": "accounts", "accounts": [bob_id, carol_id] } })))
+        .apps().create(typed(json!({ "name": CHAT, "package": CHAT, "org": src, "grants": [{ "kind": "account", "account": bob_id }, { "kind": "account", "account": carol_id }] })))
         .await.map(|a| a.app_id)
         .unwrap();
     // The target keeps Chat apart: its app team is closed, alice alone in it.
@@ -335,7 +335,7 @@ async fn a_dm_moved_into_a_closed_app_team_keeps_its_people() {
         .unwrap();
 
     let out = move_app(&alice, &mut a, &dm, &dst, true).await.unwrap();
-    assert_eq!(out["access"]["kind"], "accounts", "{out}");
+    assert_eq!(out["grants"][0]["kind"], "account", "{out}");
     let mut added: Vec<String> = out["added"].as_array().unwrap().iter().map(s).collect();
     added.sort();
     let mut expected = vec![bob_id.clone(), carol_id.clone()];
@@ -450,8 +450,8 @@ async fn wrong_movers_and_quotas_are_refused_and_an_app_of_its_own_org_moves_in(
     let out = move_app(&alice, &mut a, &app, &dst, false).await.unwrap();
     assert_eq!(out["added"], json!([]), "{out}");
     assert_eq!(
-        out["access"],
-        json!({ "kind": "org" }),
+        out["grants"],
+        json!([{ "kind": "org" }]),
         "a legacy target: {out}"
     );
     assert!(!reaches(&dave, &src).await.contains(&app));

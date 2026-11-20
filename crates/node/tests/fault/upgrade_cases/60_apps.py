@@ -77,12 +77,11 @@ class History(DeepCase):
 class AccessKinds(DeepCase):
     name = "app-access-kinds"
     area = "Apps"
-    seeds = "an organization's app of each access kind: owner, organization, listed accounts, public, team"
-    verifies = ("who reads and writes each (the owner, a member, a listed account, an outsider, no "
-                "credential), allowed and refused as before (the public one still admits no credential); on the "
-                "new release each keeps its mode and answers the grants it stands for (owner none, org, the listed "
-                "account, `anyone` marked `signedOut`, the team), and access changed there, in the old form and as "
-                "grants")
+    since = "1.0.0-rc.32"
+    seeds = "an organization's app with each kind of grant alone: none (the owner), the organization, a named account, anyone, a team"
+    verifies = ("who reads and writes each (the owner, a member, the named account, an outsider, no credential), "
+                "allowed and refused as before (`anyone` admits the outsider, never a caller without an account); "
+                "each instance's grants as the owner reads them; a grant added on the new release")
 
     def populate(self, w):
         ace, mo, lis, oz = people(w, "ace", "mo", "lis", "oz")
@@ -90,19 +89,20 @@ class AccessKinds(DeepCase):
         org = new_org(ace, "Access Org")
         join(ace, org, mo, lis)
         team = team_id(ace.raw("post", f"orgs/{org}/teams", {"name": "few", "join": "invite"}))
-        apps = {}
-        for kind, access in (("owner", {"kind": "owner"}), ("org", {"kind": "org"}),
-                             ("accounts", {"kind": "accounts", "accounts": [lis.id]}),
-                             ("public", {"kind": "public"}), ("team", {"kind": "team", "team": team})):
+        apps, grants = {}, {}
+        for kind, granted in (("owner", []), ("org", [{"kind": "org"}]),
+                              ("account", [{"kind": "account", "account": lis.id}]),
+                              ("anyone", [{"kind": "anyone"}]), ("team", [{"kind": "team", "team": team}])):
             app = ace.deploy(kv_wasm(w), f"access-{kind}", org=org)
-            ace.raw("post", f"apps/{app}/access", {"access": access})
+            ace.raw("post", f"apps/{app}/access", {"grants": granted})
             ace.call(app, "set", {"key": "k", "value": kind})
-            apps[kind] = app
-        s = {"org": org, "apps": apps}
+            apps[kind], grants[kind] = app, granted
+        s = {"org": org, "apps": apps, "grants": grants}
         s["decisions"] = self._decide(w, s)
-        for want in ("mo reads org", "lis reads accounts", "oz reads public"):
+        for want in ("mo reads org", "lis reads account", "oz reads anyone"):
             check(s["decisions"][want] == "ok", f"{want}: {s['decisions'][want]}")
-        for want in ("mo reads owner", "oz reads org", "mo reads accounts", "mo reads team", "anonymous reads org"):
+        for want in ("mo reads owner", "oz reads org", "mo reads account", "mo reads team", "anonymous reads org",
+                     "anonymous reads anyone"):
             check(s["decisions"][want] != "ok", f"{want} was allowed")
         return s
 
@@ -119,32 +119,17 @@ class AccessKinds(DeepCase):
         return out
 
     def check(self, w, s):
+        ace = person(w, "ace")
+        for kind, app in s["apps"].items():
+            eq(ace.get(f"apps/{app}").get("grants"), s["grants"][kind], f"the {kind} instance's grants")
         same_decisions(self._decide(w, s), s["decisions"], "access kinds")
 
     def exercise(self, w, s):
         ace, mo, lis = people(w, "ace", "mo", "lis")
-        team = ace.get(f"apps/{s['apps']['team']}")["access"]["team"]
-        stands_for = {
-            "owner": [], "org": [{"kind": "org"}], "accounts": [{"kind": "account", "account": lis.id}],
-            "public": [{"kind": "anyone", "signedOut": True}], "team": [{"kind": "team", "team": team}],
-        }
-        for kind, grants in stands_for.items():
-            record = ace.get(f"apps/{s['apps'][kind]}")
-            if kind == "public" and record["access"]["kind"] == "grants":
-                # Seeded on a cluster at 1.0.0-rc.32 or later, where the deprecated `public` sets an
-                # `anyone` grant (signed-in accounts only).
-                eq(record.get("grants"), [{"kind": "anyone"}], "the deprecated public as a grant")
-                continue
-            eq(record["access"]["kind"], kind, f"the {kind} instance keeps its mode")
-            eq(record.get("grants"), grants, f"the grants the {kind} instance stands for")
-        app = s["apps"]["accounts"]
-        ace.raw("post", f"apps/{app}/access", {"access": {"kind": "accounts", "accounts": [lis.id, mo.id]}})
-        until("mo reads once listed", lambda: mo.view(app, "get", {"key": "k"}))
-        # The team instance as grants: the team, and lis named beside it.
-        app = s["apps"]["team"]
-        until("the cluster version takes grants", lambda: ace.raw("post", f"apps/{app}/access", {"grants": [
-            {"kind": "team", "team": team}, {"kind": "account", "account": lis.id}]}), timeout=120)
-        until("lis reads once named", lambda: lis.view(app, "get", {"key": "k"}))
+        app = s["apps"]["account"]
+        s["grants"]["account"] = [{"kind": "account", "account": lis.id}, {"kind": "account", "account": mo.id}]
+        ace.raw("post", f"apps/{app}/access", {"grants": s["grants"]["account"]})
+        until("mo reads once named", lambda: mo.view(app, "get", {"key": "k"}))
         s["decisions"] = self._decide(w, s)
 
 

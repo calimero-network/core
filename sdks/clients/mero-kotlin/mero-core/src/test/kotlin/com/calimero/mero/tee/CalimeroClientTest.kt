@@ -719,7 +719,7 @@ class CalimeroClientTest {
                         "/orgs/org-1" -> json(200, """{"orgId":"org-1","name":"Acme","members":{"acc-1":"owner"},"teams":{"t1":{"teamId":"t1","name":"general","join":"everyone"}}}""")
                         "/orgs/org-1/apps" ->
                             json(200, """{"apps":[{"app":"a1","team":"t1","name":"chat","package":{"package":"com.calimero.chat","version":"1.0.0"}},{"app":"a2","package":{"package":"other","version":"1"}}],"next":null}""")
-                        "/apps" -> json(200, """{"appId":"a3"}""").also { assertTrue(body, body.contains(""""access":{"kind":"team","team":"t1"}""")) }
+                        "/apps" -> json(200, """{"appId":"a3"}""").also { assertTrue(body, body.contains(""""grants":[{"kind":"team","team":"t1"}]""")) }
                         "/invites/inv_abc/redeem" -> json(200, """{"org":"org-1"}""")
                         else -> refused(404, "NOT_FOUND")
                     }
@@ -885,7 +885,7 @@ class CalimeroClientTest {
                     .requests
                     .last { path(it.first) == "/apps" }
                     .second
-            assertTrue(created, created.contains(""""access":{"kind":"team","team":"$appTeam"}"""))
+            assertTrue(created, created.contains(""""grants":[{"kind":"team","team":"$appTeam"}]"""))
             assertEquals(listOf(general), backend.listContexts(org))
             assertEquals("the app team is not a channel", emptyList<Any>(), backend.listSubgroups(org))
 
@@ -944,7 +944,7 @@ class CalimeroClientTest {
                     .requests
                     .last { path(it.first) == "/apps" }
                     .second
-            assertTrue(created, created.contains(""""access":{"kind":"org"}"""))
+            assertTrue(created, created.contains(""""grants":[{"kind":"org"}]"""))
             val token = backend.createInvitation(org).token
             assertEquals(emptyList<String>(), fake.inviteTeams[token])
             val team = backend.createSubgroup(org, "t", isPublic = true)

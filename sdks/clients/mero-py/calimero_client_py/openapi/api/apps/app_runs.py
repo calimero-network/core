@@ -97,8 +97,7 @@ def sync_detailed(
      Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page,
     `null` on the last.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -138,8 +137,7 @@ def sync(
      Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page,
     `null` on the last.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -174,8 +172,7 @@ async def asyncio_detailed(
      Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page,
     `null` on the last.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -213,8 +210,7 @@ async def asyncio(
      Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page,
     `null` on the last.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):

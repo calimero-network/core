@@ -741,7 +741,7 @@ class Apps(Group):
 
         The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document, free-form here: its format is the ABI's, not this API's.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -750,28 +750,27 @@ class Apps(Group):
         """
         return self._run(_APP_ABI, (app,), {}, None)
 
-    def access(self, *, app, access=UNSET, grants=UNSET):
+    def access(self, *, app, grants):
         """Set who may reach an app (`POST /apps/{app}/access`, `app_access`).
 
-        `grants` replace the instance's grant list (#Grant; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`); the deprecated `access` sets one mode, except that from that cluster version `public` sets an `anyone` grant (signed-in accounts only). Exactly one of them, else `400 BAD_REQUEST`; a grant with `signedOut` is `400 BAD_REQUEST`. Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
+        `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
 
         **Who:** a passkey session (an API key is refused).
 
         Args:
             app: path
-            access: body `access`
             grants: body `grants`
 
         Returns: AppAccessResponse200
         """
-        return self._run(_APP_ACCESS, (app,), {}, {"access": access, "grants": grants})
+        return self._run(_APP_ACCESS, (app,), {}, {"grants": grants})
 
     def attestation(self, *, app, nonce):
         """Every replica's receipt-key attestation (`GET /apps/{app}/attestation`, `app_attestation`).
 
         Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`), and `cluster`, the cluster id each quote binds (with the replica's `node`): the documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any other query parameter is ignored.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -786,7 +785,7 @@ class Apps(Group):
 
         The owner or an organization admin.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -809,7 +808,7 @@ class Apps(Group):
 
         `{id}` is base58 or hex; `grant` is a link the app made (`BlobRef::grant`).
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -831,7 +830,7 @@ class Apps(Group):
     def blob_info(self, *, app, id):
         """A blob's size (`GET /apps/{app}/blobs/{id}/info`, `blob_info`).
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -854,7 +853,7 @@ class Apps(Group):
 
         Plain blobs only.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -868,7 +867,7 @@ class Apps(Group):
 
         The grants made so far for a published blob; the owner or an organization admin.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -893,7 +892,7 @@ class Apps(Group):
 
         A plain blob, stored with the request's `Content-Type`, which a component app's download answers with: any media type (printable ASCII, 127 bytes at most; another is `400 BAD_REQUEST`), `application/octet-stream` when the request names none. Send the blob's own type, not `*/*`, which would be stored as its type. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -912,7 +911,7 @@ class Apps(Group):
 
         A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
         Args:
             app: path
@@ -941,7 +940,6 @@ class Apps(Group):
         service=UNSET,
         org=UNSET,
         new_org=UNSET,
-        access=UNSET,
         grants=UNSET,
         init_args=UNSET,
         metadata=UNSET,
@@ -949,7 +947,7 @@ class Apps(Group):
     ):
         """Create an app instance (`POST /apps`, `app_create`).
 
-        From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; the deprecated `access` still names one mode; not both, `400 BAD_REQUEST`; neither: the organization; grants need cluster version 1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+        From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.32, `409 FEATURE_NOT_ACTIVE`). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
 
         **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
@@ -961,7 +959,6 @@ class Apps(Group):
             service: body `service`
             org: body `org`
             new_org: body `newOrg`
-            access: body `access`
             grants: body `grants`
             init_args: body `initArgs`
             metadata: body `metadata`
@@ -981,7 +978,6 @@ class Apps(Group):
                 "service": service,
                 "org": org,
                 "newOrg": new_org,
-                "access": access,
                 "grants": grants,
                 "initArgs": init_args,
                 "metadata": metadata,
@@ -1144,14 +1140,14 @@ class Apps(Group):
     def get(self, *, app):
         """One app (`GET /apps/{app}`, `app_get`).
 
-        `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in (absent from a node before 1.0.0-rc.32): an instance set `public` before 1.0.0-rc.32 keeps `access: { kind: "public" }` and answers `[{ kind: "anyone", signedOut: true }]`, as it admits callers without an account too; a guest sees only their own grant (and `access` naming only them).
+        `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. A guest sees only their own grant in `grants`.
 
         **Who:** signed in (a session or an API key).
 
         Args:
             app: path
 
-        Returns: AppGetResponse200
+        Returns: App
         """
         return self._run(_APP_GET, (app,), {}, None)
 
@@ -1160,7 +1156,7 @@ class Apps(Group):
     ):
         """Invite someone to an instance (`POST /apps/{app}/invites`, `app_invite_create`).
 
-        A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access, whatever its guest switches say: they are judged when someone redeems it. Not on an instance set `public` before 1.0.0-rc.32 (`409 LEGACY_PUBLIC`): the grant a redemption adds would end its access for callers without an account, so its grants are set first. At most 64 pending per instance. `412` first.
+        A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. `412` first.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -1251,7 +1247,7 @@ class Apps(Group):
 
         One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1263,7 +1259,7 @@ class Apps(Group):
     def list(self, *, package=UNSET, bundle=UNSET):
         """Apps the caller reaches (`GET /apps`, `app_list`).
 
-        Anyone may list public apps.
+        The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
 
         **Who:** signed in (a session or an API key).
 
@@ -1305,7 +1301,7 @@ class Apps(Group):
 
         The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
         Args:
             app: path
@@ -1337,7 +1333,7 @@ class Apps(Group):
     def move(self, *, app, to_org, bring_members=UNSET, confirm=None):
         """Move an app to another organization (`POST /apps/{app}/move`, `app_move`).
 
-        Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
+        Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -1362,7 +1358,7 @@ class Apps(Group):
 
         Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1451,7 +1447,7 @@ class Apps(Group):
 
         Its record: `state`, `version`, `hash`, `computeBundle`, `inputs`, `params`, per-step `status`, `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap). Sizes, hashes and results only for callers who may list the app's files.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1474,7 +1470,7 @@ class Apps(Group):
 
         The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1561,7 +1557,7 @@ class Apps(Group):
 
         One entry per present device (a session's passkey, or an API key): its account, device and state (hex).
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1575,7 +1571,7 @@ class Apps(Group):
 
         The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts it.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1591,7 +1587,7 @@ class Apps(Group):
     ):
         """Make a public link of an instance (`POST /apps/{app}/public-links`, `public_link_create`).
 
-        A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor (`Caller::Visitor { link, key }`), whatever its access: send `Authorization: Bearer vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing `"calimero.visitor.v1\\0" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's clock. Whoever may change the instance's access, while its organization allows public links (`409 PUBLIC_LINKS_OFF`). Not on an instance set `public` before 1.0.0-rc.32 (`409 LEGACY_PUBLIC`): it admits callers without an account already, and a link would make its access a grant list, which does not. `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+        A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor (`Caller::Visitor { link, key }`), whatever its access: send `Authorization: Bearer vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing `"calimero.visitor.v1\\0" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's clock. Whoever may change the instance's access, while its organization allows public links (`409 PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -1656,7 +1652,7 @@ class Apps(Group):
 
         Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1702,7 +1698,7 @@ class Apps(Group):
 
         Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1783,7 +1779,7 @@ class Apps(Group):
 
         Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -2041,7 +2037,7 @@ class Apps(Group):
 
         Read linearizably (`consistency: "strong"`, the default; any value but `"stale"` reads as it): the replica answering waits until it applied the index the app's leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (`"stale"`) on the replica answering, as it stands; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
 
-        **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -5192,7 +5188,7 @@ class Orgs(Group):
     ):
         """Change the organization's settings (`POST /orgs/{org}/settings`, `org_settings`).
 
-        `allowGuests` (default on): whether its instances take guests, accounts listed on one instance (its `accounts` access) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+        `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
 
         **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 

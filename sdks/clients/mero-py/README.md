@@ -142,7 +142,7 @@ team = client.orgs.team_create(org=org, name="eng", join="invite").team_id
 client.orgs.team_set_member(org=org, team=team, account=account_id, role="readOnly")
 bundle = client.packages.bundle_put(body=wasm).hash_
 app = client.apps.create(name="eng-kv", bundle=bundle, org=org,
-                         access={"kind": "team", "team": team}).app_id
+                         grants=[{"kind": "team", "team": team}]).app_id
 client.orgs.team_update(org=org, team=team, name="engineering", metadata={"colour": "teal"})
 client.orgs.team_delete(org=org, team=team)  # takes its sub-teams and apps
 ```

@@ -105,7 +105,7 @@ await client.orgs.teamRemoveMember({ org, team, account: bobId }, { confirm: pas
 await client.orgs.teamDelete({ org, team }, { confirm: passkeyConfirm(passkey) }); // and the teams below it, and their apps
 ```
 
-An app created with `access: { kind: 'team', team }` is reached by the team's
+An app created with `grants: [{ kind: 'team', team }]` is reached by the team's
 members; a read-only member's calls that would write are refused.
 
 Deleting a team whose teams hold apps takes the deleter's passkey: the node's

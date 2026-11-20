@@ -13,7 +13,7 @@ not one app's own data:
 | Field of `SystemState` | What it is |
 | --- | --- |
 | `nodes`, `removed_nodes`, `node_epoch` | Every registered node (id, base URL, zone, role: `replica`, or `job` for a node that only runs compute, and a job node's pool); the ids removed for good; a counter per id that moves with each registration or removal |
-| `apps`, `next_group` | The app directory (each instance's bundle and release, owner, organization, access rule, confirm methods, replicas, group, metadata, last upgrade) and the next app group number |
+| `apps`, `next_group` | The app directory (each instance's bundle and release, owner, organization, grants, confirm methods, replicas, group, metadata, last upgrade) and the next app group number |
 | `bundles` | Bundle hash → size, uploader, and the release it ships in (the WASM itself is in the blob store) |
 | `packages`, `package_origins` | Installed packages (pinned signer, installers, and every release: `.mpk` hash and size, source, services, compute components, pipelines, declared outbound prefixes); the web origins each package registered |
 | `accounts`, `credentials`, `activity` | Accounts with their passkeys, labels, aliases and passkey times; credential id → account; each account's recent sign-ins and step-ups |

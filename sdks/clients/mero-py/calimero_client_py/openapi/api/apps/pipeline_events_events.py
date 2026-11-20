@@ -81,8 +81,7 @@ def sync_detailed(
 
      Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -118,8 +117,7 @@ def sync(
 
      Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -150,8 +148,7 @@ async def asyncio_detailed(
 
      Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -185,8 +182,7 @@ async def asyncio(
 
      Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.
 
-    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
-    signed out too).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):

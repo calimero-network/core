@@ -15,15 +15,9 @@ if TYPE_CHECKING:
     from ..models.grant_type_0 import GrantType0
     from ..models.grant_type_3 import GrantType3
     from ..models.grant_type_1 import GrantType1
-    from ..models.access_type_0 import AccessType0
+    from ..models.grant_type_4 import GrantType4
     from ..models.app_create_body_new_org import AppCreateBodyNewOrg
     from ..models.grant_type_2 import GrantType2
-    from ..models.access_type_3 import AccessType3
-    from ..models.access_type_1 import AccessType1
-    from ..models.access_type_4 import AccessType4
-    from ..models.access_type_2 import AccessType2
-    from ..models.grant_type_4 import GrantType4
-    from ..models.access_type_5 import AccessType5
 
 
 T = TypeVar("T", bound="AppCreateBody")
@@ -40,12 +34,6 @@ class AppCreateBody:
         service (Union[Unset, str]):
         org (Union[Unset, str]):
         new_org (Union[Unset, AppCreateBodyNewOrg]):
-        access (Union['AccessType0', 'AccessType1', 'AccessType2', 'AccessType3', 'AccessType4', 'AccessType5', Unset]):
-            Who may reach an app at all, as one mode (deprecated: see `grants`), or `grants`: the instance's grant list (see
-            #Grant). Each mode is a grant list: `owner` none, `org` the organization, `team` that team, `accounts` those
-            people, `public` `anyone` with `signedOut: true` (it admits callers without an account too, which no grant
-            does). From cluster version 1.0.0-rc.32 the deprecated `public` sets an `anyone` grant (signed-in accounts
-            only); an instance set `public` before keeps the mode and answers `public`.
         grants (Union[Unset, list[Union['GrantType0', 'GrantType1', 'GrantType2', 'GrantType3', 'GrantType4']]]):
         init_args (Union[Unset, Any]): Free-form JSON: its shape is not this API's (see the description around it for
             whose it is).
@@ -61,15 +49,6 @@ class AppCreateBody:
     service: Union[Unset, str] = UNSET
     org: Union[Unset, str] = UNSET
     new_org: Union[Unset, "AppCreateBodyNewOrg"] = UNSET
-    access: Union[
-        "AccessType0",
-        "AccessType1",
-        "AccessType2",
-        "AccessType3",
-        "AccessType4",
-        "AccessType5",
-        Unset,
-    ] = UNSET
     grants: Union[
         Unset,
         list[
@@ -85,15 +64,9 @@ class AppCreateBody:
         from ..models.grant_type_0 import GrantType0
         from ..models.grant_type_3 import GrantType3
         from ..models.grant_type_1 import GrantType1
-        from ..models.access_type_0 import AccessType0
+        from ..models.grant_type_4 import GrantType4
         from ..models.app_create_body_new_org import AppCreateBodyNewOrg
         from ..models.grant_type_2 import GrantType2
-        from ..models.access_type_3 import AccessType3
-        from ..models.access_type_1 import AccessType1
-        from ..models.access_type_4 import AccessType4
-        from ..models.access_type_2 import AccessType2
-        from ..models.grant_type_4 import GrantType4
-        from ..models.access_type_5 import AccessType5
 
         name = self.name
 
@@ -110,22 +83,6 @@ class AppCreateBody:
         new_org: Union[Unset, dict[str, Any]] = UNSET
         if not isinstance(self.new_org, Unset):
             new_org = self.new_org.to_dict()
-
-        access: Union[Unset, dict[str, Any]]
-        if isinstance(self.access, Unset):
-            access = UNSET
-        elif isinstance(self.access, AccessType0):
-            access = self.access.to_dict()
-        elif isinstance(self.access, AccessType1):
-            access = self.access.to_dict()
-        elif isinstance(self.access, AccessType2):
-            access = self.access.to_dict()
-        elif isinstance(self.access, AccessType3):
-            access = self.access.to_dict()
-        elif isinstance(self.access, AccessType4):
-            access = self.access.to_dict()
-        else:
-            access = self.access.to_dict()
 
         grants: Union[Unset, list[dict[str, Any]]] = UNSET
         if not isinstance(self.grants, Unset):
@@ -168,8 +125,6 @@ class AppCreateBody:
             field_dict["org"] = org
         if new_org is not UNSET:
             field_dict["newOrg"] = new_org
-        if access is not UNSET:
-            field_dict["access"] = access
         if grants is not UNSET:
             field_dict["grants"] = grants
         if init_args is not UNSET:
@@ -186,15 +141,9 @@ class AppCreateBody:
         from ..models.grant_type_0 import GrantType0
         from ..models.grant_type_3 import GrantType3
         from ..models.grant_type_1 import GrantType1
-        from ..models.access_type_0 import AccessType0
+        from ..models.grant_type_4 import GrantType4
         from ..models.app_create_body_new_org import AppCreateBodyNewOrg
         from ..models.grant_type_2 import GrantType2
-        from ..models.access_type_3 import AccessType3
-        from ..models.access_type_1 import AccessType1
-        from ..models.access_type_4 import AccessType4
-        from ..models.access_type_2 import AccessType2
-        from ..models.grant_type_4 import GrantType4
-        from ..models.access_type_5 import AccessType5
 
         d = dict(src_dict)
         name = d.pop("name", UNSET)
@@ -215,67 +164,6 @@ class AppCreateBody:
             new_org = UNSET
         else:
             new_org = AppCreateBodyNewOrg.from_dict(_new_org)
-
-        def _parse_access(
-            data: object,
-        ) -> Union[
-            "AccessType0",
-            "AccessType1",
-            "AccessType2",
-            "AccessType3",
-            "AccessType4",
-            "AccessType5",
-            Unset,
-        ]:
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_access_type_0 = AccessType0.from_dict(data)
-
-                return componentsschemas_access_type_0
-            except:  # noqa: E722
-                pass
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_access_type_1 = AccessType1.from_dict(data)
-
-                return componentsschemas_access_type_1
-            except:  # noqa: E722
-                pass
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_access_type_2 = AccessType2.from_dict(data)
-
-                return componentsschemas_access_type_2
-            except:  # noqa: E722
-                pass
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_access_type_3 = AccessType3.from_dict(data)
-
-                return componentsschemas_access_type_3
-            except:  # noqa: E722
-                pass
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_access_type_4 = AccessType4.from_dict(data)
-
-                return componentsschemas_access_type_4
-            except:  # noqa: E722
-                pass
-            if not isinstance(data, dict):
-                raise TypeError()
-            componentsschemas_access_type_5 = AccessType5.from_dict(data)
-
-            return componentsschemas_access_type_5
-
-        access = _parse_access(d.pop("access", UNSET))
 
         grants = []
         _grants = d.pop("grants", UNSET)
@@ -342,7 +230,6 @@ class AppCreateBody:
             service=service,
             org=org,
             new_org=new_org,
-            access=access,
             grants=grants,
             init_args=init_args,
             metadata=metadata,

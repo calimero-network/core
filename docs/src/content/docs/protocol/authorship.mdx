@@ -19,7 +19,7 @@ one. An app reads it with `env::caller()` (`crates/sdk/src/env.rs`):
 | --- | --- |
 | `Account(id)` | A passkey session. |
 | `ApiKey { key_id, account }` | An API key acting for `account`. |
-| `Public` | No credential, on a public app, for a `#[app::public]` method. |
+| `Public` | No credential, for a `#[app::public]` method, where the instance admits a caller without an account (no access grant does). |
 | `System` | The node itself: a timer tick (`#[app::every]`), a compute run's result method (`#[app::compute_result]`), the dead-letter handler `onXcallFailed`. |
 | `App(id)` | A message or synchronous call from app `id` ([Cross-app calls](/protocol/xcall/)). |
 
