@@ -289,7 +289,7 @@ describe('apps, orgs, teams, invites', () => {
       id = await result.current.create.create({ name: 'kv', bundle: { package: 'com.x' }, org: 'org-1' });
     });
     expect(id).toBe('app-new');
-    expect(client.apps.create).toHaveBeenCalledWith({ name: 'kv', package: 'com.x', org: 'org-1', access: undefined });
+    expect(client.apps.create).toHaveBeenCalledWith({ name: 'kv', package: 'com.x', org: 'org-1' });
   });
 
   it('reads an org and creates a team', async () => {
@@ -546,7 +546,7 @@ describe('the generated method groups', () => {
     await act(async () => {
       await result.current.create({ name: 'kv', bundle: 'abc', initArgs: { n: 1 } });
     });
-    expect(client.apps.create).toHaveBeenCalledWith({ name: 'kv', bundle: 'abc', initArgs: { n: 1 }, access: undefined });
+    expect(client.apps.create).toHaveBeenCalledWith({ name: 'kv', bundle: 'abc', initArgs: { n: 1 } });
   });
 
   it('requests consent and checks its result', async () => {

@@ -9,7 +9,7 @@ import type { ApiComponents, AppInfo, PackageInfo } from '@calimero-network/mero
 import { useMero } from '../context';
 import { confirmWith, NotConnectedError, useAppId, useAsyncAction, useResource, useSignedInClient, type MutationOptions } from './internal';
 
-type AppAccess = ApiComponents['schemas']['Access'];
+type AppGrant = ApiComponents['schemas']['Grant'];
 
 /** What `useUpgradeApp().upgrade` resolves: the upgrade's log index and outcome. */
 interface AppUpgradeResult {
@@ -38,7 +38,8 @@ export interface CreateAppInput {
   bundle: string | { package: string; version?: string; service?: string };
   /** The organization that owns it (default: the account). */
   org?: string;
-  access?: Record<string, unknown>;
+  /** Who reaches it: `org`, `team`, `account` and `anyone` grants (absent: the organization; empty: the owner alone). */
+  grants?: AppGrant[];
   /** Methods that need the caller's passkey on every call. */
   confirmMethods?: string[];
   initArgs?: unknown;
@@ -58,7 +59,6 @@ export function useCreateApp(options?: MutationOptions) {
           name,
           ...target,
           ...rest,
-          access: rest.access as AppAccess | undefined,
         });
         return appId;
       }),
