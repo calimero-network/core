@@ -1408,7 +1408,9 @@ catalog_entries() {
       $ind = length($1); $cat = $2; next;
     }
     my $c = $sec eq "catalog" ? "default" : ($sec eq "catalogs" && $cat ne "") ? $cat : next;
-    if (m{^\s*["\x27]?\Q$ENV{NAME}\E["\x27]?\s*:\s*["\x27]?([^"\x27\s#]+)}) { print "$c\t$1\n" }
+    if (m{^\s*["\x27]?\Q$ENV{NAME}\E["\x27]?\s*:\s*["\x27]?([^"\x27\s#]+)}) {
+      print "$c\t$1\t" . (/#\s*fleet-bump:\s*hold\b/ ? "hold" : "") . "\n";
+    }
   ' "$2"
 }
 
@@ -1521,10 +1523,18 @@ bump_npm() {
     local new_major="${ver%%.*}"
 
     if [ -n "$workspace_yaml" ]; then
-      local cat current_cat verdict label
-      while IFS="$(printf '\t')" read -r cat current_cat; do
+      local cat current_cat hold verdict label
+      while IFS="$(printf '\t')" read -r cat current_cat hold; do
         [ -n "${cat:-}" ] || continue
         label=$(catalog_label "$cat")
+        # `# fleet-bump: hold` on the entry's line: a pin kept on purpose (apps'
+        # conformance 0.x rig stays on mero-js 26 / mero-react 10), which
+        # --allow-major would otherwise move onto the release's line.
+        if [ "${hold:-}" = hold ]; then
+          applicable=1
+          note "pnpm-workspace.yaml ($label): $name $current_cat is held (# fleet-bump: hold) — skipped"
+          continue
+        fi
         verdict=$(catalog_bump "$name" "$ver" "$workspace_yaml" "$cat" "$current_cat")
         case "$verdict" in
           changed)
