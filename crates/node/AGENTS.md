@@ -1348,8 +1348,7 @@ is its command line.
   target), else `SECOND_APPROVAL_REQUIRED`; `drop_spent_approvals` after each upgrade.
   The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
   `autoApply` (`noDestinations`: a green update of an app whose unit has no destinations
-  before or after) and `holdHours` are stored and validated only: the hold, auto-apply,
-  restore points and waves are C9. Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
+  before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
   /apps/{app}/upgrade-policy` (`policy_json`), `GET /apps/{app}/update` adds `policy`,
   `pendingApprovals`, `available.approvalsNeeded`/`approvedBy`
   (`api::upgrades::update_view`), `GET /orgs/{org}/updates?after=` (owners and admins,
@@ -1359,6 +1358,57 @@ is its command line.
   `an_update_policy_is_an_owners_or_admins_and_bounded`,
   `a_red_update_needs_a_second_approver_where_the_policy_asks`),
   `a_red_update_waits_for_a_second_approver` (`tests/consent_page.rs`).
+- **Updates on their own, restore points, undo and waves** (C9; `system/updates.rs`,
+  `system/rollouts.rs`, `node/auto_updates.rs`, `node/restore_points.rs`, `api/undo.rs`,
+  rollout routes in `api/deployments.rs`; docs: protocol upgrades "Updates that apply on
+  their own"). *On its own* (`Feature::AutoUpdates`, rc.34): the system leader's pass
+  (`Node::auto_update` from `reconcile`, every `AUTO_UPDATE_EVERY`, at most
+  `MAX_AUTO_UPDATES_PER_PASS`) pauses failing rollouts (`failing_rollouts`), then takes
+  `SystemState::auto_update_candidates(at)` (policy `noDestinations`, the newest release
+  that may apply, never one a failed update or an undo left), classifies each
+  (`move_class`) and runs the green ones through `api::upgrades::auto_upgrade` ->
+  `run_upgrade` (`Upgrader::auto`, `Caller::System`, actor `system::AUTO_UPDATE`).
+  `UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that
+  actor); apply judges `SystemState::auto_update_gate`: policy, green class (and
+  `check_class`), newer release of its package, not a unit member, the logged unit with
+  no destination before or after, the hold (`at` >= `installedAt`, or the deployment
+  offer's `addedAt`, + `holdHours`), the rollout's wave, a restore point
+  (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `ROLLOUT_WAITS`, `RESTORE_POINT_REQUIRED`;
+  `UpgradeRecord::auto`). Every update decision's time is `types::update_now`
+  (`testing::shift_update_clock` moves it in tests). *Restore points*
+  (`Feature::RestorePoints`): `run_upgrade` takes one before an upgrade that runs on the
+  group (`api::upgrades::take_restore_point`: `Node::take_restore_point`, here or a
+  replica's `internal/restore-point { op: take }`; the group's `fresh_snapshot` written
+  with `backup::write` into `<data>/restore-points/<app>/`), `{}` when nothing runs on
+  the group, and `UpgradeApp { restore_point }` makes it `AppRecord::restore_point`
+  (`types::RestorePoint`; replaced by each upgrade, cleared by one without, by
+  `RestoreApp`, spent by `FinishRestore` after its undo). A manual upgrade goes on
+  without one (warn); an automatic one does not. `sweep_restore_points` keeps the named
+  file and those under `RESTORE_POINT_GRACE`. *Undo*: `UndoUpgrade { app_id, apps:
+  { app: replicas } }` (consent `<app> / __undo_upgrade / SystemState::undo_args`; owner
+  or admin; `undo_set`: the app and the members whose restore point is of the same run;
+  `may_undo`: within `UNDO_WINDOW_SECS` of the upgrade's `at`, the app still on its
+  target, or a retry while its restore runs) reverts bundle, compute and release and,
+  with a file, moves the app to a new group with `PendingRestore { seed: the file's
+  node }` as `RestoreApp` does; `POST /apps/{app}/undo` then asks that node to seed it
+  (`Node::seed_undo` -> `seed_undo_here` -> `seed_restore`, in its own task) and waits
+  `UNDO_WAIT`; `GET /apps/{app}/undo` (`lostWrites` from `restore_point_here`: entries
+  since, last write, `any`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
+  `UNDO_NOT_AS_NAMED`, `409 RESTORE_POINT_UNAVAILABLE`. *Waves* (`Feature::Rollouts`):
+  `SystemState::rollouts` (deployment -> app -> `rollouts::RolloutState { version,
+  waveHours, baseWave, baseAt, paused }`), `rollout_of` (defaults from the offer's
+  `addedAt`), `rollout_order` (`SHA-256(version, app)`), `admitted` (`WAVES` 1/10/50/100
+  %), `rollout_admits`, `rollout_health`/`failing` (`ROLLOUT_FAILURE_PERCENT`).
+  `SetRollout` (managers, consent `deployment:<id> / __set_rollout / rollout_args`; `BAD_ROLLOUT`
+  for `waveHours` outside 1..=168), `PauseRollout` (the leader's, `ROLLOUT_HEALTHY` unless
+  the state shows the failures). Routes `GET /deployments/{id}/rollout`, `POST
+  /deployments/{id}/rollout/{app}/pause|resume`. Regressions: `system::tests`
+  (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`,
+  `an_upgrade_is_undone_within_a_week_back_to_its_restore_point`,
+  `a_deployments_offer_reaches_its_instances_in_waves_and_pauses_on_failures`),
+  `system::rollouts::tests`, `tests/auto_updates.rs`. Not done: an automatic update that
+  moves a unit's members, waves for a publisher's run, a restore point kept on more than
+  one node.
 - **Upgrades are code-only**: a component upgrade swaps the bundle
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
   consent page shows the state version each side's `calimero:abi` declares and flags a
