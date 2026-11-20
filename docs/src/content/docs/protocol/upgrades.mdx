@@ -222,19 +222,22 @@ from the release's `.mpk` and still refuses it.
 An app's **unit** is the app and every app it created with it (`uses` in mode
 `create`, transitively; never an app attached to it). Its **egress** is every
 destination the releases of the unit may send a request to: each release's
-`outbound` prefixes, and the host of a declared secret no prefix names. The
-operator keeps a list of **sealed endpoints** per cluster (`POST
-/ops/sealed-endpoints`, signed; `SetSealedEndpoints`): prefixes it vouches keep
-what is sent there inside a TEE, such as a private-inference service. A unit is
-**Sealed** when one of them covers every destination of its egress; a unit with
-no egress is Sealed.
+`outbound` prefixes, and the host of a declared secret no prefix names. Only
+those destinations are reported; an empty list means no data leaves Calimero.
+Any destination outside Calimero is just a destination, whatever runs there: the
+platform keeps no list of trusted endpoints and never vouches for an external
+one, a TEE (a private-inference service, say) included. An app that wants to
+trust an external TEE verifies its attestation in its own code; the destination
+is still listed.
 
-`GET /packages/{package}/{version}/capabilities` answers a release's unit egress
-before any instance exists (`egress`, `sealed`, `members`), `GET
+`GET /packages/{package}/{version}/capabilities` answers a release's unit
+destinations before any instance exists (`destinations`, `members`), `GET
 /apps/{app}/egress` an instance's as it runs now, and `GET /apps/{app}/update`
 classifies the available update over the unit (as `upgrade-unit` would move its
 members when it has any, else the app alone). The consent page's upgrade sheets
-carry the same verdict (`unit`) and say Sealed or Not Sealed in plain words.
+carry the same verdict (`unit`) and say it in plain words: "This update can send
+data to a new place:" and the new hosts when it adds any (red), else "Your data
+stays in Calimero" or "This app can send data to:" and the hosts.
 
 The classifier (`calimero_bundle::update`, the same code `meroctl` uses) calls
 an update **red** when any of these holds, and **green** otherwise:
@@ -242,7 +245,7 @@ an update **red** when any of these holds, and **green** otherwise:
 | Rule | Why |
 | --- | --- |
 | The app or a member that stays is signed by another key (`signerChanged`) | The code is no longer from whoever was trusted with it |
-| A destination after is covered by none before, members counted (`egressAdded`) | Data may go somewhere it could not; leaving the sealed set implies it |
+| A destination after is covered by none before, members counted (`egressAdded`) | Data may go somewhere it could not |
 | The app or a member declares another state version (`stateVersionChanged`) | No migration runs, so the new code reads data in a shape it may not expect |
 | A member with egress joins or leaves the unit (`memberAdded`, `memberRemoved`) | A joining member brings its own destinations; one that leaves is no longer upgraded under this consent |
 | A release newly calls a method of another app as the person (`delegatedMethodsAdded`) | A new way to act as the user |

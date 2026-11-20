@@ -180,11 +180,6 @@ pub enum Feature {
     /// the setting; a visitor's call names `Caller::Visitor` in the app's log, which an
     /// earlier replica cannot decode, so visitors are admitted only at this version too.
     PublicLinks,
-    /// `SetSealedEndpoints`, the operator's list of endpoints a unit's egress may reach and
-    /// still be Sealed (`SystemState::sealed_endpoints`): an earlier release cannot decode
-    /// it, so its replicas would keep no list and call a unit unsealed that the others call
-    /// sealed.
-    SealedEndpoints,
     /// `UpgradeApp` with `class`: what the update classifier said of the move, judged at
     /// apply against the log (`SystemState::check_class`) and recorded on the app's
     /// `lastUpgrade`. An earlier release ignores the field and would apply a move logged as
@@ -198,7 +193,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 44] = [
+pub const FEATURES: [Feature; 43] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -240,7 +235,6 @@ pub const FEATURES: [Feature; 44] = [
     Feature::AccessGrants,
     Feature::KeepTeamApps,
     Feature::PublicLinks,
-    Feature::SealedEndpoints,
     Feature::UpgradeClasses,
     Feature::UpgradePolicies,
 ];
@@ -291,7 +285,6 @@ impl Feature {
             Self::AccessGrants => "accessGrants",
             Self::KeepTeamApps => "keepTeamApps",
             Self::PublicLinks => "publicLinks",
-            Self::SealedEndpoints => "sealedEndpoints",
             Self::UpgradeClasses => "upgradeClasses",
             Self::UpgradePolicies => "upgradePolicies",
         }
@@ -340,7 +333,7 @@ impl Feature {
             | Self::AccessGrants
             | Self::KeepTeamApps
             | Self::PublicLinks => "1.0.0-rc.33",
-            Self::SealedEndpoints | Self::UpgradeClasses | Self::UpgradePolicies => "1.0.0-rc.34",
+            Self::UpgradeClasses | Self::UpgradePolicies => "1.0.0-rc.34",
         }
     }
 }
@@ -647,7 +640,6 @@ impl SystemCmd {
                 vec![Feature::DeploymentSecrets]
             }
             Self::SetPools { .. } => vec![Feature::ComputePools],
-            Self::SetSealedEndpoints { .. } => vec![Feature::SealedEndpoints],
             Self::ScopeApps {
                 apps, by_release, ..
             } => {
@@ -1117,10 +1109,6 @@ mod tests {
                 "app_id": "app", "bundle": "b", "actor": "a", "owner_approves": true })),
             Feature::PublicLinks => entry(json!({ "op": "setOrgSettings", "org": "org",
                 "settings": { "allowPublicLinks": false }, "actor": "alice" })),
-            Feature::SealedEndpoints => SystemCmd::SetSealedEndpoints {
-                endpoints: vec!["https://inference.near.ai/".into()],
-                proof: Value::Null,
-            },
             Feature::UpgradeClasses => entry(json!({ "op": "upgradeApp",
                 "app_id": "app", "bundle": "b", "actor": "a",
                 "class": { "class": "green" } })),
@@ -1580,16 +1568,8 @@ mod tests {
                 Feature::PublicLinks
             ]
         );
-        // rc.34's (the operator's sealed endpoints, update classes and policies) for every
-        // node on rc.34.
-        assert_eq!(
-            rc34,
-            [
-                Feature::SealedEndpoints,
-                Feature::UpgradeClasses,
-                Feature::UpgradePolicies
-            ]
-        );
+        // rc.34's (update classes and policies) for every node on rc.34.
+        assert_eq!(rc34, [Feature::UpgradeClasses, Feature::UpgradePolicies]);
         for &feature in rc32.iter().chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(

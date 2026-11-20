@@ -1720,25 +1720,23 @@ pub(super) async fn readable_app(
 }
 
 /// `GET /apps/{app}/egress`: where the instance's unit may send data now, for whoever
-/// `GET /apps/{app}` admits. `egress` is every destination of the app and its members
-/// (`links`, transitively; never an attached app), `sealed` whether the cluster's sealed
-/// endpoints cover each, `members` each member by path with its app, release and own
-/// egress, and `sealedEndpoints` the list judged against. A development bundle declares
-/// no egress: `egress: []`, `sealed: true`.
+/// `GET /apps/{app}` admits. `destinations` is every destination of the app and its
+/// members (`links`, transitively; never an attached app), empty when no data leaves
+/// Calimero (an external endpoint, a TEE included, is listed like any other), and
+/// `members` each member by path with its app, release and own destinations. A
+/// development bundle declares none: `destinations: []`.
 async fn app_egress(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
 ) -> ApiResult {
     let (app, _p) = readable_app(&node, &headers, &app_id).await?;
-    let endpoints = crate::egress::sealed_endpoints(&node);
     let placed = crate::egress::instance_unit(&node, &app).await?;
     let mut out = placed.as_ref().map_or_else(
-        || json!({ "egress": [], "sealed": true, "members": {} }),
-        |u| crate::egress::describe(u, &endpoints),
+        || json!({ "destinations": [], "members": {} }),
+        crate::egress::describe,
     );
     out["app"] = json!(app.app_id);
-    out["sealedEndpoints"] = json!(endpoints);
     Ok(Json(out))
 }
 

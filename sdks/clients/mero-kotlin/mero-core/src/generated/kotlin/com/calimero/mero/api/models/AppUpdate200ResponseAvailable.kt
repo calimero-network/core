@@ -39,8 +39,6 @@ import kotlinx.serialization.Contextual
  * @param propertyClass 
  * @param reasons 
  * @param egress 
- * @param sealedBefore 
- * @param sealedAfter 
  * @param stateVersionChanged 
  * @param newMethods 
  * @param removedMethods 
@@ -71,12 +69,6 @@ data class AppUpdate200ResponseAvailable (
 
     @SerialName(value = "egress")
     val egress: AppUpdate200ResponseAvailableEgress? = null,
-
-    @SerialName(value = "sealedBefore")
-    val sealedBefore: kotlin.Boolean? = null,
-
-    @SerialName(value = "sealedAfter")
-    val sealedAfter: kotlin.Boolean? = null,
 
     @SerialName(value = "stateVersionChanged")
     val stateVersionChanged: kotlin.Boolean? = null,

@@ -159,7 +159,7 @@ public protocol APIProtocol: Sendable {
     func appUndelegate(_ input: Operations.AppUndelegate.Input) async throws -> Operations.AppUndelegate.Output
     /// Where an app's unit may send data
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`) covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no egress.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -556,7 +556,7 @@ public protocol APIProtocol: Sendable {
     func appTransfer(_ input: Operations.AppTransfer.Input) async throws -> Operations.AppTransfer.Output
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -1567,7 +1567,7 @@ public protocol APIProtocol: Sendable {
     func packageVersionUninstall(_ input: Operations.PackageVersionUninstall.Input) async throws -> Operations.PackageVersionUninstall.Output
     /// A release's capabilities
     ///
-    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `egress` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own egress), and `sealed` whether the cluster's sealed endpoints cover all of it; all three `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -1946,7 +1946,7 @@ extension APIProtocol {
     }
     /// Where an app's unit may send data
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`) covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no egress.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -2751,7 +2751,7 @@ extension APIProtocol {
     }
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -4726,7 +4726,7 @@ extension APIProtocol {
     }
     /// A release's capabilities
     ///
-    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `egress` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own egress), and `sealed` whether the cluster's sealed endpoints cover all of it; all three `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -5936,8 +5936,8 @@ public enum Components {
             public var version: Swift.String
             /// - Remark: Generated from `#/components/schemas/UnitMember/signer`.
             public var signer: Swift.String
-            /// - Remark: Generated from `#/components/schemas/UnitMember/egress`.
-            public var egress: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/UnitMember/destinations`.
+            public var destinations: [Swift.String]
             /// Creates a new `UnitMember`.
             ///
             /// - Parameters:
@@ -5945,26 +5945,26 @@ public enum Components {
             ///   - package:
             ///   - version:
             ///   - signer:
-            ///   - egress:
+            ///   - destinations:
             public init(
                 app: Swift.String? = nil,
                 package: Swift.String,
                 version: Swift.String,
                 signer: Swift.String,
-                egress: [Swift.String]
+                destinations: [Swift.String]
             ) {
                 self.app = app
                 self.package = package
                 self.version = version
                 self.signer = signer
-                self.egress = egress
+                self.destinations = destinations
             }
             public enum CodingKeys: String, CodingKey {
                 case app
                 case package
                 case version
                 case signer
-                case egress
+                case destinations
             }
         }
         /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself.
@@ -14230,7 +14230,7 @@ public enum Operations {
     }
     /// Where an app's unit may send data
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`) covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no egress.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -14285,12 +14285,8 @@ public enum Operations {
                     public struct JsonPayload: Codable, Hashable, Sendable {
                         /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/app`.
                         public var app: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/egress`.
-                        public var egress: [Swift.String]
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/sealed`.
-                        public var sealed: Swift.Bool
-                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/sealedEndpoints`.
-                        public var sealedEndpoints: [Swift.String]
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/destinations`.
+                        public var destinations: [Swift.String]
                         /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/members`.
                         public struct MembersPayload: Codable, Hashable, Sendable {
                             /// A container of undocumented properties.
@@ -14315,28 +14311,20 @@ public enum Operations {
                         ///
                         /// - Parameters:
                         ///   - app:
-                        ///   - egress:
-                        ///   - sealed:
-                        ///   - sealedEndpoints:
+                        ///   - destinations:
                         ///   - members:
                         public init(
                             app: Swift.String,
-                            egress: [Swift.String],
-                            sealed: Swift.Bool,
-                            sealedEndpoints: [Swift.String],
+                            destinations: [Swift.String],
                             members: Operations.AppEgress.Output.Ok.Body.JsonPayload.MembersPayload
                         ) {
                             self.app = app
-                            self.egress = egress
-                            self.sealed = sealed
-                            self.sealedEndpoints = sealedEndpoints
+                            self.destinations = destinations
                             self.members = members
                         }
                         public enum CodingKeys: String, CodingKey {
                             case app
-                            case egress
-                            case sealed
-                            case sealedEndpoints
+                            case destinations
                             case members
                         }
                     }
@@ -22705,7 +22693,7 @@ public enum Operations {
     }
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -22844,10 +22832,6 @@ public enum Operations {
                             }
                             /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress`.
                             public var egress: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.EgressPayload?
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/sealedBefore`.
-                            public var sealedBefore: Swift.Bool?
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/sealedAfter`.
-                            public var sealedAfter: Swift.Bool?
                             /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/stateVersionChanged`.
                             public var stateVersionChanged: Swift.Bool?
                             /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/newMethods`.
@@ -22869,8 +22853,6 @@ public enum Operations {
                             ///   - _class:
                             ///   - reasons:
                             ///   - egress:
-                            ///   - sealedBefore:
-                            ///   - sealedAfter:
                             ///   - stateVersionChanged:
                             ///   - newMethods:
                             ///   - removedMethods:
@@ -22884,8 +22866,6 @@ public enum Operations {
                                 _class: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.ClassPayload? = nil,
                                 reasons: [Components.Schemas.UpdateReason]? = nil,
                                 egress: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.EgressPayload? = nil,
-                                sealedBefore: Swift.Bool? = nil,
-                                sealedAfter: Swift.Bool? = nil,
                                 stateVersionChanged: Swift.Bool? = nil,
                                 newMethods: [Swift.String]? = nil,
                                 removedMethods: [Swift.String]? = nil,
@@ -22899,8 +22879,6 @@ public enum Operations {
                                 self._class = _class
                                 self.reasons = reasons
                                 self.egress = egress
-                                self.sealedBefore = sealedBefore
-                                self.sealedAfter = sealedAfter
                                 self.stateVersionChanged = stateVersionChanged
                                 self.newMethods = newMethods
                                 self.removedMethods = removedMethods
@@ -22915,8 +22893,6 @@ public enum Operations {
                                 case _class = "class"
                                 case reasons
                                 case egress
-                                case sealedBefore
-                                case sealedAfter
                                 case stateVersionChanged
                                 case newMethods
                                 case removedMethods
@@ -43672,7 +43648,7 @@ public enum Operations {
     }
     /// A release's capabilities
     ///
-    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `egress` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own egress), and `sealed` whether the cluster's sealed endpoints cover all of it; all three `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -43780,10 +43756,8 @@ public enum Operations {
                         ///
                         /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/abi`.
                         public var abi: OpenAPIRuntime.OpenAPIValueContainer
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/egress`.
-                        public var egress: [Swift.String]?
-                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/sealed`.
-                        public var sealed: Swift.Bool?
+                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/destinations`.
+                        public var destinations: [Swift.String]?
                         /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/members`.
                         public struct MembersPayload: Codable, Hashable, Sendable {
                             /// A container of undocumented properties.
@@ -43820,8 +43794,7 @@ public enum Operations {
                         ///   - secrets: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                         ///   - uses: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                         ///   - abi: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-                        ///   - egress:
-                        ///   - sealed:
+                        ///   - destinations:
                         ///   - members:
                         public init(
                             package: Swift.String,
@@ -43837,8 +43810,7 @@ public enum Operations {
                             secrets: OpenAPIRuntime.OpenAPIValueContainer,
                             uses: OpenAPIRuntime.OpenAPIValueContainer,
                             abi: OpenAPIRuntime.OpenAPIValueContainer,
-                            egress: [Swift.String]? = nil,
-                            sealed: Swift.Bool? = nil,
+                            destinations: [Swift.String]? = nil,
                             members: Operations.PackageCapabilities.Output.Ok.Body.JsonPayload.MembersPayload? = nil
                         ) {
                             self.package = package
@@ -43854,8 +43826,7 @@ public enum Operations {
                             self.secrets = secrets
                             self.uses = uses
                             self.abi = abi
-                            self.egress = egress
-                            self.sealed = sealed
+                            self.destinations = destinations
                             self.members = members
                         }
                         public enum CodingKeys: String, CodingKey {
@@ -43872,8 +43843,7 @@ public enum Operations {
                             case secrets
                             case uses
                             case abi
-                            case egress
-                            case sealed
+                            case destinations
                             case members
                         }
                     }

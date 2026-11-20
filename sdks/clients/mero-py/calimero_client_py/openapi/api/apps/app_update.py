@@ -79,20 +79,20 @@ def sync_detailed(
     development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move
     them, else the app alone: `class` `red` when the signer changes, egress grows, a state version
     changes, a member with egress joins or leaves, or a release newly calls another app as the person
-    (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and
-    `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and
-    `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment,
-    the release the deployment offers for its package when it is not the one running (`source:
-    deployment`); for any other, the newest release of its package the caller sees, newer than the
-    running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else
-    `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins`
-    (the owner and admins of the app's organization), `operator` where the cluster gives it app
-    upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or
-    `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and
-    its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy
-    asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that
-    approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app
-    (its own, or its unit's).
+    (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty:
+    no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other),
+    with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as
+    `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment
+    offers for its package when it is not the one running (`source: deployment`); for any other, the
+    newest release of its package the caller sees, newer than the running one, that the upgrade would
+    take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the
+    caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's
+    organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still
+    below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a
+    red (or unclassified) update where the policy asks for a second approver, else 1;
+    `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the
+    first approvals waiting for their second that cover this app (its own, or its unit's).
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -131,20 +131,20 @@ def sync(
     development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move
     them, else the app alone: `class` `red` when the signer changes, egress grows, a state version
     changes, a member with egress joins or leaves, or a release newly calls another app as the person
-    (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and
-    `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and
-    `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment,
-    the release the deployment offers for its package when it is not the one running (`source:
-    deployment`); for any other, the newest release of its package the caller sees, newer than the
-    running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else
-    `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins`
-    (the owner and admins of the app's organization), `operator` where the cluster gives it app
-    upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or
-    `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and
-    its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy
-    asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that
-    approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app
-    (its own, or its unit's).
+    (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty:
+    no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other),
+    with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as
+    `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment
+    offers for its package when it is not the one running (`source: deployment`); for any other, the
+    newest release of its package the caller sees, newer than the running one, that the upgrade would
+    take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the
+    caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's
+    organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still
+    below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a
+    red (or unclassified) update where the policy asks for a second approver, else 1;
+    `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the
+    first approvals waiting for their second that cover this app (its own, or its unit's).
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -178,20 +178,20 @@ async def asyncio_detailed(
     development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move
     them, else the app alone: `class` `red` when the signer changes, egress grows, a state version
     changes, a member with egress joins or leaves, or a release newly calls another app as the person
-    (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and
-    `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and
-    `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment,
-    the release the deployment offers for its package when it is not the one running (`source:
-    deployment`); for any other, the newest release of its package the caller sees, newer than the
-    running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else
-    `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins`
-    (the owner and admins of the app's organization), `operator` where the cluster gives it app
-    upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or
-    `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and
-    its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy
-    asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that
-    approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app
-    (its own, or its unit's).
+    (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty:
+    no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other),
+    with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as
+    `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment
+    offers for its package when it is not the one running (`source: deployment`); for any other, the
+    newest release of its package the caller sees, newer than the running one, that the upgrade would
+    take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the
+    caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's
+    organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still
+    below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a
+    red (or unclassified) update where the policy asks for a second approver, else 1;
+    `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the
+    first approvals waiting for their second that cover this app (its own, or its unit's).
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -228,20 +228,20 @@ async def asyncio(
     development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move
     them, else the app alone: `class` `red` when the signer changes, egress grows, a state version
     changes, a member with egress joins or leaves, or a release newly calls another app as the person
-    (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and
-    `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and
-    `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment,
-    the release the deployment offers for its package when it is not the one running (`source:
-    deployment`); for any other, the newest release of its package the caller sees, newer than the
-    running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else
-    `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins`
-    (the owner and admins of the app's organization), `operator` where the cluster gives it app
-    upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or
-    `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and
-    its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy
-    asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that
-    approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app
-    (its own, or its unit's).
+    (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty:
+    no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other),
+    with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as
+    `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment
+    offers for its package when it is not the one running (`source: deployment`); for any other, the
+    newest release of its package the caller sees, newer than the running one, that the upgrade would
+    take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the
+    caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's
+    organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still
+    below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a
+    red (or unclassified) update where the policy asks for a second approver, else 1;
+    `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the
+    first approvals waiting for their second that cover this app (its own, or its unit's).
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 

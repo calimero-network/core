@@ -2073,7 +2073,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Where an app's unit may send data",
-        "description": "For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`) covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no egress.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
+        "description": "For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -2106,16 +2106,7 @@
                     "app": {
                       "type": "string"
                     },
-                    "egress": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    },
-                    "sealed": {
-                      "type": "boolean"
-                    },
-                    "sealedEndpoints": {
+                    "destinations": {
                       "type": "array",
                       "items": {
                         "type": "string"
@@ -2130,9 +2121,7 @@
                   },
                   "required": [
                     "app",
-                    "egress",
-                    "sealed",
-                    "sealedEndpoints",
+                    "destinations",
                     "members"
                   ]
                 }
@@ -8650,7 +8639,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Whether an update is available for an app",
-        "description": "For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
+        "description": "For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -8767,12 +8756,6 @@
                             "added",
                             "removed"
                           ]
-                        },
-                        "sealedBefore": {
-                          "type": "boolean"
-                        },
-                        "sealedAfter": {
-                          "type": "boolean"
                         },
                         "stateVersionChanged": {
                           "type": "boolean"
@@ -21590,214 +21573,6 @@
         }
       }
     },
-    "/ops/sealed-endpoints": {
-      "get": {
-        "operationId": "ops_sealed_endpoints_get",
-        "tags": [
-          "Ops"
-        ],
-        "x-calimero-group": "ops",
-        "summary": "The sealed endpoints",
-        "description": "The `https://` prefixes the operator vouches keep what is sent there inside a TEE (private inference, say), sorted; `[]` until set. A unit whose every egress destination one of them covers is Sealed (`GET /apps/{app}/egress`).\n\n**Who:** the ops token.",
-        "security": [
-          {
-            "opsToken": []
-          }
-        ],
-        "x-calimero-who": "the ops token",
-        "x-calimero-sealed": true,
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "endpoints": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    }
-                  },
-                  "required": [
-                    "endpoints"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "UNAUTHENTICATED"
-            ]
-          },
-          "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "FORBIDDEN"
-            ]
-          }
-        }
-      },
-      "post": {
-        "operationId": "ops_sealed_endpoints_set",
-        "tags": [
-          "Ops"
-        ],
-        "x-calimero-group": "ops",
-        "summary": "Set the sealed endpoints",
-        "description": "Replaces the list. Signed over `cluster / __set_sealed_endpoints / { endpoints }` with the list sorted. At most 64 distinct `outbound` prefixes (`https://`, a host and an optional path, no query, fragment or credentials, at most 2048 bytes; `400 BAD_SEALED_ENDPOINTS`, before the signature is asked for); `[]` clears it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. Answers the list as kept.\n\n**Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
-        "security": [
-          {
-            "opsToken": []
-          }
-        ],
-        "x-calimero-who": "the ops token",
-        "x-calimero-sealed": true,
-        "x-calimero-operator": true,
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "endpoints": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  "operatorProof": {
-                    "$ref": "#/components/schemas/OperatorProof"
-                  }
-                },
-                "required": [
-                  "endpoints"
-                ],
-                "additionalProperties": false
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "endpoints": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    }
-                  },
-                  "required": [
-                    "endpoints"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "`BAD_SEALED_ENDPOINTS`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "BAD_SEALED_ENDPOINTS"
-            ]
-          },
-          "401": {
-            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "UNAUTHENTICATED"
-            ]
-          },
-          "403": {
-            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "BAD_OPERATOR_SIGNATURE",
-              "FORBIDDEN"
-            ]
-          },
-          "409": {
-            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "FEATURE_NOT_ACTIVE"
-            ],
-            "x-calimero-details": {
-              "FEATURE_NOT_ACTIVE": {
-                "$ref": "#/components/schemas/FeatureNotActive"
-              }
-            }
-          },
-          "428": {
-            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement. `details` of `OPERATOR_SIGNATURE_REQUIRED`: a `OperatorSignatureRequired`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "OPERATOR_SIGNATURE_REQUIRED"
-            ],
-            "x-calimero-details": {
-              "OPERATOR_SIGNATURE_REQUIRED": {
-                "$ref": "#/components/schemas/OperatorSignatureRequired"
-              }
-            }
-          }
-        }
-      }
-    },
     "/ops/served-origins": {
       "get": {
         "operationId": "ops_served",
@@ -29743,7 +29518,7 @@
         ],
         "x-calimero-group": "packages",
         "summary": "A release's capabilities",
-        "description": "What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `egress` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own egress), and `sealed` whether the cluster's sealed endpoints cover all of it; all three `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.\n\n**Who:** signed in (a session or an API key).",
+        "description": "What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -29839,7 +29614,7 @@
                     "abi": {
                       "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
                     },
-                    "egress": {
+                    "destinations": {
                       "type": [
                         "array",
                         "null"
@@ -29847,12 +29622,6 @@
                       "items": {
                         "type": "string"
                       }
-                    },
-                    "sealed": {
-                      "type": [
-                        "boolean",
-                        "null"
-                      ]
                     },
                     "members": {
                       "type": [
@@ -29878,8 +29647,7 @@
                     "secrets",
                     "uses",
                     "abi",
-                    "egress",
-                    "sealed",
+                    "destinations",
                     "members"
                   ]
                 }
@@ -32518,7 +32286,7 @@
           "signer": {
             "type": "string"
           },
-          "egress": {
+          "destinations": {
             "type": "array",
             "items": {
               "type": "string"
@@ -32529,7 +32297,7 @@
           "package",
           "version",
           "signer",
-          "egress"
+          "destinations"
         ],
         "description": "An app of a unit, by its path from the instance: its app id (absent on a release's card, where no app exists), the release it runs or would run, that release's signer, and the destinations it alone may send data to."
       },

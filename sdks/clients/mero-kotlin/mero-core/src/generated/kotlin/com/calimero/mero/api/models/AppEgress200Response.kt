@@ -33,9 +33,7 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param app 
- * @param egress 
- * @param `sealed` 
- * @param sealedEndpoints 
+ * @param destinations 
  * @param members 
  */
 @Serializable
@@ -45,14 +43,8 @@ data class AppEgress200Response (
     @SerialName(value = "app")
     val app: kotlin.String,
 
-    @SerialName(value = "egress")
-    val egress: kotlin.collections.List<kotlin.String>,
-
-    @SerialName(value = "sealed")
-    val `sealed`: kotlin.Boolean,
-
-    @SerialName(value = "sealedEndpoints")
-    val sealedEndpoints: kotlin.collections.List<kotlin.String>,
+    @SerialName(value = "destinations")
+    val destinations: kotlin.collections.List<kotlin.String>,
 
     @Contextual @SerialName(value = "members")
     val members: kotlin.collections.Map<kotlin.String, UnitMember>

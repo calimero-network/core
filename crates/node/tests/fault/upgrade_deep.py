@@ -104,12 +104,12 @@ NOT_COVERED = [
      "the route reads the state and stores nothing. `an_instance_shows_its_update_and_who_may_approve_it` "
      "(`deployments.rs`) and `a_customer_accepts_its_deployments_offer_on_the_page` (`consent_page.rs`) cover "
      "it on one build"),
-    ("Apps", "A unit's egress and whether it is Sealed (`GET /apps/{app}/egress`, the capability card's `egress`, "
-     "`sealed` and `members`) and the update classifier's verdict (`GET /apps/{app}/update`'s `class`, `reasons` "
+    ("Apps", "A unit's destinations (`GET /apps/{app}/egress`, the capability card's `destinations` "
+     "and `members`) and the update classifier's verdict (`GET /apps/{app}/update`'s `class`, `reasons` "
      "and egress diff, the consent page's `unit`)",
-     "reads that store nothing, over a unit, which the old release's meroctl cannot pack (it writes no `uses`); "
-     "the list they are judged against is the `sealed-endpoints` case's. "
-     "`a_units_egress_and_sealed_are_judged_over_its_members` (`consent_page.rs`) covers them on one build and "
+     "reads that store nothing (the destinations are derived from the signed manifests alone), over a unit, "
+     "which the old release's meroctl cannot pack (it writes no `uses`). "
+     "`a_units_destinations_are_judged_over_its_members` (`consent_page.rs`) covers them on one build and "
      "`calimero_bundle::update::tests` every rule of the classifier"),
     ("Apps", "An update's class judged at apply (`UpgradeApp::class`, `lastUpgrade.class`) and a red update's "
      "first approval waiting for a second approver (`ApproveUpgrade`, `Org::pending_upgrades`)",

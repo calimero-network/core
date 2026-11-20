@@ -431,8 +431,6 @@ node answers `403` for the others.
 | `ops set-quotas JSON` | `POST /ops/quotas` | Replace them. |
 | `ops pools` | `GET /ops/pools` | The compute pools and the runs each takes at once. |
 | `ops set-pools JSON` | `POST /ops/pools` | Set the pools, `{ name: { runsPerNode, maxMemoryMib } }`; a job node joins one with `add-node --pool`. |
-| `ops sealed-endpoints` | `GET /ops/sealed-endpoints` | The cluster's sealed endpoints. |
-| `ops set-sealed-endpoints JSON` | `POST /ops/sealed-endpoints` | Replace them, a JSON array of `https://` prefixes (`[]` clears); signed with `--operator-key-file`. |
 | `ops prices` | `GET /ops/prices` | The price table, `{}` until one is set. |
 | `ops set-prices JSON` | `POST /ops/prices` | Set it, `{ version, fuelPerVcpuSecond, vcpuSecond, gibSecond, connectorGib, storageGibMonth, egressGib }` in micro-units; the version must be the current one plus one. |
 | `ops release VERSION [--withdraw]` | `POST /ops/releases` | Approve (or withdraw) a mero-tee release for every app, where the operator holds release approvals. |

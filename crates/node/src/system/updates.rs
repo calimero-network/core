@@ -334,7 +334,7 @@ impl SystemState {
         ) else {
             return Ok(());
         };
-        let derived = classify(&before, &after, &self.sealed_endpoints).reasons;
+        let derived = classify(&before, &after).reasons;
         if derived
             .iter()
             .all(|d| claimed.reasons.iter().any(|c| says_at_least(c, d)))
