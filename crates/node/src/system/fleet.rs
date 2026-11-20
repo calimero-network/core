@@ -63,6 +63,12 @@ pub(super) fn authorize(
             proofs.states(&st, "cluster", "__set_price_table", &|a| *a == args)?;
             Ok(Some(used))
         }
+        SystemCmd::SetSealedEndpoints { endpoints, proof } => {
+            let (st, used) = proofs.fresh(proofs.operator(proof)?)?;
+            let args = json!({ "endpoints": endpoints });
+            proofs.states(&st, "cluster", "__set_sealed_endpoints", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         _ => Ok(None),
     }
 }
@@ -99,6 +105,21 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err(PRICE_VERSION);
             }
             s.price_table = Some(table);
+            Ok(Value::Null)
+        }
+        SystemCmd::SetSealedEndpoints { endpoints, .. } => {
+            let mut sorted = endpoints.clone();
+            sorted.sort();
+            sorted.dedup();
+            if endpoints.len() > MAX_SEALED_ENDPOINTS
+                || sorted.len() != endpoints.len()
+                || !endpoints
+                    .iter()
+                    .all(|e| calimero_bundle::is_outbound_url(e))
+            {
+                return Err(BAD_SEALED_ENDPOINTS);
+            }
+            s.sealed_endpoints = sorted;
             Ok(Value::Null)
         }
         SystemCmd::RemoveNode { id, .. } => {

@@ -123,7 +123,7 @@ use {
         ClusterOwnerBody, DeployerBody, DeploymentBody, DeploymentSecretBody, OfferBody,
     },
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
-    ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
+    ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody, SealedEndpointsBody},
     orgs::{
         AllAppsBody, MemberBody, MembersQuery, OrgBody, OrgSettingsBody, RenameOrgBody,
         ScopeAppsBody, TeamBody, TeamDeleteBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,

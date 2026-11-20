@@ -842,6 +842,29 @@ pub(crate) async fn release_capabilities(
     }))
 }
 
+/// What the update classifier (`calimero_bundle::update`) reads of release `v` of
+/// `package`: its signed manifest, signer, and the ABI of `service`'s component (of its
+/// only one when `None`; none when that names no single service).
+pub(crate) async fn classifier_release(
+    node: &Node,
+    package: &str,
+    v: &PackageVersion,
+    service: Option<&str>,
+) -> Result<calimero_bundle::update::Release, ApiError> {
+    let facts = release_facts(node, package, v).await?;
+    let abi = match service {
+        Some(name) => facts.abi.get(name),
+        None if facts.abi.len() == 1 => facts.abi.values().next(),
+        None => facts.abi.get(""),
+    }
+    .and_then(Option::as_ref);
+    Ok(calimero_bundle::update::Release::new(
+        &facts.manifest,
+        &facts.signer,
+        abi,
+    ))
+}
+
 /// The (name, bundle hash) of the service `service` names, or of the only one.
 fn pick_service<'a>(
     package: &str,
@@ -1553,6 +1576,57 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
     out
 }
 
+/// The plain sentence a page says of where the unit's data can go after the update
+/// (`calimero_bundle::update`): Sealed, or the destinations that are not.
+fn sealed_point(c: &calimero_bundle::update::Classification) -> String {
+    let destinations = hosts(c.egress.after.iter().map(String::as_str));
+    match (c.sealed_after, destinations.is_empty()) {
+        (true, true) => {
+            "Sealed: the app and the apps it created send data nowhere outside this cluster."
+                .to_owned()
+        }
+        (true, false) => format!(
+            "Sealed: the app and the apps it created send data only to sealed endpoints ({}).",
+            phrase(&destinations)
+        ),
+        (false, _) => format!(
+            "Not Sealed: the app and the apps it created may send data to {}.",
+            phrase(&destinations)
+        ),
+    }
+}
+
+/// What the unit's classification adds to the page's attention: destinations the members
+/// add (the app's own are `sendsData` already), and that the update is red, so no
+/// automatic policy would apply it.
+fn unit_attention(c: &calimero_bundle::update::Classification, sheet: &Value) -> Vec<Value> {
+    let own = strings(&sheet["outbound"]["added"]);
+    let others: Vec<&str> = c
+        .egress
+        .added
+        .iter()
+        .filter(|d| !own.contains(d))
+        .map(String::as_str)
+        .collect();
+    let mut out = Vec::new();
+    if !others.is_empty() {
+        out.push(attention(
+            "unitSendsData",
+            "The apps it created can send data to new addresses:".to_owned(),
+            hosts(others),
+        ));
+    }
+    if c.sealed_before && !c.sealed_after {
+        out.push(attention(
+            "leavesSealed",
+            "It is no longer Sealed: data can leave for addresses no sealed endpoint covers."
+                .to_owned(),
+            vec![],
+        ));
+    }
+    out
+}
+
 async fn release_request(
     node: &Node,
     account: &str,
@@ -1938,6 +2012,27 @@ async fn upgrade_request(
         notes.push("The release is signed by a different key than the one running now.".to_owned());
     }
     let author = to.manifest.metadata.as_ref().and_then(|m| m.author.clone());
+    // Where data can go across the app and its members, before and after: a member's page
+    // in a unit's sheet leaves it to the instance's.
+    let unit = if member_of_unit {
+        None
+    } else {
+        crate::egress::update(node, &app, &target.version, false).await?
+    };
+    let mut points = vec![
+        json!(format!(
+            "{} moves from version {old} to {new}, for everyone who uses it.",
+            app.name
+        )),
+        json!(format!(
+            "Until you approve, nothing changes: it keeps running {old}."
+        )),
+    ];
+    let mut attention = upgrade_attention(&sheet);
+    if let Some(c) = &unit {
+        points.push(json!(sealed_point(c)));
+        attention.extend(unit_attention(c, &sheet));
+    }
     let model = json!({
         "kind": "upgrade",
         "scope": {
@@ -1948,11 +2043,9 @@ async fn upgrade_request(
         },
         "headline": format!("Upgrade {name} from {old} to {new}"),
         "title": format!("Update {} to version {new}", app.name),
-        "points": [
-            format!("{} moves from version {old} to {new}, for everyone who uses it.", app.name),
-            format!("Until you approve, nothing changes: it keeps running {old}."),
-        ],
-        "attention": upgrade_attention(&sheet),
+        "points": points,
+        "attention": attention,
+        "unit": unit,
         "app": { "name": name, "package": package },
         "publisher": {
             "name": author,
@@ -2058,9 +2151,20 @@ async fn unit_upgrade_request(
         .iter()
         .flat_map(|m| m["notes"].as_array().cloned().unwrap_or_default())
         .collect();
+    // The whole unit moves: its egress after is the members' targets', classified once.
+    let unit = crate::egress::update(node, &plan.app, &version, true).await?;
+    if let Some(c) = &unit {
+        points.insert(points.len() - 1, json!(sealed_point(c)));
+    }
+    let mut attention = attention;
+    if let Some(c) = &unit {
+        attention.retain(|a| a["flag"] != "unitSendsData" && a["flag"] != "leavesSealed");
+        attention.extend(unit_attention(c, &root["upgrade"]));
+    }
     let mut model = root.clone();
     if let Some(o) = model.as_object_mut() {
         let _prev = o.insert("kind".into(), json!("upgradeUnit"));
+        let _prev = o.insert("unit".into(), json!(unit));
         let _prev = o.insert(
             "headline".into(),
             json!(format!(

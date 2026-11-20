@@ -170,6 +170,12 @@ pub const MAX_POOLS: usize = 32; // pools one cluster defines
 pub const MAX_POOL_NAME_BYTES: usize = 64; // a pool's name, also on a job node's record
 /// The apply error for a pool set past `MAX_POOLS` or with an empty or too long name.
 pub const BAD_POOLS: &str = "BAD_POOLS: at most 32 pools, each named with 1 to 64 bytes";
+/// Most sealed endpoints one cluster lists (`SetSealedEndpoints`): the list is in every
+/// checkpoint of the system state and every unit's egress is judged against all of it.
+pub const MAX_SEALED_ENDPOINTS: usize = 64;
+/// The apply error for a sealed-endpoint list past [`MAX_SEALED_ENDPOINTS`], with a
+/// repeated entry, or with an entry that is not an `outbound` prefix.
+pub const BAD_SEALED_ENDPOINTS: &str = "BAD_SEALED_ENDPOINTS: at most 64 distinct https:// prefixes, each a host and an optional path, no query, fragment or credentials, at most 2048 bytes";
 /// The apply error for a price table whose version is not the current one plus one.
 pub const PRICE_VERSION: &str = "PRICE_VERSION: the version must be the current one plus one";
 /// The apply error for a price table with a zero fuel rate.
@@ -578,6 +584,13 @@ pub struct SystemState {
     /// The operator's prices; left out until set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_table: Option<PriceTable>,
+    /// The operator's sealed endpoints (`SetSealedEndpoints`): `https://` prefixes it vouches
+    /// keep what is sent there inside a TEE, so a unit whose every egress destination one
+    /// of them covers is Sealed (`calimero_bundle::update`). Sorted, at most
+    /// [`MAX_SEALED_ENDPOINTS`]; left out when empty, so a state from before reads and
+    /// writes as it did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sealed_endpoints: Vec<String>,
     pub nodes: BTreeMap<u64, NodeRecord>,
     /// Nodes the operator removed (`RemoveNode`): registered again only by
     /// the operator (`/ops/nodes`).
@@ -4784,6 +4797,7 @@ impl SystemCmd {
             Self::SetOrgQuotas { .. } => Area::Fleet,
             Self::SetPools { .. } => Area::Fleet,
             Self::SetPriceTable { .. } => Area::Fleet,
+            Self::SetSealedEndpoints { .. } => Area::Fleet,
             Self::CreateOrg { .. } => Area::Orgs,
             Self::RenameOrg { .. } => Area::Orgs,
             Self::Genesis { .. } => Area::Fleet,
@@ -5753,6 +5767,14 @@ pub enum SystemCmd {
     /// The operator sets the price table (`cluster / __set_price_table / { table }`).
     SetPriceTable {
         table: PriceTable,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
+    },
+    /// The operator replaces the cluster's sealed endpoints
+    /// (`cluster / __set_sealed_endpoints / { endpoints }`; `SystemState::sealed_endpoints`).
+    SetSealedEndpoints {
+        endpoints: Vec<String>,
         /// The operator's signature over it ([`crate::proof`]).
         #[serde(default)]
         proof: Value,

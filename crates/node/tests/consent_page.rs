@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 mod harness;
 
 use calimero_client::Request;
-use harness::{fixture, home_org, kv_wasm, signed_up, typed, wire, Cluster, ORIGIN};
+use harness::{fixture, home_org, kv_wasm, ops_signed, signed_up, typed, wire, Cluster, ORIGIN};
 use reqwest::Method;
 
 const PACKAGE: &str = "com.test.notes";
@@ -451,6 +451,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         "points": [
             "notes moves from version 1.0.0 to 2.0.0, for everyone who uses it.",
             "Until you approve, nothing changes: it keeps running 1.0.0.",
+            "Not Sealed: the app and the apps it created may send data to api.example and metrics.example.",
         ],
         "attention": [
             {
@@ -464,6 +465,24 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
                 "items": ["https://share.example"],
             },
         ],
+        // Where the app's unit may send data, classified (`calimero_bundle::update`): a new
+        // destination is red, and no sealed endpoint is listed.
+        "unit": {
+            "class": "red",
+            "reasons": [{ "code": "egressAdded", "destinations": ["https://metrics.example/"] }],
+            "egress": {
+                "before": ["https://api.example/v1/"],
+                "after": ["https://api.example/v1/", "https://metrics.example/"],
+                "added": ["https://metrics.example/"],
+                "removed": [],
+            },
+            "sealedBefore": false,
+            "sealedAfter": false,
+            "stateVersionChanged": false,
+            "newMethods": [],
+            "removedMethods": [],
+            "signerChanged": false,
+        },
         "app": { "name": "Notes", "package": PACKAGE },
         "publisher": { "name": "Example", "signer": "<redacted>", "keyChanged": false, "org": null },
         "before": "Until you approve, the app keeps running 1.0.0: only that code reads and changes its data.",
@@ -2356,6 +2375,9 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
             "secrets": {},
             "uses": {},
             "abi": abi,
+            "egress": ["https://api.example/v1/", "https://metrics.example/"],
+            "sealed": false,
+            "members": {},
         })
     );
 
@@ -3237,4 +3259,195 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     })
     .await;
     assert_eq!(moved["deployment"], json!(d), "{moved}");
+}
+
+/// C5: where a unit may send data is computed over the app and every app it created, and
+/// is Sealed when the operator's sealed endpoints cover all of it. The capability card,
+/// `GET /apps/{app}/egress`, `GET /apps/{app}/update` (with the classifier's verdict) and
+/// the unit's upgrade page all say so; the list is the operator's signed decision
+/// (`/ops/sealed-endpoints`), bounded and checked before the signature is asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_units_egress_and_sealed_are_judged_over_its_members() {
+    const AI: &str = "https://inference.near.ai/v1/";
+    const TELEMETRY: &str = "https://telemetry.example/";
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
+    let (kv, ai) = ("com.test.sealed-kv", "com.test.sealed-ai");
+    let uses = |kv_version: &str| Declares {
+        uses: Some(json!({
+            "store": { "package": kv, "range": "^0.1", "version": kv_version },
+            "ai": { "package": ai, "range": "^1", "version": "1.0.0" },
+        })),
+        ..Declares::default()
+    };
+    // 2.0.0 moves the store to a release that also reports to a telemetry host.
+    for (package, version, d) in [
+        (kv, "0.1.0", Declares::default()),
+        (
+            kv,
+            "0.1.1",
+            Declares {
+                outbound: &[TELEMETRY],
+                ..Declares::default()
+            },
+        ),
+        (
+            ai,
+            "1.0.0",
+            Declares {
+                outbound: &[AI],
+                ..Declares::default()
+            },
+        ),
+        (PACKAGE, "1.0.0", uses("0.1.0")),
+        (PACKAGE, "2.0.0", uses("0.1.1")),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+
+    // Before the operator lists anything, the card counts the members' egress, unsealed.
+    let card_path = format!("packages/{PACKAGE}/1.0.0/capabilities");
+    let card = get(&alice, &card_path).await.unwrap();
+    assert_eq!(card["outbound"], json!([]), "{card}");
+    assert_eq!(card["egress"], json!([AI]), "{card}");
+    assert_eq!(card["sealed"], false, "{card}");
+    assert_eq!(card["members"]["ai"]["egress"], json!([AI]), "{card}");
+    assert_eq!(card["members"]["store"]["version"], "0.1.0", "{card}");
+
+    // The operator's list: read with the ops token, set only with its signature.
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    assert_eq!(
+        get(&ops, "ops/sealed-endpoints").await.unwrap(),
+        json!({ "endpoints": [] })
+    );
+    for bad in [
+        json!(["http://inference.near.ai/"]),
+        json!(["https://inference.near.ai/?key=1"]),
+        json!(["https://a.example/", "https://a.example/"]),
+        json!((0..=64)
+            .map(|i| format!("https://e{i}.example/"))
+            .collect::<Vec<_>>()),
+    ] {
+        let e = ops_signed(&ops, "ops/sealed-endpoints", json!({ "endpoints": bad }))
+            .await
+            .unwrap_err();
+        assert_eq!(status(&e), 400, "{bad}: {e}");
+        assert!(e.to_string().contains("BAD_SEALED_ENDPOINTS"), "{e}");
+    }
+    let unsigned = post(
+        &ops,
+        "ops/sealed-endpoints",
+        json!({ "endpoints": ["https://inference.near.ai/"] }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status(&unsigned), 428, "{unsigned}");
+    let refused = post(
+        &alice,
+        "ops/sealed-endpoints",
+        json!({ "endpoints": ["https://evil.example/"] }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status(&refused), 403, "{refused}");
+    let set = ops_signed(
+        &ops,
+        "ops/sealed-endpoints",
+        json!({ "endpoints": ["https://inference.near.ai/"] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(set, json!({ "endpoints": ["https://inference.near.ai/"] }));
+    let other = c.client(2);
+    other.use_api_key("ops-secret").await;
+    assert_eq!(get(&other, "ops/sealed-endpoints").await.unwrap(), set);
+    let card = get_until(&alice, &card_path, |c| c["sealed"] == true).await;
+    assert_eq!(card["egress"], json!([AI]), "{card}");
+
+    // An instance and its unit: Sealed while only the AI member sends data.
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let egress = get(&alice, &format!("apps/{notes}/egress")).await.unwrap();
+    assert_eq!(egress["app"], json!(notes), "{egress}");
+    assert_eq!(egress["egress"], json!([AI]), "{egress}");
+    assert_eq!(egress["sealed"], true, "{egress}");
+    assert_eq!(
+        egress["sealedEndpoints"],
+        json!(["https://inference.near.ai/"])
+    );
+    assert_eq!(
+        egress["members"]["ai"]["app"], made["links"]["ai"],
+        "{egress}"
+    );
+    assert_eq!(egress["members"]["store"]["egress"], json!([]), "{egress}");
+    let (stranger, _) = signed_up(&c, 1, "mallory").await;
+    let e = get(&stranger, &format!("apps/{notes}/egress"))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
+
+    // The update moves the store to a release that adds a destination: red, not Sealed after.
+    let update = get(&alice, &format!("apps/{notes}/update")).await.unwrap();
+    let available = &update["available"];
+    assert_eq!(available["version"], "2.0.0", "{update}");
+    assert_eq!(available["class"], "red", "{update}");
+    assert_eq!(available["reasons"][0]["code"], "egressAdded", "{update}");
+    assert_eq!(available["egress"]["added"], json!([TELEMETRY]), "{update}");
+    assert_eq!(available["egress"]["before"], json!([AI]), "{update}");
+    assert_eq!(
+        (&available["sealedBefore"], &available["sealedAfter"]),
+        (&json!(true), &json!(false)),
+        "{update}"
+    );
+    assert_eq!(available["signerChanged"], false, "{update}");
+
+    // The unit's page says so, before anything moves.
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgradeUnit", "subject": { "app": notes, "toVersion": "2.0.0" },
+                "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    assert_eq!(model["unit"]["class"], "red", "{model}");
+    assert_eq!(
+        model["unit"]["egress"]["added"],
+        json!([TELEMETRY]),
+        "{model}"
+    );
+    let flags: Vec<&str> = model["attention"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["flag"].as_str())
+        .collect();
+    assert!(flags.contains(&"leavesSealed"), "{model}");
+    assert!(
+        model["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p.as_str().is_some_and(|p| p.starts_with("Not Sealed"))),
+        "{model}"
+    );
 }

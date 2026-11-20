@@ -133,6 +133,14 @@ pub enum OpsCmd {
     SetPools {
         pools: String,
     },
+    /// The cluster's sealed endpoints: `https://` prefixes a unit may send data to and stay
+    /// Sealed.
+    SealedEndpoints,
+    /// Replace the sealed endpoints with this JSON array of `https://` prefixes (`[]`
+    /// clears them); at most 64.
+    SetSealedEndpoints {
+        endpoints: String,
+    },
     /// The operator's price table, `{}` until one is set.
     Prices,
     /// Set the price table, JSON `{ version, fuelPerVcpuSecond, vcpuSecond, gibSecond,
@@ -351,6 +359,11 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             let pools: BTreeMap<String, OpsPoolsSetRequestPoolsValue> =
                 serde_json::from_value(json_arg(&pools)?)?;
             decided(ops.pools_set(pools, operator).await)?
+        }
+        OpsCmd::SealedEndpoints => to_json(&ops.sealed_endpoints_get().await?)?,
+        OpsCmd::SetSealedEndpoints { endpoints } => {
+            let endpoints: Vec<String> = serde_json::from_value(json_arg(&endpoints)?)?;
+            decided(ops.sealed_endpoints_set(endpoints, operator).await)?
         }
         OpsCmd::Prices => to_json(&ops.prices_get().await?)?,
         OpsCmd::SetPrices { table } => {

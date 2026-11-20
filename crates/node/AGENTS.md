@@ -146,7 +146,7 @@ is its command line.
   `an_owner_opening_their_own_invite_leaves_it_for_the_invitee`). The fleet
   carries the operator's signature (`cluster /
   __register_node { id, addr, zone }`, `__remove_node { id }`,
-  `__set_quotas { quotas }`, `__set_pools { pools }`, `__set_price_table { table }`, `__set_org_quotas { payer, quotas }`; `<app> / __set_replicas { replicas }`, one
+  `__set_quotas { quotas }`, `__set_pools { pools }`, `__set_price_table { table }`, `__set_org_quotas { payer, quotas }`, `__set_sealed_endpoints { endpoints }`; `<app> / __set_replicas { replicas }`, one
   signature for both of a move's writes: the union applies with it unspent,
   the target spends it). The configured peers come with `Genesis { nodes }`;
   `reconcile` registers nobody. The consent page (`consent_page::act`) logs the same
@@ -1293,7 +1293,35 @@ is its command line.
   `latestReachable`); `mayApprove` is `api::upgrade_refusal` under the rule in force;
   `approvers` is `managers` while `Feature::OwnerApprovedUpgrades` is not.
   Regression: `an_instance_shows_its_update_and_who_may_approve_it`
-  (`tests/deployments.rs`).
+  (`tests/deployments.rs`). `available` also carries the update classifier's verdict
+  (Unit egress below), over the whole unit when the instance has members.
+- **Unit egress and Sealed** (`egress.rs`; the classifier is `calimero_bundle::update`,
+  shared with `meroctl`): a unit's egress is the union of the `outbound` prefixes (and
+  any declared secret host no prefix names) of the release the app runs and of each
+  member's (`links`, transitively; never `attached`). It is **Sealed** when an entry of
+  the cluster's sealed endpoints covers every destination (none at all is Sealed).
+  The list is the operator's: `SetSealedEndpoints { endpoints }`
+  (`SystemState::sealed_endpoints`, sorted, at most `MAX_SEALED_ENDPOINTS` distinct
+  `outbound` prefixes, else `BAD_SEALED_ENDPOINTS` at apply; signed `cluster /
+  __set_sealed_endpoints / { endpoints }`; `Feature::SealedEndpoints`, rc.34; `POST|GET
+  /ops/sealed-endpoints`, which checks the list and the feature before asking for the
+  signature; `meroctl ops sealed-endpoints|set-sealed-endpoints`). Reads:
+  the capability card adds `egress`, `sealed` and `members` (`egress::release_unit`:
+  each member release `unit_members` would create; all three `null` while one is not
+  installed here); `GET /apps/{app}/egress` (whoever
+  `GET /apps/{app}` admits; `egress::instance_unit`) answers `{ app, egress, sealed,
+  sealedEndpoints, members }`; `GET /apps/{app}/update`'s `available` and the consent
+  page's `upgrade`/`upgradeUnit` model (`unit`, a `Sealed`/`Not Sealed` point, the
+  `unitSendsData` and `leavesSealed` attention) carry `egress::update`'s
+  `Classification`: `class` red when the signer changes, egress grows, a state version
+  changes, a member with egress joins or leaves, or a release newly calls another app as
+  the person, else green, with `reasons`, the egress diff, `sealedBefore`/`sealedAfter`,
+  `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
+  unit's moves its direct members as `unit_plan` does. Nothing applies an update by its
+  class yet (C8). Regressions: `a_units_egress_and_sealed_are_judged_over_its_members`
+  (`tests/consent_page.rs`), `system::tests::the_sealed_endpoints_are_the_operators_signed_and_bounded_list`,
+  `state_from_before_sealed_endpoints_reads_with_none_and_writes_as_before`,
+  `calimero_bundle::update::tests`.
 - **Upgrades are code-only**: a component upgrade swaps the bundle
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
   consent page shows the state version each side's `calimero:abi` declares and flags a

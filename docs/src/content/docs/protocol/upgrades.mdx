@@ -217,6 +217,40 @@ upgrade, not which release to: the report leaves them to the app's
 their runtime requirement is not judged by it here; the upgrade reads it
 from the release's `.mpk` and still refuses it.
 
+## Where an update may send data
+
+An app's **unit** is the app and every app it created with it (`uses` in mode
+`create`, transitively; never an app attached to it). Its **egress** is every
+destination the releases of the unit may send a request to: each release's
+`outbound` prefixes, and the host of a declared secret no prefix names. The
+operator keeps a list of **sealed endpoints** per cluster (`POST
+/ops/sealed-endpoints`, signed; `SetSealedEndpoints`): prefixes it vouches keep
+what is sent there inside a TEE, such as a private-inference service. A unit is
+**Sealed** when one of them covers every destination of its egress; a unit with
+no egress is Sealed.
+
+`GET /packages/{package}/{version}/capabilities` answers a release's unit egress
+before any instance exists (`egress`, `sealed`, `members`), `GET
+/apps/{app}/egress` an instance's as it runs now, and `GET /apps/{app}/update`
+classifies the available update over the unit (as `upgrade-unit` would move its
+members when it has any, else the app alone). The consent page's upgrade sheets
+carry the same verdict (`unit`) and say Sealed or Not Sealed in plain words.
+
+The classifier (`calimero_bundle::update`, the same code `meroctl` uses) calls
+an update **red** when any of these holds, and **green** otherwise:
+
+| Rule | Why |
+| --- | --- |
+| The app or a member that stays is signed by another key (`signerChanged`) | The code is no longer from whoever was trusted with it |
+| A destination after is covered by none before, members counted (`egressAdded`) | Data may go somewhere it could not; leaving the sealed set implies it |
+| The app or a member declares another state version (`stateVersionChanged`) | No migration runs, so the new code reads data in a shape it may not expect |
+| A member with egress joins or leaves the unit (`memberAdded`, `memberRemoved`) | A joining member brings its own destinations; one that leaves is no longer upgraded under this consent |
+| A release newly calls a method of another app as the person (`delegatedMethodsAdded`) | A new way to act as the user |
+
+New and removed methods are reported (`newMethods`, `removedMethods`) but do not
+make an update red. Nothing applies an update by its class yet: every update
+still waits for an owner's or admin's approval.
+
 ## Running it
 
 The upgrade is an entry in the app's own log, so it is ordered against the

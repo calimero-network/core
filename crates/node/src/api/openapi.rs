@@ -824,6 +824,16 @@ fn components() -> Vec<Component> {
         )
         .of::<QuotaSettings>(),
         component(
+            "UnitMember",
+            "An app of a unit, by its path from the instance: its app id (absent on a release's card, where no app exists), the release it runs or would run, that release's signer, and the destinations it alone may send data to.",
+            "{ app?: string, package: string, version: string, signer: string, egress: string[] }",
+        ),
+        component(
+            "UpdateReason",
+            "Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself.",
+            r#"{ code: "signerChanged", member: string | null, from: string, to: string } | { code: "egressAdded", destinations: string[] } | { code: "stateVersionChanged", member: string | null, from: uint | null, to: uint | null } | { code: "memberAdded", member: string, package: string, egress: string[] } | { code: "memberRemoved", member: string, package: string, egress: string[] } | { code: "delegatedMethodsAdded", member: string | null, package: string, methods: string[] }"#,
+        ),
+        component(
             "UsageDay",
             "What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.",
             "{ date: string, runs: u64, fuel: u64, wallMs: u64, writes: u64, bytesWritten: u64, events: u64 }",
@@ -1379,8 +1389,12 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "OUTSIDE_DEPLOYMENT"), (409, "OUTSIDE_UNIT_RANGE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
         get("/apps/{app}/update", "app_update", AppAccess, "Whether an update is available for an app")
-            .about("For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).")
-            .ok("{ app: string, running: { package: string, version: string } | null, available: { package: string, version: string, source: \"deployment\" | \"release\" } | null, mayApprove: bool, approvers: \"owner-and-admins\" | \"operator\" | \"managers\" }")
+            .about("For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).")
+            .ok("{ app: string, running: { package: string, version: string } | null, available: { package: string, version: string, source: \"deployment\" | \"release\", class?: \"green\" | \"red\", reasons?: #UpdateReason[], egress?: { before: string[], after: string[], added: string[], removed: string[] }, sealedBefore?: bool, sealedAfter?: bool, stateVersionChanged?: bool, newMethods?: string[], removedMethods?: string[], signerChanged?: bool } | null, mayApprove: bool, approvers: \"owner-and-admins\" | \"operator\" | \"managers\" }")
+            .errors(&[(404, "NOT_FOUND")]),
+        get("/apps/{app}/egress", "app_egress", AppAccess, "Where an app's unit may send data")
+            .about("For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`) covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no egress.")
+            .ok("{ app: string, egress: string[], sealed: bool, sealedEndpoints: string[], members: { [string]: #UnitMember } }")
             .errors(&[(404, "NOT_FOUND")]),
         post("/apps/{app}/upgrade-unit", "app_upgrade_unit", AccountHolder, "Upgrade an app and the apps it created, in one consent")
             .about("An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.")
@@ -1552,9 +1566,9 @@ fn operations() -> Vec<Op> {
             .ok("{ [string]: { hash: string, worstCaseFuel: any, modules: any, pipeline: any } }")
             .errors(&[(404, "NOT_FOUND")]),
         get("/packages/{package}/{version}/capabilities", "package_capabilities", SignedIn, "A release's capabilities")
-            .about("What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.")
+            .about("What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `egress` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own egress), and `sealed` whether the cluster's sealed endpoints cover all of it; all three `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.")
             .query::<super::packages::CapabilitiesQuery>("{ service?: string }")
-            .ok("{ package: string, version: string, service: string | null, bundle: string, mpk: string, manifestHash: string, signer: string, name: string | null, author: string | null, outbound: string[], abi: any }")
+            .ok("{ package: string, version: string, service: string | null, bundle: string, mpk: string, manifestHash: string, signer: string, name: string | null, author: string | null, outbound: string[], secrets: any, uses: any, abi: any, egress: string[] | null, sealed: bool | null, members: { [string]: #UnitMember } | null }")
             .errors(&[(400, "BAD_REQUEST"), (400, "NO_SUCH_SERVICE"), (404, "NOT_FOUND")]),
         post("/apps/{app}/pipelines/{name}/estimate", "pipelines::estimate_run", SignedIn, "Estimate a pipeline run")
             .about("The owner and the organization's members. Runs, fuel and cost of a run of a pipeline the app's release registers, for `inputs` (file ids, only counted) or `counts`, not both; numbers as decimal strings.")
@@ -2016,6 +2030,15 @@ fn operations() -> Vec<Op> {
             .ok("{}")
             .operator()
             .errors(&[(400, "BAD_PRICES"), (409, "PRICE_VERSION"), (409, "UPGRADE_PENDING")]),
+        get("/ops/sealed-endpoints", "ops_sealed_endpoints_get", Ops, "The sealed endpoints")
+            .about("The `https://` prefixes the operator vouches keep what is sent there inside a TEE (private inference, say), sorted; `[]` until set. A unit whose every egress destination one of them covers is Sealed (`GET /apps/{app}/egress`).")
+            .ok("{ endpoints: string[] }"),
+        post("/ops/sealed-endpoints", "ops_sealed_endpoints_set", Ops, "Set the sealed endpoints")
+            .about("Replaces the list. Signed over `cluster / __set_sealed_endpoints / { endpoints }` with the list sorted. At most 64 distinct `outbound` prefixes (`https://`, a host and an optional path, no query, fragment or credentials, at most 2048 bytes; `400 BAD_SEALED_ENDPOINTS`, before the signature is asked for); `[]` clears it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. Answers the list as kept.")
+            .json::<super::SealedEndpointsBody>("{ endpoints: string[], operatorProof?: #OperatorProof }")
+            .ok("{ endpoints: string[] }")
+            .operator()
+            .errors(&[(400, "BAD_SEALED_ENDPOINTS"), (409, "FEATURE_NOT_ACTIVE")]),
         // ---------------------------------------------------------------- the cluster's owner
         post("/sign-up", "sign_up_set", AccountHolder, "Set the sign-up policy")
             .about("The cluster's owner, once named, with a passkey (`412` first).")
