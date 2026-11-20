@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.UnitMember
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -41,7 +42,12 @@ import kotlinx.serialization.Contextual
  * @param name 
  * @param author 
  * @param outbound 
+ * @param secrets Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+ * @param uses Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param abi Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+ * @param egress 
+ * @param `sealed` 
+ * @param members 
  */
 @Serializable
 
@@ -78,8 +84,25 @@ data class PackageCapabilities200Response (
     val outbound: kotlin.collections.List<kotlin.String>,
 
     /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+    @Contextual @SerialName(value = "secrets")
+    val secrets: kotlinx.serialization.json.JsonElement?,
+
+    /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+    @Contextual @SerialName(value = "uses")
+    val uses: kotlinx.serialization.json.JsonElement?,
+
+    /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
     @Contextual @SerialName(value = "abi")
-    val abi: kotlinx.serialization.json.JsonElement?
+    val abi: kotlinx.serialization.json.JsonElement?,
+
+    @SerialName(value = "egress")
+    val egress: kotlin.collections.List<kotlin.String>?,
+
+    @SerialName(value = "sealed")
+    val `sealed`: kotlin.Boolean?,
+
+    @Contextual @SerialName(value = "members")
+    val members: kotlin.collections.Map<kotlin.String, UnitMember>?
 
 ) {
 

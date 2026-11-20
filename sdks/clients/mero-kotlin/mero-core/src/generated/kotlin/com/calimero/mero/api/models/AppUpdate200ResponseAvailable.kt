@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.AppUpdate200ResponseAvailableEgress
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -34,6 +35,15 @@ import kotlinx.serialization.Contextual
  * @param `package` 
  * @param version 
  * @param source 
+ * @param propertyClass 
+ * @param reasons 
+ * @param egress 
+ * @param sealedBefore 
+ * @param sealedAfter 
+ * @param stateVersionChanged 
+ * @param newMethods 
+ * @param removedMethods 
+ * @param signerChanged 
  */
 @Serializable
 
@@ -46,7 +56,34 @@ data class AppUpdate200ResponseAvailable (
     val version: kotlin.String,
 
     @SerialName(value = "source")
-    val source: AppUpdate200ResponseAvailable.Source
+    val source: AppUpdate200ResponseAvailable.Source,
+
+    @SerialName(value = "class")
+    val propertyClass: AppUpdate200ResponseAvailable.PropertyClass? = null,
+
+    @SerialName(value = "reasons")
+    val reasons: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>? = null,
+
+    @SerialName(value = "egress")
+    val egress: AppUpdate200ResponseAvailableEgress? = null,
+
+    @SerialName(value = "sealedBefore")
+    val sealedBefore: kotlin.Boolean? = null,
+
+    @SerialName(value = "sealedAfter")
+    val sealedAfter: kotlin.Boolean? = null,
+
+    @SerialName(value = "stateVersionChanged")
+    val stateVersionChanged: kotlin.Boolean? = null,
+
+    @SerialName(value = "newMethods")
+    val newMethods: kotlin.collections.List<kotlin.String>? = null,
+
+    @SerialName(value = "removedMethods")
+    val removedMethods: kotlin.collections.List<kotlin.String>? = null,
+
+    @SerialName(value = "signerChanged")
+    val signerChanged: kotlin.Boolean? = null
 
 ) {
 
@@ -59,6 +96,16 @@ data class AppUpdate200ResponseAvailable (
     enum class Source(val value: kotlin.String) {
         @SerialName(value = "deployment") DEPLOYMENT("deployment"),
         @SerialName(value = "release") RELEASE("release");
+    }
+    /**
+     * 
+     *
+     * Values: GREEN,RED
+     */
+    @Serializable
+    enum class PropertyClass(val value: kotlin.String) {
+        @SerialName(value = "green") GREEN("green"),
+        @SerialName(value = "red") RED("red");
     }
 
 }

@@ -132,6 +132,14 @@ export function createRoutes(api: RouteClient) {
       delete: (args: operations['app_delete']['parameters']['path'], options?: MethodOptions): Promise<operations['app_delete']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"DELETE","path":"/apps/{app}","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_delete']['responses'][200]['content']['application/json']>,
       /**
+       * Where an app's unit may send data.
+       *
+       * `GET /apps/{app}/egress` (`app_egress`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      egress: (args: operations['app_egress']['parameters']['path'], options?: MethodOptions): Promise<operations['app_egress']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/egress","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_egress']['responses'][200]['content']['application/json']>,
+      /**
        * Export a sealed file's key.
        *
        * `POST /apps/{app}/files/{id}/export` (`exports_export`). **Who:** signed in (a session or an API key).
@@ -1256,6 +1264,21 @@ export function createRoutes(api: RouteClient) {
        */
       restore: (args: operations['ops_restore']['parameters']['path'] & operations['ops_restore']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['ops_restore']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/ops/apps/{app}/restore","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","operator":true}, args as unknown as Record<string, unknown>, options) as Promise<operations['ops_restore']['responses'][200]['content']['application/json']>,
+      /**
+       * The sealed endpoints.
+       *
+       * `GET /ops/sealed-endpoints` (`ops_sealed_endpoints_get`). **Who:** the ops token.
+       */
+      sealedEndpointsGet: (args: Record<string, never> = {}, options?: MethodOptions): Promise<operations['ops_sealed_endpoints_get']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/ops/sealed-endpoints","pathParams":[],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['ops_sealed_endpoints_get']['responses'][200]['content']['application/json']>,
+      /**
+       * Set the sealed endpoints.
+       *
+       * `POST /ops/sealed-endpoints` (`ops_sealed_endpoints_set`). **Who:** the ops token.
+       * Answers `428 OPERATOR_SIGNATURE_REQUIRED` first: give `operatorProof` (here or on the client).
+       */
+      sealedEndpointsSet: (args: operations['ops_sealed_endpoints_set']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['ops_sealed_endpoints_set']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/ops/sealed-endpoints","pathParams":[],"query":[],"body":"fields","optionalBody":false,"reply":"json","operator":true}, args as unknown as Record<string, unknown>, options) as Promise<operations['ops_sealed_endpoints_set']['responses'][200]['content']['application/json']>,
       /**
        * Custom domains to serve.
        *

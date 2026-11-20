@@ -63,6 +63,9 @@ import com.calimero.mero.api.models.OpsReleaseRequest
 import com.calimero.mero.api.models.OpsRemoveNode200Response
 import com.calimero.mero.api.models.OpsRestore200Response
 import com.calimero.mero.api.models.OpsRestoreRequest
+import com.calimero.mero.api.models.OpsSealedEndpointsGet200Response
+import com.calimero.mero.api.models.OpsSealedEndpointsSet200Response
+import com.calimero.mero.api.models.OpsSealedEndpointsSetRequest
 import com.calimero.mero.api.models.OpsServed200Response
 import com.calimero.mero.api.models.OpsSetBackupKeyRequest
 import com.calimero.mero.api.models.OpsSetReplicas200Response
@@ -2709,6 +2712,150 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
         return RequestConfig(
             method = RequestMethod.POST,
             path = "/ops/apps/{app}/restore".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /ops/sealed-endpoints
+     * The sealed endpoints
+     * The &#x60;https://&#x60; prefixes the operator vouches keep what is sent there inside a TEE (private inference, say), sorted; &#x60;[]&#x60; until set. A unit whose every egress destination one of them covers is Sealed (&#x60;GET /apps/{app}/egress&#x60;).  **Who:** the ops token.
+     * @return OpsSealedEndpointsGet200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun opsSealedEndpointsGet() : OpsSealedEndpointsGet200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = opsSealedEndpointsGetWithHttpInfo()
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsSealedEndpointsGet200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /ops/sealed-endpoints
+     * The sealed endpoints
+     * The &#x60;https://&#x60; prefixes the operator vouches keep what is sent there inside a TEE (private inference, say), sorted; &#x60;[]&#x60; until set. A unit whose every egress destination one of them covers is Sealed (&#x60;GET /apps/{app}/egress&#x60;).  **Who:** the ops token.
+     * @return ApiResponse<OpsSealedEndpointsGet200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun opsSealedEndpointsGetWithHttpInfo() : ApiResponse<OpsSealedEndpointsGet200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = opsSealedEndpointsGetRequestConfig()
+
+        return@withContext request<Unit, OpsSealedEndpointsGet200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation opsSealedEndpointsGet
+     *
+     * @return RequestConfig
+     */
+    fun opsSealedEndpointsGetRequestConfig() : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/ops/sealed-endpoints",
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /ops/sealed-endpoints
+     * Set the sealed endpoints
+     * Replaces the list. Signed over &#x60;cluster / __set_sealed_endpoints / { endpoints }&#x60; with the list sorted. At most 64 distinct &#x60;outbound&#x60; prefixes (&#x60;https://&#x60;, a host and an optional path, no query, fragment or credentials, at most 2048 bytes; &#x60;400 BAD_SEALED_ENDPOINTS&#x60;, before the signature is asked for); &#x60;[]&#x60; clears it. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34. Answers the list as kept.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
+     * @param opsSealedEndpointsSetRequest 
+     * @return OpsSealedEndpointsSet200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun opsSealedEndpointsSet(opsSealedEndpointsSetRequest: OpsSealedEndpointsSetRequest) : OpsSealedEndpointsSet200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = opsSealedEndpointsSetWithHttpInfo(opsSealedEndpointsSetRequest = opsSealedEndpointsSetRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsSealedEndpointsSet200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /ops/sealed-endpoints
+     * Set the sealed endpoints
+     * Replaces the list. Signed over &#x60;cluster / __set_sealed_endpoints / { endpoints }&#x60; with the list sorted. At most 64 distinct &#x60;outbound&#x60; prefixes (&#x60;https://&#x60;, a host and an optional path, no query, fragment or credentials, at most 2048 bytes; &#x60;400 BAD_SEALED_ENDPOINTS&#x60;, before the signature is asked for); &#x60;[]&#x60; clears it. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34. Answers the list as kept.  **Who:** the ops token. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
+     * @param opsSealedEndpointsSetRequest 
+     * @return ApiResponse<OpsSealedEndpointsSet200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun opsSealedEndpointsSetWithHttpInfo(opsSealedEndpointsSetRequest: OpsSealedEndpointsSetRequest) : ApiResponse<OpsSealedEndpointsSet200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = opsSealedEndpointsSetRequestConfig(opsSealedEndpointsSetRequest = opsSealedEndpointsSetRequest)
+
+        return@withContext request<OpsSealedEndpointsSetRequest, OpsSealedEndpointsSet200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation opsSealedEndpointsSet
+     *
+     * @param opsSealedEndpointsSetRequest 
+     * @return RequestConfig
+     */
+    fun opsSealedEndpointsSetRequestConfig(opsSealedEndpointsSetRequest: OpsSealedEndpointsSetRequest) : RequestConfig<OpsSealedEndpointsSetRequest> {
+        val localVariableBody = opsSealedEndpointsSetRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/ops/sealed-endpoints",
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

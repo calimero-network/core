@@ -146,6 +146,22 @@ class AppsFacade internal constructor(
         api(null, null, emptySet()).apps.appDelete(app = app)
 
     /**
+     * Where an app's unit may send data
+     *
+     * For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`) covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no egress.
+     *
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+     *
+     * `GET /apps/{app}/egress` (`app_egress`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun egress(
+        app: kotlin.String,
+    ): AppEgress200Response =
+        api(null, null, emptySet()).apps.appEgress(app = app)
+
+    /**
      * One app
      *
      * `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. A guest sees only their own grant in `grants`.
@@ -536,7 +552,7 @@ class AppsFacade internal constructor(
     /**
      * Whether an update is available for an app
      *
-     * For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+     * For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
      *
      * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *

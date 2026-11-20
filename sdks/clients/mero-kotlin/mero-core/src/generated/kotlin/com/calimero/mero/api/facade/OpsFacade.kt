@@ -623,6 +623,39 @@ class OpsFacade internal constructor(
         api(null, operator, emptySet()).ops.opsRestore(app = app, opsRestoreRequest = OpsRestoreRequest(backup = backup, recovery = recovery))
 
     /**
+     * The sealed endpoints
+     *
+     * The `https://` prefixes the operator vouches keep what is sent there inside a TEE (private inference, say), sorted; `[]` until set. A unit whose every egress destination one of them covers is Sealed (`GET /apps/{app}/egress`).
+     *
+     * **Who:** the ops token.
+     *
+     * `GET /ops/sealed-endpoints` (`ops_sealed_endpoints_get`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun sealedEndpointsGet(): OpsSealedEndpointsGet200Response =
+        api(null, null, emptySet()).ops.opsSealedEndpointsGet()
+
+    /**
+     * Set the sealed endpoints
+     *
+     * Replaces the list. Signed over `cluster / __set_sealed_endpoints / { endpoints }` with the list sorted. At most 64 distinct `outbound` prefixes (`https://`, a host and an optional path, no query, fragment or credentials, at most 2048 bytes; `400 BAD_SEALED_ENDPOINTS`, before the signature is asked for); `[]` clears it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. Answers the list as kept.
+     *
+     * **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
+     *
+     * `POST /ops/sealed-endpoints` (`ops_sealed_endpoints_set`).
+     *
+     * Answers `428 OPERATOR_SIGNATURE_REQUIRED` first: signed by [operator], else the client's ([CalimeroClient.operator]); with neither, [com.calimero.mero.OperatorSignatureRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun sealedEndpointsSet(
+        endpoints: kotlin.collections.List<kotlin.String>,
+        operator: DeviceSigner? = null,
+    ): OpsSealedEndpointsSet200Response =
+        api(null, operator, emptySet()).ops.opsSealedEndpointsSet(opsSealedEndpointsSetRequest = OpsSealedEndpointsSetRequest(endpoints = endpoints))
+
+    /**
      * Custom domains to serve
      *
      * Every served origin a package's manager registered, by the package's label, never its name; `addedAt` is RFC 3339.

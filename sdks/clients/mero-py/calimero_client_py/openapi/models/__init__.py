@@ -54,6 +54,8 @@ from .app_delegations_response_200_delegations import (
     AppDelegationsResponse200Delegations,
 )
 from .app_delete_response_200 import AppDeleteResponse200
+from .app_egress_response_200 import AppEgressResponse200
+from .app_egress_response_200_members import AppEgressResponse200Members
 from .app_entry import AppEntry
 from .app_error import AppError
 from .app_executor import AppExecutor
@@ -117,6 +119,12 @@ from .app_unlink_response_200 import AppUnlinkResponse200
 from .app_update_response_200 import AppUpdateResponse200
 from .app_update_response_200_approvers import AppUpdateResponse200Approvers
 from .app_update_response_200_available_type_0 import AppUpdateResponse200AvailableType0
+from .app_update_response_200_available_type_0_class import (
+    AppUpdateResponse200AvailableType0Class,
+)
+from .app_update_response_200_available_type_0_egress import (
+    AppUpdateResponse200AvailableType0Egress,
+)
 from .app_update_response_200_available_type_0_source import (
     AppUpdateResponse200AvailableType0Source,
 )
@@ -418,6 +426,9 @@ from .ops_restore_body import OpsRestoreBody
 from .ops_restore_body_recovery import OpsRestoreBodyRecovery
 from .ops_restore_response_200 import OpsRestoreResponse200
 from .ops_restore_response_200_backup import OpsRestoreResponse200Backup
+from .ops_sealed_endpoints_get_response_200 import OpsSealedEndpointsGetResponse200
+from .ops_sealed_endpoints_set_body import OpsSealedEndpointsSetBody
+from .ops_sealed_endpoints_set_response_200 import OpsSealedEndpointsSetResponse200
 from .ops_served_response_200 import OpsServedResponse200
 from .ops_served_response_200_origins_item import OpsServedResponse200OriginsItem
 from .ops_set_backup_key_body import OpsSetBackupKeyBody
@@ -490,6 +501,9 @@ from .outbound_approved import OutboundApproved
 from .outbound_selection_type_0 import OutboundSelectionType0
 from .package import Package
 from .package_capabilities_response_200 import PackageCapabilitiesResponse200
+from .package_capabilities_response_200_members_type_0 import (
+    PackageCapabilitiesResponse200MembersType0,
+)
 from .package_install_body import PackageInstallBody
 from .package_install_response_200 import PackageInstallResponse200
 from .package_install_response_200_services import PackageInstallResponse200Services
@@ -663,6 +677,19 @@ from .team_view_members_item import TeamViewMembersItem
 from .trap import Trap
 from .trap_kind import TrapKind
 from .uninstalled import Uninstalled
+from .unit_member import UnitMember
+from .update_reason_type_0 import UpdateReasonType0
+from .update_reason_type_0_code import UpdateReasonType0Code
+from .update_reason_type_1 import UpdateReasonType1
+from .update_reason_type_1_code import UpdateReasonType1Code
+from .update_reason_type_2 import UpdateReasonType2
+from .update_reason_type_2_code import UpdateReasonType2Code
+from .update_reason_type_3 import UpdateReasonType3
+from .update_reason_type_3_code import UpdateReasonType3Code
+from .update_reason_type_4 import UpdateReasonType4
+from .update_reason_type_4_code import UpdateReasonType4Code
+from .update_reason_type_5 import UpdateReasonType5
+from .update_reason_type_5_code import UpdateReasonType5Code
 from .upgrade import Upgrade
 from .upgrade_pending import UpgradePending
 from .upgrade_pending_nodes_item import UpgradePendingNodesItem
@@ -729,6 +756,8 @@ __all__ = (
     "AppDelegationsResponse200",
     "AppDelegationsResponse200Delegations",
     "AppDeleteResponse200",
+    "AppEgressResponse200",
+    "AppEgressResponse200Members",
     "AppEntry",
     "AppError",
     "AppExecutor",
@@ -787,6 +816,8 @@ __all__ = (
     "AppUpdateResponse200",
     "AppUpdateResponse200Approvers",
     "AppUpdateResponse200AvailableType0",
+    "AppUpdateResponse200AvailableType0Class",
+    "AppUpdateResponse200AvailableType0Egress",
     "AppUpdateResponse200AvailableType0Source",
     "AppUpdateResponse200RunningType0",
     "AppUpgradeBody",
@@ -1039,6 +1070,9 @@ __all__ = (
     "OpsRestoreBodyRecovery",
     "OpsRestoreResponse200",
     "OpsRestoreResponse200Backup",
+    "OpsSealedEndpointsGetResponse200",
+    "OpsSealedEndpointsSetBody",
+    "OpsSealedEndpointsSetResponse200",
     "OpsServedResponse200",
     "OpsServedResponse200OriginsItem",
     "OpsSetBackupKeyBody",
@@ -1105,6 +1139,7 @@ __all__ = (
     "OutboundSelectionType0",
     "Package",
     "PackageCapabilitiesResponse200",
+    "PackageCapabilitiesResponse200MembersType0",
     "PackageInstallBody",
     "PackageInstallResponse200",
     "PackageInstallResponse200Services",
@@ -1260,6 +1295,19 @@ __all__ = (
     "Trap",
     "TrapKind",
     "Uninstalled",
+    "UnitMember",
+    "UpdateReasonType0",
+    "UpdateReasonType0Code",
+    "UpdateReasonType1",
+    "UpdateReasonType1Code",
+    "UpdateReasonType2",
+    "UpdateReasonType2Code",
+    "UpdateReasonType3",
+    "UpdateReasonType3Code",
+    "UpdateReasonType4",
+    "UpdateReasonType4Code",
+    "UpdateReasonType5",
+    "UpdateReasonType5Code",
     "Upgrade",
     "UpgradePending",
     "UpgradePendingNodesItem",

@@ -9,6 +9,12 @@ from ..types import UNSET, Unset
 from typing import cast
 from typing import cast, Union
 
+if TYPE_CHECKING:
+    from ..models.package_capabilities_response_200_members_type_0 import (
+        PackageCapabilitiesResponse200MembersType0,
+    )
+
+
 T = TypeVar("T", bound="PackageCapabilitiesResponse200")
 
 
@@ -26,7 +32,12 @@ class PackageCapabilitiesResponse200:
         name (Union[None, str]):
         author (Union[None, str]):
         outbound (list[str]):
+        secrets (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+        uses (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
         abi (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+        egress (Union[None, list[str]]):
+        sealed (Union[None, bool]):
+        members (Union['PackageCapabilitiesResponse200MembersType0', None]):
     """
 
     package: str
@@ -39,10 +50,19 @@ class PackageCapabilitiesResponse200:
     name: Union[None, str]
     author: Union[None, str]
     outbound: list[str]
+    secrets: Any
+    uses: Any
     abi: Any
+    egress: Union[None, list[str]]
+    sealed: Union[None, bool]
+    members: Union["PackageCapabilitiesResponse200MembersType0", None]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.package_capabilities_response_200_members_type_0 import (
+            PackageCapabilitiesResponse200MembersType0,
+        )
+
         package = self.package
 
         version = self.version
@@ -66,7 +86,27 @@ class PackageCapabilitiesResponse200:
 
         outbound = self.outbound
 
+        secrets = self.secrets
+
+        uses = self.uses
+
         abi = self.abi
+
+        egress: Union[None, list[str]]
+        if isinstance(self.egress, list):
+            egress = self.egress
+
+        else:
+            egress = self.egress
+
+        sealed: Union[None, bool]
+        sealed = self.sealed
+
+        members: Union[None, dict[str, Any]]
+        if isinstance(self.members, PackageCapabilitiesResponse200MembersType0):
+            members = self.members.to_dict()
+        else:
+            members = self.members
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -82,7 +122,12 @@ class PackageCapabilitiesResponse200:
                 "name": name,
                 "author": author,
                 "outbound": outbound,
+                "secrets": secrets,
+                "uses": uses,
                 "abi": abi,
+                "egress": egress,
+                "sealed": sealed,
+                "members": members,
             }
         )
 
@@ -90,6 +135,10 @@ class PackageCapabilitiesResponse200:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.package_capabilities_response_200_members_type_0 import (
+            PackageCapabilitiesResponse200MembersType0,
+        )
+
         d = dict(src_dict)
         package = d.pop("package")
 
@@ -126,7 +175,52 @@ class PackageCapabilitiesResponse200:
 
         outbound = cast(list[str], d.pop("outbound"))
 
+        secrets = d.pop("secrets")
+
+        uses = d.pop("uses")
+
         abi = d.pop("abi")
+
+        def _parse_egress(data: object) -> Union[None, list[str]]:
+            if data is None:
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                egress_type_0 = cast(list[str], data)
+
+                return egress_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, list[str]], data)
+
+        egress = _parse_egress(d.pop("egress"))
+
+        def _parse_sealed(data: object) -> Union[None, bool]:
+            if data is None:
+                return data
+            return cast(Union[None, bool], data)
+
+        sealed = _parse_sealed(d.pop("sealed"))
+
+        def _parse_members(
+            data: object,
+        ) -> Union["PackageCapabilitiesResponse200MembersType0", None]:
+            if data is None:
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                members_type_0 = PackageCapabilitiesResponse200MembersType0.from_dict(
+                    data
+                )
+
+                return members_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union["PackageCapabilitiesResponse200MembersType0", None], data)
+
+        members = _parse_members(d.pop("members"))
 
         package_capabilities_response_200 = cls(
             package=package,
@@ -139,7 +233,12 @@ class PackageCapabilitiesResponse200:
             name=name,
             author=author,
             outbound=outbound,
+            secrets=secrets,
+            uses=uses,
             abi=abi,
+            egress=egress,
+            sealed=sealed,
+            members=members,
         )
 
         package_capabilities_response_200.additional_properties = d
