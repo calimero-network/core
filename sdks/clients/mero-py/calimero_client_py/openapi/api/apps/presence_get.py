@@ -71,7 +71,7 @@ def sync_detailed(
      One entry per present device (a session's passkey, or an API key): its account, device and state
     (hex).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -105,7 +105,7 @@ def sync(
      One entry per present device (a session's passkey, or an API key): its account, device and state
     (hex).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -134,7 +134,7 @@ async def asyncio_detailed(
      One entry per present device (a session's passkey, or an API key): its account, device and state
     (hex).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -166,7 +166,7 @@ async def asyncio(
      One entry per present device (a session's passkey, or an API key): its account, device and state
     (hex).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):

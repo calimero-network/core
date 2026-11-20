@@ -71,7 +71,7 @@ def sync_detailed(
      The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document,
     free-form here: its format is the ABI's, not this API's.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -105,7 +105,7 @@ def sync(
      The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document,
     free-form here: its format is the ABI's, not this API's.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -134,7 +134,7 @@ async def asyncio_detailed(
      The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document,
     free-form here: its format is the ABI's, not this API's.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -166,7 +166,7 @@ async def asyncio(
      The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document,
     free-form here: its format is the ABI's, not this API's.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):

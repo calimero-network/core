@@ -380,7 +380,7 @@ receipts, events and exports are also covered in
 | `400 BAD_PARAMS` | a param of the wrong type, outside `min`/`max`/`enum`, or undeclared |
 | `409 NO_PRICE_TABLE`, `400 BAD_MAX_COST` | `maxCost` given and the operator set no prices, or it is not a whole number of micro-units |
 | `429 TOO_MANY_PIPELINE_RUNS` | 8 runs already going in this app |
-| `403 FORBIDDEN` | the caller is not the app's owner or a member of its organization (start, cancel, retry, receipt), even on a public app |
+| `403 FORBIDDEN` | the caller is not the app's owner or a member of its organization (start, cancel, retry, receipt), even where an `anyone` grant admits others |
 | `409 STILL_RUNNING`, `400 LIMIT_EXCEEDS_CAP`, `400 BAD_LIMITS` | a retry of a running run, or with limits above the method's caps or for a step the pipeline lacks |
 | `409 RUN_NOT_ENDED` | a receipt asked for before the run ended |
 | `429 TOO_MANY_EXPORTS` | more than 30 exports a minute by one account on one node |

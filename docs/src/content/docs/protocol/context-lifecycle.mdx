@@ -83,7 +83,7 @@ Calls, views and events go through any node ([The write path](/protocol/write-pa
 
 | Change | Route | Who |
 | --- | --- | --- |
-| Access rule | `POST /apps/{app}/access` | The owner while a member, an admin, or whoever holds `MANAGE_APPLICATION` on its team (and on the team it moves to; org-wide for any access but `team`); a frontend session moves its own package's apps between its channels ([App access](/protocol/organizations/#app-access)) |
+| Grants | `POST /apps/{app}/access` | The owner while a member, an admin, or whoever holds `MANAGE_APPLICATION` on each team it admits (before and after; org-wide for grants with no team); a frontend session moves its own package's apps between its channels ([App access](/protocol/organizations/#app-access)) |
 | Owner | `POST /apps/{app}/transfer { to }` | The owner while a member, or an admin, with a passkey; to a member of the organization ([below](#transferring-an-app)) |
 | Organization | `POST /apps/{app}/move { toOrg, bringMembers? }` | Its manager where it is, as an admin of the target, with a passkey; data stays put ([Moving an app](/protocol/organizations/#moving-an-app)) |
 | Metadata (a title, an icon; at most 16 KiB) | `POST /apps/{app}/metadata` | The owner while a member, or an admin of its organization |
@@ -101,7 +101,7 @@ record in the system group changes.
 | --- | --- | --- | --- |
 | Route | `POST /apps/{app}/transfer { to }` | `POST /apps/{app}/move { toOrg, bringMembers? }` | `PUT /auth/aliases/{alias} { app }` |
 | `meroctl` | `instance transfer <app> <account>` | `instance move <app> <org> [--bring-members]` | `instance alias add <alias> <app>`, `instance use <app>` |
-| Changes | `owner` (and, below cluster version 1.0.0-rc.32, the organization, out of a personal one) | `org`, the access rule, the payer | The caller's own names |
+| Changes | `owner` (and, below cluster version 1.0.0-rc.32, the organization, out of a personal one) | `org`, the grants, the payer | The caller's own names |
 | Who | The app's manager | Its manager where it is, as an admin of the target | Any account that reaches the app |
 | Passkey | `<app> / __transfer / { to }` | `<app> / __move / { toOrg, bringMembers }` | None |
 
@@ -145,12 +145,12 @@ has each in full):
    owner of `toOrg`. The API refuses both first (`403`), and refuses with
    `409 FEATURE_NOT_ACTIVE` before the step-up while the cluster version
    lacks moves.
-2. **Access.** `org` access, or `team` access on its package's app team,
-   becomes `team` access on the target's app team of the package, made when
+2. **Grants.** An `org` grant, or a `team` grant on its package's app team,
+   becomes a `team` grant on the target's app team of the package, made when
    missing. Any other team is refused (`MOVE_NEEDS_APP_TEAM`): its leads, rows
    and capabilities are grants of the source the target's admins never saw.
-   Give the app `org` or app-team access first. `owner`, `accounts` and
-   `public` access stay.
+   Give the app an `org` or app-team grant first. Named people and `anyone`
+   stay.
 3. **Owner.** The owner stays the owner and must be a member of the target
    once the move is done (`MOVE_OWNER_NOT_IN_TARGET`): invite them first,
    transfer the app to a member, or bring the members along.
@@ -252,5 +252,6 @@ reconcile loop then stops the group and deletes its data from that node.
 
 An app is also deleted with its organization (`DELETE /orgs/{org}`, the owner
 with a passkey step-up) and with the team it is deployed to (`DeleteTeam` takes
-the team, the teams below it, and their apps).
+the team, the teams below it, and their apps, unless the deleter asks to keep
+them: `keepApps`, [Teams](/protocol/organizations/)).
 

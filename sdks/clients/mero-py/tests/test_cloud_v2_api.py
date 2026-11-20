@@ -88,7 +88,7 @@ def test_orgs_and_teams_end_to_end(cluster, wasm):
     app = alice.json.apps.create(
         name="eng-kv",
         bundle=alice.json.packages.bundle_put(body=wasm)["hash"],
-        **{"org": org, "access": {"kind": "team", "team": team}},
+        **{"org": org, "grants": [{"kind": "team", "team": team}]},
     )["appId"]
     view = bob.json.orgs.team_get(org=org, team=team)
     assert view["myRole"] == "readOnly" and sub in view["children"]
@@ -151,12 +151,10 @@ def test_app_directory_access_and_upgrade(cluster, wasm):
     alice, alice_pk = person(cluster, 0, "alice-apps")
     carol, _ = person(cluster, 2, "carol-apps")
     bundle = alice.json.packages.bundle_put(body=wasm)["hash"]
-    # Owner-only, in an organization made with it: an `accounts` list reaches only
-    # the organization's members, so carol joins it, and joining alone still
+    # Owner-only, in an organization made with it: a named account reaches it only
+    # as a member of the organization, so carol joins it, and joining alone still
     # leaves her out.
-    app = alice.json.apps.create(name="dir", bundle=bundle, access={"kind": "owner"})[
-        "appId"
-    ]
+    app = alice.json.apps.create(name="dir", bundle=bundle, grants=[])["appId"]
     assert app in {a["appId"] for a in alice.json.apps.list()["apps"]}
     assert alice.json.apps.get(app=app)["name"] == "dir"
     alice.json.apps.call(app=app, method="set", args={"key": "k", "value": "v"})
@@ -170,9 +168,20 @@ def test_app_directory_access_and_upgrade(cluster, wasm):
         carol.json.apps.view(app=app, method="get", args={"key": "k"})
     alice.json.apps.access(
         app=app,
-        access={"kind": "accounts", "accounts": [carol.json.auth.me()["accountId"]]},
+        grants=[{"kind": "account", "account": carol.json.auth.me()["accountId"]}],
     )
     time.sleep(0.3)
+    assert (
+        carol.json.apps.view(app=app, method="get", args={"key": "k"})["result"] == "v"
+    )
+    # Access is a list of grants: as set, and replaced (here by the organization,
+    # which carol is in).
+    carol_id = carol.json.auth.me()["accountId"]
+    assert alice.json.apps.get(app=app)["grants"] == [
+        {"kind": "account", "account": carol_id}
+    ]
+    alice.json.apps.access(app=app, grants=[{"kind": "org"}])
+    assert alice.json.apps.get(app=app)["grants"] == [{"kind": "org"}]
     assert (
         carol.json.apps.view(app=app, method="get", args={"key": "k"})["result"] == "v"
     )
@@ -423,7 +432,7 @@ def test_an_app_moves_with_its_people_into_another_org(cluster, wasm):
         pytest.skip("the node has no app moves (core feat/move-app-to-org)")
     assert moved["appId"] == app and moved["from"] == src, moved
     assert moved["org"] == dst and moved["added"] == [bob_id], moved
-    assert moved["access"] == {"kind": "org"}, moved
+    assert moved["grants"] == [{"kind": "org"}], moved
     assert alice.get(f"apps/{app}")["org"] == dst
     assert bob.json.apps.view(app=app, method="get", args={"key": "a"})["result"] == "1"
     # Bob, a member of the target only, moves nothing.

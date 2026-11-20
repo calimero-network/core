@@ -14,7 +14,7 @@ use crate::runtime::NodeRuntime;
 use crate::system::{
     compare_versions, Authority, PackageRef, PackageVersion, SystemState, OPERATOR,
 };
-use crate::types::{Access, AppRecord, OrgRole, UpgradeRecord};
+use crate::types::{AppRecord, OrgRole, UpgradeRecord};
 
 /// The most apps (or organizations) one page of a report answers.
 pub const MAX_REPORT_PAGE: usize = 100;
@@ -408,7 +408,7 @@ pub fn app_json(
     });
     if let Reader::Account(account) = reader {
         v["name"] = json!(app.name);
-        if let Access::Team { team } = &app.access {
+        if let Some(team) = app.access.the_team() {
             v["team"] = json!(team);
         }
         if let Some(r) = &current {

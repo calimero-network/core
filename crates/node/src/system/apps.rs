@@ -178,6 +178,45 @@ pub(super) fn authorize(
         }
         // Taking a grant back narrows what an app may do as the person: no consent.
         SystemCmd::SetDelegation { methods: None, .. } => Ok(None),
+        SystemCmd::CreateAppInvite {
+            invite_key,
+            invite,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = super::app_invite_args(invite_key, invite);
+            proofs.states(&st, &invite.app, "__create_app_invite", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::RevokeAppInvite {
+            app_id,
+            invite_key,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = json!({ "inviteKey": invite_key });
+            proofs.states(&st, app_id, "__revoke_app_invite", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        // The token's key signs the redemption: only a node the redeemer gave the token
+        // to can make it.
+        SystemCmd::RedeemAppInvite {
+            invite_key,
+            account,
+            now,
+            signature,
+        } => {
+            if !s.app_invites.contains_key(invite_key) {
+                return Err(super::APP_INVITE_GONE);
+            }
+            let used = crate::proof::verify_invite_redeem(invite_key, account, *now, signature)?;
+            if s.used_proofs.contains(&used) {
+                return Err("that redemption was used already");
+            }
+            Ok(Some(used))
+        }
         SystemCmd::LinkApp {
             app_id,
             name,
@@ -300,10 +339,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 }
                 // CREATE_APP: admins and the team's leads hold it,
                 // a member only when granted (not by default).
-                let team = match &app.access {
-                    Access::Team { team } => Some(team.as_str()),
-                    _ => None,
-                };
+                let team = app.access.the_team().map(String::as_str);
                 if !o.is_some_and(|o| o.may(&app.owner, team, crate::types::caps::CREATE_APP)) {
                     return Err("creating apps here needs the CREATE_APP capability");
                 }
@@ -318,9 +354,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     }
                 }
             }
-            if let Access::Team { team } = &app.access {
-                let o = s.orgs.get(&app.org);
-                // A team's app is created by someone who writes the team.
+            s.check_grants(&app.org, app.access.grants())?;
+            let o = s.orgs.get(&app.org);
+            // A team's app is created by someone who writes the team (each team it admits).
+            for team in app.access.teams() {
                 if !o.is_some_and(|o| o.writes_team(&app.owner, team)) {
                     return Err("not a member of that team");
                 }
@@ -615,9 +652,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 if let Some(org) = to_org {
                     app.org = org;
                     // A team of the organization it left means nothing there.
-                    if matches!(app.access, Access::Team { .. }) {
-                        app.access = Access::Org;
-                    }
+                    app.access = app.access.teams_to_org();
                 }
             }
             s.set_app_file_bytes(&app_id, held);
@@ -766,15 +801,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             {
                 return Err("only the app's owner, an organization admin, or whoever manages its team's apps (MANAGE_APPLICATION) may change its access");
             }
-            if let Access::Team { team } = &access {
-                let in_org = s
-                    .orgs
-                    .get(&app.org)
-                    .is_some_and(|o| o.teams.contains_key(team));
-                if !in_org {
-                    return Err("no such team in the app's organization");
-                }
-            }
+            s.check_grants(&app.org, access.grants())?;
             let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
             app.access = access;
             Ok(Value::Null)
@@ -824,6 +851,122 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .or_default()
                 .insert(target, methods);
             Ok(Value::Null)
+        }
+        SystemCmd::CreateAppInvite {
+            invite_key,
+            invite,
+            actor,
+            ..
+        } => {
+            let app = s.apps.get(&invite.app).ok_or("no such app")?;
+            if !s.manages_grants(app, &actor) {
+                return Err("only whoever may change the instance's access invites its guests");
+            }
+            // Whether guests are allowed is judged when someone redeems it (a member always
+            // may): an invite is made whatever the switches say now.
+            if invite
+                .scope
+                .as_ref()
+                .is_some_and(|v| !crate::types::scope_fits(v))
+            {
+                return Err("an invite's scope is at most 256 bytes of JSON");
+            }
+            if invite.uses_left == 0 || invite.uses_left > super::MAX_APP_INVITE_USES {
+                return Err("an instance invite admits 1 to 1000 uses");
+            }
+            if invite.expires_at
+                > invite
+                    .created_at
+                    .saturating_add(super::MAX_APP_INVITE_TTL_SECS)
+            {
+                return Err("an instance invite lasts at most 90 days");
+            }
+            if s.app_invites.contains_key(&invite_key) || s.invites.contains_key(&invite_key) {
+                return Err("invite exists");
+            }
+            if s.app_invites
+                .values()
+                .filter(|i| i.app == invite.app)
+                .count()
+                >= super::MAX_APP_INVITES_PER_APP
+                || s.app_invites.len() >= super::MAX_APP_INVITES
+            {
+                return Err("quota exceeded: instance invites");
+            }
+            let invite = crate::types::AppInvite {
+                created_by: actor,
+                ..invite
+            };
+            let _prev = s.app_invites.insert(invite_key, invite);
+            Ok(Value::Null)
+        }
+        SystemCmd::RevokeAppInvite {
+            app_id,
+            invite_key,
+            actor,
+            ..
+        } => {
+            let inv = s
+                .app_invites
+                .get(&invite_key)
+                .filter(|i| i.app == app_id)
+                .ok_or(super::APP_INVITE_GONE)?;
+            let app = s.apps.get(&app_id).ok_or("no such app")?;
+            if inv.created_by != actor && !s.manages_grants(app, &actor) {
+                return Err("only the invite's creator or whoever manages the instance's guests may revoke it");
+            }
+            let _gone = s.app_invites.remove(&invite_key);
+            Ok(Value::Null)
+        }
+        SystemCmd::RedeemAppInvite {
+            invite_key,
+            account,
+            now,
+            ..
+        } => {
+            if !s.accounts.contains_key(&account) {
+                return Err("unknown account");
+            }
+            let inv = s
+                .app_invites
+                .get(&invite_key)
+                .ok_or(super::APP_INVITE_GONE)?;
+            if inv.expires_at <= now || inv.uses_left == 0 {
+                return Err(INVITE_EXPIRED);
+            }
+            let app = s.apps.get(&inv.app).ok_or(super::APP_INVITE_GONE)?;
+            // A member of its organization is named on it (a member grant); anyone else is a
+            // guest, only while the instance takes guests.
+            let member = s
+                .orgs
+                .get(&app.org)
+                .and_then(|o| o.role(&account))
+                .is_some();
+            if !member && !s.guests_allowed(app) {
+                return Err(super::GUESTS_NOT_ALLOWED);
+            }
+            let answer = json!({ "app": app.app_id, "org": app.org, "member": member });
+            // Named already: nothing changes, and the use is left for someone else.
+            if app.access.names(&account) {
+                return Ok(answer);
+            }
+            if app.access.named_count() >= crate::types::MAX_ACCOUNT_GRANTS {
+                return Err("quota exceeded: an instance names at most 1000 accounts");
+            }
+            let access = app.access.naming(&account, inv.scope.clone());
+            let app_id = inv.app.clone();
+            let inv = s
+                .app_invites
+                .get_mut(&invite_key)
+                .ok_or(super::APP_INVITE_GONE)?;
+            inv.uses_left -= 1;
+            if inv.uses_left == 0 {
+                let _gone = s.app_invites.remove(&invite_key);
+            }
+            if let Some(app) = s.apps.get_mut(&app_id) {
+                app.access = access;
+            }
+            Ok(answer)
         }
         SystemCmd::LinkApp {
             app_id,

@@ -57,6 +57,8 @@ import com.calimero.mero.api.models.OrgRename200Response
 import com.calimero.mero.api.models.OrgRenameRequest
 import com.calimero.mero.api.models.OrgSetBackupKeyRequest
 import com.calimero.mero.api.models.OrgSetMemberRequest
+import com.calimero.mero.api.models.OrgSettings200Response
+import com.calimero.mero.api.models.OrgSettingsRequest
 import com.calimero.mero.api.models.OrgUpgradeRequest
 import com.calimero.mero.api.models.OrgUpgradeRetryRequest
 import com.calimero.mero.api.models.OrgUsage200Response
@@ -69,6 +71,7 @@ import com.calimero.mero.api.models.RecoveryStartRequest
 import com.calimero.mero.api.models.TeamCreate200Response
 import com.calimero.mero.api.models.TeamCreateRequest
 import com.calimero.mero.api.models.TeamDelete200Response
+import com.calimero.mero.api.models.TeamDeleteRequest
 import com.calimero.mero.api.models.TeamSetMemberRequest
 import com.calimero.mero.api.models.TeamUpdateRequest
 import com.calimero.mero.api.models.TeamView
@@ -405,7 +408,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /invites/{token}/redeem
      * Join with an invite
-     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined.  **Who:** a passkey session (an API key is refused).
+     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, and &#x60;member&#x60;: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused &#x60;409 GUESTS_NOT_ALLOWED&#x60; unless the instance&#39;s release says &#x60;guests: allowed&#x60; and its organization&#39;s &#x60;allowGuests&#x60; is on, judged as the redemption applies.  **Who:** a passkey session (an API key is refused).
      * @param token 
      * @return InviteRedeem200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -437,7 +440,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /invites/{token}/redeem
      * Join with an invite
-     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined.  **Who:** a passkey session (an API key is refused).
+     * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, and &#x60;member&#x60;: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused &#x60;409 GUESTS_NOT_ALLOWED&#x60; unless the instance&#39;s release says &#x60;guests: allowed&#x60; and its organization&#39;s &#x60;allowGuests&#x60; is on, judged as the redemption applies.  **Who:** a passkey session (an API key is refused).
      * @param token 
      * @return ApiResponse<InviteRedeem200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -2050,6 +2053,83 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     }
 
     /**
+     * POST /orgs/{org}/settings
+     * Change the organization&#39;s settings
+     * &#x60;allowGuests&#x60; (default on): whether its instances take guests, accounts named on one instance (an &#x60;account&#x60; grant) that are not members, where the instance&#39;s release allows them too (&#x60;guests: allowed&#x60; in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is &#x60;400&#x60;. The owner or an admin; &#x60;412&#x60; first. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.33.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param org 
+     * @param orgSettingsRequest 
+     * @return OrgSettings200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun orgSettings(org: kotlin.String, orgSettingsRequest: OrgSettingsRequest) : OrgSettings200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = orgSettingsWithHttpInfo(org = org, orgSettingsRequest = orgSettingsRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgSettings200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /orgs/{org}/settings
+     * Change the organization&#39;s settings
+     * &#x60;allowGuests&#x60; (default on): whether its instances take guests, accounts named on one instance (an &#x60;account&#x60; grant) that are not members, where the instance&#39;s release allows them too (&#x60;guests: allowed&#x60; in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is &#x60;400&#x60;. The owner or an admin; &#x60;412&#x60; first. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.33.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param org 
+     * @param orgSettingsRequest 
+     * @return ApiResponse<OrgSettings200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun orgSettingsWithHttpInfo(org: kotlin.String, orgSettingsRequest: OrgSettingsRequest) : ApiResponse<OrgSettings200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgSettingsRequestConfig(org = org, orgSettingsRequest = orgSettingsRequest)
+
+        return@withContext request<OrgSettingsRequest, OrgSettings200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation orgSettings
+     *
+     * @param org 
+     * @param orgSettingsRequest 
+     * @return RequestConfig
+     */
+    fun orgSettingsRequestConfig(org: kotlin.String, orgSettingsRequest: OrgSettingsRequest) : RequestConfig<OrgSettingsRequest> {
+        val localVariableBody = orgSettingsRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/orgs/{org}/settings".replace("{"+"org"+"}", encodeURIComponent(org.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
      * POST /orgs/{org}/upgrade
      * Start an upgrade run
      * Upgrade every app of the organization (or of &#x60;team&#x60;, with &#x60;cascade&#x60; its subtree) that runs &#x60;package&#x60; to &#x60;version&#x60;, with one passkey assertion over the whole run; the organization&#39;s owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds &#x60;MANAGE_APPLICATION&#x60; there). Each app is upgraded as &#x60;POST /apps/{app}/upgrade&#x60; would; &#x60;GET /orgs/{org}/upgrades/{run}&#x60; follows it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
@@ -2823,10 +2903,10 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * DELETE /orgs/{org}/teams/{team}
      * Delete a team
-     * With the teams and apps below it. A package-bound session: only its own package&#39;s teams (its app team and the teams below it): a team below its app team whose apps are all its package&#39;s.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (&#x60;apps&#x60;), unless &#x60;keepApps: true&#x60;: then they stay (&#x60;keptApps&#x60;), each without those teams&#39; grants and with its other grants (named members, guests, &#x60;anyone&#x60;, public links), or, with none left, an empty grant list (only its owner reaches it); &#x60;keepApps&#x60; needs cluster version 1.0.0-rc.33 (&#x60;409 FEATURE_NOT_ACTIVE&#x60;). An instance another team or the organization admits only loses the deleted teams&#39; grants either way. With such instances, the passkey is over &#x60;{ team, apps }&#x60; (plus &#x60;keepApps: true&#x60; when set), and the &#x60;412&#x60;&#39;s details list &#x60;apps&#x60; and &#x60;keepApps&#x60;, so the approver sees what happens to them. A package-bound session: only its own package&#39;s teams (its app team and the teams below it): a team below its app team whose apps are all its package&#39;s.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param team 
-     * @param confirmOnly May be absent. (optional)
+     * @param teamDeleteRequest May be absent. (optional)
      * @return TeamDelete200Response
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -2836,8 +2916,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun teamDelete(org: kotlin.String, team: kotlin.String, confirmOnly: ConfirmOnly? = null) : TeamDelete200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = teamDeleteWithHttpInfo(org = org, team = team, confirmOnly = confirmOnly)
+    suspend fun teamDelete(org: kotlin.String, team: kotlin.String, teamDeleteRequest: TeamDeleteRequest? = null) : TeamDelete200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = teamDeleteWithHttpInfo(org = org, team = team, teamDeleteRequest = teamDeleteRequest)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as TeamDelete200Response
@@ -2857,20 +2937,20 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * DELETE /orgs/{org}/teams/{team}
      * Delete a team
-     * With the teams and apps below it. A package-bound session: only its own package&#39;s teams (its app team and the teams below it): a team below its app team whose apps are all its package&#39;s.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (&#x60;apps&#x60;), unless &#x60;keepApps: true&#x60;: then they stay (&#x60;keptApps&#x60;), each without those teams&#39; grants and with its other grants (named members, guests, &#x60;anyone&#x60;, public links), or, with none left, an empty grant list (only its owner reaches it); &#x60;keepApps&#x60; needs cluster version 1.0.0-rc.33 (&#x60;409 FEATURE_NOT_ACTIVE&#x60;). An instance another team or the organization admits only loses the deleted teams&#39; grants either way. With such instances, the passkey is over &#x60;{ team, apps }&#x60; (plus &#x60;keepApps: true&#x60; when set), and the &#x60;412&#x60;&#39;s details list &#x60;apps&#x60; and &#x60;keepApps&#x60;, so the approver sees what happens to them. A package-bound session: only its own package&#39;s teams (its app team and the teams below it): a team below its app team whose apps are all its package&#39;s.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param team 
-     * @param confirmOnly May be absent. (optional)
+     * @param teamDeleteRequest May be absent. (optional)
      * @return ApiResponse<TeamDelete200Response?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun teamDeleteWithHttpInfo(org: kotlin.String, team: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<TeamDelete200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = teamDeleteRequestConfig(org = org, team = team, confirmOnly = confirmOnly)
+    suspend fun teamDeleteWithHttpInfo(org: kotlin.String, team: kotlin.String, teamDeleteRequest: TeamDeleteRequest?) : ApiResponse<TeamDelete200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = teamDeleteRequestConfig(org = org, team = team, teamDeleteRequest = teamDeleteRequest)
 
-        return@withContext request<ConfirmOnly, TeamDelete200Response>(
+        return@withContext request<TeamDeleteRequest, TeamDelete200Response>(
             localVariableConfig
         )
     }
@@ -2880,11 +2960,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      *
      * @param org 
      * @param team 
-     * @param confirmOnly May be absent. (optional)
+     * @param teamDeleteRequest May be absent. (optional)
      * @return RequestConfig
      */
-    fun teamDeleteRequestConfig(org: kotlin.String, team: kotlin.String, confirmOnly: ConfirmOnly?) : RequestConfig<ConfirmOnly> {
-        val localVariableBody = confirmOnly
+    fun teamDeleteRequestConfig(org: kotlin.String, team: kotlin.String, teamDeleteRequest: TeamDeleteRequest?) : RequestConfig<TeamDeleteRequest> {
+        val localVariableBody = teamDeleteRequest
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"

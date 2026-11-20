@@ -55,6 +55,9 @@ from .openapi.api.apps import app_delegate as _app_delegate
 from .openapi.api.apps import app_delegations as _app_delegations
 from .openapi.api.apps import app_delete as _app_delete
 from .openapi.api.apps import app_get as _app_get
+from .openapi.api.apps import app_invite_create as _app_invite_create
+from .openapi.api.apps import app_invite_list as _app_invite_list
+from .openapi.api.apps import app_invite_revoke as _app_invite_revoke
 from .openapi.api.apps import app_link as _app_link
 from .openapi.api.apps import app_links as _app_links
 from .openapi.api.apps import app_list as _app_list
@@ -183,6 +186,7 @@ from .openapi.api.organizations import org_remove_member as _org_remove_member
 from .openapi.api.organizations import org_rename as _org_rename
 from .openapi.api.organizations import org_set_backup_key as _org_set_backup_key
 from .openapi.api.organizations import org_set_member as _org_set_member
+from .openapi.api.organizations import org_settings as _org_settings
 from .openapi.api.organizations import org_upgrade as _org_upgrade
 from .openapi.api.organizations import org_upgrade_retry as _org_upgrade_retry
 from .openapi.api.organizations import org_upgrade_status as _org_upgrade_status
@@ -259,6 +263,7 @@ from .openapi.models import ApikeyCreateBody
 from .openapi.models import AppAccessBody
 from .openapi.models import AppCreateBody
 from .openapi.models import AppDelegateBody
+from .openapi.models import AppInviteCreateBody
 from .openapi.models import AppLinkBody
 from .openapi.models import AppMetadataBody
 from .openapi.models import AppMethodBody
@@ -329,6 +334,7 @@ from .openapi.models import OrgReleaseApprovalBody
 from .openapi.models import OrgRenameBody
 from .openapi.models import OrgSetBackupKeyBody
 from .openapi.models import OrgSetMemberBody
+from .openapi.models import OrgSettingsBody
 from .openapi.models import OrgUpgradeBody
 from .openapi.models import OrgUpgradeRetryBody
 from .openapi.models import OriginsAddBody
@@ -353,6 +359,7 @@ from .openapi.models import RestoreRecoverHolderBody
 from .openapi.models import SignUpInviteCreateBody
 from .openapi.models import SignUpSetBody
 from .openapi.models import TeamCreateBody
+from .openapi.models import TeamDeleteBody
 from .openapi.models import TeamSetMemberBody
 from .openapi.models import TeamUpdateBody
 from .openapi.models import UploadBeginBody
@@ -477,6 +484,26 @@ _APP_GET = Operation(
     "app_get",
     body="none",
     answer="json",
+)
+_APP_INVITE_CREATE = Operation(
+    _app_invite_create,
+    "app_invite_create",
+    body=AppInviteCreateBody,
+    answer="json",
+    confirm=True,
+)
+_APP_INVITE_LIST = Operation(
+    _app_invite_list,
+    "app_invite_list",
+    body="none",
+    answer="json",
+)
+_APP_INVITE_REVOKE = Operation(
+    _app_invite_revoke,
+    "app_invite_revoke",
+    body=ConfirmOnly,
+    answer="json",
+    confirm=True,
 )
 _APP_LINK = Operation(
     _app_link, "app_link", body=AppLinkBody, answer="json", confirm=True
@@ -697,7 +724,7 @@ class Apps(Group):
 
         The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document, free-form here: its format is the ABI's, not this API's.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -706,27 +733,27 @@ class Apps(Group):
         """
         return self._run(_APP_ABI, (app,), {}, None)
 
-    def access(self, *, app, access):
+    def access(self, *, app, grants):
         """Set who may reach an app (`POST /apps/{app}/access`, `app_access`).
 
-        A package-bound session: only its own package's app, from one of its package's teams to another.
+        `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version 1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
 
         **Who:** a passkey session (an API key is refused).
 
         Args:
             app: path
-            access: body `access`
+            grants: body `grants`
 
         Returns: AppAccessResponse200
         """
-        return self._run(_APP_ACCESS, (app,), {}, {"access": access})
+        return self._run(_APP_ACCESS, (app,), {}, {"grants": grants})
 
     def attestation(self, *, app, nonce):
         """Every replica's receipt-key attestation (`GET /apps/{app}/attestation`, `app_attestation`).
 
         Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`), and `cluster`, the cluster id each quote binds (with the replica's `node`): the documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any other query parameter is ignored.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -741,7 +768,7 @@ class Apps(Group):
 
         The owner or an organization admin.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -764,7 +791,7 @@ class Apps(Group):
 
         `{id}` is base58 or hex; `grant` is a link the app made (`BlobRef::grant`).
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -786,7 +813,7 @@ class Apps(Group):
     def blob_info(self, *, app, id):
         """A blob's size (`GET /apps/{app}/blobs/{id}/info`, `blob_info`).
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -809,7 +836,7 @@ class Apps(Group):
 
         Plain blobs only.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -823,7 +850,7 @@ class Apps(Group):
 
         The grants made so far for a published blob; the owner or an organization admin.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -848,7 +875,7 @@ class Apps(Group):
 
         A plain blob, stored with the request's `Content-Type`, which a component app's download answers with: any media type (printable ASCII, 127 bytes at most; another is `400 BAD_REQUEST`), `application/octet-stream` when the request names none. Send the blob's own type, not `*/*`, which would be stored as its type. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -867,7 +894,7 @@ class Apps(Group):
 
         A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
 
-        **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
         Args:
             app: path
@@ -896,14 +923,14 @@ class Apps(Group):
         service=UNSET,
         org=UNSET,
         new_org=UNSET,
-        access=UNSET,
+        grants=UNSET,
         init_args=UNSET,
         metadata=UNSET,
         deployment=UNSET,
     ):
         """Create an app instance (`POST /apps`, `app_create`).
 
-        From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+        From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`; the single `access` mode of earlier releases is `400 ACCESS_REMOVED`, never read as no grants). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
 
         **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
@@ -915,7 +942,7 @@ class Apps(Group):
             service: body `service`
             org: body `org`
             new_org: body `newOrg`
-            access: body `access`
+            grants: body `grants`
             init_args: body `initArgs`
             metadata: body `metadata`
             deployment: body `deployment`
@@ -934,7 +961,7 @@ class Apps(Group):
                 "service": service,
                 "org": org,
                 "newOrg": new_org,
-                "access": access,
+                "grants": grants,
                 "initArgs": init_args,
                 "metadata": metadata,
                 "deployment": deployment,
@@ -1096,7 +1123,7 @@ class Apps(Group):
     def get(self, *, app):
         """One app (`GET /apps/{app}`, `app_get`).
 
-        `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.
+        `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. A guest sees only their own grant in `grants`.
 
         **Who:** signed in (a session or an API key).
 
@@ -1106,6 +1133,71 @@ class Apps(Group):
         Returns: App
         """
         return self._run(_APP_GET, (app,), {}, None)
+
+    def invite_create(
+        self, *, app, ttl_secs=UNSET, uses=UNSET, scope=UNSET, confirm=None
+    ):
+        """Invite someone to an instance (`POST /apps/{app}/invites`, `app_invite_create`).
+
+        A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. `412` first.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            ttl_secs: body `ttlSecs`
+            uses: body `uses`
+            scope: body `scope`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: AppInviteCreateResponse200
+        """
+        return self._run(
+            _APP_INVITE_CREATE,
+            (app,),
+            {},
+            {"ttlSecs": ttl_secs, "uses": uses, "scope": scope},
+            confirm=confirm,
+        )
+
+    def invite_list(self, *, app):
+        """An instance's invites (`GET /apps/{app}/invites`, `app_invite_list`).
+
+        For whoever may change its access: keys, terms and scope, never a token.
+
+        **Who:** a passkey session (an API key is refused).
+
+        Args:
+            app: path
+
+        Returns: AppInviteListResponse200
+        """
+        return self._run(_APP_INVITE_LIST, (app,), {}, None)
+
+    def invite_revoke(self, *, app, key, confirm=None):
+        """Revoke an instance invite (`DELETE /apps/{app}/invites/{key}`, `app_invite_revoke`).
+
+        Its creator, or whoever may change the instance's access; `412` first.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            key: path
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: AppInviteRevokeResponse200
+        """
+        return self._run(
+            _APP_INVITE_REVOKE,
+            (
+                app,
+                key,
+            ),
+            {},
+            {},
+            confirm=confirm,
+        )
 
     def link(self, *, app, name, body_app, confirm=None):
         """Attach an app to one of an app's references (`PUT /apps/{app}/links/{name}`, `app_link`).
@@ -1138,7 +1230,7 @@ class Apps(Group):
 
         One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1150,7 +1242,7 @@ class Apps(Group):
     def list(self, *, package=UNSET, bundle=UNSET):
         """Apps the caller reaches (`GET /apps`, `app_list`).
 
-        Anyone may list public apps.
+        The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
 
         **Who:** signed in (a session or an API key).
 
@@ -1192,7 +1284,7 @@ class Apps(Group):
 
         The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
 
-        **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
         Args:
             app: path
@@ -1224,7 +1316,7 @@ class Apps(Group):
     def move(self, *, app, to_org, bring_members=UNSET, confirm=None):
         """Move an app to another organization (`POST /apps/{app}/move`, `app_move`).
 
-        Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
+        Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -1249,7 +1341,7 @@ class Apps(Group):
 
         Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1338,7 +1430,7 @@ class Apps(Group):
 
         Its record: `state`, `version`, `hash`, `computeBundle`, `inputs`, `params`, per-step `status`, `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap). Sizes, hashes and results only for callers who may list the app's files.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1361,7 +1453,7 @@ class Apps(Group):
 
         The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1448,7 +1540,7 @@ class Apps(Group):
 
         One entry per present device (a session's passkey, or an API key): its account, device and state (hex).
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1462,7 +1554,7 @@ class Apps(Group):
 
         The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts it.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1478,7 +1570,7 @@ class Apps(Group):
 
         Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1524,7 +1616,7 @@ class Apps(Group):
 
         Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1605,7 +1697,7 @@ class Apps(Group):
 
         Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1683,7 +1775,7 @@ class Apps(Group):
 
         For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -1877,7 +1969,7 @@ class Apps(Group):
 
         Read linearizably (`consistency: "strong"`, the default; any value but `"stale"` reads as it): the replica answering waits until it applied the index the app's leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (`"stale"`) on the replica answering, as it stands; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
 
-        **Who:** whoever the app's access admits (a public app: anyone).
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
         Args:
             app: path
@@ -4336,6 +4428,9 @@ _ORG_SET_MEMBER = Operation(
     answer="json",
     confirm=True,
 )
+_ORG_SETTINGS = Operation(
+    _org_settings, "org_settings", body=OrgSettingsBody, answer="json", confirm=True
+)
 _TEAM_CREATE = Operation(
     _team_create,
     "team_create",
@@ -4343,7 +4438,7 @@ _TEAM_CREATE = Operation(
     answer="json",
 )
 _TEAM_DELETE = Operation(
-    _team_delete, "team_delete", body=ConfirmOnly, answer="json", confirm=True
+    _team_delete, "team_delete", body=TeamDeleteBody, answer="json", confirm=True
 )
 _TEAM_GET = Operation(
     _team_get,
@@ -4627,7 +4722,7 @@ class Orgs(Group):
     def invite_redeem(self, *, token):
         """Join with an invite (`POST /invites/{token}/redeem`, `invite_redeem`).
 
-        No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.
+        No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the redemption applies.
 
         **Who:** a passkey session (an API key is refused).
 
@@ -5020,6 +5115,24 @@ class Orgs(Group):
             confirm=confirm,
         )
 
+    def settings(self, *, org, allow_guests=UNSET, confirm=None):
+        """Change the organization's settings (`POST /orgs/{org}/settings`, `org_settings`).
+
+        `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+
+        **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            org: path
+            allow_guests: body `allowGuests`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: OrgSettingsResponse200
+        """
+        return self._run(
+            _ORG_SETTINGS, (org,), {}, {"allowGuests": allow_guests}, confirm=confirm
+        )
+
     def team_create(self, *, org, name, parent=UNSET, join):
         """Create a team (`POST /orgs/{org}/teams`, `team_create`).
 
@@ -5039,16 +5152,17 @@ class Orgs(Group):
             _TEAM_CREATE, (org,), {}, {"name": name, "parent": parent, "join": join}
         )
 
-    def team_delete(self, *, org, team, confirm=None):
+    def team_delete(self, *, org, team, keep_apps=UNSET, confirm=None):
         """Delete a team (`DELETE /orgs/{org}/teams/{team}`, `team_delete`).
 
-        With the teams and apps below it. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.
+        With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay (`keptApps`), each without those teams' grants and with its other grants (named members, guests, `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it); `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or the organization admits only loses the deleted teams' grants either way. With such instances, the passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.
 
         **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
         Args:
             org: path
             team: path
+            keep_apps: body `keepApps`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
         Returns: TeamDeleteResponse200
@@ -5060,7 +5174,7 @@ class Orgs(Group):
                 team,
             ),
             {},
-            {},
+            {"keepApps": keep_apps},
             confirm=confirm,
         )
 

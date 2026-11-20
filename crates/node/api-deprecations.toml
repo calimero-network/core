@@ -46,3 +46,8 @@ why = "deprecated since 1.0.0-rc.25 for POST /sealed/handshake: clients and peer
 route = "POST /sealed/v2"
 pr = 5102
 why = "deprecated since 1.0.0-rc.25 for POST /sealed: every SDK released before this one (mero-js up to 35.7.0, MeroKit and mero-kotlin up to 6.1.0) posts its sealed requests here and must upgrade to one that posts to /sealed"
+
+[[cutover]]
+field = "access"
+pr = 5194
+why = "an instance's access is its list of grants: POST /apps and POST /apps/{app}/access take only grants, and GET /apps/{app} and the move answer it as grants; clients that send or read the single access mode must move to grants, and clusters are recreated (no earlier access record is read)"

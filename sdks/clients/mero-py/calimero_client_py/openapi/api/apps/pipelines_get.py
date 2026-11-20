@@ -80,7 +80,7 @@ def sync_detailed(
     `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap).
     Sizes, hashes and results only for callers who may list the app's files.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -118,7 +118,7 @@ def sync(
     `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap).
     Sizes, hashes and results only for callers who may list the app's files.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -151,7 +151,7 @@ async def asyncio_detailed(
     `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap).
     Sizes, hashes and results only for callers who may list the app's files.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -187,7 +187,7 @@ async def asyncio(
     `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap).
     Sizes, hashes and results only for callers who may list the app's files.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):

@@ -465,10 +465,10 @@ CASES = [
         {"appId": "a1"},
     ),
     (
-        lambda c: c.json.apps.access(app="a1", access={"kind": "public"}),
+        lambda c: c.json.apps.access(app="a1", grants=[{"kind": "anyone"}]),
         "POST",
         "/apps/a1/access",
-        {"access": {"kind": "public"}},
+        {"grants": [{"kind": "anyone"}]},
         {},
         {},
     ),
@@ -628,6 +628,14 @@ CASES = [
         {},
         {},
         {},
+    ),
+    (
+        lambda c: c.json.orgs.team_delete(org="o1", team="t1", keep_apps=True),
+        "DELETE",
+        "/orgs/o1/teams/t1",
+        {"keepApps": True},
+        {"teams": ["t1"], "apps": [], "keptApps": ["a1"]},
+        {"teams": ["t1"], "apps": [], "keptApps": ["a1"]},
     ),
     (
         lambda c: c.json.orgs.team_set_member(

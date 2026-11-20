@@ -542,6 +542,33 @@ impl UpgradeAuthority {
     }
 }
 
+/// Whether an instance of a package takes guests, as its signed manifest declares
+/// (`guests`): accounts listed on one instance that are not members of its organization.
+///
+/// Absent means [`Self::Forbidden`], so a package from before never takes guests it did
+/// not declare. A node older than the rule ignores the field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GuestPolicy {
+    /// An instance's listed accounts reach it without joining its organization, where
+    /// the organization allows guests too.
+    Allowed,
+    /// Only the organization's members reach an instance. The default.
+    #[default]
+    Forbidden,
+}
+
+impl GuestPolicy {
+    /// The manifest's word for it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::Forbidden => "forbidden",
+        }
+    }
+}
+
 /// Where an instance of a package goes, as its signed manifest declares
 /// (`instanceOrg`): the organization it is created in.
 ///
@@ -692,6 +719,12 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_org: Option<InstanceOrg>,
 
+    /// Whether an instance takes guests ([`GuestPolicy`]): `allowed`, or `forbidden` (the
+    /// default when absent). Signed with the rest; any other value fails to parse. An
+    /// older node ignores the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guests: Option<GuestPolicy>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<BundleSignature>,
 }
@@ -774,6 +807,7 @@ impl BundleManifest {
             uses: _,
             upgrades: _,
             instance_org: _,
+            guests: _,
             signature: _,
         } = self;
 
@@ -1295,6 +1329,31 @@ mod tests {
             verify_manifest_signature(&signed).is_err(),
             "a changed declaration breaks the signature"
         );
+    }
+
+    /// `guests` says whether an instance takes guests: absent (every manifest from
+    /// before) is `forbidden` and is written back absent, an unknown value is refused, and
+    /// the field is signed with the rest.
+    #[test]
+    fn guests_are_forbidden_unless_the_manifest_allows_them() {
+        let parse = |block: &str| serde_json::from_str::<BundleManifest>(&manifest_json(block));
+        let none = parse("").unwrap();
+        assert_eq!(none.guests, None);
+        assert_eq!(none.guests.unwrap_or_default(), GuestPolicy::Forbidden);
+        assert!(serde_json::to_value(&none).unwrap().get("guests").is_none());
+        assert_eq!(
+            parse(r#""guests": "allowed","#).unwrap().guests,
+            Some(GuestPolicy::Allowed)
+        );
+        assert_eq!(GuestPolicy::Allowed.as_str(), "allowed");
+        assert!(parse(r#""guests": "anyone","#).is_err());
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let mut signed: serde_json::Value =
+            serde_json::from_str(&manifest_json(r#""guests": "forbidden","#)).unwrap();
+        let _sig = sign_manifest_json(&mut signed, &key).unwrap();
+        assert!(verify_manifest_signature(&signed).is_ok());
+        signed["guests"] = serde_json::json!("allowed");
+        assert!(verify_manifest_signature(&signed).is_err());
     }
 
     #[test]

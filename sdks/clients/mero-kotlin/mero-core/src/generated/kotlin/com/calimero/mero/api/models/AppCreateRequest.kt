@@ -39,7 +39,7 @@ import kotlinx.serialization.Contextual
  * @param service 
  * @param org 
  * @param newOrg 
- * @param access 
+ * @param grants 
  * @param initArgs Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param metadata Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param deployment 
@@ -69,8 +69,8 @@ data class AppCreateRequest (
     @SerialName(value = "newOrg")
     val newOrg: AppCreateRequestNewOrg? = null,
 
-    @SerialName(value = "access")
-    val access: com.calimero.mero.AppAccess? = null,
+    @SerialName(value = "grants")
+    val grants: kotlin.collections.List<@Contextual com.calimero.mero.AppGrant>? = null,
 
     /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
     @Contextual @SerialName(value = "initArgs")

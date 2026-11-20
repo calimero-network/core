@@ -74,7 +74,7 @@ def sync_detailed(
     """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route.
+    route. A guest sees only their own grant in `grants`.
 
     **Who:** signed in (a session or an API key).
 
@@ -108,7 +108,7 @@ def sync(
     """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route.
+    route. A guest sees only their own grant in `grants`.
 
     **Who:** signed in (a session or an API key).
 
@@ -137,7 +137,7 @@ async def asyncio_detailed(
     """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route.
+    route. A guest sees only their own grant in `grants`.
 
     **Who:** signed in (a session or an API key).
 
@@ -169,7 +169,7 @@ async def asyncio(
     """One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
-    route.
+    route. A guest sees only their own grant in `grants`.
 
     **Who:** signed in (a session or an API key).
 

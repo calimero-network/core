@@ -16,8 +16,9 @@ use tracing::error;
 
 use crate::job_node::RUNS_PER_JOB_NODE;
 use crate::types::{
-    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Components, Invite,
-    NodeRecord, NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
+    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Components, Grant,
+    Invite, NodeRecord, NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin,
+    TeamRole,
 };
 
 mod accounts;
@@ -415,6 +416,13 @@ pub struct PackageVersion {
     /// reads and writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_org: Option<calimero_bundle::InstanceOrg>,
+    /// Whether an instance of it takes guests, from its signed manifest (`guests`,
+    /// [`calimero_bundle::GuestPolicy`]). Recorded only once every node keeps it
+    /// (`Feature::Guests`), filled in by an install of the same release after that; absent
+    /// in a release recorded before, whose switch the API reads from its `.mpk`
+    /// (`Node::release_guests`) and apply takes as `forbidden`. Left out when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guests: Option<calimero_bundle::GuestPolicy>,
 }
 
 impl PackageVersion {
@@ -498,7 +506,7 @@ impl PackageRecord {
 struct MoveRows {
     /// A new app team gives its members who get every app added later a row.
     all_apps_rows: bool,
-    /// An `Accounts` instance's people get a row on its closed app team.
+    /// An instance only named people reach gives them a row on its closed app team.
     accounts_in_app_team: bool,
     /// The target's quotas are its override where it has one.
     org_quotas: bool,
@@ -618,6 +626,11 @@ pub struct SystemState {
     pub orgs: BTreeMap<OrgId, Org>,
     /// invite key (the token's Ed25519 public key, hex) -> invite
     pub invites: BTreeMap<String, Invite>,
+    /// Instance invites ([`crate::types::AppInvite`]), by the token's Ed25519 public key:
+    /// whoever redeems one becomes a guest of its instance. Left out when empty, so a
+    /// state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub app_invites: BTreeMap<String, crate::types::AppInvite>,
     #[serde(default)]
     pub quotas: Quotas,
     /// Installed packages by name.
@@ -998,6 +1011,58 @@ pub const PERSONAL_ORG_EXISTS: &str = "the account has a personal organization a
 /// organization is an ordinary one it creates.
 pub const NO_PERSONAL_ORGS: &str =
     "personal organizations are no longer made: create an ordinary organization";
+/// How far up a unit [`SystemState::guest_holder`] walks: a unit nests at most
+/// `api::apps::MAX_UNIT_DEPTH` deep, so this leaves room and bounds a cycle.
+pub const MAX_UNIT_LINKS_UP: usize = 8;
+
+/// An organization's settings, as `SetOrgSettings` changes them and its consent states them
+/// (camelCase, a setting left out kept as it is).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OrgSettings {
+    /// Whether its instances take guests ([`crate::types::Org::allow_guests`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_guests: Option<bool>,
+}
+
+impl OrgSettings {
+    /// Whether it changes nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.allow_guests.is_none()
+    }
+}
+
+/// The arguments an instance invite's consent states: its key and terms, and its scope when
+/// it carries one.
+#[must_use]
+pub fn app_invite_args(invite_key: &str, invite: &crate::types::AppInvite) -> Value {
+    let mut args = json!({
+        "inviteKey": invite_key,
+        "expiresAt": invite.expires_at,
+        "uses": invite.uses_left,
+    });
+    if let Some(scope) = &invite.scope {
+        args["scope"] = scope.clone();
+    }
+    args
+}
+
+/// Pending invites one instance holds at most ([`crate::types::AppInvite`]).
+pub const MAX_APP_INVITES_PER_APP: usize = 64;
+/// Pending instance invites the cluster holds at most: the system state is one checkpoint.
+pub const MAX_APP_INVITES: usize = 10_000;
+/// Uses one instance invite admits at most.
+pub const MAX_APP_INVITE_USES: u32 = 1_000;
+/// How long an instance invite lasts at most, from when it is made.
+pub const MAX_APP_INVITE_TTL_SECS: u64 = 90 * 24 * 3600;
+/// A refusal: the instance's release or its organization does not allow guests
+/// ([`SystemState::guests_allowed`]).
+pub const GUESTS_NOT_ALLOWED: &str =
+    "this instance takes no guests: its release or its organization does not allow them";
+/// A refusal: an instance invite gone, used up or never made.
+pub const APP_INVITE_GONE: &str = "this invite was used up, revoked or never existed";
+
 /// A refusal: an organization's app is handed only to a member of it.
 pub const NEW_OWNER_NOT_A_MEMBER: &str = "the new owner is not a member of the app's organization";
 /// The name a personal organization is made with when the request names
@@ -1562,6 +1627,7 @@ impl SystemState {
             a.attached.retain(|_, t| t != app_id);
         }
         let _ring = self.released_runs.remove(app_id);
+        self.app_invites.retain(|_, i| i.app != app_id);
         if self.compute.remove(app_id).is_some() {
             self.grant_runs();
         }
@@ -2060,10 +2126,9 @@ impl SystemState {
         self.apps
             .values()
             .filter(|a| a.org == org)
-            .filter(|a| match (&teams, &a.access) {
-                (None, _) => true,
-                (Some(ts), Access::Team { team }) => ts.contains(team),
-                (Some(_), _) => false,
+            .filter(|a| match &teams {
+                None => true,
+                Some(ts) => a.access.teams().into_iter().any(|t| ts.contains(t)),
             })
             .filter(|a| self.app_release(a).is_some_and(|r| r.package == package))
             .map(|a| a.app_id.clone())
@@ -2643,11 +2708,83 @@ impl SystemState {
     /// brings [`cluster_version::Feature::OrdinaryOrgs`]. From then on a sign-up makes no
     /// organization, no personal one is made, and one made before is treated as any other
     /// (it counts against `maxOrgsPerAccount`, its apps go only to its members), except that
-    /// its `accounts` instances still reach their listed accounts ([`Self::may_reach`]).
+    /// its instances still reach the accounts they name ([`Self::may_reach`]).
     /// Before it, every entry applies as it was logged.
     #[must_use]
     pub fn ordinary_orgs(&self) -> bool {
         self.cluster_brings(cluster_version::Feature::OrdinaryOrgs)
+    }
+
+    /// Whether guests are on at this log position: the logged cluster version brings
+    /// [`cluster_version::Feature::Guests`]. Before it, an instance's listed accounts
+    /// reach it only as members (or in a personal organization), as they did.
+    #[must_use]
+    pub fn guests_on(&self) -> bool {
+        self.cluster_brings(cluster_version::Feature::Guests)
+    }
+
+    /// Whether `app` takes guests: the release it runs allows them (`guests: allowed` in
+    /// its signed manifest, recorded on the release; a release recorded without it, a raw
+    /// bundle, or none, does not) and its organization does not turn them off
+    /// ([`crate::types::Org::allow_guests`]). The stricter switch wins.
+    #[must_use]
+    pub fn guests_allowed(&self, app: &AppRecord) -> bool {
+        let release = app.release.as_ref().and_then(|r| {
+            self.packages
+                .get(&r.package)
+                .and_then(|p| p.versions.get(&r.version))
+        });
+        let developer =
+            release.and_then(|v| v.guests) == Some(calimero_bundle::GuestPolicy::Allowed);
+        developer && self.orgs.get(&app.org).is_some_and(|o| o.allow_guests)
+    }
+
+    /// The instance whose guest list judges `app`: the top of its unit (the app whose
+    /// `links` hold it, transitively, at most [`MAX_UNIT_LINKS_UP`] steps), else itself.
+    #[must_use]
+    pub fn guest_holder<'a>(&'a self, app: &'a AppRecord) -> &'a AppRecord {
+        let mut at = app;
+        for _ in 0..MAX_UNIT_LINKS_UP {
+            match self.unit_parent(&at.app_id).and_then(|p| self.apps.get(p)) {
+                Some(parent) => at = parent,
+                None => break,
+            }
+        }
+        at
+    }
+
+    /// Whether `account` reaches `app` as its guest ([`cluster_version::Feature::Guests`]):
+    /// listed on the instance that holds its guest list ([`Self::guest_holder`]: `app`, or
+    /// the instance whose unit created it) and that instance takes guests
+    /// ([`Self::guests_allowed`]). Judged on the state of the moment, so a guest taken off
+    /// the list, or a switch turned off, stops reaching it at once.
+    #[must_use]
+    pub fn guest_reaches(&self, app: &AppRecord, account: &str) -> bool {
+        if !self.guests_on() {
+            return false;
+        }
+        let holder = self.guest_holder(app);
+        holder.access.names(account) && self.guests_allowed(holder)
+    }
+
+    /// Whether `account` is a guest of `app` and not a member of its organization: it
+    /// reaches the app only as a guest ([`Self::guest_reaches`]).
+    #[must_use]
+    pub fn is_guest(&self, app: &AppRecord, account: &str) -> bool {
+        self.orgs
+            .get(&app.org)
+            .and_then(|o| o.role(account))
+            .is_none()
+            && self.guest_reaches(app, account)
+    }
+
+    /// Whether `actor` may change `app`'s grants (who it names, its invites): whoever may
+    /// change its access ([`Self::owner_acts`], or [`Self::may_set_access`] keeping its member
+    /// grants: a team's leads on their team's instance, else who manages the organization's
+    /// apps).
+    #[must_use]
+    pub fn manages_grants(&self, app: &AppRecord, actor: &str) -> bool {
+        self.owner_acts(app, actor) || self.may_set_access(app, &app.access, actor)
     }
 
     /// Whether `org` is kept apart as a personal organization: flagged so, and only
@@ -2967,11 +3104,22 @@ impl SystemState {
                 .upgraded_by_publisher(release)
                 .is_some_and(|p| self.manages_apps(p, account, None));
         }
-        let team = match &app.access {
-            Access::Team { team } => Some(team.as_str()),
-            _ => None,
-        };
-        self.owner_acts_as_logged(app, account, rule) || self.manages_apps(&app.org, account, team)
+        self.owner_acts_as_logged(app, account, rule)
+            || self.manages_access(&app.org, account, &app.access)
+    }
+
+    /// Whether `actor` manages the apps an instance with `access` is: on each team it admits
+    /// (every team grant), else organization-wide
+    /// ([`Self::manages_apps`]).
+    #[must_use]
+    pub fn manages_access(&self, org: &str, actor: &str, access: &Access) -> bool {
+        let teams = access.teams();
+        if teams.is_empty() {
+            return self.manages_apps(org, actor, None);
+        }
+        teams
+            .into_iter()
+            .all(|t| self.manages_apps(org, actor, Some(t)))
     }
 
     /// The package whose release `app` runs; `None` for a raw upload.
@@ -2999,16 +3147,13 @@ impl SystemState {
     /// Whether `actor`, not `app`'s owner, may change its access to `to`
     /// (G1): someone who manages the organization's apps (`MANAGE_APPLICATION`,
     /// [`Self::manages_apps`]) where the app is now and where it goes, on its
-    /// team for `Access::Team`, organization-wide for any other access. Org
-    /// admins and the owner hold it everywhere, a team's leads on their team.
+    /// each team its grants name, organization-wide for grants with no team
+    /// ([`Self::manages_access`]). Org admins and the owner hold it everywhere, a
+    /// team's leads on their team.
     #[must_use]
     pub fn may_set_access(&self, app: &AppRecord, to: &Access, actor: &str) -> bool {
         let org = app.org.as_str();
-        let manages = |a: &Access| match a {
-            Access::Team { team } => self.manages_apps(org, actor, Some(team)),
-            _ => self.manages_apps(org, actor, None),
-        };
-        manages(&app.access) && manages(to)
+        self.manages_access(org, actor, &app.access) && self.manages_access(org, actor, to)
     }
 
     /// Whether `account` holds `app`'s owner powers: it owns the app and, for
@@ -3045,12 +3190,13 @@ impl SystemState {
     /// Whether `app`'s team, if it is on one, holds `owner`: an owner reaches
     /// and manages an app on a team only while they are in it.
     fn owner_in_team(&self, app: &AppRecord, owner: &str) -> bool {
-        let Access::Team { team } = &app.access else {
+        let teams = app.access.teams();
+        if teams.is_empty() || app.access.org_wide() || app.access.names(owner) {
             return true;
-        };
+        }
         self.orgs
             .get(&app.org)
-            .is_some_and(|o| o.in_team(owner, team))
+            .is_some_and(|o| teams.into_iter().any(|t| o.in_team(owner, t)))
     }
 
     /// Whether `account` manages `app` as a whole (transfers or deletes it,
@@ -3255,10 +3401,6 @@ pub fn check_team_batch<'a>(
 /// flag is the entry's own, absent (`false`) in an earlier release's entry.
 #[derive(Clone, Copy, Debug)]
 struct ScopeAsLogged {
-    /// An owner reaches an app on a team only while in it.
-    owner_in_team: bool,
-    /// An `Accounts` instance is reached only through its app team.
-    accounts_in_app_team: bool,
     /// A new app team's default holds `CREATE_CHILD_TEAM`.
     member_child_teams: bool,
     /// A new app team gives its `all_apps` members a row.
@@ -3272,8 +3414,6 @@ impl ScopeAsLogged {
     /// Every rule as this release judges it: what a command this release
     /// writes and applies in the same entry (`CreateOrg { app_team }`) uses.
     const CURRENT: Self = Self {
-        owner_in_team: true,
-        accounts_in_app_team: true,
         member_child_teams: true,
         all_apps_rows: true,
         by_release: true,
@@ -3306,7 +3446,7 @@ impl SystemState {
                 .apps
                 .values()
                 .filter(in_org)
-                .filter(|a| a.access == Access::Org)
+                .filter(|a| a.access.org_wide())
                 .filter_map(|a| self.instance_package(a, logged.by_release))
                 .collect::<BTreeSet<_>>()
                 .into_iter()
@@ -3400,7 +3540,7 @@ impl SystemState {
                     .apps
                     .values()
                     .filter(in_org)
-                    .filter(|a| a.access == Access::Org && of_package(a))
+                    .filter(|a| a.access.org_wide() && of_package(a))
                     .map(|a| a.app_id.clone())
                     .collect(),
             };
@@ -3410,14 +3550,7 @@ impl SystemState {
                 .flat_map(|a| {
                     o.members
                         .keys()
-                        .filter(|m| {
-                            self.may_reach_as_logged(
-                                a,
-                                Some(m.as_str()),
-                                logged.owner_in_team,
-                                logged.accounts_in_app_team,
-                            )
-                        })
+                        .filter(|m| self.may_reach(a, Some(m.as_str())))
                         .cloned()
                         .collect::<Vec<_>>()
                 })
@@ -3585,9 +3718,7 @@ impl SystemState {
             }));
             for id in &plan.instances {
                 if let Some(a) = self.apps.get_mut(id) {
-                    a.access = Access::Team {
-                        team: team_id.clone(),
-                    };
+                    a.access = a.access.onto_team(team_id.clone());
                 }
             }
         }
@@ -3634,14 +3765,14 @@ impl SystemState {
     ///   ([`Self::manages_app`]: a personal app's owner, an organization's
     ///   app's owner while a member, or an admin there) and is an admin or the
     ///   owner of `to_org`.
-    /// - **Access:** organization or app-team access becomes team access on
+    /// - **Grants:** an `org` or app-team grant becomes a `team` grant on
     ///   the target's app team of the app's package, made when missing: open,
     ///   unless every app team of the target is closed (shared), where it is
     ///   closed like the rest; an app team closed alone leaves it open. A legacy target (no app team) and a raw upload
-    ///   (no package) keep organization access, so moving an app in never
-    ///   changes how the target holds its other apps. Owner, public and
-    ///   accounts access stay as they are; an accounts instance whose package
-    ///   has a closed app team in the target is reached there only through
+    ///   (no package) get an `org` grant, so moving an app in never
+    ///   changes how the target holds its other apps. Named people and
+    ///   `anyone` stay as they are; an instance only named people reach whose
+    ///   package has a closed app team in the target is reached there only through
     ///   that team ([`Self::may_reach`]), so its owner and who it brings get
     ///   a row on that team (`accounts_in_app_team`; none in an entry an
     ///   earlier release logged). Any other team is refused
@@ -3693,20 +3824,22 @@ impl SystemState {
         }
         let source = self.orgs.get(&from);
         let package = self.package_of(app).map(str::to_owned);
-        let source_team = match &app.access {
-            Access::Team { team } => {
+        // A team grant moves only as the package's app team, which the target has its own of.
+        let source_team = match app.access.teams().as_slice() {
+            [] => None,
+            [team] => {
                 let app_team = source
-                    .and_then(|o| o.teams.get(team))
+                    .and_then(|o| o.teams.get(*team))
                     .and_then(Team::app_package)
                     .is_some_and(|p| package.as_deref() == Some(p));
                 if !app_team {
                     return Err(MOVE_NEEDS_APP_TEAM);
                 }
-                Some(team.clone())
+                Some((*team).clone())
             }
-            _ => None,
+            _ => return Err(MOVE_NEEDS_APP_TEAM),
         };
-        let to_app_team = matches!(app.access, Access::Org | Access::Team { .. })
+        let to_app_team = (app.access.org_wide() || source_team.is_some())
             && package.is_some()
             && target.mode() != OrgMode::Legacy;
 
@@ -3824,22 +3957,19 @@ impl SystemState {
         } else {
             Vec::new()
         };
-        // An `Accounts` instance (a DM, a private list) of a package whose
+        // An instance only named people reach (a DM, a private list) of a package whose
         // app team in the target is closed is reached there only by those in
         // that team: who comes along, and its owner, get a row on it, as
         // they would on the app team an `org` or `team` instance goes to.
-        let accounts_team = match (&app.access, package.as_deref()) {
-            (Access::Accounts { .. }, Some(p)) if accounts_in_app_team => target
+        let accounts_team = match (app.access.named_only(), package.as_deref()) {
+            (true, Some(p)) if accounts_in_app_team => target
                 .app_team(p)
                 .filter(|t| t.join == TeamJoin::Invite)
                 .map(|t| t.team_id.clone()),
             _ => None,
         };
         // App-team access without an app team to go to: the organization's.
-        let mut access = match &app.access {
-            Access::Team { .. } => Access::Org,
-            other => other.clone(),
-        };
+        let mut access = app.access.teams_to_org();
 
         // Everything is judged: apply.
         let o = self.orgs.get_mut(to_org).ok_or("no such organization")?;
@@ -3895,7 +4025,7 @@ impl SystemState {
                 let _back = t.removed.remove(m);
                 let _row = t.members.entry(m.clone()).or_insert(false);
             }
-            access = Access::Team { team: team_id };
+            access = access.onto_team(team_id);
         }
         if let Some(team_id) = accounts_team {
             let t = o.teams.get_mut(&team_id).ok_or("no such team")?;
@@ -3919,9 +4049,10 @@ impl SystemState {
         let mut revoked = 0usize;
         if let Some(team) = leaves_team.as_deref() {
             let from = from.as_str();
-            let still = self.apps.values().any(|a| {
-                a.org == from && matches!(&a.access, Access::Team { team: t } if t == team)
-            });
+            let still = self
+                .apps
+                .values()
+                .any(|a| a.org == from && a.access.teams().iter().any(|t| t.as_str() == team));
             if !still {
                 let before = self.invites.len();
                 self.invites
@@ -3933,7 +4064,7 @@ impl SystemState {
             "appId": app_id,
             "from": from,
             "org": to_org,
-            "access": access,
+            "grants": access,
             "created": created,
             "added": joins.iter().map(|(m, _)| m).collect::<Vec<_>>(),
             "revokedInvites": revoked,
@@ -4184,21 +4315,11 @@ impl SystemState {
         Some((account, cred))
     }
 
-    /// Whether `account` may reach `app` at all. An organization's app is
-    /// reached only by its current members, whatever names the account: its
-    /// owner, or an `Accounts` list, stop reaching it once they leave or are
-    /// removed (the organization itself gone: nobody but a public app's
-    /// callers). An app on a team is reached only by that team, its owner
-    /// included: an owner who leaves or is removed from the team (an app's
-    /// team, a private channel) stops reaching it, as they stop managing it
-    /// ([`Self::owner_acts`]). An `Accounts` instance of a package with an
-    /// app team in its organization (a private channel, a DM) is reached only
-    /// by those who reach that app team, its owner included
-    /// ([`Self::app_team_of`]): a person removed from the app is out of its
-    /// private channels too.
+    /// Whether `account` may reach `app` at all: through one of its grants
+    /// ([`Self::grants_reach`]). Nobody without an account does.
     #[must_use]
     pub fn may_reach(&self, app: &AppRecord, account: Option<&str>) -> bool {
-        self.may_reach_as_logged(app, account, true, true)
+        account.is_some_and(|a| self.grants_reach(app, a))
     }
 
     /// Whether `account` lets `source`'s runs for them call `method` of `target` as them.
@@ -4211,61 +4332,89 @@ impl SystemState {
             .is_some_and(|m| m.iter().any(|x| x == method))
     }
 
-    /// [`Self::may_reach`], or, for a command an earlier release logged
-    /// with an app on a team reached by its owner whatever the team holds
-    /// (`owner_in_team: false`), or an `Accounts` instance reached by its
-    /// list whatever its app team holds (`accounts_in_app_team: false`), as
-    /// that release judged it.
-    fn may_reach_as_logged(
-        &self,
-        app: &AppRecord,
-        account: Option<&str>,
-        owner_in_team: bool,
-        accounts_in_app_team: bool,
-    ) -> bool {
-        if let (org, Some(a)) = (&app.org, account) {
-            let o = self.orgs.get(org);
-            let member = o.and_then(|o| o.role(a)).is_some();
-            // An app in a personal organization shared with listed accounts
-            // reaches them as a personal app's list did, without making them
-            // members. Only personal organizations, which exist from the
-            // release that judges this, so every replica decides alike.
-            let listed_in_personal =
-                o.is_some_and(|o| o.personal) && matches!(app.access, Access::Accounts { .. });
-            if !member && app.access != Access::Public && !listed_in_personal {
-                return false;
-            }
+    /// Refuses a grant list `org`'s instance cannot hold: a grant twice, the organization
+    /// beside a team (it covers them), a team not of `org`, an account the cluster does not
+    /// know (one name per account), a scope past [`crate::types::MAX_GRANT_SCOPE_BYTES`], or more than
+    /// [`crate::types::MAX_TEAM_GRANTS`] teams or [`crate::types::MAX_ACCOUNT_GRANTS`] names.
+    pub fn check_grants(&self, org: &str, grants: &[Grant]) -> Result<(), &'static str> {
+        if grants.len() > crate::types::MAX_GRANTS {
+            return Err("quota exceeded: an instance holds at most 1018 grants");
         }
-        if let (Access::Accounts { .. }, Some(a), true) =
-            (&app.access, account, accounts_in_app_team)
-        {
-            if let Some((o, team)) = self.app_team_of(app) {
-                if !o.in_team(a, &team.team_id) {
-                    return false;
+        let o = self.orgs.get(org).ok_or("no such organization")?;
+        let mut named: BTreeSet<&str> = BTreeSet::new();
+        let mut teams: BTreeSet<&str> = BTreeSet::new();
+        let (mut whole, mut anyone) = (false, false);
+        for g in grants {
+            let fresh = match g {
+                Grant::Org => !std::mem::replace(&mut whole, true),
+                Grant::Anyone => !std::mem::replace(&mut anyone, true),
+                Grant::Team { team } => {
+                    if !o.teams.contains_key(team) {
+                        return Err("no such team in the app's organization");
+                    }
+                    teams.insert(team)
                 }
+                Grant::Account { account, scope } => {
+                    if !self.accounts.contains_key(account) {
+                        return Err("unknown account");
+                    }
+                    if scope.as_ref().is_some_and(|v| !crate::types::scope_fits(v)) {
+                        return Err("a grant's scope is at most 256 bytes of JSON");
+                    }
+                    named.insert(account)
+                }
+            };
+            if !fresh {
+                return Err("a grant is listed twice");
             }
         }
-        match (&app.access, account) {
-            (Access::Public, _) => true,
-            (_, None) => false,
-            // On a team, the owner too is judged by the team (below).
-            (access, Some(a))
-                if a == app.owner && (!owner_in_team || !matches!(access, Access::Team { .. })) =>
-            {
-                true
-            }
-            (Access::Owner, Some(_)) => false,
-            (Access::Accounts { accounts }, Some(a)) => accounts.iter().any(|x| x == a),
-            // Where apps have app teams, a guest has only the apps of the
-            // teams they are in.
-            (Access::Org, Some(a)) => self
-                .orgs
-                .get(&app.org)
-                .is_some_and(|o| o.role(a).is_some() && !o.app_only(a)),
-            (Access::Team { team }, Some(a)) => {
-                self.orgs.get(&app.org).is_some_and(|o| o.in_team(a, team))
-            }
+        if whole && !teams.is_empty() {
+            return Err("a grant to the organization covers its teams: not both");
         }
+        if teams.len() > crate::types::MAX_TEAM_GRANTS {
+            return Err("quota exceeded: an instance names at most 16 teams");
+        }
+        if named.len() > crate::types::MAX_ACCOUNT_GRANTS {
+            return Err("quota exceeded: an instance names at most 1000 accounts");
+        }
+        Ok(())
+    }
+
+    /// [`Self::may_reach`] for a signed-in `a`: [`Grant::Anyone`] admits every account.
+    /// Someone outside the organization reaches it as a guest
+    /// ([`Self::guest_reaches`]: named here, or on the instance whose unit made it, while both
+    /// switches allow), or, named in an organization flagged personal, as a personal app's list
+    /// did. A member reaches it as its owner (while in a team it admits, when it admits teams
+    /// only) or through a grant: the organization (an `app_only` guest of it never), a team
+    /// they are in, or their name; a name, and the owner of an instance only names admit, only
+    /// while they are in the package's app team where it has one.
+    fn grants_reach(&self, app: &AppRecord, a: &str) -> bool {
+        let grants = app.access.grants();
+        if app.access.anyone() {
+            return true;
+        }
+        let Some(o) = self.orgs.get(&app.org) else {
+            return false;
+        };
+        if o.role(a).is_none() {
+            return (o.personal && app.access.names(a)) || self.guest_reaches(app, a);
+        }
+        let in_app_team = || {
+            self.app_team_of(app)
+                .is_none_or(|(o, team)| o.in_team(a, &team.team_id))
+        };
+        if a == app.owner
+            && self.owner_in_team(app, a)
+            && (!app.access.named_only() || in_app_team())
+        {
+            return true;
+        }
+        grants.iter().any(|g| match g {
+            Grant::Org => !o.app_only(a),
+            Grant::Team { team } => o.in_team(a, team),
+            Grant::Account { account, .. } => account == a && in_app_team(),
+            Grant::Anyone => true,
+        })
     }
 
     /// The app team of `app`'s package in `app`'s organization, with the
@@ -4311,7 +4460,8 @@ impl SystemState {
     }
 
     /// The apps deleting `team` takes with it: those of `org` on `team` or a
-    /// team below it, in id order. None for a team `org` does not hold.
+    /// team below it, in id order. None for a team `org` does not hold. With
+    /// `DeleteTeam { keep_apps }` the same apps stay, without those teams' grants.
     #[must_use]
     pub fn team_apps(&self, org: &str, team: &str) -> Vec<AppId> {
         let Some(o) = self.orgs.get(org).filter(|o| o.teams.contains_key(team)) else {
@@ -4320,8 +4470,14 @@ impl SystemState {
         let gone = o.subtree(team);
         self.apps
             .values()
+            // Every team it admits is going: an instance that keeps another way in (another
+            // team, a grant to the organization) stays and loses only those grants.
             .filter(|a| {
-                a.org == org && matches!(&a.access, Access::Team { team } if gone.contains(team))
+                let teams = a.access.teams();
+                a.org == org
+                    && !teams.is_empty()
+                    && !a.access.org_wide()
+                    && teams.into_iter().all(|t| gone.contains(t))
             })
             .map(|a| a.app_id.clone())
             .collect()
@@ -4594,6 +4750,10 @@ impl SystemCmd {
             Self::CreateInvite { .. } => Area::Orgs,
             Self::RedeemInvite { .. } => Area::Orgs,
             Self::RevokeInvite { .. } => Area::Orgs,
+            Self::SetOrgSettings { .. } => Area::Orgs,
+            Self::CreateAppInvite { .. } => Area::Apps,
+            Self::RevokeAppInvite { .. } => Area::Apps,
+            Self::RedeemAppInvite { .. } => Area::Apps,
             Self::ScopeApps { .. } => Area::Orgs,
             Self::SetRecoveryKey { .. } => Area::Recovery,
             Self::StartRecovery { .. } => Area::Recovery,
@@ -4697,15 +4857,11 @@ impl SystemCmd {
                 *owner_in_team = true;
             }
             Self::ScopeApps {
-                owner_in_team,
-                accounts_in_app_team,
                 member_child_teams,
                 by_release,
                 all_apps_rows,
                 ..
             } => {
-                *owner_in_team = true;
-                *accounts_in_app_team = true;
                 *member_child_teams = true;
                 *by_release = true;
                 *all_apps_rows = true;
@@ -4832,6 +4988,19 @@ pub struct TeamRow {
     /// and the team's default; an existing row keeps its own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<u32>,
+}
+
+/// What a person consents to when deleting a team whose subtree holds `apps`
+/// (`org:<org> / __delete_team`): `{ team, apps }`, plus `keepApps: true` when those
+/// apps stay without the team's grants (`DeleteTeam { keep_apps }`), so a deletion
+/// consented as before reads as it did.
+#[must_use]
+pub fn delete_team_args(team: &str, apps: &[AppId], keep_apps: bool) -> Value {
+    if keep_apps {
+        json!({ "team": team, "apps": apps, "keepApps": true })
+    } else {
+        json!({ "team": team, "apps": apps })
+    }
 }
 
 /// What a person consents to when setting one account's rows in several
@@ -5137,7 +5306,7 @@ pub enum SystemCmd {
         /// release logged, which replays filling the rows it filled then.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         all_apps_rows: bool,
-        /// An `Accounts` instance whose package has a closed app team in the
+        /// An instance only named people reach whose package has a closed app team in the
         /// target is reached there only through that team
         /// ([`SystemState::may_reach`]): who comes along with it, and its
         /// owner, get a row on that team. The API always sets it; absent
@@ -5234,8 +5403,10 @@ pub enum SystemCmd {
         app_id: AppId,
         group: u64,
     },
+    /// Replace an app's grants ([`Access`], as `grants`).
     SetAccess {
         app_id: AppId,
+        #[serde(rename = "grants")]
         access: Access,
         actor: AccountId,
         /// An organization's app is managed by its owner only while they are
@@ -6076,6 +6247,14 @@ pub enum SystemCmd {
         /// which replays deleting without one, as that release did.
         #[serde(default)]
         apps_need_consent: bool,
+        /// Keep the instances the team's subtree alone admits ([`SystemState::team_apps`]):
+        /// they lose its team grants and keep their other grants (named members, guests,
+        /// `anyone`, links); with none left, the owner alone (an empty grant list). Absent
+        /// (`false`), as every entry before it: they are deleted. Stated in the consent
+        /// (`keepApps: true`). Proposed only from cluster version 1.0.0-rc.33
+        /// (`Feature::KeepTeamApps`), as an earlier release would delete them.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_apps: bool,
     },
     /// A member's capabilities, organization-wide (`team: None`) or in a team.
     SetCapabilities {
@@ -6189,11 +6368,50 @@ pub enum SystemCmd {
         actor: AccountId,
         consent: Value,
     },
+    /// Change an organization's settings ([`OrgSettings`]: whether its instances take
+    /// guests, [`crate::types::Org::allow_guests`]): its owner or an admin, with passkey
+    /// consent (`org:<org> / __set_org_settings / settings`). A setting left out is kept.
+    SetOrgSettings {
+        org: OrgId,
+        settings: OrgSettings,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Mint an instance invite ([`crate::types::AppInvite`]): whoever manages the instance's
+    /// guests ([`SystemState::manages_grants`]), with passkey consent over
+    /// [`app_invite_args`] (`<app> / __create_app_invite`), on any instance. Only the token's
+    /// public key is logged.
+    CreateAppInvite {
+        invite_key: String,
+        invite: crate::types::AppInvite,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Withdraw an instance invite: its creator or whoever manages the instance's guests,
+    /// with passkey consent (`<app> / __revoke_app_invite / { inviteKey }`).
+    RevokeAppInvite {
+        app_id: AppId,
+        invite_key: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Redeem an instance invite: `account` joins the instance's guest list. Carries the
+    /// token key's signature over the redemption (`proof::sign_invite_redeem`), so a node
+    /// that only saw the log cannot redeem one. One already listed spends no use.
+    RedeemAppInvite {
+        invite_key: String,
+        account: AccountId,
+        now: u64,
+        signature: String,
+    },
     /// Give apps their own access lists in one step (G3): for each package
-    /// named (absent: every package with an organization-access instance
+    /// named (absent: every package with an instance an `org` grant admits
     /// here), find or make its app team ([`crate::types::Team::app_package`]),
-    /// give every person who reaches its instances now a row there, and move
-    /// the instances to `Access::Team` on it. `shared` (absent: whether the
+    /// give every person who reaches its instances now a row there, and give
+    /// the instances its `team` grant in place of `org`. `shared` (absent: whether the
     /// organization then holds two app teams or more) closes every app team,
     /// rows filled in first, so nobody loses an app. A package's own `join`
     /// opens or closes its team alone ([`ScopeApp::join`], `shared` absent
@@ -6211,19 +6429,6 @@ pub enum SystemCmd {
         nonce: String,
         actor: AccountId,
         consent: Value,
-        /// Who reaches an instance now is judged with an app on a team
-        /// reached by its owner only while in it ([`SystemState::may_reach`]).
-        /// The API always sets it; absent (`false`) in an entry an earlier
-        /// release logged, which replays as that release judged it.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        owner_in_team: bool,
-        /// Who reaches an instance now is judged with an `Accounts` instance
-        /// reached only through its package's app team
-        /// ([`SystemState::may_reach`]). The API always sets it; absent
-        /// (`false`) in an entry an earlier release logged, which replays as
-        /// that release judged it.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        accounts_in_app_team: bool,
         /// A new app team's default capabilities let its members create
         /// restricted teams below it (`caps::CREATE_CHILD_TEAM`). The API
         /// always sets it; absent (`false`) in an entry an earlier release

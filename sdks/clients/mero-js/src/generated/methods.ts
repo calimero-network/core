@@ -19,7 +19,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * An app's ABI.
        *
-       * `GET /apps/{app}/abi` (`app_abi`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/abi` (`app_abi`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       abi: (args: operations['app_abi']['parameters']['path'], options?: MethodOptions): Promise<operations['app_abi']['responses'][200]['content']['application/json']> =>
@@ -35,7 +35,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Every replica's receipt-key attestation.
        *
-       * `GET /apps/{app}/attestation` (`app_attestation`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/attestation` (`app_attestation`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       attestation: (args: operations['app_attestation']['parameters']['path'] & NonNullable<operations['app_attestation']['parameters']['query']>, options?: MethodOptions): Promise<operations['app_attestation']['responses'][200]['content']['application/json']> =>
@@ -43,7 +43,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Forget a blob.
        *
-       * `DELETE /apps/{app}/blobs/{id}` (`blob_delete`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `DELETE /apps/{app}/blobs/{id}` (`blob_delete`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       blobDelete: (args: operations['blob_delete']['parameters']['path'], options?: MethodOptions): Promise<operations['blob_delete']['responses'][200]['content']['application/json']> =>
@@ -51,7 +51,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Download a blob.
        *
-       * `GET /apps/{app}/blobs/{id}` (`blob_download`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/blobs/{id}` (`blob_download`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       blobDownload: (args: operations['blob_download']['parameters']['path'] & NonNullable<operations['blob_download']['parameters']['query']>, options?: MethodOptions): Promise<Blob> =>
@@ -59,7 +59,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * A blob's size.
        *
-       * `GET /apps/{app}/blobs/{id}/info` (`blob_info`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/blobs/{id}/info` (`blob_info`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       blobInfo: (args: operations['blob_info']['parameters']['path'], options?: MethodOptions): Promise<operations['blob_info']['responses'][200]['content']['application/json']> =>
@@ -67,7 +67,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * List an app's blobs.
        *
-       * `GET /apps/{app}/blobs` (`blob_list`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/blobs` (`blob_list`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       blobList: (args: operations['blob_list']['parameters']['path'], options?: MethodOptions): Promise<operations['blob_list']['responses'][200]['content']['application/json']> =>
@@ -75,7 +75,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Invalidate a blob's grants.
        *
-       * `POST /apps/{app}/blobs/{id}/revoke` (`blob_revoke`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `POST /apps/{app}/blobs/{id}/revoke` (`blob_revoke`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       blobRevoke: (args: operations['blob_revoke']['parameters']['path'], options?: MethodOptions): Promise<operations['blob_revoke']['responses'][200]['content']['application/json']> =>
@@ -83,7 +83,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Upload a blob.
        *
-       * `POST /apps/{app}/blobs` (`blob_upload`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `POST /apps/{app}/blobs` (`blob_upload`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       blobUpload: (args: operations['blob_upload']['parameters']['path'] & NonNullable<operations['blob_upload']['parameters']['query']> & RawBody, options?: MethodOptions): Promise<operations['blob_upload']['responses'][200]['content']['application/json']> =>
@@ -91,7 +91,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Call a method.
        *
-       * `POST /apps/{app}/intents` (`intents`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `POST /apps/{app}/intents` (`intents`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * Answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI: give `confirm` (here or on the client); the passkey must verify the user `required`.
        * Retried on `503` (D70), with its `idempotencyKey` (one is made when none is given).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
@@ -180,6 +180,32 @@ export function createRoutes(api: RouteClient) {
       get: (args: operations['app_get']['parameters']['path'], options?: MethodOptions): Promise<operations['app_get']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/apps/{app}","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_get']['responses'][200]['content']['application/json']>,
       /**
+       * Invite someone to an instance.
+       *
+       * `POST /apps/{app}/invites` (`app_invite_create`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      inviteCreate: (args: operations['app_invite_create']['parameters']['path'] & operations['app_invite_create']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_invite_create']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/invites","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_invite_create']['responses'][200]['content']['application/json']>,
+      /**
+       * An instance's invites.
+       *
+       * `GET /apps/{app}/invites` (`app_invite_list`). **Who:** a passkey session (an API key is refused).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      inviteList: (args: operations['app_invite_list']['parameters']['path'], options?: MethodOptions): Promise<operations['app_invite_list']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/invites","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_invite_list']['responses'][200]['content']['application/json']>,
+      /**
+       * Revoke an instance invite.
+       *
+       * `DELETE /apps/{app}/invites/{key}` (`app_invite_revoke`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      inviteRevoke: (args: operations['app_invite_revoke']['parameters']['path'] & Partial<NonNullable<operations['app_invite_revoke']['requestBody']>['content']['application/json']>, options?: MethodOptions): Promise<operations['app_invite_revoke']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/apps/{app}/invites/{key}","pathParams":["app","key"],"query":[],"body":"fields","optionalBody":true,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_invite_revoke']['responses'][200]['content']['application/json']>,
+      /**
        * Attach an app to one of an app's references.
        *
        * `PUT /apps/{app}/links/{name}` (`app_link`). **Who:** an account holder (a passkey session not bound to an app's frontend).
@@ -191,7 +217,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * List an app's links to the apps its release uses.
        *
-       * `GET /apps/{app}/links` (`app_links`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/links` (`app_links`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       links: (args: operations['app_links']['parameters']['path'], options?: MethodOptions): Promise<operations['app_links']['responses'][200]['content']['application/json']> =>
@@ -215,7 +241,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Call a method by its path.
        *
-       * `POST /apps/{app}/methods/{method}` (`app_method`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `POST /apps/{app}/methods/{method}` (`app_method`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * Answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI: give `confirm` (here or on the client); the passkey must verify the user `required`.
        * Retried on `503` (D70), with its `idempotencyKey` (one is made when none is given).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
@@ -234,7 +260,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * An app's OpenAPI document.
        *
-       * `GET /apps/{app}/openapi.json` (`app_openapi`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/openapi.json` (`app_openapi`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       openapi: (args: operations['app_openapi']['parameters']['path'], options?: MethodOptions): Promise<operations['app_openapi']['responses'][200]['content']['application/json']> =>
@@ -266,7 +292,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * One pipeline run.
        *
-       * `GET /apps/{app}/pipeline-runs/{run}` (`pipelines_get`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/pipeline-runs/{run}` (`pipelines_get`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       pipelinesGet: (args: operations['pipelines_get']['parameters']['path'], options?: MethodOptions): Promise<operations['pipelines_get']['responses'][200]['content']['application/json']> =>
@@ -274,7 +300,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * An app's pipeline runs.
        *
-       * `GET /apps/{app}/pipeline-runs` (`pipelines_list`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/pipeline-runs` (`pipelines_list`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       pipelinesList: (args: operations['pipelines_list']['parameters']['path'] & NonNullable<operations['pipelines_list']['parameters']['query']>, options?: MethodOptions): Promise<operations['pipelines_list']['responses'][200]['content']['application/json']> =>
@@ -306,7 +332,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Who is present.
        *
-       * `GET /apps/{app}/presence` (`presence_get`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/presence` (`presence_get`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       presenceGet: (args: operations['presence_get']['parameters']['path'], options?: MethodOptions): Promise<operations['presence_get']['responses'][200]['content']['application/json']> =>
@@ -314,7 +340,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Publish presence.
        *
-       * `POST /apps/{app}/presence` (`presence_publish`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `POST /apps/{app}/presence` (`presence_publish`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       presencePublish: (args: operations['presence_publish']['parameters']['path'] & operations['presence_publish']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['presence_publish']['responses'][200]['content']['application/json']> =>
@@ -322,7 +348,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * One compute run.
        *
-       * `GET /apps/{app}/runs/{run}` (`app_run`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/runs/{run}` (`app_run`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       run: (args: operations['app_run']['parameters']['path'], options?: MethodOptions): Promise<operations['app_run']['responses'][200]['content']['application/json']> =>
@@ -338,7 +364,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * An app's compute runs.
        *
-       * `GET /apps/{app}/runs` (`app_runs`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/runs` (`app_runs`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       runs: (args: operations['app_runs']['parameters']['path'] & NonNullable<operations['app_runs']['parameters']['query']>, options?: MethodOptions): Promise<operations['app_runs']['responses'][200]['content']['application/json']> =>
@@ -372,7 +398,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * What an app stores.
        *
-       * `GET /apps/{app}/storage` (`app_storage`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/storage` (`app_storage`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       storage: (args: operations['app_storage']['parameters']['path'], options?: MethodOptions): Promise<operations['app_storage']['responses'][200]['content']['application/json']> =>
@@ -406,7 +432,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Whether an update is available for an app.
        *
-       * `GET /apps/{app}/update` (`app_update`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/update` (`app_update`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       update: (args: operations['app_update']['parameters']['path'], options?: MethodOptions): Promise<operations['app_update']['responses'][200]['content']['application/json']> =>
@@ -480,7 +506,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Read with a view method.
        *
-       * `POST /apps/{app}/views` (`views`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `POST /apps/{app}/views` (`views`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * Retried on `503` (D70).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
@@ -1542,6 +1568,15 @@ export function createRoutes(api: RouteClient) {
        */
       setMember: (args: operations['org_set_member']['parameters']['path'] & operations['org_set_member']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['org_set_member']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/orgs/{org}/members","pathParams":["org"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_set_member']['responses'][200]['content']['application/json']>,
+      /**
+       * Change the organization's settings.
+       *
+       * `POST /orgs/{org}/settings` (`org_settings`). **Who:** a passkey session (an API key is refused).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      settings: (args: operations['org_settings']['parameters']['path'] & operations['org_settings']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['org_settings']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/orgs/{org}/settings","pathParams":["org"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_settings']['responses'][200]['content']['application/json']>,
       /**
        * Create a team.
        *

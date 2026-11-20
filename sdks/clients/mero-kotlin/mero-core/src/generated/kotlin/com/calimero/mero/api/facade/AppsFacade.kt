@@ -22,7 +22,7 @@ class AppsFacade internal constructor(
      *
      * The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document, free-form here: its format is the ABI's, not this API's.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/abi` (`app_abi`).
      *
@@ -36,7 +36,7 @@ class AppsFacade internal constructor(
     /**
      * Set who may reach an app
      *
-     * A package-bound session: only its own package's app, from one of its package's teams to another.
+     * `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version 1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
      *
      * **Who:** a passkey session (an API key is refused).
      *
@@ -46,16 +46,16 @@ class AppsFacade internal constructor(
      */
     suspend fun access(
         app: kotlin.String,
-        access: com.calimero.mero.AppAccess,
+        grants: kotlin.collections.List<com.calimero.mero.AppGrant>,
     ): kotlinx.serialization.json.JsonObject =
-        api(null, null, emptySet()).apps.appAccess(app = app, appAccessRequest = AppAccessRequest(access = access))
+        api(null, null, emptySet()).apps.appAccess(app = app, appAccessRequest = AppAccessRequest(grants = grants))
 
     /**
      * Every replica's receipt-key attestation
      *
      * Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`), and `cluster`, the cluster id each quote binds (with the replica's `node`): the documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any other query parameter is ignored.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/attestation` (`app_attestation`).
      *
@@ -70,7 +70,7 @@ class AppsFacade internal constructor(
     /**
      * Create an app instance
      *
-     * From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+     * From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`; the single `access` mode of earlier releases is `400 ACCESS_REMOVED`, never read as no grants). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
      *
      * **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      *
@@ -86,12 +86,12 @@ class AppsFacade internal constructor(
         service: kotlin.String? = null,
         org: kotlin.String? = null,
         newOrg: AppCreateRequestNewOrg? = null,
-        access: com.calimero.mero.AppAccess? = null,
+        grants: kotlin.collections.List<com.calimero.mero.AppGrant>? = null,
         initArgs: kotlinx.serialization.json.JsonElement? = null,
         metadata: kotlinx.serialization.json.JsonElement? = null,
         deployment: kotlin.String? = null,
     ): AppCreate200Response =
-        api(null, null, emptySet()).apps.appCreate(appCreateRequest = AppCreateRequest(name = name, bundle = bundle, `package` = `package`, version = version, service = service, org = org, newOrg = newOrg, access = access, initArgs = initArgs, metadata = metadata, deployment = deployment))
+        api(null, null, emptySet()).apps.appCreate(appCreateRequest = AppCreateRequest(name = name, bundle = bundle, `package` = `package`, version = version, service = service, org = org, newOrg = newOrg, grants = grants, initArgs = initArgs, metadata = metadata, deployment = deployment))
 
     /**
      * Let an app call another as you
@@ -148,7 +148,7 @@ class AppsFacade internal constructor(
     /**
      * One app
      *
-     * `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.
+     * `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. A guest sees only their own grant in `grants`.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -160,6 +160,64 @@ class AppsFacade internal constructor(
         app: kotlin.String,
     ): App =
         api(null, null, emptySet()).apps.appGet(app = app)
+
+    /**
+     * Invite someone to an instance
+     *
+     * A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. `412` first.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /apps/{app}/invites` (`app_invite_create`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun inviteCreate(
+        app: kotlin.String,
+        ttlSecs: kotlin.Long? = null,
+        uses: kotlin.Long? = null,
+        scope: kotlinx.serialization.json.JsonElement? = null,
+        passkey: PasskeyProvider? = null,
+    ): AppInviteCreate200Response =
+        api(passkey, null, emptySet()).apps.appInviteCreate(app = app, appInviteCreateRequest = AppInviteCreateRequest(ttlSecs = ttlSecs, uses = uses, scope = scope))
+
+    /**
+     * An instance's invites
+     *
+     * For whoever may change its access: keys, terms and scope, never a token.
+     *
+     * **Who:** a passkey session (an API key is refused).
+     *
+     * `GET /apps/{app}/invites` (`app_invite_list`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun inviteList(
+        app: kotlin.String,
+    ): AppInviteList200Response =
+        api(null, null, emptySet()).apps.appInviteList(app = app)
+
+    /**
+     * Revoke an instance invite
+     *
+     * Its creator, or whoever may change the instance's access; `412` first.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `DELETE /apps/{app}/invites/{key}` (`app_invite_revoke`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun inviteRevoke(
+        app: kotlin.String,
+        key: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): kotlinx.serialization.json.JsonObject =
+        api(passkey, null, emptySet()).apps.appInviteRevoke(app = app, key = key)
 
     /**
      * Attach an app to one of an app's references
@@ -187,7 +245,7 @@ class AppsFacade internal constructor(
      *
      * One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/links` (`app_links`).
      *
@@ -201,7 +259,7 @@ class AppsFacade internal constructor(
     /**
      * Apps the caller reaches
      *
-     * Anyone may list public apps.
+     * The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -237,7 +295,7 @@ class AppsFacade internal constructor(
      *
      * The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
      * `POST /apps/{app}/methods/{method}` (`app_method`).
      *
@@ -259,7 +317,7 @@ class AppsFacade internal constructor(
     /**
      * Move an app to another organization
      *
-     * Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
+     * Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -282,7 +340,7 @@ class AppsFacade internal constructor(
      *
      * Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/openapi.json` (`app_openapi`).
      *
@@ -298,7 +356,7 @@ class AppsFacade internal constructor(
      *
      * Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/runs/{run}` (`app_run`).
      *
@@ -332,7 +390,7 @@ class AppsFacade internal constructor(
      *
      * Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/runs` (`app_runs`).
      *
@@ -407,7 +465,7 @@ class AppsFacade internal constructor(
      *
      * Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/storage` (`app_storage`).
      *
@@ -480,7 +538,7 @@ class AppsFacade internal constructor(
      *
      * For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/update` (`app_update`).
      *
@@ -572,7 +630,7 @@ class AppsFacade internal constructor(
      *
      * The owner or an organization admin.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `DELETE /apps/{app}/blobs/{id}` (`blob_delete`).
      *
@@ -589,7 +647,7 @@ class AppsFacade internal constructor(
      *
      * `{id}` is base58 or hex; `grant` is a link the app made (`BlobRef::grant`).
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/blobs/{id}` (`blob_download`).
      *
@@ -605,7 +663,7 @@ class AppsFacade internal constructor(
     /**
      * A blob's size
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/blobs/{id}/info` (`blob_info`).
      *
@@ -622,7 +680,7 @@ class AppsFacade internal constructor(
      *
      * Plain blobs only.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/blobs` (`blob_list`).
      *
@@ -638,7 +696,7 @@ class AppsFacade internal constructor(
      *
      * The grants made so far for a published blob; the owner or an organization admin.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `POST /apps/{app}/blobs/{id}/revoke` (`blob_revoke`).
      *
@@ -655,7 +713,7 @@ class AppsFacade internal constructor(
      *
      * A plain blob, stored with the request's `Content-Type`, which a component app's download answers with: any media type (printable ASCII, 127 bytes at most; another is `400 BAD_REQUEST`), `application/octet-stream` when the request names none. Send the blob's own type, not `*&#47;*`, which would be stored as its type. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `POST /apps/{app}/blobs` (`blob_upload`).
      *
@@ -673,7 +731,7 @@ class AppsFacade internal constructor(
      *
      * Committed events from index `from`, then live ones, each to its audience.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/events` (`events`).
      *
@@ -774,7 +832,7 @@ class AppsFacade internal constructor(
      *
      * A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
      * `POST /apps/{app}/intents` (`intents`).
      *
@@ -796,7 +854,7 @@ class AppsFacade internal constructor(
      *
      * Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/pipeline-runs/{run}/events` (`pipeline_events_events`).
      *
@@ -868,7 +926,7 @@ class AppsFacade internal constructor(
      *
      * Its record: `state`, `version`, `hash`, `computeBundle`, `inputs`, `params`, per-step `status`, `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap). Sizes, hashes and results only for callers who may list the app's files.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/pipeline-runs/{run}` (`pipelines_get`).
      *
@@ -885,7 +943,7 @@ class AppsFacade internal constructor(
      *
      * The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/pipeline-runs` (`pipelines_list`).
      *
@@ -959,7 +1017,7 @@ class AppsFacade internal constructor(
      *
      * One entry per present device (a session's passkey, or an API key): its account, device and state (hex).
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/presence` (`presence_get`).
      *
@@ -975,7 +1033,7 @@ class AppsFacade internal constructor(
      *
      * The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts it.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `POST /apps/{app}/presence` (`presence_publish`).
      *
@@ -991,7 +1049,7 @@ class AppsFacade internal constructor(
     /**
      * Presence as server-sent events
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `GET /apps/{app}/presence/stream` (`presence_stream`).
      *
@@ -1090,7 +1148,7 @@ class AppsFacade internal constructor(
      *
      * Read linearizably (`consistency: "strong"`, the default; any value but `"stale"` reads as it): the replica answering waits until it applied the index the app's leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (`"stale"`) on the replica answering, as it stands; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
      *
-     * **Who:** whoever the app's access admits (a public app: anyone).
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
      * `POST /apps/{app}/views` (`views`).
      *

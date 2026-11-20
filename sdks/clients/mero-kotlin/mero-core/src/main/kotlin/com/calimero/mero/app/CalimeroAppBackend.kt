@@ -1,6 +1,6 @@
 package com.calimero.mero.app
 
-import com.calimero.mero.AppAccess
+import com.calimero.mero.AppGrant
 import com.calimero.mero.AppSource
 import com.calimero.mero.CalimeroClient
 import com.calimero.mero.CalimeroError
@@ -167,7 +167,7 @@ class CalimeroAppBackend(
             name,
             AppSource.Package(pkg, service = service),
             org = ref.org,
-            access = team?.let { AppAccess.Team(it) } ?: AppAccess.Org,
+            grants = listOf(team?.let { AppGrant.Team(it) } ?: AppGrant.Org),
             initArgs = initArgs,
         )
     }

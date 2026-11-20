@@ -32,13 +32,21 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param org 
+ * @param app 
+ * @param member 
  */
 @Serializable
 
 data class InviteRedeem200Response (
 
     @SerialName(value = "org")
-    val org: kotlin.String
+    val org: kotlin.String,
+
+    @SerialName(value = "app")
+    val app: kotlin.String? = null,
+
+    @SerialName(value = "member")
+    val member: kotlin.Boolean? = null
 
 ) {
 

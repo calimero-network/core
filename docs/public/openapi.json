@@ -128,7 +128,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Create an app instance",
-        "description": "From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
+        "description": "From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`; the single `access` mode of earlier releases is `400 ACCESS_REMOVED`, never read as no grants). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
         "security": [
           {
             "session": []
@@ -175,8 +175,11 @@
                       "name"
                     ]
                   },
-                  "access": {
-                    "$ref": "#/components/schemas/Access"
+                  "grants": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Grant"
+                    }
                   },
                   "initArgs": {
                     "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
@@ -235,7 +238,7 @@
             }
           },
           "400": {
-            "description": "`AMBIGUOUS_COMPUTE`; `BAD_REQUEST`: the request is malformed; `NOT_OFFERED`; `NO_SUCH_SERVICE`; `ORG_INSTANCE`; `ORG_REQUIRED`; `STANDALONE_INSTANCE`; `VERSION_REQUIRED`",
+            "description": "`ACCESS_REMOVED`; `AMBIGUOUS_COMPUTE`; `BAD_REQUEST`: the request is malformed; `NOT_OFFERED`; `NO_SUCH_SERVICE`; `ORG_INSTANCE`; `ORG_REQUIRED`; `STANDALONE_INSTANCE`; `VERSION_REQUIRED`",
             "content": {
               "application/json": {
                 "schema": {
@@ -244,6 +247,7 @@
               }
             },
             "x-calimero-codes": [
+              "ACCESS_REMOVED",
               "AMBIGUOUS_COMPUTE",
               "BAD_REQUEST",
               "NOT_OFFERED",
@@ -373,7 +377,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Apps the caller reaches",
-        "description": "Anyone may list public apps.\n\n**Who:** signed in (a session or an API key).",
+        "description": "The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -461,7 +465,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "One app",
-        "description": "`{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.\n\n**Who:** signed in (a session or an API key).",
+        "description": "`{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. A guest sees only their own grant in `grants`.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -657,7 +661,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "An app's ABI",
-        "description": "The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document, free-form here: its format is the ABI's, not this API's.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document, free-form here: its format is the ABI's, not this API's.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -667,7 +671,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -739,7 +743,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Set who may reach an app",
-        "description": "A package-bound session: only its own package's app, from one of its package's teams to another.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "`grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version 1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -764,12 +768,15 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "access": {
-                    "$ref": "#/components/schemas/Access"
+                  "grants": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Grant"
+                    }
                   }
                 },
                 "required": [
-                  "access"
+                  "grants"
                 ]
               }
             }
@@ -836,7 +843,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Every replica's receipt-key attestation",
-        "description": "Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`), and `cluster`, the cluster id each quote binds (with the replica's `node`): the documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any other query parameter is ignored.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`), and `cluster`, the cluster id each quote binds (with the replica's `node`): the documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any other query parameter is ignored.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -846,7 +853,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -968,7 +975,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Upload a blob",
-        "description": "A plain blob, stored with the request's `Content-Type`, which a component app's download answers with: any media type (printable ASCII, 127 bytes at most; another is `400 BAD_REQUEST`), `application/octet-stream` when the request names none. Send the blob's own type, not `*/*`, which would be stored as its type. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "A plain blob, stored with the request's `Content-Type`, which a component app's download answers with: any media type (printable ASCII, 127 bytes at most; another is `400 BAD_REQUEST`), `application/octet-stream` when the request names none. Send the blob's own type, not `*/*`, which would be stored as its type. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -978,7 +985,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -1125,7 +1132,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "List an app's blobs",
-        "description": "Plain blobs only.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Plain blobs only.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -1135,7 +1142,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -1224,7 +1231,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Download a blob",
-        "description": "`{id}` is base58 or hex; `grant` is a link the app made (`BlobRef::grant`).\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "`{id}` is base58 or hex; `grant` is a link the app made (`BlobRef::grant`).\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -1234,7 +1241,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -1335,7 +1342,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Forget a blob",
-        "description": "The owner or an organization admin.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "The owner or an organization admin.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -1345,7 +1352,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -1449,7 +1456,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "A blob's size",
-        "description": "**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -1459,7 +1466,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -1571,7 +1578,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Invalidate a blob's grants",
-        "description": "The grants made so far for a published blob; the owner or an organization admin.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "The grants made so far for a published blob; the owner or an organization admin.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -1581,7 +1588,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -2066,7 +2073,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "An app's events as server-sent events",
-        "description": "Committed events from index `from`, then live ones, each to its audience.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Committed events from index `from`, then live ones, each to its audience.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -2076,7 +2083,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -3462,7 +3469,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Call a method",
-        "description": "A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.\n\n**Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -3472,7 +3479,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "x-calimero-step-up": true,
         "x-calimero-user-verification": "required",
@@ -3736,6 +3743,486 @@
         }
       }
     },
+    "/apps/{app}/invites": {
+      "post": {
+        "operationId": "app_invite_create",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Invite someone to an instance",
+        "description": "A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. `412` first.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ttlSecs": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "uses": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "scope": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                  },
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "token"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_REQUEST`: the request is malformed; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_REQUEST",
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE",
+              "WRONG_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          },
+          "429": {
+            "description": "`QUOTA_EXCEEDED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "QUOTA_EXCEEDED"
+            ]
+          }
+        }
+      },
+      "get": {
+        "operationId": "app_invite_list",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "An instance's invites",
+        "description": "For whoever may change its access: keys, terms and scope, never a token.\n\n**Who:** a passkey session (an API key is refused).",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "a passkey session (an API key is refused)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invites": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "inviteKey": {
+                            "type": "string"
+                          },
+                          "usesLeft": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "expiresAt": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "expired": {
+                            "type": "boolean"
+                          },
+                          "createdBy": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "scope": {
+                            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                          }
+                        },
+                        "required": [
+                          "inviteKey",
+                          "usesLeft",
+                          "expiresAt",
+                          "expired",
+                          "createdBy",
+                          "createdAt",
+                          "scope"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "invites"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/invites/{key}": {
+      "delete": {
+        "operationId": "app_invite_revoke",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Revoke an instance invite",
+        "description": "Its creator, or whoever may change the instance's access; `412` first.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmOnly"
+              }
+            }
+          },
+          "description": "May be absent."
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
     "/apps/{app}/links": {
       "get": {
         "operationId": "app_links",
@@ -3744,7 +4231,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "List an app's links to the apps its release uses",
-        "description": "One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -3754,7 +4241,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -4359,7 +4846,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Call a method by its path",
-        "description": "The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.\n\n**Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -4369,7 +4856,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "x-calimero-step-up": true,
         "x-calimero-user-verification": "required",
@@ -4657,7 +5144,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Move an app to another organization",
-        "description": "Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -4722,8 +5209,11 @@
                     "org": {
                       "type": "string"
                     },
-                    "access": {
-                      "$ref": "#/components/schemas/Access"
+                    "grants": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Grant"
+                      }
                     },
                     "created": {
                       "type": "boolean"
@@ -4744,7 +5234,7 @@
                     "appId",
                     "from",
                     "org",
-                    "access",
+                    "grants",
                     "created",
                     "added",
                     "revokedInvites"
@@ -4853,7 +5343,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "An app's OpenAPI document",
-        "description": "Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -4863,7 +5353,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -4963,7 +5453,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "An app's pipeline runs",
-        "description": "The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -4973,7 +5463,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -5068,7 +5558,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "One pipeline run",
-        "description": "Its record: `state`, `version`, `hash`, `computeBundle`, `inputs`, `params`, per-step `status`, `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap). Sizes, hashes and results only for callers who may list the app's files.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Its record: `state`, `version`, `hash`, `computeBundle`, `inputs`, `params`, per-step `status`, `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap). Sizes, hashes and results only for callers who may list the app's files.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -5078,7 +5568,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -5271,7 +5761,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "A pipeline run as server-sent events",
-        "description": "Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -5281,7 +5771,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -6173,7 +6663,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Who is present",
-        "description": "One entry per present device (a session's passkey, or an API key): its account, device and state (hex).\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "One entry per present device (a session's passkey, or an API key): its account, device and state (hex).\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -6183,7 +6673,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -6271,7 +6761,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Publish presence",
-        "description": "The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts it.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts it.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -6281,7 +6771,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -6393,7 +6883,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Presence as server-sent events",
-        "description": "**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -6403,7 +6893,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -6463,7 +6953,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "An app's compute runs",
-        "description": "Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -6473,7 +6963,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -6594,7 +7084,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "One compute run",
-        "description": "Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -6604,7 +7094,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -7313,7 +7803,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "What an app stores",
-        "description": "Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -7323,7 +7813,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -7553,7 +8043,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Whether an update is available for an app",
-        "description": "For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -7563,7 +8053,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "parameters": [
           {
@@ -8171,7 +8661,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Read with a view method",
-        "description": "Read linearizably (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it): the replica answering waits until it applied the index the app's leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (`\"stale\"`) on the replica answering, as it stands; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Read linearizably (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it): the replica answering waits until it applied the index the app's leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (`\"stale\"`) on the replica answering, as it stands; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -8181,7 +8671,7 @@
           },
           {}
         ],
-        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
         "x-calimero-sealed": true,
         "x-calimero-retry-safe": true,
         "parameters": [
@@ -15329,7 +15819,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Join with an invite",
-        "description": "No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the redemption applies.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -15357,6 +15847,12 @@
                   "properties": {
                     "org": {
                       "type": "string"
+                    },
+                    "app": {
+                      "type": "string"
+                    },
+                    "member": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -15390,6 +15886,19 @@
             },
             "x-calimero-codes": [
               "FORBIDDEN"
+            ]
+          },
+          "409": {
+            "description": "`GUESTS_NOT_ALLOWED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "GUESTS_NOT_ALLOWED"
             ]
           },
           "421": {
@@ -24910,6 +25419,182 @@
         }
       }
     },
+    "/orgs/{org}/settings": {
+      "post": {
+        "operationId": "org_settings",
+        "tags": [
+          "Organizations"
+        ],
+        "x-calimero-group": "orgs",
+        "summary": "Change the organization's settings",
+        "description": "`allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.\n\n**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "a passkey session (an API key is refused)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "allowGuests": {
+                    "type": "boolean"
+                  },
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "org": {
+                      "type": "string"
+                    },
+                    "allowGuests": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "org",
+                    "allowGuests"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_REQUEST`: the request is malformed; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_REQUEST",
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
     "/orgs/{org}/teams": {
       "post": {
         "operationId": "team_create",
@@ -25230,7 +25915,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Delete a team",
-        "description": "With the teams and apps below it. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.\n\n**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay (`keptApps`), each without those teams' grants and with its other grants (named members, guests, `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it); `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or the organization admits only loses the deleted teams' grants either way. With such instances, the passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.\n\n**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -25263,7 +25948,16 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ConfirmOnly"
+                "type": "object",
+                "properties": {
+                  "keepApps": {
+                    "type": "boolean"
+                  },
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "additionalProperties": false
               }
             }
           },
@@ -25284,6 +25978,12 @@
                       }
                     },
                     "apps": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "keptApps": {
                       "type": "array",
                       "items": {
                         "type": "string"
@@ -25350,6 +26050,24 @@
             "x-calimero-codes": [
               "NOT_FOUND"
             ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
           },
           "412": {
             "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
@@ -29176,22 +29894,8 @@
         ],
         "description": "The answering node's signature (receipt key, hex) over `(app, index, SHA-256(JCS(result)), node)`."
       },
-      "Access": {
+      "Grant": {
         "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "owner"
-                ]
-              }
-            },
-            "required": [
-              "kind"
-            ]
-          },
           {
             "type": "object",
             "properties": {
@@ -29212,41 +29916,6 @@
               "kind": {
                 "type": "string",
                 "enum": [
-                  "public"
-                ]
-              }
-            },
-            "required": [
-              "kind"
-            ]
-          },
-          {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "accounts"
-                ]
-              },
-              "accounts": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            },
-            "required": [
-              "kind",
-              "accounts"
-            ]
-          },
-          {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "enum": [
                   "team"
                 ]
               },
@@ -29258,12 +29927,47 @@
               "kind",
               "team"
             ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "account"
+                ]
+              },
+              "account": {
+                "type": "string"
+              },
+              "scope": {
+                "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+              }
+            },
+            "required": [
+              "kind",
+              "account"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "anyone"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
           }
         ],
         "discriminator": {
           "propertyName": "kind"
         },
-        "description": "Who may reach an app at all."
+        "description": "One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account. At most 16 teams and 1000 accounts."
       },
       "OrgRole": {
         "type": "string",
@@ -30474,8 +31178,11 @@
               "null"
             ]
           },
-          "access": {
-            "$ref": "#/components/schemas/Access"
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Grant"
+            }
           },
           "confirmMethods": {
             "type": "array",
@@ -30578,7 +31285,7 @@
           "bundle",
           "owner",
           "org",
-          "access",
+          "grants",
           "confirmMethods",
           "replicas",
           "createdAt",
@@ -30979,6 +31686,9 @@
           "personal": {
             "type": "boolean"
           },
+          "allowGuests": {
+            "type": "boolean"
+          },
           "mode": {
             "type": "string",
             "enum": [
@@ -31031,7 +31741,7 @@
           "memberMetadata",
           "upgradeRuns"
         ],
-        "description": "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other)."
+        "description": "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33)."
       },
       "Team": {
         "type": "object",

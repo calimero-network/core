@@ -2,7 +2,7 @@
 import Figure from '../Figure.astro';
 ---
 <Figure id="d-request-layers">
-<svg viewBox="0 0 760 520" role="img" aria-label="Every request passes five layers. Who: an account, its passkeys (each a device) and the organizations it is in. Session: the ceremony's origin decides its kind, unbound on the cluster's own origins, package-bound on a package's frontend origin, stamped into the token and kept by refresh. Where: each route's session check answers whether this session may call this route, before anything is logged. Step-up: 412 CONFIRM_REQUIRED and a user-verified passkey assertion over subject, method, arguments and nonce. What: the system log, on every node where the command applies, verifies and spends the proof and judges the account's authority: org role, capabilities, team rows, the app's access rule." xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 760 520" role="img" aria-label="Every request passes five layers. Who: an account, its passkeys (each a device) and the organizations it is in. Session: the ceremony's origin decides its kind, unbound on the cluster's own origins, package-bound on a package's frontend origin, stamped into the token and kept by refresh. Where: each route's session check answers whether this session may call this route, before anything is logged. Step-up: 412 CONFIRM_REQUIRED and a user-verified passkey assertion over subject, method, arguments and nonce. What: the system log, on every node where the command applies, verifies and spends the proof and judges the account's authority: org role, capabilities, team rows, the app's grants." xmlns="http://www.w3.org/2000/svg">
   <rect x="0" y="0" width="760" height="520" rx="10" fill="#0f0f16"/>
   <text x="380" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">every request, layer by layer</text>
 
@@ -55,7 +55,7 @@ import Figure from '../Figure.astro';
     <text x="36" y="442" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">5 · WHAT: the system log, at apply, on every node</text>
     <text x="36" y="460" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">authorize: verify the consent under the actor's passkeys, spend it</text>
     <text x="36" y="476" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">then the command's rules: org role · capabilities · team rows</text>
-    <text x="36" y="492" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">(an app call: the access rule, judged on fresh system state)</text>
+    <text x="36" y="492" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">(an app call: its grants, judged on fresh system state)</text>
   </g>
 
   <!-- the two questions -->

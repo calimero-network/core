@@ -37,6 +37,9 @@ import com.calimero.mero.api.models.AppDelegate200Response
 import com.calimero.mero.api.models.AppDelegateRequest
 import com.calimero.mero.api.models.AppDelegations200Response
 import com.calimero.mero.api.models.AppDelete200Response
+import com.calimero.mero.api.models.AppInviteCreate200Response
+import com.calimero.mero.api.models.AppInviteCreateRequest
+import com.calimero.mero.api.models.AppInviteList200Response
 import com.calimero.mero.api.models.AppLink200Response
 import com.calimero.mero.api.models.AppLinkRequest
 import com.calimero.mero.api.models.AppLinks200Response
@@ -127,7 +130,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/abi
      * An app&#39;s ABI
-     * The ABI its bundle embeds: methods, events, errors and state. &#x60;abi&#x60; is the bundle&#39;s own document, free-form here: its format is the ABI&#39;s, not this API&#39;s.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * The ABI its bundle embeds: methods, events, errors and state. &#x60;abi&#x60; is the bundle&#39;s own document, free-form here: its format is the ABI&#39;s, not this API&#39;s.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return AppAbi200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -159,7 +162,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/abi
      * An app&#39;s ABI
-     * The ABI its bundle embeds: methods, events, errors and state. &#x60;abi&#x60; is the bundle&#39;s own document, free-form here: its format is the ABI&#39;s, not this API&#39;s.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * The ABI its bundle embeds: methods, events, errors and state. &#x60;abi&#x60; is the bundle&#39;s own document, free-form here: its format is the ABI&#39;s, not this API&#39;s.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<AppAbi200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -200,7 +203,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/access
      * Set who may reach an app
-     * A package-bound session: only its own package&#39;s app, from one of its package&#39;s teams to another.  **Who:** a passkey session (an API key is refused).
+     * &#x60;grants&#x60; replace the instance&#39;s grant list (#Grant; empty: the owner alone; cluster version 1.0.0-rc.33, else &#x60;409 FEATURE_NOT_ACTIVE&#x60;). Its owner, or whoever manages the organization&#39;s apps (on each team it admits, before and after). A package-bound session: only its own package&#39;s app, from one of its package&#39;s teams to another.  **Who:** a passkey session (an API key is refused).
      * @param app 
      * @param appAccessRequest 
      * @return kotlinx.serialization.json.JsonObject
@@ -233,7 +236,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/access
      * Set who may reach an app
-     * A package-bound session: only its own package&#39;s app, from one of its package&#39;s teams to another.  **Who:** a passkey session (an API key is refused).
+     * &#x60;grants&#x60; replace the instance&#39;s grant list (#Grant; empty: the owner alone; cluster version 1.0.0-rc.33, else &#x60;409 FEATURE_NOT_ACTIVE&#x60;). Its owner, or whoever manages the organization&#39;s apps (on each team it admits, before and after). A package-bound session: only its own package&#39;s app, from one of its package&#39;s teams to another.  **Who:** a passkey session (an API key is refused).
      * @param app 
      * @param appAccessRequest 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
@@ -277,7 +280,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/attestation
      * Every replica&#39;s receipt-key attestation
-     * Each replica&#39;s &#x60;/attestation?purpose&#x3D;receipts&#x60; for &#x60;nonce&#x60; (32 bytes, hex), or why it could not be had (&#x60;error&#x60;), and &#x60;cluster&#x60;, the cluster id each quote binds (with the replica&#39;s &#x60;node&#x60;): the documents are fetched in the clear, so their own &#x60;cluster&#x60; and &#x60;node&#x60; fields count for nothing. Any other query parameter is ignored.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Each replica&#39;s &#x60;/attestation?purpose&#x3D;receipts&#x60; for &#x60;nonce&#x60; (32 bytes, hex), or why it could not be had (&#x60;error&#x60;), and &#x60;cluster&#x60;, the cluster id each quote binds (with the replica&#39;s &#x60;node&#x60;): the documents are fetched in the clear, so their own &#x60;cluster&#x60; and &#x60;node&#x60; fields count for nothing. Any other query parameter is ignored.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param nonce 
      * @return AppAttestation200Response
@@ -310,7 +313,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/attestation
      * Every replica&#39;s receipt-key attestation
-     * Each replica&#39;s &#x60;/attestation?purpose&#x3D;receipts&#x60; for &#x60;nonce&#x60; (32 bytes, hex), or why it could not be had (&#x60;error&#x60;), and &#x60;cluster&#x60;, the cluster id each quote binds (with the replica&#39;s &#x60;node&#x60;): the documents are fetched in the clear, so their own &#x60;cluster&#x60; and &#x60;node&#x60; fields count for nothing. Any other query parameter is ignored.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Each replica&#39;s &#x60;/attestation?purpose&#x3D;receipts&#x60; for &#x60;nonce&#x60; (32 bytes, hex), or why it could not be had (&#x60;error&#x60;), and &#x60;cluster&#x60;, the cluster id each quote binds (with the replica&#39;s &#x60;node&#x60;): the documents are fetched in the clear, so their own &#x60;cluster&#x60; and &#x60;node&#x60; fields count for nothing. Any other query parameter is ignored.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param nonce 
      * @return ApiResponse<AppAttestation200Response?>
@@ -356,7 +359,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps
      * Create an app instance
-     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;grants&#x60; say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, &#x60;409 FEATURE_NOT_ACTIVE&#x60;; the single &#x60;access&#x60; mode of earlier releases is &#x60;400 ACCESS_REMOVED&#x60;, never read as no grants). &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param appCreateRequest 
      * @return AppCreate200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -388,7 +391,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps
      * Create an app instance
-     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;grants&#x60; say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, &#x60;409 FEATURE_NOT_ACTIVE&#x60;; the single &#x60;access&#x60; mode of earlier releases is &#x60;400 ACCESS_REMOVED&#x60;, never read as no grants). &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param appCreateRequest 
      * @return ApiResponse<AppCreate200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -656,7 +659,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}
      * One app
-     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route.  **Who:** signed in (a session or an API key).
+     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route. A guest sees only their own grant in &#x60;grants&#x60;.  **Who:** signed in (a session or an API key).
      * @param app 
      * @return App
      * @throws IllegalStateException If the request is not correctly configured
@@ -688,7 +691,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}
      * One app
-     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route.  **Who:** signed in (a session or an API key).
+     * &#x60;{app}&#x60; is an app id or its context id (&#x60;hex(SHA-256(app_id))&#x60;), here and on every &#x60;/apps/{app}&#x60; route. A guest sees only their own grant in &#x60;grants&#x60;.  **Who:** signed in (a session or an API key).
      * @param app 
      * @return ApiResponse<App?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -719,6 +722,236 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.GET,
             path = "/apps/{app}".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /apps/{app}/invites
+     * Invite someone to an instance
+     * A token whose redeemer is named on this instance only (an &#x60;account&#x60; grant: a guest, or a named member when they are a member of its organization; never added to the organization), &#x60;uses&#x60; times (1 to 1000, default 1) within &#x60;ttlSecs&#x60; (at most 90 days, default 7), on any instance. &#x60;scope&#x60; (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance&#39;s access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appInviteCreateRequest 
+     * @return AppInviteCreate200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appInviteCreate(app: kotlin.String, appInviteCreateRequest: AppInviteCreateRequest) : AppInviteCreate200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appInviteCreateWithHttpInfo(app = app, appInviteCreateRequest = appInviteCreateRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppInviteCreate200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /apps/{app}/invites
+     * Invite someone to an instance
+     * A token whose redeemer is named on this instance only (an &#x60;account&#x60; grant: a guest, or a named member when they are a member of its organization; never added to the organization), &#x60;uses&#x60; times (1 to 1000, default 1) within &#x60;ttlSecs&#x60; (at most 90 days, default 7), on any instance. &#x60;scope&#x60; (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance&#39;s access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appInviteCreateRequest 
+     * @return ApiResponse<AppInviteCreate200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appInviteCreateWithHttpInfo(app: kotlin.String, appInviteCreateRequest: AppInviteCreateRequest) : ApiResponse<AppInviteCreate200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appInviteCreateRequestConfig(app = app, appInviteCreateRequest = appInviteCreateRequest)
+
+        return@withContext request<AppInviteCreateRequest, AppInviteCreate200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appInviteCreate
+     *
+     * @param app 
+     * @param appInviteCreateRequest 
+     * @return RequestConfig
+     */
+    fun appInviteCreateRequestConfig(app: kotlin.String, appInviteCreateRequest: AppInviteCreateRequest) : RequestConfig<AppInviteCreateRequest> {
+        val localVariableBody = appInviteCreateRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/apps/{app}/invites".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /apps/{app}/invites
+     * An instance&#39;s invites
+     * For whoever may change its access: keys, terms and scope, never a token.  **Who:** a passkey session (an API key is refused).
+     * @param app 
+     * @return AppInviteList200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appInviteList(app: kotlin.String) : AppInviteList200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appInviteListWithHttpInfo(app = app)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppInviteList200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/invites
+     * An instance&#39;s invites
+     * For whoever may change its access: keys, terms and scope, never a token.  **Who:** a passkey session (an API key is refused).
+     * @param app 
+     * @return ApiResponse<AppInviteList200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appInviteListWithHttpInfo(app: kotlin.String) : ApiResponse<AppInviteList200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appInviteListRequestConfig(app = app)
+
+        return@withContext request<Unit, AppInviteList200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appInviteList
+     *
+     * @param app 
+     * @return RequestConfig
+     */
+    fun appInviteListRequestConfig(app: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/invites".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * DELETE /apps/{app}/invites/{key}
+     * Revoke an instance invite
+     * Its creator, or whoever may change the instance&#39;s access; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param key 
+     * @param confirmOnly May be absent. (optional)
+     * @return kotlinx.serialization.json.JsonObject
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appInviteRevoke(app: kotlin.String, key: kotlin.String, confirmOnly: ConfirmOnly? = null) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = appInviteRevokeWithHttpInfo(app = app, key = key, confirmOnly = confirmOnly)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * DELETE /apps/{app}/invites/{key}
+     * Revoke an instance invite
+     * Its creator, or whoever may change the instance&#39;s access; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param key 
+     * @param confirmOnly May be absent. (optional)
+     * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appInviteRevokeWithHttpInfo(app: kotlin.String, key: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appInviteRevokeRequestConfig(app = app, key = key, confirmOnly = confirmOnly)
+
+        return@withContext request<ConfirmOnly, kotlinx.serialization.json.JsonObject>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appInviteRevoke
+     *
+     * @param app 
+     * @param key 
+     * @param confirmOnly May be absent. (optional)
+     * @return RequestConfig
+     */
+    fun appInviteRevokeRequestConfig(app: kotlin.String, key: kotlin.String, confirmOnly: ConfirmOnly?) : RequestConfig<ConfirmOnly> {
+        val localVariableBody = confirmOnly
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.DELETE,
+            path = "/apps/{app}/invites/{key}".replace("{"+"app"+"}", encodeURIComponent(app.toString())).replace("{"+"key"+"}", encodeURIComponent(key.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,
@@ -809,7 +1042,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/links
      * List an app&#39;s links to the apps its release uses
-     * One row per reference (&#x60;uses&#x60;) of the release the app runs, with the app linked under it: a member made with the instance (&#x60;mode: create&#x60;) or an app its owner attached (&#x60;mode: attach&#x60;), &#x60;null&#x60; when none. &#x60;version&#x60; is the release that app runs and &#x60;inRange&#x60; whether it is inside the reference&#39;s range (&#x60;null&#x60; with nothing linked). A link the release no longer names is listed with &#x60;package&#x60;, &#x60;range&#x60; and &#x60;mode&#x60; &#x60;null&#x60;.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * One row per reference (&#x60;uses&#x60;) of the release the app runs, with the app linked under it: a member made with the instance (&#x60;mode: create&#x60;) or an app its owner attached (&#x60;mode: attach&#x60;), &#x60;null&#x60; when none. &#x60;version&#x60; is the release that app runs and &#x60;inRange&#x60; whether it is inside the reference&#39;s range (&#x60;null&#x60; with nothing linked). A link the release no longer names is listed with &#x60;package&#x60;, &#x60;range&#x60; and &#x60;mode&#x60; &#x60;null&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return AppLinks200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -841,7 +1074,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/links
      * List an app&#39;s links to the apps its release uses
-     * One row per reference (&#x60;uses&#x60;) of the release the app runs, with the app linked under it: a member made with the instance (&#x60;mode: create&#x60;) or an app its owner attached (&#x60;mode: attach&#x60;), &#x60;null&#x60; when none. &#x60;version&#x60; is the release that app runs and &#x60;inRange&#x60; whether it is inside the reference&#39;s range (&#x60;null&#x60; with nothing linked). A link the release no longer names is listed with &#x60;package&#x60;, &#x60;range&#x60; and &#x60;mode&#x60; &#x60;null&#x60;.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * One row per reference (&#x60;uses&#x60;) of the release the app runs, with the app linked under it: a member made with the instance (&#x60;mode: create&#x60;) or an app its owner attached (&#x60;mode: attach&#x60;), &#x60;null&#x60; when none. &#x60;version&#x60; is the release that app runs and &#x60;inRange&#x60; whether it is inside the reference&#39;s range (&#x60;null&#x60; with nothing linked). A link the release no longer names is listed with &#x60;package&#x60;, &#x60;range&#x60; and &#x60;mode&#x60; &#x60;null&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<AppLinks200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -882,7 +1115,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps
      * Apps the caller reaches
-     * Anyone may list public apps.  **Who:** signed in (a session or an API key).
+     * The instances the caller reaches; one an &#x60;anyone&#x60; grant admits is listed only to its owner.  **Who:** signed in (a session or an API key).
      * @param `package`  (optional)
      * @param bundle  (optional)
      * @return AppList200Response
@@ -915,7 +1148,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps
      * Apps the caller reaches
-     * Anyone may list public apps.  **Who:** signed in (a session or an API key).
+     * The instances the caller reaches; one an &#x60;anyone&#x60; grant admits is listed only to its owner.  **Who:** signed in (a session or an API key).
      * @param `package`  (optional)
      * @param bundle  (optional)
      * @return ApiResponse<AppList200Response?>
@@ -1043,7 +1276,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/methods/{method}
      * Call a method by its path
-     * The body of &#x60;/intents&#x60; or &#x60;/views&#x60; without &#x60;method&#x60;, which the path names, as the app&#39;s OpenAPI document lists it: a view the running bundle&#39;s ABI declares (without &#x60;confirm&#x60;) is answered as &#x60;/views&#x60;, anything else as &#x60;/intents&#x60;, with that route&#39;s gate, step-up and limits. Retry-safe as a view always, as a call with &#x60;idempotencyKey&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s access admits (a public app: anyone). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * The body of &#x60;/intents&#x60; or &#x60;/views&#x60; without &#x60;method&#x60;, which the path names, as the app&#39;s OpenAPI document lists it: a view the running bundle&#39;s ABI declares (without &#x60;confirm&#x60;) is answered as &#x60;/views&#x60;, anything else as &#x60;/intents&#x60;, with that route&#39;s gate, step-up and limits. Retry-safe as a view always, as a call with &#x60;idempotencyKey&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param method 
      * @param appMethodRequest 
@@ -1077,7 +1310,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/methods/{method}
      * Call a method by its path
-     * The body of &#x60;/intents&#x60; or &#x60;/views&#x60; without &#x60;method&#x60;, which the path names, as the app&#39;s OpenAPI document lists it: a view the running bundle&#39;s ABI declares (without &#x60;confirm&#x60;) is answered as &#x60;/views&#x60;, anything else as &#x60;/intents&#x60;, with that route&#39;s gate, step-up and limits. Retry-safe as a view always, as a call with &#x60;idempotencyKey&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s access admits (a public app: anyone). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * The body of &#x60;/intents&#x60; or &#x60;/views&#x60; without &#x60;method&#x60;, which the path names, as the app&#39;s OpenAPI document lists it: a view the running bundle&#39;s ABI declares (without &#x60;confirm&#x60;) is answered as &#x60;/views&#x60;, anything else as &#x60;/intents&#x60;, with that route&#39;s gate, step-up and limits. Retry-safe as a view always, as a call with &#x60;idempotencyKey&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param method 
      * @param appMethodRequest 
@@ -1123,7 +1356,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/move
      * Move an app to another organization
-     * Its data where it is; its files, runs and quotas go to the target, &#x60;org&#x60; or app-team access becomes the target&#39;s app team of its package. &#x60;bringMembers&#x60; adds the source&#39;s members who reach it, capped at &#x60;member&#x60;. &#x60;from&#x60; is the organization it left, &#x60;null&#x60; for an app of the caller&#39;s own; &#x60;added&#x60; the accounts brought; &#x60;revokedInvites&#x60; how many invites to its old team were withdrawn.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Its data where it is; its files, runs and quotas go to the target, its &#x60;org&#x60; or app-team grant becomes the target&#39;s app team of its package. &#x60;bringMembers&#x60; adds the source&#39;s members who reach it, capped at &#x60;member&#x60;. &#x60;from&#x60; is the organization it left, &#x60;null&#x60; for an app of the caller&#39;s own; &#x60;added&#x60; the accounts brought; &#x60;revokedInvites&#x60; how many invites to its old team were withdrawn.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appMoveRequest 
      * @return AppMove200Response
@@ -1156,7 +1389,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/move
      * Move an app to another organization
-     * Its data where it is; its files, runs and quotas go to the target, &#x60;org&#x60; or app-team access becomes the target&#39;s app team of its package. &#x60;bringMembers&#x60; adds the source&#39;s members who reach it, capped at &#x60;member&#x60;. &#x60;from&#x60; is the organization it left, &#x60;null&#x60; for an app of the caller&#39;s own; &#x60;added&#x60; the accounts brought; &#x60;revokedInvites&#x60; how many invites to its old team were withdrawn.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Its data where it is; its files, runs and quotas go to the target, its &#x60;org&#x60; or app-team grant becomes the target&#39;s app team of its package. &#x60;bringMembers&#x60; adds the source&#39;s members who reach it, capped at &#x60;member&#x60;. &#x60;from&#x60; is the organization it left, &#x60;null&#x60; for an app of the caller&#39;s own; &#x60;added&#x60; the accounts brought; &#x60;revokedInvites&#x60; how many invites to its old team were withdrawn.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appMoveRequest 
      * @return ApiResponse<AppMove200Response?>
@@ -1200,7 +1433,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/openapi.json
      * An app&#39;s OpenAPI document
-     * Generated from the ABI of the bundle the app runs, under the access &#x60;/abi&#x60; has: one &#x60;POST /apps/{app}/methods/{method}&#x60; per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Generated from the ABI of the bundle the app runs, under the access &#x60;/abi&#x60; has: one &#x60;POST /apps/{app}/methods/{method}&#x60; per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -1232,7 +1465,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/openapi.json
      * An app&#39;s OpenAPI document
-     * Generated from the ABI of the bundle the app runs, under the access &#x60;/abi&#x60; has: one &#x60;POST /apps/{app}/methods/{method}&#x60; per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Generated from the ABI of the bundle the app runs, under the access &#x60;/abi&#x60; has: one &#x60;POST /apps/{app}/methods/{method}&#x60; per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?>?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -1273,7 +1506,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/runs/{run}
      * One compute run
-     * Its record without arguments or keys: method, state, &#x60;cancelRequested&#x60;, &#x60;startTsMs&#x60;, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app&#39;s files), usage, and &#x60;progress&#x60; as the leader last polled it.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Its record without arguments or keys: method, state, &#x60;cancelRequested&#x60;, &#x60;startTsMs&#x60;, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app&#39;s files), usage, and &#x60;progress&#x60; as the leader last polled it.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param run 
      * @return Run
@@ -1306,7 +1539,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/runs/{run}
      * One compute run
-     * Its record without arguments or keys: method, state, &#x60;cancelRequested&#x60;, &#x60;startTsMs&#x60;, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app&#39;s files), usage, and &#x60;progress&#x60; as the leader last polled it.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Its record without arguments or keys: method, state, &#x60;cancelRequested&#x60;, &#x60;startTsMs&#x60;, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app&#39;s files), usage, and &#x60;progress&#x60; as the leader last polled it.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param run 
      * @return ApiResponse<Run?>
@@ -1425,7 +1658,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/runs
      * An app&#39;s compute runs
-     * Newest first, &#x60;limit&#x60; (1 to 100, default 20) at a time; &#x60;next&#x60; is the &#x60;before&#x60; of the next page, &#x60;null&#x60; on the last.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Newest first, &#x60;limit&#x60; (1 to 100, default 20) at a time; &#x60;next&#x60; is the &#x60;before&#x60; of the next page, &#x60;null&#x60; on the last.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param limit  (optional)
      * @param before  (optional)
@@ -1459,7 +1692,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/runs
      * An app&#39;s compute runs
-     * Newest first, &#x60;limit&#x60; (1 to 100, default 20) at a time; &#x60;next&#x60; is the &#x60;before&#x60; of the next page, &#x60;null&#x60; on the last.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Newest first, &#x60;limit&#x60; (1 to 100, default 20) at a time; &#x60;next&#x60; is the &#x60;before&#x60; of the next page, &#x60;null&#x60; on the last.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param limit  (optional)
      * @param before  (optional)
@@ -1745,7 +1978,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/storage
      * What an app stores
-     * Keys, bytes and blobs held, and &#x60;lastWriteAt&#x60; (Unix seconds of its last committed write, &#x60;null&#x60; before one).  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Keys, bytes and blobs held, and &#x60;lastWriteAt&#x60; (Unix seconds of its last committed write, &#x60;null&#x60; before one).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return AppStorage200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -1777,7 +2010,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/storage
      * What an app stores
-     * Keys, bytes and blobs held, and &#x60;lastWriteAt&#x60; (Unix seconds of its last committed write, &#x60;null&#x60; before one).  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Keys, bytes and blobs held, and &#x60;lastWriteAt&#x60; (Unix seconds of its last committed write, &#x60;null&#x60; before one).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<AppStorage200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -2049,7 +2282,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/update
      * Whether an update is available for an app
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return AppUpdate200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -2081,7 +2314,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/update
      * Whether an update is available for an app
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<AppUpdate200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -2422,7 +2655,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * DELETE /apps/{app}/blobs/{id}
      * Forget a blob
-     * The owner or an organization admin.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * The owner or an organization admin.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
      * @return BlobDelete200Response
@@ -2455,7 +2688,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * DELETE /apps/{app}/blobs/{id}
      * Forget a blob
-     * The owner or an organization admin.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * The owner or an organization admin.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
      * @return ApiResponse<BlobDelete200Response?>
@@ -2498,7 +2731,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/blobs/{id}
      * Download a blob
-     * &#x60;{id}&#x60; is base58 or hex; &#x60;grant&#x60; is a link the app made (&#x60;BlobRef::grant&#x60;).  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * &#x60;{id}&#x60; is base58 or hex; &#x60;grant&#x60; is a link the app made (&#x60;BlobRef::grant&#x60;).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
      * @param grant  (optional)
@@ -2532,7 +2765,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/blobs/{id}
      * Download a blob
-     * &#x60;{id}&#x60; is base58 or hex; &#x60;grant&#x60; is a link the app made (&#x60;BlobRef::grant&#x60;).  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * &#x60;{id}&#x60; is base58 or hex; &#x60;grant&#x60; is a link the app made (&#x60;BlobRef::grant&#x60;).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
      * @param grant  (optional)
@@ -2582,7 +2815,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/blobs/{id}/info
      * A blob&#39;s size
-     * **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
      * @return BlobInfo200Response
@@ -2615,7 +2848,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/blobs/{id}/info
      * A blob&#39;s size
-     * **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
      * @return ApiResponse<BlobInfo200Response?>
@@ -2658,7 +2891,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/blobs
      * List an app&#39;s blobs
-     * Plain blobs only.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Plain blobs only.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return BlobList200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -2690,7 +2923,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/blobs
      * List an app&#39;s blobs
-     * Plain blobs only.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Plain blobs only.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<BlobList200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -2731,7 +2964,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/blobs/{id}/revoke
      * Invalidate a blob&#39;s grants
-     * The grants made so far for a published blob; the owner or an organization admin.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * The grants made so far for a published blob; the owner or an organization admin.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
      * @return BlobDelete200Response
@@ -2764,7 +2997,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/blobs/{id}/revoke
      * Invalidate a blob&#39;s grants
-     * The grants made so far for a published blob; the owner or an organization admin.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * The grants made so far for a published blob; the owner or an organization admin.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param id 
      * @return ApiResponse<BlobDelete200Response?>
@@ -2807,7 +3040,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/blobs
      * Upload a blob
-     * A plain blob, stored with the request&#39;s &#x60;Content-Type&#x60;, which a component app&#39;s download answers with: any media type (printable ASCII, 127 bytes at most; another is &#x60;400 BAD_REQUEST&#x60;), &#x60;application/octet-stream&#x60; when the request names none. Send the blob&#39;s own type, not &#x60;*_/_*&#x60;, which would be stored as its type. Any &#x60;sealed&#x60; parameter, &#x60;true&#x60; or &#x60;false&#x60;, is refused &#x60;400 USE_FILES_API&#x60;: sealed files go through &#x60;/files&#x60;.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * A plain blob, stored with the request&#39;s &#x60;Content-Type&#x60;, which a component app&#39;s download answers with: any media type (printable ASCII, 127 bytes at most; another is &#x60;400 BAD_REQUEST&#x60;), &#x60;application/octet-stream&#x60; when the request names none. Send the blob&#39;s own type, not &#x60;*_/_*&#x60;, which would be stored as its type. Any &#x60;sealed&#x60; parameter, &#x60;true&#x60; or &#x60;false&#x60;, is refused &#x60;400 USE_FILES_API&#x60;: sealed files go through &#x60;/files&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param body the blob; its &#x60;Content-Type&#x60; is the type it is stored and served with
      * @param `sealed`  (optional)
@@ -2841,7 +3074,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/blobs
      * Upload a blob
-     * A plain blob, stored with the request&#39;s &#x60;Content-Type&#x60;, which a component app&#39;s download answers with: any media type (printable ASCII, 127 bytes at most; another is &#x60;400 BAD_REQUEST&#x60;), &#x60;application/octet-stream&#x60; when the request names none. Send the blob&#39;s own type, not &#x60;*_/_*&#x60;, which would be stored as its type. Any &#x60;sealed&#x60; parameter, &#x60;true&#x60; or &#x60;false&#x60;, is refused &#x60;400 USE_FILES_API&#x60;: sealed files go through &#x60;/files&#x60;.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * A plain blob, stored with the request&#39;s &#x60;Content-Type&#x60;, which a component app&#39;s download answers with: any media type (printable ASCII, 127 bytes at most; another is &#x60;400 BAD_REQUEST&#x60;), &#x60;application/octet-stream&#x60; when the request names none. Send the blob&#39;s own type, not &#x60;*_/_*&#x60;, which would be stored as its type. Any &#x60;sealed&#x60; parameter, &#x60;true&#x60; or &#x60;false&#x60;, is refused &#x60;400 USE_FILES_API&#x60;: sealed files go through &#x60;/files&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param body the blob; its &#x60;Content-Type&#x60; is the type it is stored and served with
      * @param `sealed`  (optional)
@@ -2892,7 +3125,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/events
      * An app&#39;s events as server-sent events
-     * Committed events from index &#x60;from&#x60;, then live ones, each to its audience.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Committed events from index &#x60;from&#x60;, then live ones, each to its audience.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param from  (optional)
      * @return kotlin.String
@@ -2925,7 +3158,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/events
      * An app&#39;s events as server-sent events
-     * Committed events from index &#x60;from&#x60;, then live ones, each to its audience.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Committed events from index &#x60;from&#x60;, then live ones, each to its audience.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param from  (optional)
      * @return ApiResponse<kotlin.String?>
@@ -3358,7 +3591,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/intents
      * Call a method
-     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s access admits (a public app: anyone). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param intentsRequest 
      * @return Intents200Response
@@ -3391,7 +3624,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/intents
      * Call a method
-     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s access admits (a public app: anyone). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * A logged call: the result, the events of the call the caller receives, and the answering node&#39;s receipt. A &#x60;confirm&#x60; method answers &#x60;412&#x60; first. An app error is &#x60;422 APP_ERROR&#x60; with &#x60;details { index, code, fields }&#x60;; a trap &#x60;422 TRAP&#x60;. &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account). **Step-up:** when the method is a &#x60;confirm&#x60; method of the app&#39;s ABI, answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param intentsRequest 
      * @return ApiResponse<Intents200Response?>
@@ -3435,7 +3668,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/pipeline-runs/{run}/events
      * A pipeline run as server-sent events
-     * Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param run 
      * @return kotlin.String
@@ -3468,7 +3701,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/pipeline-runs/{run}/events
      * A pipeline run as server-sent events
-     * Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param run 
      * @return ApiResponse<kotlin.String?>
@@ -3751,7 +3984,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/pipeline-runs/{run}
      * One pipeline run
-     * Its record: &#x60;state&#x60;, &#x60;version&#x60;, &#x60;hash&#x60;, &#x60;computeBundle&#x60;, &#x60;inputs&#x60;, &#x60;params&#x60;, per-step &#x60;status&#x60;, &#x60;runs&#x60;, &#x60;outputs&#x60;, &#x60;result&#x60;, &#x60;reason&#x60; and &#x60;cost&#x60; (&#x60;cost&#x60; and &#x60;costSoFar&#x60; for a run with a cap). Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Its record: &#x60;state&#x60;, &#x60;version&#x60;, &#x60;hash&#x60;, &#x60;computeBundle&#x60;, &#x60;inputs&#x60;, &#x60;params&#x60;, per-step &#x60;status&#x60;, &#x60;runs&#x60;, &#x60;outputs&#x60;, &#x60;result&#x60;, &#x60;reason&#x60; and &#x60;cost&#x60; (&#x60;cost&#x60; and &#x60;costSoFar&#x60; for a run with a cap). Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param run 
      * @return kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>
@@ -3784,7 +4017,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/pipeline-runs/{run}
      * One pipeline run
-     * Its record: &#x60;state&#x60;, &#x60;version&#x60;, &#x60;hash&#x60;, &#x60;computeBundle&#x60;, &#x60;inputs&#x60;, &#x60;params&#x60;, per-step &#x60;status&#x60;, &#x60;runs&#x60;, &#x60;outputs&#x60;, &#x60;result&#x60;, &#x60;reason&#x60; and &#x60;cost&#x60; (&#x60;cost&#x60; and &#x60;costSoFar&#x60; for a run with a cap). Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Its record: &#x60;state&#x60;, &#x60;version&#x60;, &#x60;hash&#x60;, &#x60;computeBundle&#x60;, &#x60;inputs&#x60;, &#x60;params&#x60;, per-step &#x60;status&#x60;, &#x60;runs&#x60;, &#x60;outputs&#x60;, &#x60;result&#x60;, &#x60;reason&#x60; and &#x60;cost&#x60; (&#x60;cost&#x60; and &#x60;costSoFar&#x60; for a run with a cap). Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param run 
      * @return ApiResponse<kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>?>
@@ -3827,7 +4060,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/pipeline-runs
      * An app&#39;s pipeline runs
-     * The recent runs, newest first, as &#x60;{ runs }&#x60;; &#x60;limit&#x60; 1 to 100. Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * The recent runs, newest first, as &#x60;{ runs }&#x60;; &#x60;limit&#x60; 1 to 100. Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param limit  (optional)
      * @return kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>
@@ -3860,7 +4093,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/pipeline-runs
      * An app&#39;s pipeline runs
-     * The recent runs, newest first, as &#x60;{ runs }&#x60;; &#x60;limit&#x60; 1 to 100. Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * The recent runs, newest first, as &#x60;{ runs }&#x60;; &#x60;limit&#x60; 1 to 100. Sizes, hashes and results only for callers who may list the app&#39;s files.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param limit  (optional)
      * @return ApiResponse<kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>?>
@@ -4142,7 +4375,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/presence
      * Who is present
-     * One entry per present device (a session&#39;s passkey, or an API key): its account, device and state (hex).  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * One entry per present device (a session&#39;s passkey, or an API key): its account, device and state (hex).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return PresenceGet200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -4174,7 +4407,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/presence
      * Who is present
-     * One entry per present device (a session&#39;s passkey, or an API key): its account, device and state (hex).  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * One entry per present device (a session&#39;s passkey, or an API key): its account, device and state (hex).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<PresenceGet200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -4215,7 +4448,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/presence
      * Publish presence
-     * The caller&#39;s presence state (hex), in sequence; not logged. A &#x60;null&#x60; (or absent) &#x60;state&#x60; retracts it.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * The caller&#39;s presence state (hex), in sequence; not logged. A &#x60;null&#x60; (or absent) &#x60;state&#x60; retracts it.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param presencePublishRequest 
      * @return kotlinx.serialization.json.JsonObject
@@ -4248,7 +4481,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/presence
      * Publish presence
-     * The caller&#39;s presence state (hex), in sequence; not logged. A &#x60;null&#x60; (or absent) &#x60;state&#x60; retracts it.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * The caller&#39;s presence state (hex), in sequence; not logged. A &#x60;null&#x60; (or absent) &#x60;state&#x60; retracts it.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param presencePublishRequest 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
@@ -4292,7 +4525,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/presence/stream
      * Presence as server-sent events
-     * **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return kotlin.String
      * @throws IllegalStateException If the request is not correctly configured
@@ -4324,7 +4557,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/presence/stream
      * Presence as server-sent events
-     * **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<kotlin.String?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -4753,7 +4986,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/views
      * Read with a view method
-     * Read linearizably (&#x60;consistency: \&quot;strong\&quot;&#x60;, the default; any value but &#x60;\&quot;stale\&quot;&#x60; reads as it): the replica answering waits until it applied the index the app&#39;s leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (&#x60;\&quot;stale\&quot;&#x60;) on the replica answering, as it stands; &#x60;minIndex&#x60; waits until the replica applied it (&#x60;503 NOT_CAUGHT_UP&#x60;). &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Read linearizably (&#x60;consistency: \&quot;strong\&quot;&#x60;, the default; any value but &#x60;\&quot;stale\&quot;&#x60; reads as it): the replica answering waits until it applied the index the app&#39;s leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (&#x60;\&quot;stale\&quot;&#x60;) on the replica answering, as it stands; &#x60;minIndex&#x60; waits until the replica applied it (&#x60;503 NOT_CAUGHT_UP&#x60;). &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param viewsRequest 
      * @return Views200Response
@@ -4786,7 +5019,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/views
      * Read with a view method
-     * Read linearizably (&#x60;consistency: \&quot;strong\&quot;&#x60;, the default; any value but &#x60;\&quot;stale\&quot;&#x60; reads as it): the replica answering waits until it applied the index the app&#39;s leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (&#x60;\&quot;stale\&quot;&#x60;) on the replica answering, as it stands; &#x60;minIndex&#x60; waits until the replica applied it (&#x60;503 NOT_CAUGHT_UP&#x60;). &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Read linearizably (&#x60;consistency: \&quot;strong\&quot;&#x60;, the default; any value but &#x60;\&quot;stale\&quot;&#x60; reads as it): the replica answering waits until it applied the index the app&#39;s leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (&#x60;\&quot;stale\&quot;&#x60;) on the replica answering, as it stands; &#x60;minIndex&#x60; waits until the replica applied it (&#x60;503 NOT_CAUGHT_UP&#x60;). &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @param viewsRequest 
      * @return ApiResponse<Views200Response?>

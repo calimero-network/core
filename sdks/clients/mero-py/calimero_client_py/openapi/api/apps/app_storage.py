@@ -71,7 +71,7 @@ def sync_detailed(
      Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null`
     before one).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -105,7 +105,7 @@ def sync(
      Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null`
     before one).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -134,7 +134,7 @@ async def asyncio_detailed(
      Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null`
     before one).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -166,7 +166,7 @@ async def asyncio(
      Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null`
     before one).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):

@@ -80,7 +80,7 @@ layers side by side; the detail of each is in the pages it links to.
    under a passkey the actor holds now, checks it states exactly this change,
    and spends it (`used_proofs`), so it cannot be replayed. Then the command's
    own rules judge the actor: org role, capabilities (`caps`), team rows and
-   roles, the app's access rule. A node that proposes a command the actor may
+   roles, the app's grants. A node that proposes a command the actor may
    not make has it refused by every replica. See
    [The system group](/protocol/system-group/) and
    [Organizations, teams & access](/protocol/organizations/).
@@ -134,8 +134,8 @@ may call, and which check lets it through:
 | Route | Session check | Judged where it applies |
 | --- | --- | --- |
 | `GET /auth/me`, `GET /auth/apps`, `POST /auth/logout` | signed in (`GET /auth/apps` lists `chat`'s apps only) | — |
-| `GET /apps`, `GET /apps/{app}` | `chat`'s apps only | the access rule |
-| `POST /apps/{app}/intents`, `/views`, `GET .../events`, presence, blobs, files, runs | `within` (other apps: `404`) | the access rule; a read-only row runs views only |
+| `GET /apps`, `GET /apps/{app}` | `chat`'s apps only | the app's grants |
+| `POST /apps/{app}/intents`, `/views`, `GET .../events`, presence, blobs, files, runs | `within` (other apps: `404`) | the app's grants; a read-only row runs views only |
 | `POST /apps { package: "chat", org? }` | its own package, installed; no bundle | `CREATE_APP` in the org; in an org with app teams, a package without one is an admin's to add |
 | `POST /apps/{app}/metadata` | `within` | the owner or an org admin |
 | `POST /apps/{app}/access` | `within`, and both teams `chat`'s | `SetAccess`'s rules |

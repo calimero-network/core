@@ -107,7 +107,10 @@ pub(crate) use upgrades::{
 #[cfg(test)]
 use {
     approvals::{OpsDeadlineBody, OpsOutboundBody, OpsReleaseBody},
-    apps::{AccessBody, AppAttestQuery, AppListQuery, CreateAppBody, MoveBody, TransferBody},
+    apps::{
+        AccessBody, AppAttestQuery, AppInviteBody, AppListQuery, CreateAppBody, MoveBody,
+        TransferBody,
+    },
     auth::{
         ActivityQuery, AddPasskeyFinish, AliasBody, ApiKeyBody, AssertionBody, LoginBegin,
         PasskeyLabelBody, RefreshBody, RegisterBegin, RegisterFinish,
@@ -120,8 +123,9 @@ use {
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
     ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
     orgs::{
-        AllAppsBody, MemberBody, MembersQuery, OrgBody, RenameOrgBody, ScopeAppsBody, TeamBody,
-        TeamIdsBody, TeamMemberBody, TeamRowsBody, TeamUpdateBody,
+        AllAppsBody, MemberBody, MembersQuery, OrgBody, OrgSettingsBody, RenameOrgBody,
+        ScopeAppsBody, TeamBody, TeamDeleteBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,
+        TeamUpdateBody,
     },
     packages::{InstallBody, PublisherBody},
     recovery::{RecoveryBegin, RecoveryFinish, RecoveryKeyBody, RecoveryStart, RecoveryStartBody},
@@ -1218,17 +1222,19 @@ pub async fn read_only_in(
     account: Option<&str>,
     sys_index: Option<u64>,
 ) -> bool {
-    let (crate::types::Access::Team { team }, Some(a)) = (&app.access, account) else {
+    let Some(a) = account else {
         return false;
     };
-    if a == app.owner {
+    // Only through teams: a name, or the whole organization, writes.
+    let teams = app.access.teams();
+    if teams.is_empty() || a == app.owner || app.access.org_wide() || app.access.names(a) {
         return false;
     }
     let check = || {
         node.sys(|s| {
             s.orgs
                 .get(&app.org)
-                .is_some_and(|o| !o.writes_team(a, team))
+                .is_some_and(|o| teams.iter().all(|t| !o.writes_team(a, t)))
         })
     };
     check() && {

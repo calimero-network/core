@@ -83,7 +83,10 @@ def sync_detailed(
 ) -> Response[Union[AppAccessResponse200, Error]]:
     """Set who may reach an app
 
-     A package-bound session: only its own package's app, from one of its package's teams to another.
+     `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version
+    1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
+    (on each team it admits, before and after). A package-bound session: only its own package's app,
+    from one of its package's teams to another.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -119,7 +122,10 @@ def sync(
 ) -> Optional[Union[AppAccessResponse200, Error]]:
     """Set who may reach an app
 
-     A package-bound session: only its own package's app, from one of its package's teams to another.
+     `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version
+    1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
+    (on each team it admits, before and after). A package-bound session: only its own package's app,
+    from one of its package's teams to another.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -150,7 +156,10 @@ async def asyncio_detailed(
 ) -> Response[Union[AppAccessResponse200, Error]]:
     """Set who may reach an app
 
-     A package-bound session: only its own package's app, from one of its package's teams to another.
+     `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version
+    1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
+    (on each team it admits, before and after). A package-bound session: only its own package's app,
+    from one of its package's teams to another.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -184,7 +193,10 @@ async def asyncio(
 ) -> Optional[Union[AppAccessResponse200, Error]]:
     """Set who may reach an app
 
-     A package-bound session: only its own package's app, from one of its package's teams to another.
+     `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version
+    1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps
+    (on each team it admits, before and after). A package-bound session: only its own package's app,
+    from one of its package's teams to another.
 
     **Who:** a passkey session (an API key is refused).
 

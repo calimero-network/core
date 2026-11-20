@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.confirm_only import ConfirmOnly
 from ...models.error import Error
+from ...models.team_delete_body import TeamDeleteBody
 from ...models.team_delete_response_200 import TeamDeleteResponse200
 from typing import cast
 
@@ -17,7 +17,7 @@ def _get_kwargs(
     org: str,
     team: str,
     *,
-    body: ConfirmOnly,
+    body: TeamDeleteBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -65,6 +65,11 @@ def _parse_response(
 
         return response_404
 
+    if response.status_code == 409:
+        response_409 = Error.from_dict(response.json())
+
+        return response_409
+
     if response.status_code == 412:
         response_412 = Error.from_dict(response.json())
 
@@ -97,12 +102,20 @@ def sync_detailed(
     team: str,
     *,
     client: AuthenticatedClient,
-    body: ConfirmOnly,
+    body: TeamDeleteBody,
 ) -> Response[Union[Error, TeamDeleteResponse200]]:
     """Delete a team
 
-     With the teams and apps below it. A package-bound session: only its own package's teams (its app
-    team and the teams below it): a team below its app team whose apps are all its package's.
+     With the teams below it. The instances only those teams admit (each of whose team grants goes, with
+    no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay
+    (`keptApps`), each without those teams' grants and with its other grants (named members, guests,
+    `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it);
+    `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
+    the organization admits only loses the deleted teams' grants either way. With such instances, the
+    passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list
+    `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its
+    own package's teams (its app team and the teams below it): a team below its app team whose apps are
+    all its package's.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
@@ -110,8 +123,7 @@ def sync_detailed(
     Args:
         org (str):
         team (str):
-        body (ConfirmOnly): The body of a step-up that names nothing else: none (or `{}`) at
-            first, the passkey assertion after the `412`.
+        body (TeamDeleteBody):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -139,12 +151,20 @@ def sync(
     team: str,
     *,
     client: AuthenticatedClient,
-    body: ConfirmOnly,
+    body: TeamDeleteBody,
 ) -> Optional[Union[Error, TeamDeleteResponse200]]:
     """Delete a team
 
-     With the teams and apps below it. A package-bound session: only its own package's teams (its app
-    team and the teams below it): a team below its app team whose apps are all its package's.
+     With the teams below it. The instances only those teams admit (each of whose team grants goes, with
+    no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay
+    (`keptApps`), each without those teams' grants and with its other grants (named members, guests,
+    `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it);
+    `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
+    the organization admits only loses the deleted teams' grants either way. With such instances, the
+    passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list
+    `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its
+    own package's teams (its app team and the teams below it): a team below its app team whose apps are
+    all its package's.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
@@ -152,8 +172,7 @@ def sync(
     Args:
         org (str):
         team (str):
-        body (ConfirmOnly): The body of a step-up that names nothing else: none (or `{}`) at
-            first, the passkey assertion after the `412`.
+        body (TeamDeleteBody):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -176,12 +195,20 @@ async def asyncio_detailed(
     team: str,
     *,
     client: AuthenticatedClient,
-    body: ConfirmOnly,
+    body: TeamDeleteBody,
 ) -> Response[Union[Error, TeamDeleteResponse200]]:
     """Delete a team
 
-     With the teams and apps below it. A package-bound session: only its own package's teams (its app
-    team and the teams below it): a team below its app team whose apps are all its package's.
+     With the teams below it. The instances only those teams admit (each of whose team grants goes, with
+    no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay
+    (`keptApps`), each without those teams' grants and with its other grants (named members, guests,
+    `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it);
+    `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
+    the organization admits only loses the deleted teams' grants either way. With such instances, the
+    passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list
+    `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its
+    own package's teams (its app team and the teams below it): a team below its app team whose apps are
+    all its package's.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
@@ -189,8 +216,7 @@ async def asyncio_detailed(
     Args:
         org (str):
         team (str):
-        body (ConfirmOnly): The body of a step-up that names nothing else: none (or `{}`) at
-            first, the passkey assertion after the `412`.
+        body (TeamDeleteBody):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -216,12 +242,20 @@ async def asyncio(
     team: str,
     *,
     client: AuthenticatedClient,
-    body: ConfirmOnly,
+    body: TeamDeleteBody,
 ) -> Optional[Union[Error, TeamDeleteResponse200]]:
     """Delete a team
 
-     With the teams and apps below it. A package-bound session: only its own package's teams (its app
-    team and the teams below it): a team below its app team whose apps are all its package's.
+     With the teams below it. The instances only those teams admit (each of whose team grants goes, with
+    no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay
+    (`keptApps`), each without those teams' grants and with its other grants (named members, guests,
+    `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it);
+    `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
+    the organization admits only loses the deleted teams' grants either way. With such instances, the
+    passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list
+    `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its
+    own package's teams (its app team and the teams below it): a team below its app team whose apps are
+    all its package's.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
@@ -229,8 +263,7 @@ async def asyncio(
     Args:
         org (str):
         team (str):
-        body (ConfirmOnly): The body of a step-up that names nothing else: none (or `{}`) at
-            first, the passkey assertion after the `412`.
+        body (TeamDeleteBody):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

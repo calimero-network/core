@@ -192,6 +192,8 @@ async fn org_get(
     if let Some(m) = v.get_mut("allApps").and_then(Value::as_array_mut) {
         m.retain(|a| a.as_str().is_some_and(|a| o.sees_member(&account, a)));
     }
+    // Its settings, whatever they are: the state leaves a default out.
+    v["allowGuests"] = json!(o.allow_guests);
     for field in ["members", "capabilities", "memberMetadata"] {
         if let Some(m) = v.get_mut(field).and_then(Value::as_object_mut) {
             m.retain(|a, _| o.sees_member(&account, a));
@@ -733,9 +735,7 @@ fn team_view(
     let apps: Vec<Value> = s
         .apps
         .values()
-        .filter(|a| {
-            a.org == o.org_id && matches!(&a.access, Access::Team { team: t } if t == team)
-        })
+        .filter(|a| a.org == o.org_id && a.access.teams().iter().any(|t| t.as_str() == team))
         .map(|a| json!({ "appId": a.app_id, "name": a.name, "contextId": hex::encode(sha256(a.app_id.as_bytes())) }))
         .collect();
     Some(json!({
@@ -818,15 +818,35 @@ async fn team_update(
     Ok(Json(json!({})))
 }
 
-/// Delete a team with the teams below it and their apps. When there are
-/// apps, with the actor's passkey over them (412 first, its details listing
-/// the `apps` that go; the retry's JSON body carries `confirm`).
+/// `DELETE /orgs/{org}/teams/{team}`'s body: whether the instances only the team admits
+/// stay, and the passkey confirmation after the `412`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct TeamDeleteBody {
+    /// Keep the instances only the team (and the teams below it) admit, without its grants:
+    /// they keep their other grants (named members, guests, `anyone`, public links), or with
+    /// none left only their owner reaches them. Absent or `false`: they are deleted with the
+    /// team. Needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`).
+    #[serde(default)]
+    keep_apps: bool,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Delete a team with the teams below it and their apps (or, with `keepApps`, keeping those
+/// apps without its grants). When there are apps, with the actor's passkey over them and what
+/// happens to them (412 first, its details listing the `apps` and `keepApps`; the retry's
+/// JSON body carries `confirm` and the same `keepApps`).
 async fn team_delete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((org, team)): Path<(String, String)>,
-    body: Option<Json<ConfirmOnlyBody>>,
+    body: Option<Json<TeamDeleteBody>>,
 ) -> ApiResult {
+    let Json(body) = body.unwrap_or_default();
+    if body.keep_apps {
+        node.require_features(&[Feature::KeepTeamApps]).await?;
+    }
     let p = person(&node, &headers).await?;
     p.within_team(&node, &org, &team, OwnTeam::BelowHoldingOwnApps)?;
     let actor = p.account()?;
@@ -849,15 +869,19 @@ async fn team_delete(
         return Err(ApiError::forbidden("not allowed to delete this team"));
     }
     let apps = node.sys(|s| s.team_apps(&org, &team));
+    let keep_apps = body.keep_apps;
     let consent = if apps.is_empty() {
         Value::Null
     } else {
-        let args = json!({ "team": team, "apps": apps });
-        let confirm = body.and_then(|Json(b)| b.confirm);
-        org_consent(&node, &p, &org, "__delete_team", &args, confirm)
+        let args = crate::system::delete_team_args(&team, &apps, keep_apps);
+        org_consent(&node, &p, &org, "__delete_team", &args, body.confirm)
             .await
             .map_err(|e| match e.code.as_str() {
-                "CONFIRM_REQUIRED" => with_detail(e, "apps", json!(apps)),
+                "CONFIRM_REQUIRED" => with_detail(
+                    with_detail(e, "apps", json!(apps)),
+                    "keepApps",
+                    json!(keep_apps),
+                ),
                 _ => e,
             })?
     };
@@ -868,6 +892,7 @@ async fn team_delete(
             actor,
             consent,
             apps_need_consent: true,
+            keep_apps,
         })
         .await?;
     Ok(Json(v))
@@ -1101,6 +1126,61 @@ pub(crate) async fn create_invite(
     Ok(Json(json!({ "token": token })))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct OrgSettingsBody {
+    #[serde(flatten)]
+    settings: crate::system::OrgSettings,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Change the organization's settings (`allowGuests`): its owner or an admin, with a
+/// passkey over `org:<org> / __set_org_settings / settings` (`412` first). `404` to anyone
+/// outside it, `403` to a member below admin, `400` for no setting.
+async fn org_settings(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(org): Path<String>,
+    Json(body): Json<OrgSettingsBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let (member, admin) = node.sys(|s| {
+        (
+            s.orgs.get(&org).and_then(|o| o.role(&actor)).is_some(),
+            s.is_org_admin(&org, &actor),
+        )
+    });
+    if !member {
+        return Err(ApiError::not_found("no such organization"));
+    }
+    if !admin {
+        return Err(ApiError::forbidden(
+            "only the organization's owner or an admin changes its settings",
+        ));
+    }
+    if body.settings.is_empty() {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "name a setting to change",
+        ));
+    }
+    node.require_features(&[Feature::Guests]).await?;
+    let args = serde_json::to_value(&body.settings).unwrap_or_default();
+    let consent = org_consent(&node, &p, &org, "__set_org_settings", &args, body.confirm).await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetOrgSettings {
+            org,
+            settings: body.settings,
+            actor,
+            consent,
+        })
+        .await?,
+    ))
+}
+
 /// Redeem an invite for the signed-in account. This node, holding the token,
 /// signs the redemption with the token's key; no passkey prompt. One that
 /// changes nothing for the account (already a member, at the invite's role or
@@ -1118,6 +1198,19 @@ async fn invite_redeem(
 /// the consent page's `acceptInvite` once the person approved it there.
 pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> ApiResult {
     let now = now_secs();
+    // An instance invite makes the account a guest of that instance, never a member.
+    let key = crate::proof::invite_key(token);
+    if node.sys(|s| s.app_invites.contains_key(&key)) {
+        let v = node
+            .sys_write(&SystemCmd::RedeemAppInvite {
+                signature: crate::proof::sign_invite_redeem(token, &account, now),
+                invite_key: key,
+                account,
+                now,
+            })
+            .await?;
+        return Ok(Json(v));
+    }
     // An earlier release would apply the grant unclamped, so the flag waits
     // for every node to read it.
     let clamp_grants = node
@@ -1322,8 +1415,6 @@ async fn app_teams_scope(
             nonce: b64url(&random::<16>()),
             actor,
             consent,
-            owner_in_team: true,
-            accounts_in_app_team: true,
             member_child_teams: true,
             all_apps_rows: true,
             by_release: true,
@@ -1432,4 +1523,5 @@ pub(super) fn routes() -> Router<Arc<Node>> {
             get(app_team_list).post(app_teams_scope),
         )
         .route("/invites/{token}/redeem", post(invite_redeem))
+        .route("/orgs/{org}/settings", post(org_settings))
 }

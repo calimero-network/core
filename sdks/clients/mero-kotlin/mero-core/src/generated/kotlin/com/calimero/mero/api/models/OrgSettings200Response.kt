@@ -31,26 +31,21 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param kind 
+ * @param org 
+ * @param allowGuests 
  */
 @Serializable
 
-data class AccessOneOf (
+data class OrgSettings200Response (
 
-    @SerialName(value = "kind")
-    val kind: AccessOneOf.Kind
+    @SerialName(value = "org")
+    val org: kotlin.String,
+
+    @SerialName(value = "allowGuests")
+    val allowGuests: kotlin.Boolean
 
 ) {
 
-    /**
-     * 
-     *
-     * Values: OWNER
-     */
-    @Serializable
-    enum class Kind(val value: kotlin.String) {
-        @SerialName(value = "owner") OWNER("owner");
-    }
 
 }
 

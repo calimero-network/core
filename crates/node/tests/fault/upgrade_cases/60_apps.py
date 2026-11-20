@@ -77,9 +77,11 @@ class History(DeepCase):
 class AccessKinds(DeepCase):
     name = "app-access-kinds"
     area = "Apps"
-    seeds = "an organization's app of each access kind: owner, organization, listed accounts, public, team"
-    verifies = ("who reads and writes each (the owner, a member, a listed account, an outsider, no "
-                "credential), allowed and refused as before; access changed on the new release")
+    since = "1.0.0-rc.33"
+    seeds = "an organization's app with each kind of grant alone: none (the owner), the organization, a named account, anyone, a team"
+    verifies = ("who reads and writes each (the owner, a member, the named account, an outsider, no credential), "
+                "allowed and refused as before (`anyone` admits the outsider, never a caller without an account); "
+                "each instance's grants as the owner reads them; a grant added on the new release")
 
     def populate(self, w):
         ace, mo, lis, oz = people(w, "ace", "mo", "lis", "oz")
@@ -87,19 +89,20 @@ class AccessKinds(DeepCase):
         org = new_org(ace, "Access Org")
         join(ace, org, mo, lis)
         team = team_id(ace.raw("post", f"orgs/{org}/teams", {"name": "few", "join": "invite"}))
-        apps = {}
-        for kind, access in (("owner", {"kind": "owner"}), ("org", {"kind": "org"}),
-                             ("accounts", {"kind": "accounts", "accounts": [lis.id]}),
-                             ("public", {"kind": "public"}), ("team", {"kind": "team", "team": team})):
+        apps, grants = {}, {}
+        for kind, granted in (("owner", []), ("org", [{"kind": "org"}]),
+                              ("account", [{"kind": "account", "account": lis.id}]),
+                              ("anyone", [{"kind": "anyone"}]), ("team", [{"kind": "team", "team": team}])):
             app = ace.deploy(kv_wasm(w), f"access-{kind}", org=org)
-            ace.raw("post", f"apps/{app}/access", {"access": access})
+            ace.raw("post", f"apps/{app}/access", {"grants": granted})
             ace.call(app, "set", {"key": "k", "value": kind})
-            apps[kind] = app
-        s = {"org": org, "apps": apps}
+            apps[kind], grants[kind] = app, granted
+        s = {"org": org, "apps": apps, "grants": grants}
         s["decisions"] = self._decide(w, s)
-        for want in ("mo reads org", "lis reads accounts", "oz reads public"):
+        for want in ("mo reads org", "lis reads account", "oz reads anyone"):
             check(s["decisions"][want] == "ok", f"{want}: {s['decisions'][want]}")
-        for want in ("mo reads owner", "oz reads org", "mo reads accounts", "mo reads team", "anonymous reads org"):
+        for want in ("mo reads owner", "oz reads org", "mo reads account", "mo reads team", "anonymous reads org",
+                     "anonymous reads anyone"):
             check(s["decisions"][want] != "ok", f"{want} was allowed")
         return s
 
@@ -116,14 +119,139 @@ class AccessKinds(DeepCase):
         return out
 
     def check(self, w, s):
+        ace = person(w, "ace")
+        for kind, app in s["apps"].items():
+            eq(ace.get(f"apps/{app}").get("grants"), s["grants"][kind], f"the {kind} instance's grants")
         same_decisions(self._decide(w, s), s["decisions"], "access kinds")
 
     def exercise(self, w, s):
         ace, mo, lis = people(w, "ace", "mo", "lis")
-        app = s["apps"]["accounts"]
-        ace.raw("post", f"apps/{app}/access", {"access": {"kind": "accounts", "accounts": [lis.id, mo.id]}})
-        until("mo reads once listed", lambda: mo.view(app, "get", {"key": "k"}))
+        app = s["apps"]["account"]
+        s["grants"]["account"] = [{"kind": "account", "account": lis.id}, {"kind": "account", "account": mo.id}]
+        ace.raw("post", f"apps/{app}/access", {"grants": s["grants"]["account"]})
+        until("mo reads once named", lambda: mo.view(app, "get", {"key": "k"}))
         s["decisions"] = self._decide(w, s)
+
+
+@case
+class AccessGrants(DeepCase):
+    name = "app-access-grants"
+    area = "Apps"
+    since = "1.0.0-rc.33"
+    seeds = ("an organization's instance whose access is a list of grants: a team, a member outside it named with "
+             "an app-defined scope, and an outsider named (a guest, whom the release does not allow); grants "
+             "wait for the cluster version that brings them, so they are set after the roll")
+    verifies = ("who reads and writes it (the owner, the team's member, the named member, the guest, a member "
+                "neither in the team nor named, no credential) and the grants with their scope as the owner reads "
+                "them; a guest sees nothing of it; on the new release the team's grant goes and the organization's "
+                "takes its place")
+
+    def populate(self, w):
+        gil, gus, gia, gow, gem = people(w, "gil", "gus", "gia", "gow", "gem")
+        org = new_org(gil, "Grants Org")
+        team = team_id(gil.raw("post", f"orgs/{org}/teams", {"name": "deal", "join": "invite"}))
+        join(gil, org, gus, teams=(team,))
+        join(gil, org, gia, gem)
+        app = gil.deploy(kv_wasm(w), "grants", org=org)
+        gil.call(app, "set", {"key": "k", "value": "grants"})
+        grants = [{"kind": "team", "team": team},
+                  {"kind": "account", "account": gia.id, "scope": {"channel": "partners"}},
+                  {"kind": "account", "account": gow.id}]
+        until("the cluster version takes grants", lambda: gil.raw(
+            "post", f"apps/{app}/access", {"grants": grants}), timeout=120)
+        s = {"org": org, "team": team, "app": app, "grants": grants}
+        s["decisions"] = self._decide(w, s)
+        for want in ("gus reads", "gia reads"):
+            check(s["decisions"][want] == "ok", f"{want}: {s['decisions'][want]}")
+        for want in ("gow reads", "anonymous reads"):
+            check(s["decisions"][want] != "ok", f"{want} was allowed")
+        return s
+
+    def _decide(self, w, s):
+        out, app = {}, s["app"]
+        for who in ("gil", "gus", "gia", "gow", "gem"):
+            p = person(w, who)
+            out[f"{who} reads"] = decision(lambda p=p: p.view(app, "get", {"key": "k"}))
+            out[f"{who} writes"] = decision(lambda p=p: p.call(app, "set", {"key": "w", "value": p.name}))
+        out["anonymous reads"] = decision(
+            lambda: anyone(w, "POST", f"apps/{app}/views", {"method": "get", "args": {"key": "k"}}))
+        return out
+
+    def check(self, w, s):
+        eq(person(w, "gil").get(f"apps/{s['app']}").get("grants"), s["grants"], "the grants as the owner reads them")
+        same_decisions(self._decide(w, s), s["decisions"], "access grants")
+
+    def exercise(self, w, s):
+        gil, gus = people(w, "gil", "gus")
+        s["grants"] = [{"kind": "org"}] + s["grants"][1:]
+        gil.raw("post", f"apps/{s['app']}/access", {"grants": s["grants"]})
+        until("the organization's members read once it is granted",
+              lambda: person(w, "gem").view(s["app"], "get", {"key": "k"}))
+        gus.view(s["app"], "get", {"key": "k"})
+        s["decisions"] = self._decide(w, s)
+
+
+@case
+class TeamDeletedKeepingApps(DeepCase):
+    name = "team-deleted-keeping-apps"
+    area = "Teams"
+    since = "1.0.0-rc.33"
+    seeds = ("an organization's two instances only a team admits, one also naming a member outside the team; the "
+             "team deleted with `keepApps`, which waits for the cluster version that brings it, so it is done "
+             "after the roll")
+    verifies = ("both instances kept with their data: the one naming a member keeps that grant alone, the other an "
+                "empty grant list; who reads each (the owner, the named member, the team's former member, no "
+                "credential); on the new release another team deleted without the flag takes its instance")
+
+    def populate(self, w):
+        kora, kurt, kobi = people(w, "kora", "kurt", "kobi")
+        org = new_org(kora, "Keep Org")
+        team = team_id(kora.raw("post", f"orgs/{org}/teams", {"name": "keep", "join": "invite"}))
+        join(kora, org, kurt, teams=(team,))
+        join(kora, org, kobi)
+        named = kora.deploy(kv_wasm(w), "kept-named", org=org)
+        alone = kora.deploy(kv_wasm(w), "kept-alone", org=org)
+        for app in (named, alone):
+            kora.call(app, "set", {"key": "k", "value": "kept"})
+        until("the cluster version takes grants", lambda: kora.raw("post", f"apps/{named}/access", {
+            "grants": [{"kind": "team", "team": team}, {"kind": "account", "account": kobi.id}]}), timeout=120)
+        kora.raw("post", f"apps/{alone}/access", {"grants": [{"kind": "team", "team": team}]})
+        out = kora.raw("delete", f"orgs/{org}/teams/{team}", {"keepApps": True})
+        eq(sorted(out.get("keptApps") or []), sorted([named, alone]), "the instances kept")
+        s = {"org": org, "named": named, "alone": alone, "kobi": kobi.id}
+        s["decisions"] = self._decide(w, s)
+        for want in ("kora reads kept-named", "kobi reads kept-named", "kora reads kept-alone"):
+            check(s["decisions"][want] == "ok", f"{want}: {s['decisions'][want]}")
+        for want in ("kurt reads kept-named", "kurt reads kept-alone", "kobi reads kept-alone"):
+            check(s["decisions"][want] != "ok", f"{want} was allowed")
+        return s
+
+    def _decide(self, w, s):
+        out = {}
+        for key in ("named", "alone"):
+            app = s[key]
+            for who in ("kora", "kurt", "kobi"):
+                p = person(w, who)
+                out[f"{who} reads kept-{key}"] = decision(lambda p=p, app=app: p.view(app, "get", {"key": "k"}))
+            out[f"anonymous reads kept-{key}"] = decision(
+                lambda app=app: anyone(w, "POST", f"apps/{app}/views", {"method": "get", "args": {"key": "k"}}))
+        return out
+
+    def check(self, w, s):
+        kora = person(w, "kora")
+        eq(kora.get(f"apps/{s['named']}").get("grants"), [{"kind": "account", "account": s["kobi"]}],
+           "the kept instance's other grant")
+        eq(kora.get(f"apps/{s['alone']}").get("grants"), [], "the kept instance with none left")
+        eq(kora.result(s["alone"], "get", {"key": "k"}), "kept", "its data")
+        same_decisions(self._decide(w, s), s["decisions"], "instances kept with their team deleted")
+
+    def exercise(self, w, s):
+        kora = person(w, "kora")
+        team = team_id(kora.raw("post", f"orgs/{s['org']}/teams", {"name": "gone", "join": "invite"}))
+        app = kora.deploy(kv_wasm(w), "goes", org=s["org"])
+        kora.raw("post", f"apps/{app}/access", {"grants": [{"kind": "team", "team": team}]})
+        out = kora.raw("delete", f"orgs/{s['org']}/teams/{team}")
+        eq(out.get("apps"), [app], "the default deletes the instance only the team admitted")
 
 
 def _xcalls(w, s, node=None):

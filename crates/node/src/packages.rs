@@ -467,6 +467,7 @@ impl Node {
                 min_runtime_version: Some(manifest.min_runtime_version.clone()),
                 // Every release says, absent being `either`.
                 instance_org: Some(manifest.instance_org.unwrap_or_default()),
+                guests: Some(manifest.guests.unwrap_or_default()),
             },
             wasm: wasm_by_hash,
         })
@@ -498,6 +499,15 @@ impl Node {
             .is_err()
         {
             v.release.instance_org = None;
+        }
+        // And whether it takes guests: an older node drops it, and apply takes a release
+        // without it as forbidding them.
+        if self
+            .require_features(&[crate::system::cluster_version::Feature::Guests])
+            .await
+            .is_err()
+        {
+            v.release.guests = None;
         }
         self.refuse_stalled_install(&v.release.installed_by, &v.signer_id)?;
         // An older node drops `components` and would apply the release as an app's, and drops

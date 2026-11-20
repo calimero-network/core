@@ -82,7 +82,7 @@ openApiGenerate {
     // branch's fields are required, and renders a `oneOf` as a sealed class no branch extends.
     schemaMappings.putAll(
         mapOf(
-            "Access" to "com.calimero.mero.AppAccess",
+            "Grant" to "com.calimero.mero.AppGrant",
             "Deployer" to "com.calimero.mero.Deployer",
             "OutboundSelection" to "com.calimero.mero.OutboundSelection",
             // The consent request body is a `oneOf` with a `kind` discriminator, which 7.26's

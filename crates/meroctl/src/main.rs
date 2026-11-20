@@ -738,7 +738,7 @@ mod tests {
                 "--team",
                 "t",
             ],
-            &["meroctl", "instance", "access", "kv", "team", "--team", "t"],
+            &["meroctl", "instance", "access", "kv", "--grant", "team:t"],
             &[
                 "meroctl",
                 "ops",

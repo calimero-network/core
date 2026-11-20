@@ -6,29 +6,27 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..models.access_type_2_kind import AccessType2Kind
-
-T = TypeVar("T", bound="AccessType2")
+T = TypeVar("T", bound="AppInviteCreateResponse200")
 
 
 @_attrs_define
-class AccessType2:
+class AppInviteCreateResponse200:
     """
     Attributes:
-        kind (AccessType2Kind):
+        token (str):
     """
 
-    kind: AccessType2Kind
+    token: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        kind = self.kind.value
+        token = self.token
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "kind": kind,
+                "token": token,
             }
         )
 
@@ -37,14 +35,14 @@ class AccessType2:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        kind = AccessType2Kind(d.pop("kind"))
+        token = d.pop("token")
 
-        access_type_2 = cls(
-            kind=kind,
+        app_invite_create_response_200 = cls(
+            token=token,
         )
 
-        access_type_2.additional_properties = d
-        return access_type_2
+        app_invite_create_response_200.additional_properties = d
+        return app_invite_create_response_200
 
     @property
     def additional_keys(self) -> list[str]:

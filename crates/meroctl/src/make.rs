@@ -111,6 +111,15 @@ pub enum Upgrades {
     Publisher,
 }
 
+/// Whether the package's instances take guests (`guests` in the manifest).
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum Guests {
+    /// An instance's listed accounts reach it without joining its organization.
+    Allowed,
+    /// Only its organization's members reach it (the default).
+    Forbidden,
+}
+
 /// Where the package's instances go (`instanceOrg` in the manifest).
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum InstanceOrg {
@@ -171,6 +180,9 @@ pub struct PackArgs {
     /// `instance-org` otherwise).
     #[arg(long, value_enum)]
     pub instance_org: Option<InstanceOrg>,
+    /// Whether an instance takes guests (absent: `forbidden`; DIR's `guests` otherwise).
+    #[arg(long, value_enum)]
+    pub guests: Option<Guests>,
     /// The package id, e.g. `com.example.kv-store` (default: DIR's metadata).
     #[arg(long)]
     pub package: Option<String>,
@@ -592,7 +604,7 @@ fn uses_of(
 /// (and `cargo mero` before it) read: `metadata` (`name`, `description`,
 /// `author`, `icon`, `tags`, `license`, `category`, `guide`), `handlers.slug`
 /// (default: the package), `links` (`frontend`, `github`, `docs`),
-/// `frontendAliases`, `outbound`, `upgrades` and `instanceOrg` (`instance-org`), and `buildInfo` (the
+/// `frontendAliases`, `outbound`, `upgrades`, `instanceOrg` (`instance-org`) and `guests`, and `buildInfo` (the
 /// `calimero-sdk` git source and tag). A flag wins over the table.
 fn manifest_extras(
     a: &PackArgs,
@@ -1070,6 +1082,21 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
             bail!("instance-org = {m:?}: standalone, org or either");
         }
         let _ = manifest.insert("instanceOrg".into(), json!(m));
+    }
+    let guests = match a.guests {
+        Some(Guests::Allowed) => Some("allowed".to_owned()),
+        Some(Guests::Forbidden) => Some("forbidden".to_owned()),
+        None => meta
+            .table
+            .get("guests")
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned),
+    };
+    if let Some(g) = guests {
+        if g != "allowed" && g != "forbidden" {
+            bail!("guests = {g:?}: allowed or forbidden");
+        }
+        let _ = manifest.insert("guests".into(), json!(g));
     }
 
     let key = signing_key(a.key.as_deref())?;

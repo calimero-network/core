@@ -6,19 +6,19 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..models.access_type_0_kind import AccessType0Kind
+from ..models.grant_type_3_kind import GrantType3Kind
 
-T = TypeVar("T", bound="AccessType0")
+T = TypeVar("T", bound="GrantType3")
 
 
 @_attrs_define
-class AccessType0:
+class GrantType3:
     """
     Attributes:
-        kind (AccessType0Kind):
+        kind (GrantType3Kind):
     """
 
-    kind: AccessType0Kind
+    kind: GrantType3Kind
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -37,14 +37,14 @@ class AccessType0:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        kind = AccessType0Kind(d.pop("kind"))
+        kind = GrantType3Kind(d.pop("kind"))
 
-        access_type_0 = cls(
+        grant_type_3 = cls(
             kind=kind,
         )
 
-        access_type_0.additional_properties = d
-        return access_type_0
+        grant_type_3.additional_properties = d
+        return grant_type_3
 
     @property
     def additional_keys(self) -> list[str]:

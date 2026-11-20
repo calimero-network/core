@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class AccessType1Kind(str, Enum):
+class GrantType0Kind(str, Enum):
     ORG = "org"
 
     def __str__(self) -> str:

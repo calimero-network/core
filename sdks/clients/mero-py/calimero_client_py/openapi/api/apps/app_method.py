@@ -132,9 +132,9 @@ def sync_detailed(
     view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's
     own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
 
-    **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a
-    `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again
-    with `confirm`, a passkey assertion over `details.challenge`.
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the
+    method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same
+    request again with `confirm`, a passkey assertion over `details.challenge`.
 
     Args:
         app (str):
@@ -177,9 +177,9 @@ def sync(
     view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's
     own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
 
-    **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a
-    `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again
-    with `confirm`, a passkey assertion over `details.challenge`.
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the
+    method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same
+    request again with `confirm`, a passkey assertion over `details.challenge`.
 
     Args:
         app (str):
@@ -217,9 +217,9 @@ async def asyncio_detailed(
     view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's
     own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
 
-    **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a
-    `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again
-    with `confirm`, a passkey assertion over `details.challenge`.
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the
+    method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same
+    request again with `confirm`, a passkey assertion over `details.challenge`.
 
     Args:
         app (str):
@@ -260,9 +260,9 @@ async def asyncio(
     view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's
     own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
 
-    **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a
-    `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again
-    with `confirm`, a passkey assertion over `details.challenge`.
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the
+    method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same
+    request again with `confirm`, a passkey assertion over `details.challenge`.
 
     Args:
         app (str):

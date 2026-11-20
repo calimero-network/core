@@ -1898,7 +1898,7 @@ async fn org_with_a_public_app(f: &Fixture) -> Org {
         .map(|b| b.hash)
         .unwrap();
     let app = alice
-        .apps().create(typed(json!({ "name": "open", "bundle": &bundle, "org": org, "access": { "kind": "public" } })))
+        .apps().create(typed(json!({ "name": "open", "bundle": &bundle, "org": org, "grants": [{ "kind": "anyone" }] })))
         .await.map(|a| a.app_id)
         .unwrap();
     let join = |role: &'static str, node: usize, name: &'static str| {

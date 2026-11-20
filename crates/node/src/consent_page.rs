@@ -2548,6 +2548,15 @@ fn accept_invite_request(
     }
     let key = crate::proof::invite_key(&token);
     let now = now_secs();
+    if let Some(found) = app_invite_model(node, account, &key, now) {
+        let model = found?;
+        return Ok((
+            Action::AcceptInvite {
+                token: InviteToken(token),
+            },
+            model,
+        ));
+    }
     let (invite, org_name, current) = node
         .sys(|s| {
             let inv = s.invites.get(&key)?;
@@ -2607,6 +2616,89 @@ fn accept_invite_request(
         },
         model,
     ))
+}
+
+/// The page of an instance invite under `key`, if it is one: what is joined (the app, the
+/// package it runs, its organization), as a guest. `None` for a key no instance invite has.
+fn app_invite_model(
+    node: &Node,
+    account: &str,
+    key: &str,
+    now: u64,
+) -> Option<Result<Value, ApiError>> {
+    let found = node.sys(|s| {
+        let inv = s.app_invites.get(key)?.clone();
+        let app = s.apps.get(&inv.app)?;
+        let o = s.orgs.get(&app.org);
+        let org_name = o.map(|o| o.name.clone());
+        let member = o.and_then(|o| o.role(account)).is_some();
+        let allowed = member || s.guests_allowed(app);
+        Some((inv, app.clone(), org_name, allowed, member))
+    })?;
+    let (inv, app, org_name, allowed, member) = found;
+    if inv.expires_at <= now || inv.uses_left == 0 {
+        return Some(Err(ApiError::not_found(
+            "no such invite, or it expired or was used up",
+        )));
+    }
+    if !allowed {
+        return Some(Err(ApiError::new(
+            409,
+            crate::api::apps::GUESTS_NOT_ALLOWED,
+            crate::system::GUESTS_NOT_ALLOWED,
+        )));
+    }
+    let package = app.release.as_ref().map(|r| r.package.clone());
+    let org = org_name.unwrap_or_else(|| "an organization".to_owned());
+    let of = package
+        .as_deref()
+        .map_or_else(String::new, |p| format!(" (an instance of {p})"));
+    let joins = format!("{}{of} in {org}", app.name);
+    // A member of the organization is named on the app as a member; anyone else is a guest.
+    let points = if member {
+        vec![
+            format!("You are named on {joins}, as the member of {org} you are."),
+            "Nothing else of yours changes: your role and teams stay as they are.".to_owned(),
+        ]
+    } else {
+        vec![
+            format!("You join {joins} as a guest: this app only, not the organization."),
+            format!("You do not see {org}'s members, teams or other apps, and its admins can take you off this app."),
+            "You can be removed from it at any time; nothing else of yours changes.".to_owned(),
+        ]
+    };
+    let (headline, after) = if member {
+        (
+            format!("Join {joins}"),
+            format!("Once you approve, you reach {}.", app.name),
+        )
+    } else {
+        (
+            format!("Join {joins} as a guest"),
+            format!("Once you approve, you reach {} as a guest.", app.name),
+        )
+    };
+    Some(Ok(json!({
+        "kind": "acceptInvite",
+        "scope": { "kind": "org", "org": app.org, "name": org },
+        "headline": headline,
+        "title": format!("Join {}", app.name),
+        "points": points,
+        "attention": [],
+        "before": format!("Until you approve, you do not reach {}.", app.name),
+        "after": after,
+        "notes": [],
+        "invite": {
+            "app": app.app_id,
+            "appName": app.name,
+            "package": package,
+            "org": app.org,
+            "orgName": org,
+            "guest": !member,
+            "scope": inv.scope,
+            "expiresAt": inv.expires_at,
+        },
+    })))
 }
 
 // ---------------------------------------------------------------- results

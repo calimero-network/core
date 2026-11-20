@@ -1,8 +1,8 @@
 from enum import Enum
 
 
-class AccessType4Kind(str, Enum):
-    TEAM = "team"
+class GrantType2Kind(str, Enum):
+    ACCOUNT = "account"
 
     def __str__(self) -> str:
         return str(self.value)

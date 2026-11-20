@@ -373,8 +373,11 @@ pub(super) struct CreateAppBody {
     /// `either`). Not with `org`.
     #[serde(default)]
     new_org: Option<NewOrgBody>,
+    /// Who reaches the instance, as grants (`types::Grant`): the organization or teams of
+    /// it, named members and guests (each with an app-defined `scope`), anyone. Absent: the
+    /// organization; empty: the owner alone.
     #[serde(default)]
-    access: Option<Access>,
+    grants: Option<Vec<crate::types::Grant>>,
     /// Arguments for the app's `init`, as JSON.
     #[serde(default)]
     init_args: Value,
@@ -396,8 +399,25 @@ pub(super) struct CreateAppBody {
 async fn app_create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
-    Json(body): Json<CreateAppBody>,
+    body: axum::body::Bytes,
 ) -> ApiResult {
+    let raw: Value = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    // The single access mode clients before 1.0.0-rc.33 sent is refused, never ignored:
+    // read as no grants it would admit the whole organization to an instance the client
+    // meant to keep to a few. Judged on the raw body, so `CreateAppBody` (and the API
+    // document clients are generated from) never names it.
+    if raw.get("access").is_some() {
+        return Err(ApiError::bad_request(
+            "ACCESS_REMOVED",
+            "`access` was replaced by `grants`: name who reaches the instance as a list of grants",
+        ));
+    }
+    let body: CreateAppBody = serde_json::from_value(raw)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    if let Some(grants) = &body.grants {
+        grants_fit(grants)?;
+    }
     let p = signed_in(&node, &headers).await?;
     match p.bound_app() {
         // A frontend makes instances of its own package, already installed.
@@ -575,7 +595,7 @@ async fn create_instance(
                         service: None,
                         org: Some(org.clone()),
                         new_org: None,
-                        access: body.access.clone(),
+                        grants: body.grants.clone(),
                         init_args: Value::Null,
                         metadata: json!({ "unit": { "of": body.name, "as": name } }),
                         deployment: body.deployment.clone(),
@@ -601,7 +621,7 @@ async fn create_instance(
     let app_id = typed_id::<16>();
     let has_compute = compute_bundle.is_some();
     let components = node.sys(|s| s.components_of(release.as_ref()));
-    let access = body.access.unwrap_or(Access::Org);
+    let access = body.grants.map_or_else(Access::org, Access::new);
     let out = node
         .sys_write(&SystemCmd::CreateApp {
             app: Box::new(crate::types::AppRecord {
@@ -811,7 +831,7 @@ async fn app_list(
                         .is_some_and(|r| r.package == *pkg)
                 })
             })
-            .filter(|a| a.access != Access::Public || account.as_deref() == Some(a.owner.as_str()))
+            .filter(|a| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
             .filter(|a| s.may_reach(a, account.as_deref()))
             .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
             .filter(|a| {
@@ -911,12 +931,250 @@ async fn app_get(
     if !reaches(&node, &app, account) {
         return Err(ApiError::not_found("no such app"));
     }
-    Ok(Json(serde_json::to_value(app).unwrap_or_default()))
+    let mut v = serde_json::to_value(&app).unwrap_or_default();
+    // A guest sees none of the organization's people: only their own grant.
+    if let Some(a) = account {
+        if node.sys(|s| s.is_guest(&app, a)) {
+            v["grants"] = json!(app.access.only(a));
+        }
+    }
+    Ok(Json(v))
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct AppInviteBody {
+    /// How long it lasts (default 7 days, at most `MAX_APP_INVITE_TTL_SECS`).
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+    /// How many accounts it admits (default 1, at most `MAX_APP_INVITE_USES`).
+    #[serde(default)]
+    uses: Option<u32>,
+    /// What the grant it makes lets its redeemer do inside the app, in the app's own terms
+    /// (`Grant::Account`'s `scope`): opaque JSON of at most `MAX_GRANT_SCOPE_BYTES`, which the
+    /// app reads for its caller. Absent: the app's whole.
+    #[serde(default)]
+    scope: Option<Value>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// The instance's switches, judged before an invite is minted: who may, and that it takes
+/// guests. `404` to whoever does not reach it.
+fn refuse_app_invite(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    actor: &str,
+) -> Result<(), ApiError> {
+    node.sys(|s| {
+        if !s.may_reach(app, Some(actor)) {
+            return Err(ApiError::not_found("no such app"));
+        }
+        if !s.manages_grants(app, actor) {
+            return Err(ApiError::forbidden(
+                "only whoever may change the instance's access invites its guests",
+            ));
+        }
+        Ok(())
+    })
+}
+
+/// `409`: the instance's release or organization does not allow guests.
+pub(crate) const GUESTS_NOT_ALLOWED: &str = "GUESTS_NOT_ALLOWED";
+
+/// Mint an instance invite: whoever manages the instance's guests, with their passkey over
+/// the invite's key and terms (`412` first). The first request makes the token and keeps it
+/// with the challenge; the log records only the token's public key.
+async fn app_invite_create(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Json(body): Json<AppInviteBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let app = node.app(&app_id).await?;
+    refuse_app_invite(&node, &app, &actor)?;
+    let ttl = body.ttl_secs.unwrap_or(7 * 24 * 3600);
+    let uses = body.uses.unwrap_or(1);
+    if ttl == 0 || ttl > crate::system::MAX_APP_INVITE_TTL_SECS {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "ttlSecs is 1 to 7776000 (90 days)",
+        ));
+    }
+    if uses == 0 || uses > crate::system::MAX_APP_INVITE_USES {
+        return Err(ApiError::bad_request("BAD_REQUEST", "uses is 1 to 1000"));
+    }
+    if body
+        .scope
+        .as_ref()
+        .is_some_and(|v| !crate::types::scope_fits(v))
+    {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "scope is at most 256 bytes of JSON",
+        ));
+    }
+    node.require_features(&[
+        crate::system::cluster_version::Feature::Guests,
+        crate::system::cluster_version::Feature::AccessGrants,
+    ])
+    .await?;
+    let now = now_secs();
+    let token = format!("inv_{}", b64url(&random::<24>()));
+    let invite = crate::types::AppInvite {
+        app: app_id.clone(),
+        expires_at: now + ttl,
+        uses_left: uses,
+        created_by: actor.clone(),
+        created_at: now,
+        scope: body.scope,
+    };
+    let args = crate::system::app_invite_args(&crate::proof::invite_key(&token), &invite);
+    let c = consent_minted(
+        &node,
+        &p,
+        &app_id,
+        "__create_app_invite",
+        &args,
+        Some(json!(token)),
+        body.confirm,
+    )
+    .await?;
+    // The retry records the invite the approval names, minted by the first request.
+    let token = c
+        .carry
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| ApiError::bad_request("WRONG_CHALLENGE", "not an invite approval"))?;
+    let invite_key = crate::proof::invite_key(&token);
+    let expires_at = c
+        .args
+        .get("expiresAt")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let invite = crate::types::AppInvite {
+        expires_at,
+        created_at: expires_at.saturating_sub(ttl),
+        ..invite
+    };
+    if crate::system::app_invite_args(&invite_key, &invite) != c.args {
+        return Err(ApiError::bad_request(
+            "WRONG_CHALLENGE",
+            "the approval was for a different call",
+        ));
+    }
+    let _ok = node
+        .sys_write(&SystemCmd::CreateAppInvite {
+            invite_key,
+            invite,
+            actor,
+            consent: c.consent,
+        })
+        .await?;
+    Ok(Json(json!({ "token": token })))
+}
+
+/// The instance's pending invites, for whoever manages its guests: key, uses left, expiry,
+/// creator; never a token (the log never had one). `404` to anyone else.
+async fn app_invite_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let p = signed_in(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let app = node.app(&app_id).await?;
+    let now = now_secs();
+    node.sys(|s| {
+        if !s.may_reach(&app, Some(&actor)) || !s.manages_grants(&app, &actor) {
+            return Err(ApiError::not_found("no such app"));
+        }
+        let invites: Vec<Value> = s
+            .app_invites
+            .iter()
+            .filter(|(_, i)| i.app == app_id)
+            .map(|(k, i)| {
+                json!({
+                    "inviteKey": k,
+                    "usesLeft": i.uses_left,
+                    "expiresAt": i.expires_at,
+                    "expired": i.expires_at <= now,
+                    "createdBy": i.created_by,
+                    "createdAt": i.created_at,
+                    "scope": i.scope,
+                })
+            })
+            .collect();
+        Ok(Json(json!({ "invites": invites })))
+    })
+}
+
+/// Withdraw an instance invite: its creator or whoever manages the instance's guests, with
+/// their passkey (`412` first). One the caller may not see is `404`.
+async fn app_invite_revoke(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, key)): Path<(String, String)>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let app = node.app(&app_id).await?;
+    let visible = node.sys(|s| {
+        s.app_invites.get(&key).is_some_and(|i| {
+            i.app == app_id && (i.created_by == actor || s.manages_grants(&app, &actor))
+        })
+    });
+    if !visible {
+        return Err(ApiError::not_found(crate::system::APP_INVITE_GONE));
+    }
+    let args = json!({ "inviteKey": key });
+    let consent = consent(
+        &node,
+        &p,
+        &app_id,
+        "__revoke_app_invite",
+        &args,
+        body.and_then(|Json(b)| b.confirm),
+    )
+    .await?;
+    let _ok = node
+        .sys_write(&SystemCmd::RevokeAppInvite {
+            app_id,
+            invite_key: key,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct AccessBody {
-    access: Access,
+    /// Who reaches the instance, as grants (`types::Grant`); empty: the owner alone.
+    grants: Vec<crate::types::Grant>,
+}
+
+/// `400` for a grant list larger than an instance holds, before it is proposed; the rest is
+/// judged where it applies (`SystemState::check_grants`).
+fn grants_fit(grants: &[crate::types::Grant]) -> Result<(), ApiError> {
+    if grants.len() > crate::types::MAX_GRANTS {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "an instance holds at most 1018 grants",
+        ));
+    }
+    Ok(())
 }
 
 async fn app_access(
@@ -925,6 +1183,8 @@ async fn app_access(
     Path(app_id): Path<String>,
     Json(body): Json<AccessBody>,
 ) -> ApiResult {
+    grants_fit(&body.grants)?;
+    let access = Access::new(body.grants);
     let app_id = node.canonical_app_id(&app_id);
     let p = person(&node, &headers).await?;
     let account = p.account()?;
@@ -932,8 +1192,12 @@ async fn app_access(
     p.within(&node, &app)?;
     // A package-bound session moves its package's app between its package's
     // teams only (a channel made private, or back to the app team).
-    match (&app.org, &app.access, &body.access) {
-        (org, Access::Team { team: from }, Access::Team { team: to }) => {
+    match (&app.org, app.access.grants(), access.grants()) {
+        (
+            org,
+            [crate::types::Grant::Team { team: from }],
+            [crate::types::Grant::Team { team: to }],
+        ) => {
             p.within_team(&node, org, from, OwnTeam::AppTeamOrBelow)?;
             p.within_team(&node, org, to, OwnTeam::AppTeamOrBelow)?;
         }
@@ -942,7 +1206,7 @@ async fn app_access(
     let _ok = node
         .sys_write(&SystemCmd::SetAccess {
             app_id,
-            access: body.access,
+            access,
             actor: account,
             owner_in_org: true,
             owner_in_team: true,
@@ -1821,6 +2085,11 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/openapi.json", get(app_openapi))
         .route("/apps/{app}/attestation", get(app_attestation))
         .route("/apps/{app}/access", post(app_access))
+        .route(
+            "/apps/{app}/invites",
+            post(app_invite_create).get(app_invite_list),
+        )
+        .route("/apps/{app}/invites/{key}", delete(app_invite_revoke))
         .route("/apps/{app}/transfer", post(app_transfer))
         .route("/apps/{app}/move", post(app_move))
         .route("/apps/{app}/delegations", get(app_delegations))

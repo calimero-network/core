@@ -13,7 +13,7 @@ export interface paths {
         };
         /**
          * Apps the caller reaches
-         * @description Anyone may list public apps.
+         * @description The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -21,7 +21,7 @@ export interface paths {
         put?: never;
         /**
          * Create an app instance
-         * @description From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+         * @description From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`; the single `access` mode of earlier releases is `400 ACCESS_REMOVED`, never read as no grants). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
          *
          *     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
          */
@@ -41,7 +41,7 @@ export interface paths {
         };
         /**
          * One app
-         * @description `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.
+         * @description `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. A guest sees only their own grant in `grants`.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -71,7 +71,7 @@ export interface paths {
          * An app's ABI
          * @description The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document, free-form here: its format is the ABI's, not this API's.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["app_abi"];
         put?: never;
@@ -93,7 +93,7 @@ export interface paths {
         put?: never;
         /**
          * Set who may reach an app
-         * @description A package-bound session: only its own package's app, from one of its package's teams to another.
+         * @description `grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version 1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
          *
          *     **Who:** a passkey session (an API key is refused).
          */
@@ -115,7 +115,7 @@ export interface paths {
          * Every replica's receipt-key attestation
          * @description Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`), and `cluster`, the cluster id each quote binds (with the replica's `node`): the documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any other query parameter is ignored.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["app_attestation"];
         put?: never;
@@ -137,7 +137,7 @@ export interface paths {
          * List an app's blobs
          * @description Plain blobs only.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["blob_list"];
         put?: never;
@@ -145,7 +145,7 @@ export interface paths {
          * Upload a blob
          * @description A plain blob, stored with the request's `Content-Type`, which a component app's download answers with: any media type (printable ASCII, 127 bytes at most; another is `400 BAD_REQUEST`), `application/octet-stream` when the request names none. Send the blob's own type, not `*\/*`, which would be stored as its type. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         post: operations["blob_upload"];
         delete?: never;
@@ -165,7 +165,7 @@ export interface paths {
          * Download a blob
          * @description `{id}` is base58 or hex; `grant` is a link the app made (`BlobRef::grant`).
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["blob_download"];
         put?: never;
@@ -174,7 +174,7 @@ export interface paths {
          * Forget a blob
          * @description The owner or an organization admin.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         delete: operations["blob_delete"];
         options?: never;
@@ -191,7 +191,7 @@ export interface paths {
         };
         /**
          * A blob's size
-         * @description **Who:** whoever the app's access admits (a public app: anyone).
+         * @description **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["blob_info"];
         put?: never;
@@ -215,7 +215,7 @@ export interface paths {
          * Invalidate a blob's grants
          * @description The grants made so far for a published blob; the owner or an organization admin.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         post: operations["blob_revoke"];
         delete?: never;
@@ -285,7 +285,7 @@ export interface paths {
          * An app's events as server-sent events
          * @description Committed events from index `from`, then live ones, each to its audience.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["events"];
         put?: never;
@@ -491,10 +491,60 @@ export interface paths {
          * Call a method
          * @description A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
         post: operations["intents"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps/{app}/invites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * An instance's invites
+         * @description For whoever may change its access: keys, terms and scope, never a token.
+         *
+         *     **Who:** a passkey session (an API key is refused).
+         */
+        get: operations["app_invite_list"];
+        put?: never;
+        /**
+         * Invite someone to an instance
+         * @description A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. `412` first.
+         *
+         *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+         */
+        post: operations["app_invite_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps/{app}/invites/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke an instance invite
+         * @description Its creator, or whoever may change the instance's access; `412` first.
+         *
+         *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+         */
+        delete: operations["app_invite_revoke"];
         options?: never;
         head?: never;
         patch?: never;
@@ -511,7 +561,7 @@ export interface paths {
          * List an app's links to the apps its release uses
          * @description One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["app_links"];
         put?: never;
@@ -585,7 +635,7 @@ export interface paths {
          * Call a method by its path
          * @description The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
         post: operations["app_method"];
         delete?: never;
@@ -605,7 +655,7 @@ export interface paths {
         put?: never;
         /**
          * Move an app to another organization
-         * @description Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
+         * @description Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
          *
          *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -627,7 +677,7 @@ export interface paths {
          * An app's OpenAPI document
          * @description Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["app_openapi"];
         put?: never;
@@ -649,7 +699,7 @@ export interface paths {
          * An app's pipeline runs
          * @description The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["pipelines_list"];
         put?: never;
@@ -671,7 +721,7 @@ export interface paths {
          * One pipeline run
          * @description Its record: `state`, `version`, `hash`, `computeBundle`, `inputs`, `params`, per-step `status`, `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap). Sizes, hashes and results only for callers who may list the app's files.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["pipelines_get"];
         put?: never;
@@ -715,7 +765,7 @@ export interface paths {
          * A pipeline run as server-sent events
          * @description Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["pipeline_events_events"];
         put?: never;
@@ -825,7 +875,7 @@ export interface paths {
          * Who is present
          * @description One entry per present device (a session's passkey, or an API key): its account, device and state (hex).
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["presence_get"];
         put?: never;
@@ -833,7 +883,7 @@ export interface paths {
          * Publish presence
          * @description The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts it.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         post: operations["presence_publish"];
         delete?: never;
@@ -851,7 +901,7 @@ export interface paths {
         };
         /**
          * Presence as server-sent events
-         * @description **Who:** whoever the app's access admits (a public app: anyone).
+         * @description **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["presence_stream"];
         put?: never;
@@ -873,7 +923,7 @@ export interface paths {
          * An app's compute runs
          * @description Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["app_runs"];
         put?: never;
@@ -895,7 +945,7 @@ export interface paths {
          * One compute run
          * @description Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["app_run"];
         put?: never;
@@ -989,7 +1039,7 @@ export interface paths {
          * What an app stores
          * @description Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["app_storage"];
         put?: never;
@@ -1033,7 +1083,7 @@ export interface paths {
          * Whether an update is available for an app
          * @description For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         get: operations["app_update"];
         put?: never;
@@ -1123,7 +1173,7 @@ export interface paths {
          * Read with a view method
          * @description Read linearizably (`consistency: "strong"`, the default; any value but `"stale"` reads as it): the replica answering waits until it applied the index the app's leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (`"stale"`) on the replica answering, as it stands; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
          *
-         *     **Who:** whoever the app's access admits (a public app: anyone).
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
         post: operations["views"];
         delete?: never;
@@ -2099,7 +2149,7 @@ export interface paths {
         put?: never;
         /**
          * Join with an invite
-         * @description No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.
+         * @description No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the redemption applies.
          *
          *     **Who:** a passkey session (an API key is refused).
          */
@@ -3502,6 +3552,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orgs/{org}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change the organization's settings
+         * @description `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+         *
+         *     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+         */
+        post: operations["org_settings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/orgs/{org}/teams": {
         parameters: {
             query?: never;
@@ -3546,7 +3618,7 @@ export interface paths {
         post: operations["team_update"];
         /**
          * Delete a team
-         * @description With the teams and apps below it. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.
+         * @description With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay (`keptApps`), each without those teams' grants and with its other grants (named members, guests, `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it); `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or the organization admits only loses the deleted teams' grants either way. With such instances, the passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.
          *
          *     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -4205,24 +4277,23 @@ export interface components {
             key: string;
             signature: string;
         };
-        /** @description Who may reach an app at all. */
-        Access: {
-            /** @enum {string} */
-            kind: "owner";
-        } | {
+        /** @description One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account. At most 16 teams and 1000 accounts. */
+        Grant: {
             /** @enum {string} */
             kind: "org";
         } | {
             /** @enum {string} */
-            kind: "public";
-        } | {
-            /** @enum {string} */
-            kind: "accounts";
-            accounts: string[];
-        } | {
-            /** @enum {string} */
             kind: "team";
             team: string;
+        } | {
+            /** @enum {string} */
+            kind: "account";
+            account: string;
+            /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+            scope?: unknown;
+        } | {
+            /** @enum {string} */
+            kind: "anyone";
         };
         /**
          * @description A member's role in an organization.
@@ -4585,7 +4656,7 @@ export interface components {
             bundle: string;
             owner: string;
             org: string | null;
-            access: components["schemas"]["Access"];
+            grants: components["schemas"]["Grant"][];
             confirmMethods: string[];
             /** @enum {string} */
             executor?: "component" | "wasmer";
@@ -4694,7 +4765,7 @@ export interface components {
                 proofKey: string;
             };
         };
-        /** @description An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). */
+        /** @description An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). */
         Org: {
             orgId: string;
             name: string;
@@ -4735,6 +4806,7 @@ export interface components {
             };
             allApps?: string[];
             personal?: boolean;
+            allowGuests?: boolean;
             /** @enum {string} */
             mode?: "legacy" | "standalone" | "shared";
             releaseApprovers?: string[];
@@ -5069,7 +5141,7 @@ export interface operations {
                     newOrg?: {
                         name: string;
                     };
-                    access?: components["schemas"]["Access"];
+                    grants?: components["schemas"]["Grant"][];
                     /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
                     initArgs?: unknown;
                     /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
@@ -5095,7 +5167,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description `AMBIGUOUS_COMPUTE`; `BAD_REQUEST`: the request is malformed; `NOT_OFFERED`; `NO_SUCH_SERVICE`; `ORG_INSTANCE`; `ORG_REQUIRED`; `STANDALONE_INSTANCE`; `VERSION_REQUIRED` */
+            /** @description `ACCESS_REMOVED`; `AMBIGUOUS_COMPUTE`; `BAD_REQUEST`: the request is malformed; `NOT_OFFERED`; `NO_SUCH_SERVICE`; `ORG_INSTANCE`; `ORG_REQUIRED`; `STANDALONE_INSTANCE`; `VERSION_REQUIRED` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -5336,7 +5408,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    access: components["schemas"]["Access"];
+                    grants: components["schemas"]["Grant"][];
                 };
             };
         };
@@ -6860,6 +6932,268 @@ export interface operations {
             };
         };
     };
+    app_invite_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        invites: {
+                            inviteKey: string;
+                            /** Format: int64 */
+                            usesLeft: number;
+                            /** Format: int64 */
+                            expiresAt: number;
+                            expired: boolean;
+                            createdBy: string;
+                            /** Format: int64 */
+                            createdAt: number;
+                            /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                            scope: unknown;
+                        }[];
+                    };
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    app_invite_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: int64 */
+                    ttlSecs?: number;
+                    /** Format: int64 */
+                    uses?: number;
+                    /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                    scope?: unknown;
+                    confirm?: components["schemas"]["Confirm"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        token: string;
+                    };
+                };
+            };
+            /** @description `BAD_REQUEST`: the request is malformed; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `QUOTA_EXCEEDED` */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    app_invite_revoke: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+                key: string;
+            };
+            cookie?: never;
+        };
+        /** @description May be absent. */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ConfirmOnly"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     app_links: {
         parameters: {
             query?: never;
@@ -7326,7 +7660,7 @@ export interface operations {
                         appId: string;
                         from: string | null;
                         org: string;
-                        access: components["schemas"]["Access"];
+                        grants: components["schemas"]["Grant"][];
                         created: boolean;
                         added: string[];
                         /** Format: int64 */
@@ -12756,6 +13090,8 @@ export interface operations {
                 content: {
                     "application/json": {
                         org: string;
+                        app?: string;
+                        member?: boolean;
                     };
                 };
             };
@@ -12770,6 +13106,15 @@ export interface operations {
             };
             /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `GUESTS_NOT_ALLOWED` */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -17707,6 +18052,101 @@ export interface operations {
             };
         };
     };
+    org_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    allowGuests?: boolean;
+                    confirm?: components["schemas"]["Confirm"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        org: string;
+                        allowGuests: boolean;
+                    };
+                };
+            };
+            /** @description `BAD_REQUEST`: the request is malformed; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     team_create: {
         parameters: {
             query?: never;
@@ -17889,7 +18329,10 @@ export interface operations {
         /** @description May be absent. */
         requestBody?: {
             content: {
-                "application/json": components["schemas"]["ConfirmOnly"];
+                "application/json": {
+                    keepApps?: boolean;
+                    confirm?: components["schemas"]["Confirm"];
+                };
             };
         };
         responses: {
@@ -17902,6 +18345,7 @@ export interface operations {
                     "application/json": {
                         teams: string[];
                         apps: string[];
+                        keptApps?: string[];
                     };
                 };
             };
@@ -17934,6 +18378,15 @@ export interface operations {
             };
             /** @description `NOT_FOUND`: no such object, or one the caller may not see */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

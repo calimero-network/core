@@ -1,6 +1,6 @@
 package com.calimero.mero.cluster
 
-import com.calimero.mero.AppAccess
+import com.calimero.mero.AppGrant
 import com.calimero.mero.CalimeroClient
 import com.calimero.mero.CalimeroError
 import com.calimero.mero.ConfirmRequired
@@ -49,8 +49,8 @@ class ClusterTest {
         c: CalimeroClient,
         name: String,
         org: String? = null,
-        access: AppAccess? = null,
-    ) = Cluster.deployKv(c, name, org, access)
+        grants: List<AppGrant>? = null,
+    ) = Cluster.deployKv(c, name, org, grants)
 
     private fun kv(
         key: String,
@@ -216,13 +216,13 @@ class ClusterTest {
                     .none { it.keyId == keyId },
             )
 
-            // Owner-only, in an organization made with it: an `accounts` list reaches only the
-            // organization's members, so bob joins it, and joining alone still leaves him out.
-            val app = deployKv(alice, "shared", access = AppAccess.Owner)
+            // Owner-only, in an organization made with it: a named account reaches it only as a
+            // member of the organization, so bob joins it, and joining alone still leaves him out.
+            val app = deployKv(alice, "shared", grants = emptyList())
             val shared = alice.apps.get(app = app).org!!
             bob.orgs.inviteRedeem(token = alice.orgs.inviteCreate(org = shared, role = OrgRole.MEMBER, passkey = pk).token)
             assertEquals("NOT_FOUND", refused<CalimeroError> { bob.apps.intents(app = app, method = "set", args = kv("x", "y")) }.code)
-            alice.apps.access(app = app, access = AppAccess.Accounts(listOf(bobId)))
+            alice.apps.access(app = app, grants = listOf(AppGrant.Account(bobId)))
             delay(300)
             bob.apps.intents(app = app, method = "set", args = kv("x", "y"))
 
@@ -236,7 +236,7 @@ class ClusterTest {
             // A team whose sub-team holds an app goes only with the owner's passkey (412 names the app).
             val eng = alice.orgs.teamCreate(org = org, name = "eng", join = TeamJoin.INVITE).teamId
             val backend = alice.orgs.teamCreate(org = org, name = "backend", join = TeamJoin.INVITE, parent = eng).teamId
-            val teamApp = deployKv(alice, "eng-kv", org = org, access = AppAccess.Team(backend))
+            val teamApp = deployKv(alice, "eng-kv", org = org, grants = listOf(AppGrant.Team(backend)))
             val asked = refused<ConfirmRequired> { alice.orgs.teamDelete(org = org, team = eng) }
             assertEquals(412, asked.status)
             assertTrue("${asked.details}", teamApp in asked.details.toString())

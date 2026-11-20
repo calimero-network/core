@@ -6,54 +6,65 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..models.access_type_3_kind import AccessType3Kind
-from typing import cast
+from ..models.grant_type_2_kind import GrantType2Kind
+from ..types import UNSET, Unset
+from typing import Union
 
-T = TypeVar("T", bound="AccessType3")
+T = TypeVar("T", bound="GrantType2")
 
 
 @_attrs_define
-class AccessType3:
+class GrantType2:
     """
     Attributes:
-        kind (AccessType3Kind):
-        accounts (list[str]):
+        kind (GrantType2Kind):
+        account (str):
+        scope (Union[Unset, Any]): Free-form JSON: its shape is not this API's (see the description around it for whose
+            it is).
     """
 
-    kind: AccessType3Kind
-    accounts: list[str]
+    kind: GrantType2Kind
+    account: str
+    scope: Union[Unset, Any] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         kind = self.kind.value
 
-        accounts = self.accounts
+        account = self.account
+
+        scope = self.scope
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "kind": kind,
-                "accounts": accounts,
+                "account": account,
             }
         )
+        if scope is not UNSET:
+            field_dict["scope"] = scope
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        kind = AccessType3Kind(d.pop("kind"))
+        kind = GrantType2Kind(d.pop("kind"))
 
-        accounts = cast(list[str], d.pop("accounts"))
+        account = d.pop("account")
 
-        access_type_3 = cls(
+        scope = d.pop("scope", UNSET)
+
+        grant_type_2 = cls(
             kind=kind,
-            accounts=accounts,
+            account=account,
+            scope=scope,
         )
 
-        access_type_3.additional_properties = d
-        return access_type_3
+        grant_type_2.additional_properties = d
+        return grant_type_2
 
     @property
     def additional_keys(self) -> list[str]:

@@ -1,0 +1,89 @@
+from collections.abc import Mapping
+from typing import Any, TypeVar, Optional, BinaryIO, TextIO, TYPE_CHECKING, Generator
+
+from attrs import define as _attrs_define
+from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
+
+from ..types import UNSET, Unset
+from typing import cast
+from typing import Union
+
+if TYPE_CHECKING:
+    from ..models.confirm import Confirm
+
+
+T = TypeVar("T", bound="AppInviteCreateBody")
+
+
+@_attrs_define
+class AppInviteCreateBody:
+    """
+    Attributes:
+        ttl_secs (Union[Unset, int]):
+        uses (Union[Unset, int]):
+        scope (Union[Unset, Any]): Free-form JSON: its shape is not this API's (see the description around it for whose
+            it is).
+        confirm (Union[Unset, Confirm]): A passkey assertion over the challenge a `412 CONFIRM_REQUIRED` named: the same
+            request sent again with it approves exactly that request.
+    """
+
+    ttl_secs: Union[Unset, int] = UNSET
+    uses: Union[Unset, int] = UNSET
+    scope: Union[Unset, Any] = UNSET
+    confirm: Union[Unset, "Confirm"] = UNSET
+
+    def to_dict(self) -> dict[str, Any]:
+        from ..models.confirm import Confirm
+
+        ttl_secs = self.ttl_secs
+
+        uses = self.uses
+
+        scope = self.scope
+
+        confirm: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.confirm, Unset):
+            confirm = self.confirm.to_dict()
+
+        field_dict: dict[str, Any] = {}
+
+        field_dict.update({})
+        if ttl_secs is not UNSET:
+            field_dict["ttlSecs"] = ttl_secs
+        if uses is not UNSET:
+            field_dict["uses"] = uses
+        if scope is not UNSET:
+            field_dict["scope"] = scope
+        if confirm is not UNSET:
+            field_dict["confirm"] = confirm
+
+        return field_dict
+
+    @classmethod
+    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.confirm import Confirm
+
+        d = dict(src_dict)
+        ttl_secs = d.pop("ttlSecs", UNSET)
+
+        uses = d.pop("uses", UNSET)
+
+        scope = d.pop("scope", UNSET)
+
+        _confirm = d.pop("confirm", UNSET)
+        confirm: Union[Unset, Confirm]
+        if isinstance(_confirm, Unset):
+            confirm = UNSET
+        else:
+            confirm = Confirm.from_dict(_confirm)
+
+        app_invite_create_body = cls(
+            ttl_secs=ttl_secs,
+            uses=uses,
+            scope=scope,
+            confirm=confirm,
+        )
+
+        return app_invite_create_body

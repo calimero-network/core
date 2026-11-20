@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.Confirm
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -31,26 +32,21 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param kind 
+ * @param allowGuests 
+ * @param confirm 
  */
 @Serializable
 
-data class AccessOneOf2 (
+data class OrgSettingsRequest (
 
-    @SerialName(value = "kind")
-    val kind: AccessOneOf2.Kind
+    @SerialName(value = "allowGuests")
+    val allowGuests: kotlin.Boolean? = null,
+
+    @SerialName(value = "confirm")
+    val confirm: Confirm? = null
 
 ) {
 
-    /**
-     * 
-     *
-     * Values: PUBLIC
-     */
-    @Serializable
-    enum class Kind(val value: kotlin.String) {
-        @SerialName(value = "public") PUBLIC("public");
-    }
 
 }
 

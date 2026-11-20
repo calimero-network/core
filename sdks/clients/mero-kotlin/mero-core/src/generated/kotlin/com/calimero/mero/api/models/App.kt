@@ -40,7 +40,7 @@ import kotlinx.serialization.Contextual
  * @param bundle 
  * @param owner 
  * @param org 
- * @param access 
+ * @param grants 
  * @param confirmMethods 
  * @param replicas 
  * @param createdAt 
@@ -78,8 +78,8 @@ data class App (
     @SerialName(value = "org")
     val org: kotlin.String?,
 
-    @SerialName(value = "access")
-    val access: com.calimero.mero.AppAccess,
+    @SerialName(value = "grants")
+    val grants: kotlin.collections.List<@Contextual com.calimero.mero.AppGrant>,
 
     @SerialName(value = "confirmMethods")
     val confirmMethods: kotlin.collections.List<kotlin.String>,

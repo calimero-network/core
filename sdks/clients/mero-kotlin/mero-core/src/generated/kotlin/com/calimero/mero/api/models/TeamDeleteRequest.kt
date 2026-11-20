@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.Confirm
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -31,30 +32,21 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param kind 
- * @param accounts 
+ * @param keepApps 
+ * @param confirm 
  */
 @Serializable
 
-data class AccessOneOf3 (
+data class TeamDeleteRequest (
 
-    @SerialName(value = "kind")
-    val kind: AccessOneOf3.Kind,
+    @SerialName(value = "keepApps")
+    val keepApps: kotlin.Boolean? = null,
 
-    @SerialName(value = "accounts")
-    val accounts: kotlin.collections.List<kotlin.String>
+    @SerialName(value = "confirm")
+    val confirm: Confirm? = null
 
 ) {
 
-    /**
-     * 
-     *
-     * Values: ACCOUNTS
-     */
-    @Serializable
-    enum class Kind(val value: kotlin.String) {
-        @SerialName(value = "accounts") ACCOUNTS("accounts");
-    }
 
 }
 

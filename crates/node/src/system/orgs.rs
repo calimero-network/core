@@ -126,6 +126,7 @@ pub(super) fn authorize(
             actor,
             consent,
             apps_need_consent: true,
+            keep_apps,
         } => {
             let apps = s.team_apps(org, team);
             if apps.is_empty() {
@@ -135,7 +136,7 @@ pub(super) fn authorize(
                 return Err(DELETE_TEAM_NEEDS_CONSENT);
             }
             let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
-            let args = json!({ "team": team, "apps": apps });
+            let args = super::delete_team_args(team, &apps, *keep_apps);
             proofs.states(&st, &format!("org:{org}"), "__delete_team", &|a| *a == args)?;
             Ok(Some(used))
         }
@@ -215,6 +216,19 @@ pub(super) fn authorize(
                 "__create_invite",
                 &|a| *a == args,
             )?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetOrgSettings {
+            org,
+            settings,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = serde_json::to_value(settings).unwrap_or_default();
+            proofs.states(&st, &format!("org:{org}"), "__set_org_settings", &|a| {
+                *a == args
+            })?;
             Ok(Some(used))
         }
         SystemCmd::RevokeInvite {
@@ -733,7 +747,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             Ok(Value::Null)
         }
         SystemCmd::DeleteTeam {
-            org, team, actor, ..
+            org,
+            team,
+            actor,
+            keep_apps,
+            ..
         } => {
             let apps = s.team_apps(&org, &team);
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
@@ -749,8 +767,18 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             for t in &gone {
                 let _removed = o.teams.remove(t);
             }
-            for a in &apps {
-                s.remove_app(a);
+            if !keep_apps {
+                for a in &apps {
+                    s.remove_app(a);
+                }
+            }
+            // An instance that keeps another way in, or is kept (`keep_apps`), loses only these
+            // teams' grants: with none left, the owner alone reaches it.
+            for a in s.apps.values_mut().filter(|a| a.org == org) {
+                a.access = a.access.without_teams(&gone);
+            }
+            if keep_apps {
+                return Ok(json!({ "teams": gone, "apps": [], "keptApps": apps }));
             }
             Ok(json!({ "teams": gone, "apps": apps }))
         }
@@ -942,6 +970,24 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             )?;
             Ok(json!({ "org": org }))
         }
+        SystemCmd::SetOrgSettings {
+            org,
+            settings,
+            actor,
+            ..
+        } => {
+            if !s.is_org_admin(&org, &actor) {
+                return Err("only the organization's owner or an admin changes its settings");
+            }
+            if settings.is_empty() {
+                return Err("no setting to change");
+            }
+            let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
+            if let Some(allow) = settings.allow_guests {
+                o.allow_guests = allow;
+            }
+            Ok(json!({ "org": org, "allowGuests": o.allow_guests }))
+        }
         SystemCmd::RevokeInvite {
             org,
             invite_key,
@@ -964,8 +1010,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             shared,
             nonce,
             actor,
-            owner_in_team,
-            accounts_in_app_team,
             member_child_teams,
             all_apps_rows,
             by_release,
@@ -977,8 +1021,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             &nonce,
             &actor,
             ScopeAsLogged {
-                owner_in_team,
-                accounts_in_app_team,
                 member_child_teams,
                 all_apps_rows,
                 by_release,
@@ -1014,5 +1056,6 @@ pub(super) fn new_org(
         recovery: None,
         all_apps: BTreeSet::new(),
         personal,
+        allow_guests: true,
     }
 }

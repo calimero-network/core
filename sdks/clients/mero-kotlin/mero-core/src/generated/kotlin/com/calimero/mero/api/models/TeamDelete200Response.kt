@@ -33,6 +33,7 @@ import kotlinx.serialization.Contextual
  *
  * @param teams 
  * @param apps 
+ * @param keptApps 
  */
 @Serializable
 
@@ -42,7 +43,10 @@ data class TeamDelete200Response (
     val teams: kotlin.collections.List<kotlin.String>,
 
     @SerialName(value = "apps")
-    val apps: kotlin.collections.List<kotlin.String>
+    val apps: kotlin.collections.List<kotlin.String>,
+
+    @SerialName(value = "keptApps")
+    val keptApps: kotlin.collections.List<kotlin.String>? = null
 
 ) {
 

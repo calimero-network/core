@@ -98,7 +98,7 @@ class OrgsFacade internal constructor(
     /**
      * Join with an invite
      *
-     * No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.
+     * No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the redemption applies.
      *
      * **Who:** a passkey session (an API key is refused).
      *
@@ -500,6 +500,26 @@ class OrgsFacade internal constructor(
         api(passkey, null, emptySet()).organizations.orgSetMember(org = org, orgSetMemberRequest = OrgSetMemberRequest(account = account, role = role))
 
     /**
+     * Change the organization's settings
+     *
+     * `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+     *
+     * **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /orgs/{org}/settings` (`org_settings`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun settings(
+        org: kotlin.String,
+        allowGuests: kotlin.Boolean? = null,
+        passkey: PasskeyProvider? = null,
+    ): OrgSettings200Response =
+        api(passkey, null, emptySet()).organizations.orgSettings(org = org, orgSettingsRequest = OrgSettingsRequest(allowGuests = allowGuests))
+
+    /**
      * Start an upgrade run
      *
      * Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; the organization's owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
@@ -699,7 +719,7 @@ class OrgsFacade internal constructor(
     /**
      * Delete a team
      *
-     * With the teams and apps below it. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.
+     * With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay (`keptApps`), each without those teams' grants and with its other grants (named members, guests, `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it); `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or the organization admits only loses the deleted teams' grants either way. With such instances, the passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.
      *
      * **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -712,9 +732,10 @@ class OrgsFacade internal constructor(
     suspend fun teamDelete(
         org: kotlin.String,
         team: kotlin.String,
+        keepApps: kotlin.Boolean? = null,
         passkey: PasskeyProvider? = null,
     ): TeamDelete200Response =
-        api(passkey, null, emptySet()).organizations.teamDelete(org = org, team = team)
+        api(passkey, null, emptySet()).organizations.teamDelete(org = org, team = team, teamDeleteRequest = TeamDeleteRequest(keepApps = keepApps))
 
     /**
      * One team

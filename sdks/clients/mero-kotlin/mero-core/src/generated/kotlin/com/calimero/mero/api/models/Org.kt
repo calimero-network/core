@@ -35,7 +35,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other).
+ * An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).
  *
  * @param orgId 
  * @param name 
@@ -51,6 +51,7 @@ import kotlinx.serialization.Contextual
  * @param recovery 
  * @param allApps 
  * @param personal 
+ * @param allowGuests 
  * @param mode 
  * @param releaseApprovers 
  * @param publishes 
@@ -102,6 +103,9 @@ data class Org (
 
     @SerialName(value = "personal")
     val personal: kotlin.Boolean? = null,
+
+    @SerialName(value = "allowGuests")
+    val allowGuests: kotlin.Boolean? = null,
 
     @SerialName(value = "mode")
     val mode: Org.Mode? = null,

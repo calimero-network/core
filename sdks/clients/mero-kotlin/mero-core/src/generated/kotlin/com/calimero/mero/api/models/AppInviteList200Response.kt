@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.AppInviteList200ResponseInvitesInner
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -31,30 +32,17 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param kind 
- * @param team 
+ * @param invites 
  */
 @Serializable
 
-data class AccessOneOf4 (
+data class AppInviteList200Response (
 
-    @SerialName(value = "kind")
-    val kind: AccessOneOf4.Kind,
-
-    @SerialName(value = "team")
-    val team: kotlin.String
+    @SerialName(value = "invites")
+    val invites: kotlin.collections.List<AppInviteList200ResponseInvitesInner>
 
 ) {
 
-    /**
-     * 
-     *
-     * Values: TEAM
-     */
-    @Serializable
-    enum class Kind(val value: kotlin.String) {
-        @SerialName(value = "team") TEAM("team");
-    }
 
 }
 

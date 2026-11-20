@@ -117,6 +117,9 @@ def read_model(models, name):
     for m in FIELD.finditer(text):
         decl = m.group(3).strip()
         typ, _, default = decl.partition("=")
+        # `@Contextual` only tells the model's serializer how to encode the element; the
+        # facade's parameter is a plain type (and the facade does not import it).
+        typ = typ.replace("@Contextual ", "")
         fields.append({"wire": m.group(1), "name": m.group(2), "type": typ.strip(), "default": default.strip() or None})
     return fields
 

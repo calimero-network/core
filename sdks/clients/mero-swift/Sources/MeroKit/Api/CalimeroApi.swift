@@ -339,15 +339,18 @@ extension OpenAPIValueContainer {
     }
 }
 
-extension AppAccess {
-    /// This access as the generated API's `Access` (discriminated by `kind`).
-    public var generated: Components.Schemas.Access {
-        switch self {
-        case .owner: return .owner(.init(kind: .owner))
-        case .org: return .org(.init(kind: .org))
-        case .public: return ._public(.init(kind: ._public))
-        case .accounts(let accounts): return .accounts(.init(kind: .accounts, accounts: accounts))
-        case .team(let team): return .team(.init(kind: .team, team: team))
+extension AppGrant {
+    /// This grant as the generated API's `Grant` (discriminated by `kind`).
+    public var generated: Components.Schemas.Grant {
+        get throws {
+            switch self {
+            case .org: return .org(.init(kind: .org))
+            case .anyone: return .anyone(.init(kind: .anyone))
+            case .team(let team): return .team(.init(kind: .team, team: team))
+            case .account(let account, let scope):
+                let scope = try scope.map(OpenAPIValueContainer.init)
+                return .account(.init(kind: .account, account: account, scope: scope))
+            }
         }
     }
 }

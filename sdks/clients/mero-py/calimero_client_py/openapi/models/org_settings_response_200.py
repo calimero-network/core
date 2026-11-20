@@ -6,29 +6,32 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..models.access_type_1_kind import AccessType1Kind
-
-T = TypeVar("T", bound="AccessType1")
+T = TypeVar("T", bound="OrgSettingsResponse200")
 
 
 @_attrs_define
-class AccessType1:
+class OrgSettingsResponse200:
     """
     Attributes:
-        kind (AccessType1Kind):
+        org (str):
+        allow_guests (bool):
     """
 
-    kind: AccessType1Kind
+    org: str
+    allow_guests: bool
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        kind = self.kind.value
+        org = self.org
+
+        allow_guests = self.allow_guests
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "kind": kind,
+                "org": org,
+                "allowGuests": allow_guests,
             }
         )
 
@@ -37,14 +40,17 @@ class AccessType1:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        kind = AccessType1Kind(d.pop("kind"))
+        org = d.pop("org")
 
-        access_type_1 = cls(
-            kind=kind,
+        allow_guests = d.pop("allowGuests")
+
+        org_settings_response_200 = cls(
+            org=org,
+            allow_guests=allow_guests,
         )
 
-        access_type_1.additional_properties = d
-        return access_type_1
+        org_settings_response_200.additional_properties = d
+        return org_settings_response_200
 
     @property
     def additional_keys(self) -> list[str]:

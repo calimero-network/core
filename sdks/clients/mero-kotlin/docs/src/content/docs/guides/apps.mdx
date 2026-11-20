@@ -10,7 +10,7 @@ val appId = client.apps.create(
     name = "general",
     `package` = "com.calimero.chat",                       // installed from the registry if missing
     org = orgId,
-    access = AppAccess.Team(teamId),                       // or Owner, Org, Public, Accounts(…)
+    grants = listOf(AppGrant.Team(teamId)),                // or Org, Account(…), Anyone; none: the owner
     initArgs = buildJsonObject { put("name", "general") },
 ).appId
 ```

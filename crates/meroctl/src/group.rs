@@ -47,13 +47,18 @@ pub enum GroupCmd {
         #[arg(long, value_enum)]
         join: Option<Join>,
     },
-    /// Delete a team with the teams below it and their instances (with
-    /// instances there, approved with a passkey).
+    /// Delete a team with the teams below it and the instances only they
+    /// admit (with instances there, approved with a passkey).
     Delete {
         #[arg(value_name = "ORG")]
         namespace: String,
         #[arg(value_name = "TEAM")]
         group: String,
+        /// Keep those instances, without the team's grants: their other grants
+        /// stay (named members, guests, anyone, links); with none left, only
+        /// their owner reaches them (cluster version 1.0.0-rc.33).
+        #[arg(long)]
+        keep_apps: bool,
         /// Approve with this passkey file (development clusters).
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
@@ -211,10 +216,13 @@ pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
         GroupCmd::Delete {
             namespace,
             group,
+            keep_apps,
             dev_passkey,
         } => {
             let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
-            let out = orgs.team_delete(&namespace, &group, pk.get()).await;
+            let out = orgs
+                .team_delete(&namespace, &group, keep_apps.then_some(true), pk.get())
+                .await;
             pk.save()?;
             to_json(&out?)?
         }

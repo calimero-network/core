@@ -163,7 +163,7 @@ How `useSubscription` behaves:
 | Hook | Was (10.x) |
 | --- | --- |
 | `useApps({ package?, bundle? })` | `useContexts` |
-| `useCreateApp().create({ name, bundle, org?, access?, confirmMethods?, initArgs? })` | `useCreateContext` |
+| `useCreateApp().create({ name, bundle, org?, grants?, confirmMethods?, initArgs? })` | `useCreateContext` |
 | `useDeleteApp().deleteApp(appId)` | `useDeleteContext` |
 | `useSetAppMetadata().setMetadata(appId, metadata)` | `useSetContextMetadata` |
 | `useUpgradeApp(appId?).upgrade({ version, … })` | `useUpgradeGroup`. It asks for the passkey. |
@@ -394,7 +394,7 @@ core 1.0 is a different node, and mero-js 28 is a different client, so 11.0 is a
 | none | `useView(method, args)`, `useApp(appId)` |
 | `useSubscription(contextIds, cb)` / `{ contextIds, groupIds }` | `useSubscription(appIds, cb, { from?, onOpen? })` |
 | `useContexts`, `useApplicationContexts`, `useNamespacesForApplication` | `useApps({ package? })` |
-| `useCreateContext`, `useCreatePrivateContext` | `useCreateApp` (`access` for private apps) |
+| `useCreateContext`, `useCreatePrivateContext` | `useCreateApp` (`grants` for private apps) |
 | `useDeleteContext`, `useSetContextMetadata` | `useDeleteApp`, `useSetAppMetadata` |
 | `useNamespace`, `useNamespaces`, `useCreateNamespace`, `useDeleteNamespace` | `useOrg`, `useAccount` (orgs), `useCreateOrg`, `useDeleteOrg` |
 | `useGroupInfo`, `useNamespaceGroups`, `useSubgroups`, `useContextGroup` | `useTeam` (teams are listed in `useOrg`) |

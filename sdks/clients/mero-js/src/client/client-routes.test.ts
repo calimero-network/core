@@ -808,7 +808,7 @@ describe('the rest of the node API', () => {
 
   it('moves an app to another organization with a passkey, and says when the node has no route', async () => {
     const c = client();
-    const moved = { appId: 'a-1', from: 'o-1', org: 'o-2', access: { kind: 'org' }, created: false, added: [], revokedInvites: 0 };
+    const moved = { appId: 'a-1', from: 'o-1', org: 'o-2', grants: [{ kind: 'org' }], created: false, added: [], revokedInvites: 0 };
     node.answer = (_head, body) =>
       body.confirm
         ? { status: 200, json: moved }

@@ -656,7 +656,7 @@ async fn a_second_run_of_an_org_waits_for_the_first_final() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_stranger_sees_a_runs_record_without_file_hashes() {
-    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let rig = Rig::start_with(&[JOB_A], json!({ "grants": [{ "kind": "anyone" }] })).await;
     let file = rig.upload(&input()).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     let _ = rig.outcome(&run).await;
@@ -690,7 +690,7 @@ async fn a_stranger_sees_a_runs_record_without_file_hashes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_run_list_pages_newest_first_with_caps_and_the_single_run_view() {
-    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let rig = Rig::start_with(&[JOB_A], json!({ "grants": [{ "kind": "anyone" }] })).await;
     let file = rig.upload(&input()).await;
     let first = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     let _ = rig.outcome(&first).await;
@@ -795,7 +795,7 @@ async fn the_run_list_pages_newest_first_with_caps_and_the_single_run_view() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_stranger_lists_runs_without_file_sizes_hashes_or_keys() {
-    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let rig = Rig::start_with(&[JOB_A], json!({ "grants": [{ "kind": "anyone" }] })).await;
     let file = rig.upload(&input()).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     let _ = rig.outcome(&run).await;
@@ -1776,7 +1776,7 @@ async fn a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_failed_runs_message_is_shown_in_both_views_only_to_those_who_list_files() {
-    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let rig = Rig::start_with(&[JOB_A], json!({ "grants": [{ "kind": "anyone" }] })).await;
     let run = rig.begin("startRun", json!({ "method": "big" })).await;
     let _ = rig.outcome(&run).await;
 
@@ -1848,7 +1848,7 @@ impl Rig {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_queued_run_says_why_it_waits_and_proceeds_once_its_pool_has_a_job_node() {
-    let rig = Rig::start_with(&[], json!({ "access": { "kind": "public" } })).await;
+    let rig = Rig::start_with(&[], json!({ "grants": [{ "kind": "anyone" }] })).await;
     let ops = rig.c.client(0);
     ops.use_api_key("ops-secret").await;
     let pools = json!({ "pools": {
@@ -2757,7 +2757,7 @@ async fn a_run_log_cannot_be_published() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_stranger_cannot_list_a_run_s_logs() {
-    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let rig = Rig::start_with(&[JOB_A], json!({ "grants": [{ "kind": "anyone" }] })).await;
     let (run, _) = rig.ended("chatter").await;
     let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
     let e = bob.apps().run_logs(&rig.app, &run).await.unwrap_err();

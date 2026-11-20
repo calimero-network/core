@@ -6,53 +6,29 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..models.access_type_4_kind import AccessType4Kind
-
-T = TypeVar("T", bound="AccessType4")
+T = TypeVar("T", bound="AppInviteRevokeResponse200")
 
 
 @_attrs_define
-class AccessType4:
-    """
-    Attributes:
-        kind (AccessType4Kind):
-        team (str):
-    """
+class AppInviteRevokeResponse200:
+    """ """
 
-    kind: AccessType4Kind
-    team: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        kind = self.kind.value
-
-        team = self.team
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "kind": kind,
-                "team": team,
-            }
-        )
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        kind = AccessType4Kind(d.pop("kind"))
+        app_invite_revoke_response_200 = cls()
 
-        team = d.pop("team")
-
-        access_type_4 = cls(
-            kind=kind,
-            team=team,
-        )
-
-        access_type_4.additional_properties = d
-        return access_type_4
+        app_invite_revoke_response_200.additional_properties = d
+        return app_invite_revoke_response_200
 
     @property
     def additional_keys(self) -> list[str]:

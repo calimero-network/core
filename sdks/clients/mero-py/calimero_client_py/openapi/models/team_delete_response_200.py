@@ -6,7 +6,9 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
 from typing import cast
+from typing import Union
 
 T = TypeVar("T", bound="TeamDeleteResponse200")
 
@@ -17,16 +19,22 @@ class TeamDeleteResponse200:
     Attributes:
         teams (list[str]):
         apps (list[str]):
+        kept_apps (Union[Unset, list[str]]):
     """
 
     teams: list[str]
     apps: list[str]
+    kept_apps: Union[Unset, list[str]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         teams = self.teams
 
         apps = self.apps
+
+        kept_apps: Union[Unset, list[str]] = UNSET
+        if not isinstance(self.kept_apps, Unset):
+            kept_apps = self.kept_apps
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -36,6 +44,8 @@ class TeamDeleteResponse200:
                 "apps": apps,
             }
         )
+        if kept_apps is not UNSET:
+            field_dict["keptApps"] = kept_apps
 
         return field_dict
 
@@ -46,9 +56,12 @@ class TeamDeleteResponse200:
 
         apps = cast(list[str], d.pop("apps"))
 
+        kept_apps = cast(list[str], d.pop("keptApps", UNSET))
+
         team_delete_response_200 = cls(
             teams=teams,
             apps=apps,
+            kept_apps=kept_apps,
         )
 
         team_delete_response_200.additional_properties = d

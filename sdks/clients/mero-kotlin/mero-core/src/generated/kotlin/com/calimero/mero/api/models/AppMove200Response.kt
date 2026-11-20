@@ -34,7 +34,7 @@ import kotlinx.serialization.Contextual
  * @param appId 
  * @param from 
  * @param org 
- * @param access 
+ * @param grants 
  * @param created 
  * @param added 
  * @param revokedInvites 
@@ -52,8 +52,8 @@ data class AppMove200Response (
     @SerialName(value = "org")
     val org: kotlin.String,
 
-    @SerialName(value = "access")
-    val access: com.calimero.mero.AppAccess,
+    @SerialName(value = "grants")
+    val grants: kotlin.collections.List<@Contextual com.calimero.mero.AppGrant>,
 
     @SerialName(value = "created")
     val created: kotlin.Boolean,

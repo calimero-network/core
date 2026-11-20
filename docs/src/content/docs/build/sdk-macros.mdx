@@ -25,7 +25,7 @@ use calimero_sdk::prelude::*;
 | `#[app::init]` | method | The constructor, run once when the app is created (as the owner). |
 | `#[app::view]` | `&self` method | A read: runs as a view, never as a write. |
 | `#[app::confirm]` | method | The caller confirms with a fresh passkey assertion. |
-| `#[app::public]` / `#[app::public(rate = "10/min")]` | method | Callable without signing in (on a public app), optionally rate-limited. |
+| `#[app::public]` / `#[app::public(rate = "10/min")]` | method | Callable without signing in, where the instance admits a caller without an account (no access grant does), optionally rate-limited. |
 | `#[app::every("1m")]` | method | A timer the node runs on that interval (`<n>s`, `<n>m` or `<n>h`). |
 | `#[app::allow(system)]` | method | The node itself may call it (implied by `every`). |
 | `#[app::allow(app = "<id>")]` / `allow(app = "*")` | method | Another app may call it with a cross-app call. |
@@ -194,8 +194,8 @@ The generated `handle`:
 - `#[app::view]` makes the method a read.
 - `#[app::confirm]` asks the node to require a fresh passkey assertion for the
   call.
-- `#[app::public]` lets a caller who is not signed in reach the method on a
-  public app; `rate = "<n>/s|min|h"` limits it.
+- `#[app::public]` lets a caller who is not signed in reach the method where the
+  instance admits one (no access grant does); `rate = "<n>/s|min|h"` limits it.
 - `#[app::every("<n>s|m|h")]` is a timer. It implies `allow(system)`. Inside it,
   `env::timer()` gives the tick (`scheduled`, and `previous` when there was one).
 - `#[app::allow(app = "<app id>")]`, or `"*"` for any app, admits

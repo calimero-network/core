@@ -189,13 +189,18 @@ describe('Calimero 1.0 cluster', () => {
     const bundle = await (await alice.packages.bundlePut({ body: new Uint8Array(readFileSync(KV_STORE_WASM)), contentType: 'application/wasm' })).hash;
     // Owner-only, in an organization made with it; an `accounts` list reaches only the organization's
     // members, so bob joins it first, and joining alone still leaves him out.
-    const app = await (await alice.apps.create({ name: 'shared', bundle, access: { kind: 'owner' } })).appId;
+    const app = await (await alice.apps.create({ name: 'shared', bundle, grants: [] })).appId;
     const shared = (await alice.apps.get({ app })).org as string;
     await bob.orgs.inviteRedeem({ token: await (await alice.orgs.inviteCreate({ org: shared, role: 'member' }, { confirm: passkeyConfirm(pk) })).token });
     await expect(bob.apps.call({ app, method: 'set', args: { key: 'x', value: 'y' } })).rejects.toMatchObject({ code: 'NOT_FOUND' });
-    await alice.apps.access({ app, access: { kind: 'accounts', accounts: [bobId] } });
+    await alice.apps.access({ app, grants: [{ kind: 'account', account: bobId }] });
     await new Promise((r) => setTimeout(r, 300));
     await bob.apps.call({ app, method: 'set', args: { key: 'x', value: 'y' } });
+    // Access is a list of grants: as set, and replaced (here by the organization, which bob is in).
+    expect((await alice.apps.get({ app })).grants).toEqual([{ kind: 'account', account: bobId }]);
+    await alice.apps.access({ app, grants: [{ kind: 'org' }] });
+    expect((await alice.apps.get({ app })).grants).toEqual([{ kind: 'org' }]);
+    await bob.apps.call({ app, method: 'set', args: { key: 'x', value: 'z' } });
 
     const org = await (await alice.orgs.create({ name: 'Initech' })).orgId;
     await alice.orgs.setMember({ org, account: bobId, role: 'member' }, { confirm: passkeyConfirm(pk) });
@@ -213,7 +218,7 @@ describe('Calimero 1.0 cluster', () => {
     // (core#4891). A node from before deletes it at once, so the 412 is checked only where it is asked.
     const eng = await (await alice.orgs.teamCreate({ org, name: 'eng', join: 'invite' })).teamId;
     const backend = await (await alice.orgs.teamCreate({ org, name: 'backend', join: 'invite', parent: eng })).teamId;
-    const teamApp = await (await alice.apps.create({ name: 'eng-kv', bundle, org, access: { kind: 'team', team: backend } })).appId;
+    const teamApp = await (await alice.apps.create({ name: 'eng-kv', bundle, org, grants: [{ kind: 'team', team: backend }] })).appId;
     const asked = await alice.orgs.teamDelete({ org, team: eng }).then(() => undefined, (e: unknown) => e);
     if (asked !== undefined) {
       expect(asked).toMatchObject({ status: 412, code: 'CONFIRM_REQUIRED', details: { apps: [teamApp] } });
@@ -223,6 +228,15 @@ describe('Calimero 1.0 cluster', () => {
     await new Promise((r) => setTimeout(r, 300));
     await expect(alice.orgs.teamGet({ org, team: eng })).rejects.toMatchObject({ status: 404 });
     await expect(alice.apps.get({ app: teamApp })).rejects.toMatchObject({ status: 404 });
+    // `keepApps` keeps an instance only the team admitted: it loses the team's grant and keeps
+    // bob's name.
+    const keep = await (await alice.orgs.teamCreate({ org, name: 'keep', join: 'invite' })).teamId;
+    const kept = await (await alice.apps.create({
+      name: 'kept-kv', bundle, org, grants: [{ kind: 'team', team: keep }, { kind: 'account', account: bobId }],
+    })).appId;
+    const deleted = await alice.orgs.teamDelete({ org, team: keep, keepApps: true }, { confirm: passkeyConfirm(pk) });
+    expect(deleted.keptApps).toEqual([kept]);
+    expect((await alice.apps.get({ app: kept })).grants).toEqual([{ kind: 'account', account: bobId }]);
     const token = await (await alice.orgs.inviteCreate({ org, role: 'guest', teams: [], ttlSecs: 60, uses: 1 }, { confirm: passkeyConfirm(pk) })).token;
     expect(token).toBeTruthy();
     expect(await alice.orgs.get({ org })).toMatchObject({ orgId: org });
@@ -494,7 +508,7 @@ describe('Calimero 1.0 cluster', () => {
     await alice.apps.call({ app, method: 'set', args: { key: 'a', value: '1' } });
     const moved = await alice.apps.move({ app, toOrg: dst, bringMembers: true }, { confirm: passkeyConfirm(pk) }).catch((e: unknown) => e);
     if (moved instanceof CalimeroError && (moved.status === 404 || moved.status === 405)) return ctx.skip();
-    expect(moved).toMatchObject({ appId: app, from: src, org: dst, added: [bobId], access: { kind: 'org' } });
+    expect(moved).toMatchObject({ appId: app, from: src, org: dst, added: [bobId], grants: [{ kind: 'org' }] });
     expect(await alice.apps.get({ app })).toMatchObject({ org: dst });
     expect((await bob.apps.view({ app, method: 'get', args: { key: 'a' } })).result).toBe('1');
     // Back again, now without a passkey: the node asks for one.

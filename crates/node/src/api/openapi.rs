@@ -66,7 +66,7 @@ impl Who {
             Self::Installer => {
                 "an installer (an account holder, or an unscoped API key that is not read-only)"
             }
-            Self::AppAccess => "whoever the app's access admits (a public app: anyone)",
+            Self::AppAccess => "whoever the app's grants admit (`anyone`: any signed-in account)",
             Self::Ops => "the ops token",
         }
     }
@@ -716,11 +716,11 @@ fn components() -> Vec<Component> {
             "{ app: string, index: uint, resultHash: string, node: uint, key: string, signature: string }",
         ),
         component(
-            "Access",
-            "Who may reach an app at all.",
-            r#"{ kind: "owner" } | { kind: "org" } | { kind: "public" } | { kind: "accounts", accounts: string[] } | { kind: "team", team: string }"#,
+            "Grant",
+            "One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account. At most 16 teams and 1000 accounts.",
+            r#"{ kind: "org" } | { kind: "team", team: string } | { kind: "account", account: string, scope?: any } | { kind: "anyone" }"#,
         )
-        .of::<crate::types::Access>(),
+        .of::<crate::types::Grant>(),
         component(
             "OrgRole",
             "A member's role in an organization.",
@@ -899,7 +899,7 @@ fn components() -> Vec<Component> {
         component(
             "App",
             "An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.",
-            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, access: #Access, confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string } }"#,
+            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, grants: #Grant[], confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string } }"#,
         )
         .of::<crate::types::AppRecord>(),
         component(
@@ -932,8 +932,8 @@ fn components() -> Vec<Component> {
         .of::<crate::types::ApiKeyRecord>(),
         component(
             "Org",
-            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other).",
-            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
+            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).",
+            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, allowGuests?: bool, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
         )
         .of::<OrgAnswer>(),
         component(
@@ -1040,6 +1040,9 @@ fn components() -> Vec<Component> {
 struct OrgAnswer {
     #[serde(flatten)]
     org: crate::types::Org,
+    /// Always answered (`org_get`), though the state leaves `true` out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    allow_guests: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<crate::types::OrgMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1279,16 +1282,16 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         // ---------------------------------------------------------------- apps
         post("/apps", "app_create", Installer, "Create an app instance")
-            .about("From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.")
-            .json::<super::CreateAppBody>("{ name?: string, bundle?: string, package?: string, version?: string, service?: string, org?: string, newOrg?: { name: string }, access?: #Access, initArgs?: any, metadata?: any, deployment?: string }")
+            .about("From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`; the single `access` mode of earlier releases is `400 ACCESS_REMOVED`, never read as no grants). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.")
+            .bytes_json::<super::CreateAppBody>("{ name?: string, bundle?: string, package?: string, version?: string, service?: string, org?: string, newOrg?: { name: string }, grants?: #Grant[], initArgs?: any, metadata?: any, deployment?: string }")
             .ok("{ appId: string, contextId: string, group: uint, replicas: uint[], compute: bool }")
-            .errors(&[(400, "BAD_REQUEST"), (400, "NOT_OFFERED"), (400, "VERSION_REQUIRED"), (400, "NO_SUCH_SERVICE"), (400, "AMBIGUOUS_COMPUTE"), (400, "ORG_REQUIRED"), (400, "STANDALONE_INSTANCE"), (400, "ORG_INSTANCE"), (409, "NO_ORGANIZATION"), (409, "FEATURE_NOT_ACTIVE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "INIT_FAILED"), (429, "QUOTA_EXCEEDED"), (503, "UNAVAILABLE")]),
+            .errors(&[(400, "BAD_REQUEST"), (400, "ACCESS_REMOVED"), (400, "NOT_OFFERED"), (400, "VERSION_REQUIRED"), (400, "NO_SUCH_SERVICE"), (400, "AMBIGUOUS_COMPUTE"), (400, "ORG_REQUIRED"), (400, "STANDALONE_INSTANCE"), (400, "ORG_INSTANCE"), (409, "NO_ORGANIZATION"), (409, "FEATURE_NOT_ACTIVE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "INIT_FAILED"), (429, "QUOTA_EXCEEDED"), (503, "UNAVAILABLE")]),
         get("/apps", "app_list", SignedIn, "Apps the caller reaches")
-            .about("Anyone may list public apps.")
+            .about("The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.")
             .query::<super::AppListQuery>("{ package?: string, bundle?: string }")
             .ok("{ apps: #AppEntry[] }"),
         get("/apps/{app}", "app_get", SignedIn, "One app")
-            .about("`{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route.")
+            .about("`{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. A guest sees only their own grant in `grants`.")
             .ok("#App")
             .errors(&[(404, "NOT_FOUND")]),
         delete("/apps/{app}", "app_delete", Session, "Delete an app")
@@ -1399,9 +1402,25 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "CLUSTER_NOT_UPGRADED")]),
         post("/apps/{app}/access", "app_access", Session, "Set who may reach an app")
-            .about("A package-bound session: only its own package's app, from one of its package's teams to another.")
-            .json::<super::AccessBody>("{ access: #Access }")
+            .about("`grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version 1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.")
+            .json::<super::AccessBody>("{ grants: #Grant[] }")
             .ok("{}"),
+        post("/apps/{app}/invites", "app_invite_create", AccountHolder, "Invite someone to an instance")
+            .about("A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. `412` first.")
+            .json::<super::AppInviteBody>("{ ttlSecs?: uint, uses?: uint, scope?: any, confirm?: #Confirm }")
+            .ok("{ token: string }")
+            .step_up()
+            .errors(&[(400, "BAD_REQUEST"), (400, "WRONG_CHALLENGE"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE"), (429, "QUOTA_EXCEEDED")]),
+        get("/apps/{app}/invites", "app_invite_list", Session, "An instance's invites")
+            .about("For whoever may change its access: keys, terms and scope, never a token.")
+            .ok("{ invites: { inviteKey: string, usesLeft: uint, expiresAt: uint, expired: bool, createdBy: string, createdAt: uint, scope: any }[] }")
+            .errors(&[(404, "NOT_FOUND")]),
+        delete("/apps/{app}/invites/{key}", "app_invite_revoke", AccountHolder, "Revoke an instance invite")
+            .about("Its creator, or whoever may change the instance's access; `412` first.")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
+            .ok("{}")
+            .step_up()
+            .errors(&[(404, "NOT_FOUND")]),
         post("/apps/{app}/transfer", "app_transfer", AccountHolder, "Hand an app to another account")
             .about("The owner (for an organization's app, while a member and in the app's team), or an organization admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for; below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal one). Answers `null`.")
             .json::<super::TransferBody>("{ to: string, confirm?: #Confirm }")
@@ -1421,9 +1440,9 @@ fn operations() -> Vec<Op> {
             .ok("{}")
             .errors(&[(404, "NOT_DELEGATED"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/move", "app_move", AccountHolder, "Move an app to another organization")
-            .about("Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.")
+            .about("Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.")
             .json::<super::MoveBody>("{ toOrg: string, bringMembers?: bool, confirm?: #Confirm }")
-            .ok("{ appId: string, from: string | null, org: string, access: #Access, created: bool, added: string[], revokedInvites: uint }")
+            .ok("{ appId: string, from: string | null, org: string, grants: #Grant[], created: bool, added: string[], revokedInvites: uint }")
             .step_up()
             .errors(&[(409, "FEATURE_NOT_ACTIVE")]),
         get("/apps/{app}/links", "app_links", AppAccess, "List an app's links to the apps its release uses")
@@ -1642,11 +1661,11 @@ fn operations() -> Vec<Op> {
             .json::<super::TeamUpdateBody>("{ name?: string, join?: #TeamJoin, parent?: string | null, metadata?: any }")
             .ok("{}"),
         delete("/orgs/{org}/teams/{team}", "team_delete", Session, "Delete a team")
-            .about("With the teams and apps below it. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.")
-            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
-            .ok("{ teams: string[], apps: string[] }")
+            .about("With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay (`keptApps`), each without those teams' grants and with its other grants (named members, guests, `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it); `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or the organization admits only loses the deleted teams' grants either way. With such instances, the passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.")
+            .opt_json::<super::TeamDeleteBody>("{ keepApps?: bool, confirm?: #Confirm }")
+            .ok("{ teams: string[], apps: string[], keptApps?: string[] }")
             .step_up()
-            .errors(&[(404, "NOT_FOUND")]),
+            .errors(&[(404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/capabilities", "org_capabilities", Session, "Set capabilities")
             .about("A member's (`account`), in a team (`team`), or a team's default; the capability bits. `412` first.")
             .json::<super::CapabilitiesBody>("{ account?: string, team?: string, capabilities: uint, confirm?: #Confirm }")
@@ -1760,8 +1779,15 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(404, "NOT_FOUND"), (409, "RECOVERY_NOT_READY")]),
         post("/invites/{token}/redeem", "invite_redeem", Session, "Join with an invite")
-            .about("No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.")
-            .ok("{ org: string }"),
+            .about("No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the redemption applies.")
+            .ok("{ org: string, app?: string, member?: bool }")
+            .errors(&[(409, "GUESTS_NOT_ALLOWED")]),
+        post("/orgs/{org}/settings", "org_settings", Session, "Change the organization's settings")
+            .about("`allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.")
+            .json::<super::OrgSettingsBody>("{ allowGuests?: bool, confirm?: #Confirm }")
+            .ok("{ org: string, allowGuests: bool }")
+            .step_up()
+            .errors(&[(400, "BAD_REQUEST"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         // ---------------------------------------------------------------- consent
         post("/consent/requests", "crate::consent_page::create", Session, "Ask the account's owner to approve")
             .about("From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.")

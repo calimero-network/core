@@ -381,20 +381,27 @@ pub struct SealedRefusal {
 
 pub use crate::attest::Receipt;
 
-/// Who may reach an app at all.
+/// One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account. At most 16 teams and 1000 accounts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
-pub enum Access {
-    #[serde(rename = "owner")]
-    Owner,
+pub enum Grant {
     #[serde(rename = "org")]
     Org,
-    #[serde(rename = "public")]
-    Public,
-    #[serde(rename = "accounts")]
-    Accounts { accounts: Vec<String> },
     #[serde(rename = "team")]
     Team { team: String },
+    #[serde(rename = "account")]
+    Account {
+        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::route::present"
+        )]
+        scope: Option<Value>,
+        account: String,
+    },
+    #[serde(rename = "anyone")]
+    Anyone,
 }
 
 /// A member's role in an organization.
@@ -1404,7 +1411,7 @@ pub struct AppRestore {
 }
 
 /// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct App {
     #[serde(rename = "appId")]
     pub app_id: String,
@@ -1413,7 +1420,7 @@ pub struct App {
     pub bundle: String,
     pub owner: String,
     pub org: Option<String>,
-    pub access: Access,
+    pub grants: Vec<Grant>,
     #[serde(rename = "confirmMethods")]
     pub confirm_methods: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1696,7 +1703,7 @@ pub struct OrgNewWorkStopped {
     pub extra: Map<String, Value>,
 }
 
-/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other).
+/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Org {
     #[serde(rename = "orgId")]
@@ -1724,6 +1731,9 @@ pub struct Org {
     pub all_apps: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub personal: Option<bool>,
+    #[serde(rename = "allowGuests")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_guests: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<OrgMode>,
     #[serde(rename = "releaseApprovers")]
@@ -2386,7 +2396,7 @@ pub struct AppCreateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_org: Option<AppCreateRequestNewOrg>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access: Option<Access>,
+    pub grants: Option<Vec<Grant>>,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     #[serde(rename = "initArgs")]
     #[serde(
@@ -2685,6 +2695,42 @@ pub struct IntentsResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppInviteCreateResponse {
+    pub token: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppInviteListResponseInvitesItem {
+    #[serde(rename = "inviteKey")]
+    pub invite_key: String,
+    #[serde(rename = "usesLeft")]
+    pub uses_left: u64,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: u64,
+    pub expired: bool,
+    #[serde(rename = "createdBy")]
+    pub created_by: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub scope: Value,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppInviteListResponse {
+    pub invites: Vec<AppInviteListResponseInvitesItem>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppLinksResponseLinksItem {
     pub name: String,
     pub package: Option<String>,
@@ -2810,13 +2856,13 @@ pub struct AppMethodResponse {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppMoveResponse {
     #[serde(rename = "appId")]
     pub app_id: String,
     pub from: Option<String>,
     pub org: String,
-    pub access: Access,
+    pub grants: Vec<Grant>,
     pub created: bool,
     pub added: Vec<String>,
     #[serde(rename = "revokedInvites")]
@@ -5451,6 +5497,10 @@ pub struct OpsStatusResponse {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct InviteRedeemResponse {
     pub org: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<bool>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -5819,6 +5869,16 @@ pub struct RecoveryStartResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgSettingsResponse {
+    pub org: String,
+    #[serde(rename = "allowGuests")]
+    pub allow_guests: bool,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TeamCreateResponse {
     #[serde(rename = "teamId")]
     pub team_id: String,
@@ -5831,6 +5891,9 @@ pub struct TeamCreateResponse {
 pub struct TeamDeleteResponse {
     pub teams: Vec<String>,
     pub apps: Vec<String>,
+    #[serde(rename = "keptApps")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_apps: Option<Vec<String>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

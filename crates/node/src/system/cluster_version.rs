@@ -157,10 +157,27 @@ pub enum Feature {
     /// (`SystemState::approves_upgrades`). An earlier release ignores the field and would
     /// apply a member's, a team lead's or a publisher's upgrade where a later one refuses it.
     OwnerApprovedUpgrades,
+    /// Guests: an instance's listed accounts reach it without joining its organization
+    /// where its release (`PackageVersion::guests`) and its organization (`allowGuests`)
+    /// allow; `SetOrgSettings { allow_guests }`, and instance invites (`CreateAppInvite`, `RevokeAppInvite`,
+    /// `RedeemAppInvite`); `InstallPackage` recording the release's `guests`. An earlier
+    /// release cannot decode the commands, drops the field, and would refuse a guest the
+    /// others admit. Apply reads the logged version for the reach rule
+    /// (`SystemState::guests_on`), so state before it reads as it did.
+    Guests,
+    /// An instance's access as a list of grants (`Access`: the organization, teams, named
+    /// members and guests with an app-defined scope, anyone): every `SetAccess`, a `CreateApp`
+    /// with any grant, and the instance invites, whose redemption adds a grant. An earlier
+    /// release reads access as one mode: it cannot decode the list, and reads an instance
+    /// without one as its owner's alone.
+    AccessGrants,
+    /// `DeleteTeam` keeping the instances only the team admitted (`keep_apps`): they lose its
+    /// grants and keep the rest. An earlier release ignores the field and deletes them.
+    KeepTeamApps,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 37] = [
+pub const FEATURES: [Feature; 40] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -198,6 +215,9 @@ pub const FEATURES: [Feature; 37] = [
     Feature::UpgradeInDeployment,
     Feature::OrdinaryOrgs,
     Feature::OwnerApprovedUpgrades,
+    Feature::Guests,
+    Feature::AccessGrants,
+    Feature::KeepTeamApps,
 ];
 
 impl Feature {
@@ -242,6 +262,9 @@ impl Feature {
             Self::UpgradeInDeployment => "upgradeInDeployment",
             Self::OrdinaryOrgs => "ordinaryOrgs",
             Self::OwnerApprovedUpgrades => "ownerApprovedUpgrades",
+            Self::Guests => "guests",
+            Self::AccessGrants => "accessGrants",
+            Self::KeepTeamApps => "keepTeamApps",
         }
     }
 
@@ -283,7 +306,10 @@ impl Feature {
             | Self::DeploymentUsedSecrets
             | Self::UpgradeInDeployment
             | Self::OrdinaryOrgs => "1.0.0-rc.32",
-            Self::OwnerApprovedUpgrades => "1.0.0-rc.33",
+            Self::OwnerApprovedUpgrades
+            | Self::Guests
+            | Self::AccessGrants
+            | Self::KeepTeamApps => "1.0.0-rc.33",
         }
     }
 }
@@ -556,6 +582,14 @@ impl SystemCmd {
                 f
             }
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
+            Self::SetOrgSettings { .. } | Self::RevokeAppInvite { .. } => vec![Feature::Guests],
+            Self::CreateAppInvite { .. } | Self::RedeemAppInvite { .. } => {
+                vec![Feature::Guests, Feature::AccessGrants]
+            }
+            Self::SetAccess { .. } => vec![Feature::AccessGrants],
+            Self::DeleteTeam {
+                keep_apps: true, ..
+            } => vec![Feature::KeepTeamApps],
             Self::SetDelegation { .. } => vec![Feature::Delegation],
             Self::LinkApp { .. } => vec![Feature::AttachApp],
             Self::SetDeploymentSecret { used: true, .. } => {
@@ -623,6 +657,9 @@ impl SystemCmd {
                 if release.instance_org.is_some() {
                     f.push(Feature::OrdinaryOrgs);
                 }
+                if release.guests.is_some() {
+                    f.push(Feature::Guests);
+                }
                 f
             }
             Self::CreateApp { app, unit_offer } => {
@@ -635,6 +672,9 @@ impl SystemCmd {
                 }
                 if unit_offer.is_some() {
                     f.push(Feature::WholeUnits);
+                }
+                if !app.access.grants().is_empty() {
+                    f.push(Feature::AccessGrants);
                 }
                 f
             }
@@ -667,7 +707,6 @@ impl SystemCmd {
             | Self::AcquireRun { .. }
             | Self::ReleaseRun { .. }
             | Self::SetReplicas { .. }
-            | Self::SetAccess { .. }
             | Self::AddPasskey { .. }
             | Self::RemovePasskey { .. }
             | Self::RevokeAllSessions { .. }
@@ -906,8 +945,6 @@ mod tests {
                 nonce: "n".into(),
                 actor: "alice".into(),
                 consent: Value::Null,
-                owner_in_team: true,
-                accounts_in_app_team: true,
                 member_child_teams: true,
                 by_release: false,
                 all_apps_rows: false,
@@ -919,8 +956,6 @@ mod tests {
                 nonce: "n".into(),
                 actor: "alice".into(),
                 consent: Value::Null,
-                owner_in_team: true,
-                accounts_in_app_team: true,
                 member_child_teams: true,
                 by_release: true,
                 all_apps_rows: false,
@@ -939,8 +974,6 @@ mod tests {
                 nonce: "n".into(),
                 actor: "alice".into(),
                 consent: Value::Null,
-                owner_in_team: true,
-                accounts_in_app_team: true,
                 member_child_teams: true,
                 by_release: false,
                 all_apps_rows: false,
@@ -1006,7 +1039,7 @@ mod tests {
                     "targets": { "kv-app": { "package": "kv", "version": "0.2.0" } } } })),
             Feature::AppLinks => entry(json!({ "op": "createApp", "app": {
                 "appId": "app", "name": "notes", "group": 0, "bundle": "b", "owner": "a",
-                "org": "org", "access": { "kind": "org" }, "confirmMethods": [], "replicas": [1],
+                "org": "org", "confirmMethods": [], "replicas": [1],
                 "createdAt": 1, "initArgs": null, "metadata": null,
                 "links": { "kv": "kv-app" },
             } })),
@@ -1022,6 +1055,14 @@ mod tests {
             Feature::UpgradeInDeployment => entry(json!({ "op": "upgradeApp",
                 "app_id": "app", "bundle": "b", "actor": "a", "in_deployment": true })),
             Feature::OrdinaryOrgs => install(json!({ "instanceOrg": "standalone" })),
+            Feature::Guests => entry(json!({ "op": "setOrgSettings", "org": "org",
+                "settings": { "allowGuests": false }, "actor": "alice" })),
+            Feature::AccessGrants => entry(json!({ "op": "setAccess", "app_id": "app",
+                "grants": [{ "kind": "team", "team": "t" },
+                    { "kind": "account", "account": "carol", "scope": { "channel": "p" } }],
+                "actor": "alice" })),
+            Feature::KeepTeamApps => entry(json!({ "op": "deleteTeam", "org": "org",
+                "team": "t", "actor": "alice", "apps_need_consent": true, "keep_apps": true })),
             Feature::OwnerApprovedUpgrades => entry(json!({ "op": "upgradeApp",
                 "app_id": "app", "bundle": "b", "actor": "a", "owner_approves": true })),
             Feature::Pipelines => install(json!({
@@ -1454,7 +1495,8 @@ mod tests {
         // rc.32's (a deployment's secrets, whole units, secrets of used releases, an
         // upgrade kept on its deployment's offer, a release's instance mode) wait for every
         // node on rc.32, and rc.33's (upgrades only an organization's owner and admins
-        // approve) for every node on rc.33.
+        // approve, guests, access grants, a team deleted keeping its instances) for every
+        // node on rc.33.
         assert_eq!(
             rc32,
             [
@@ -1462,10 +1504,18 @@ mod tests {
                 Feature::WholeUnits,
                 Feature::DeploymentUsedSecrets,
                 Feature::UpgradeInDeployment,
-                Feature::OrdinaryOrgs
+                Feature::OrdinaryOrgs,
             ]
         );
-        assert_eq!(rc33, [Feature::OwnerApprovedUpgrades]);
+        assert_eq!(
+            rc33,
+            [
+                Feature::OwnerApprovedUpgrades,
+                Feature::Guests,
+                Feature::AccessGrants,
+                Feature::KeepTeamApps
+            ]
+        );
         for &feature in rc32.iter().chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(

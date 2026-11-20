@@ -80,7 +80,7 @@ def sync_detailed(
 ) -> Response[Union[AppListResponse200, Error]]:
     """Apps the caller reaches
 
-     Anyone may list public apps.
+     The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
 
     **Who:** signed in (a session or an API key).
 
@@ -116,7 +116,7 @@ def sync(
 ) -> Optional[Union[AppListResponse200, Error]]:
     """Apps the caller reaches
 
-     Anyone may list public apps.
+     The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
 
     **Who:** signed in (a session or an API key).
 
@@ -147,7 +147,7 @@ async def asyncio_detailed(
 ) -> Response[Union[AppListResponse200, Error]]:
     """Apps the caller reaches
 
-     Anyone may list public apps.
+     The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
 
     **Who:** signed in (a session or an API key).
 
@@ -181,7 +181,7 @@ async def asyncio(
 ) -> Optional[Union[AppListResponse200, Error]]:
     """Apps the caller reaches
 
-     Anyone may list public apps.
+     The instances the caller reaches; one an `anyone` grant admits is listed only to its owner.
 
     **Who:** signed in (a session or an API key).
 

@@ -83,7 +83,7 @@ def sync_detailed(
     the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule
     before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -124,7 +124,7 @@ def sync(
     the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule
     before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -160,7 +160,7 @@ async def asyncio_detailed(
     the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule
     before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -199,7 +199,7 @@ async def asyncio(
     the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule
     before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):

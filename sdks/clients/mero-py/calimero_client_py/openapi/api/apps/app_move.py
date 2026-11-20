@@ -98,10 +98,10 @@ def sync_detailed(
 ) -> Response[Union[AppMoveResponse200, Error]]:
     """Move an app to another organization
 
-     Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes
-    the target's app team of its package. `bringMembers` adds the source's members who reach it, capped
-    at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the
-    accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
+     Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant
+    becomes the target's app team of its package. `bringMembers` adds the source's members who reach it,
+    capped at `member`. `from` is the organization it left, `null` for an app of the caller's own;
+    `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -139,10 +139,10 @@ def sync(
 ) -> Optional[Union[AppMoveResponse200, Error]]:
     """Move an app to another organization
 
-     Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes
-    the target's app team of its package. `bringMembers` adds the source's members who reach it, capped
-    at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the
-    accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
+     Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant
+    becomes the target's app team of its package. `bringMembers` adds the source's members who reach it,
+    capped at `member`. `from` is the organization it left, `null` for an app of the caller's own;
+    `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -175,10 +175,10 @@ async def asyncio_detailed(
 ) -> Response[Union[AppMoveResponse200, Error]]:
     """Move an app to another organization
 
-     Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes
-    the target's app team of its package. `bringMembers` adds the source's members who reach it, capped
-    at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the
-    accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
+     Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant
+    becomes the target's app team of its package. `bringMembers` adds the source's members who reach it,
+    capped at `member`. `from` is the organization it left, `null` for an app of the caller's own;
+    `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -214,10 +214,10 @@ async def asyncio(
 ) -> Optional[Union[AppMoveResponse200, Error]]:
     """Move an app to another organization
 
-     Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes
-    the target's app team of its package. `bringMembers` adds the source's members who reach it, capped
-    at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the
-    accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
+     Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant
+    becomes the target's app team of its package. `bringMembers` adds the source's members who reach it,
+    capped at `member`. `from` is the organization it left, `null` for an app of the caller's own;
+    `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

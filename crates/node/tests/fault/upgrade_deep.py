@@ -54,6 +54,15 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
+    ("Organizations", "Guests reaching an instance and scoped instance invites (an outsider's `account` grant, "
+     "`allowGuests`, `/apps/{app}/invites` with `scope`, `Feature::Guests`)",
+     "a guest is admitted only by a release whose manifest says `guests: allowed`, which the old release's "
+     "meroctl cannot pack, and every piece is written only once every node runs this release, so nothing is "
+     "seeded before the roll (`app-access-grants` seeds a guest grant after it, which that release refuses); "
+     "`guests.rs` covers it on one build and `system::tests::"
+     "a_guest_reaches_one_instance_while_its_release_and_its_organization_allow` and "
+     "`an_instances_access_is_a_list_of_grants` the apply rules. An organization or release from before reads "
+     "with guests off, as it behaved"),
     ("Apps", "An instance's own value of a declared secret (`/apps/{app}/secrets`, `rows::CSECRET`)",
      "needs a release that declares secrets, which the old release's meroctl cannot pack, and the value is "
      "set only once every node runs this release; "

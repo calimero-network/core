@@ -1203,7 +1203,7 @@ class CalimeroClient(
         return send(JsonObject(body + ("confirm" to assertionFor(passkey, challenge))))
     }
 
-    /** One app instance: its record (`name`, `owner`, `org`, `access`, `metadata`, ...). */
+    /** One app instance: its record (`name`, `owner`, `org`, `grants`, `metadata`, ...). */
     internal suspend fun getApp(app: String): JsonObject = raw(defaultApi.apps.appGetRequestConfig(app)) as JsonObject
 
     /**
@@ -1217,14 +1217,14 @@ class CalimeroClient(
         name: String,
         source: AppSource,
         org: String? = null,
-        access: AppAccess? = null,
+        grants: List<AppGrant>? = null,
         confirmMethods: List<String>? = null,
         initArgs: JsonElement? = null,
         metadata: JsonElement? = null,
     ): String {
         val request =
             when (source) {
-                is AppSource.Bundle -> AppCreateRequest(name = name, bundle = source.hash, org = org, access = access, initArgs = initArgs, metadata = metadata)
+                is AppSource.Bundle -> AppCreateRequest(name = name, bundle = source.hash, org = org, grants = grants, initArgs = initArgs, metadata = metadata)
                 is AppSource.Package ->
                     AppCreateRequest(
                         name = name,
@@ -1233,7 +1233,7 @@ class CalimeroClient(
                         service = source.service,
                         deployment = source.deployment,
                         org = org,
-                        access = access,
+                        grants = grants,
                         initArgs = initArgs,
                         metadata = metadata,
                     )
@@ -1704,19 +1704,19 @@ class CalimeroClient(
                 put("idempotencyKey", key)
             }
 
-        internal fun accessJson(access: AppAccess): JsonObject =
+        internal fun grantJson(grant: AppGrant): JsonObject =
             buildJsonObject {
-                when (access) {
-                    AppAccess.Owner -> put("kind", "owner")
-                    AppAccess.Org -> put("kind", "org")
-                    AppAccess.Public -> put("kind", "public")
-                    is AppAccess.Accounts -> {
-                        put("kind", "accounts")
-                        put("accounts", JsonArray(access.accounts.map(::JsonPrimitive)))
+                when (grant) {
+                    AppGrant.Org -> put("kind", "org")
+                    AppGrant.Anyone -> put("kind", "anyone")
+                    is AppGrant.Account -> {
+                        put("kind", "account")
+                        put("account", grant.account)
+                        grant.scope?.let { put("scope", it) }
                     }
-                    is AppAccess.Team -> {
+                    is AppGrant.Team -> {
                         put("kind", "team")
-                        put("team", access.team)
+                        put("team", grant.team)
                     }
                 }
             }

@@ -97,6 +97,7 @@ fn release_of(
             .publisher_upgrades
             .then_some(calimero_bundle::UpgradeAuthority::Publisher),
         instance_org: None,
+        guests: None,
         services: None,
         pipelines: Vec::new(),
         signature: None,

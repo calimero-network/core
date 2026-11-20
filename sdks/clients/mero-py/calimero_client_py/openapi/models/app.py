@@ -14,14 +14,13 @@ from typing import cast, Union
 from typing import Union
 
 if TYPE_CHECKING:
+    from ..models.grant_type_0 import GrantType0
+    from ..models.grant_type_3 import GrantType3
+    from ..models.grant_type_1 import GrantType1
     from ..models.app_restore import AppRestore
     from ..models.app_links import AppLinks
-    from ..models.access_type_0 import AccessType0
-    from ..models.access_type_3 import AccessType3
-    from ..models.access_type_1 import AccessType1
+    from ..models.grant_type_2 import GrantType2
     from ..models.package_ref import PackageRef
-    from ..models.access_type_4 import AccessType4
-    from ..models.access_type_2 import AccessType2
     from ..models.app_attached import AppAttached
     from ..models.upgrade import Upgrade
 
@@ -42,8 +41,7 @@ class App:
             bundle (str):
             owner (str):
             org (Union[None, str]):
-            access (Union['AccessType0', 'AccessType1', 'AccessType2', 'AccessType3', 'AccessType4']): Who may reach an app
-                at all.
+            grants (list[Union['GrantType0', 'GrantType1', 'GrantType2', 'GrantType3']]):
             confirm_methods (list[str]):
             replicas (list[int]):
             created_at (int):
@@ -69,9 +67,7 @@ class App:
     bundle: str
     owner: str
     org: Union[None, str]
-    access: Union[
-        "AccessType0", "AccessType1", "AccessType2", "AccessType3", "AccessType4"
-    ]
+    grants: list[Union["GrantType0", "GrantType1", "GrantType2", "GrantType3"]]
     confirm_methods: list[str]
     replicas: list[int]
     created_at: int
@@ -89,14 +85,13 @@ class App:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.grant_type_0 import GrantType0
+        from ..models.grant_type_3 import GrantType3
+        from ..models.grant_type_1 import GrantType1
         from ..models.app_restore import AppRestore
         from ..models.app_links import AppLinks
-        from ..models.access_type_0 import AccessType0
-        from ..models.access_type_3 import AccessType3
-        from ..models.access_type_1 import AccessType1
+        from ..models.grant_type_2 import GrantType2
         from ..models.package_ref import PackageRef
-        from ..models.access_type_4 import AccessType4
-        from ..models.access_type_2 import AccessType2
         from ..models.app_attached import AppAttached
         from ..models.upgrade import Upgrade
 
@@ -113,17 +108,19 @@ class App:
         org: Union[None, str]
         org = self.org
 
-        access: dict[str, Any]
-        if isinstance(self.access, AccessType0):
-            access = self.access.to_dict()
-        elif isinstance(self.access, AccessType1):
-            access = self.access.to_dict()
-        elif isinstance(self.access, AccessType2):
-            access = self.access.to_dict()
-        elif isinstance(self.access, AccessType3):
-            access = self.access.to_dict()
-        else:
-            access = self.access.to_dict()
+        grants = []
+        for grants_item_data in self.grants:
+            grants_item: dict[str, Any]
+            if isinstance(grants_item_data, GrantType0):
+                grants_item = grants_item_data.to_dict()
+            elif isinstance(grants_item_data, GrantType1):
+                grants_item = grants_item_data.to_dict()
+            elif isinstance(grants_item_data, GrantType2):
+                grants_item = grants_item_data.to_dict()
+            else:
+                grants_item = grants_item_data.to_dict()
+
+            grants.append(grants_item)
 
         confirm_methods = self.confirm_methods
 
@@ -177,7 +174,7 @@ class App:
                 "bundle": bundle,
                 "owner": owner,
                 "org": org,
-                "access": access,
+                "grants": grants,
                 "confirmMethods": confirm_methods,
                 "replicas": replicas,
                 "createdAt": created_at,
@@ -208,14 +205,13 @@ class App:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.grant_type_0 import GrantType0
+        from ..models.grant_type_3 import GrantType3
+        from ..models.grant_type_1 import GrantType1
         from ..models.app_restore import AppRestore
         from ..models.app_links import AppLinks
-        from ..models.access_type_0 import AccessType0
-        from ..models.access_type_3 import AccessType3
-        from ..models.access_type_1 import AccessType1
+        from ..models.grant_type_2 import GrantType2
         from ..models.package_ref import PackageRef
-        from ..models.access_type_4 import AccessType4
-        from ..models.access_type_2 import AccessType2
         from ..models.app_attached import AppAttached
         from ..models.upgrade import Upgrade
 
@@ -237,50 +233,46 @@ class App:
 
         org = _parse_org(d.pop("org"))
 
-        def _parse_access(
-            data: object,
-        ) -> Union[
-            "AccessType0", "AccessType1", "AccessType2", "AccessType3", "AccessType4"
-        ]:
-            try:
+        grants = []
+        _grants = d.pop("grants")
+        for grants_item_data in _grants:
+
+            def _parse_grants_item(
+                data: object,
+            ) -> Union["GrantType0", "GrantType1", "GrantType2", "GrantType3"]:
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    componentsschemas_grant_type_0 = GrantType0.from_dict(data)
+
+                    return componentsschemas_grant_type_0
+                except:  # noqa: E722
+                    pass
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    componentsschemas_grant_type_1 = GrantType1.from_dict(data)
+
+                    return componentsschemas_grant_type_1
+                except:  # noqa: E722
+                    pass
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    componentsschemas_grant_type_2 = GrantType2.from_dict(data)
+
+                    return componentsschemas_grant_type_2
+                except:  # noqa: E722
+                    pass
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_access_type_0 = AccessType0.from_dict(data)
+                componentsschemas_grant_type_3 = GrantType3.from_dict(data)
 
-                return componentsschemas_access_type_0
-            except:  # noqa: E722
-                pass
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_access_type_1 = AccessType1.from_dict(data)
+                return componentsschemas_grant_type_3
 
-                return componentsschemas_access_type_1
-            except:  # noqa: E722
-                pass
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_access_type_2 = AccessType2.from_dict(data)
+            grants_item = _parse_grants_item(grants_item_data)
 
-                return componentsschemas_access_type_2
-            except:  # noqa: E722
-                pass
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_access_type_3 = AccessType3.from_dict(data)
-
-                return componentsschemas_access_type_3
-            except:  # noqa: E722
-                pass
-            if not isinstance(data, dict):
-                raise TypeError()
-            componentsschemas_access_type_4 = AccessType4.from_dict(data)
-
-            return componentsschemas_access_type_4
-
-        access = _parse_access(d.pop("access"))
+            grants.append(grants_item)
 
         confirm_methods = cast(list[str], d.pop("confirmMethods"))
 
@@ -352,7 +344,7 @@ class App:
             bundle=bundle,
             owner=owner,
             org=org,
-            access=access,
+            grants=grants,
             confirm_methods=confirm_methods,
             replicas=replicas,
             created_at=created_at,

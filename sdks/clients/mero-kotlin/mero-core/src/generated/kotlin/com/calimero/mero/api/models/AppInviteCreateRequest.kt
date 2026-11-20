@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.Confirm
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -31,26 +32,30 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param kind 
+ * @param ttlSecs 
+ * @param uses 
+ * @param scope Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+ * @param confirm 
  */
 @Serializable
 
-data class AccessOneOf1 (
+data class AppInviteCreateRequest (
 
-    @SerialName(value = "kind")
-    val kind: AccessOneOf1.Kind
+    @SerialName(value = "ttlSecs")
+    val ttlSecs: kotlin.Long? = null,
+
+    @SerialName(value = "uses")
+    val uses: kotlin.Long? = null,
+
+    /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+    @Contextual @SerialName(value = "scope")
+    val scope: kotlinx.serialization.json.JsonElement? = null,
+
+    @SerialName(value = "confirm")
+    val confirm: Confirm? = null
 
 ) {
 
-    /**
-     * 
-     *
-     * Values: ORG
-     */
-    @Serializable
-    enum class Kind(val value: kotlin.String) {
-        @SerialName(value = "org") ORG("org");
-    }
 
 }
 

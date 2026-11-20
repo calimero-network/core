@@ -96,7 +96,7 @@ def sync_detailed(
 
      `{id}` is base58 or hex; `grant` is a link the app made (`BlobRef::grant`).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -135,7 +135,7 @@ def sync(
 
      `{id}` is base58 or hex; `grant` is a link the app made (`BlobRef::grant`).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -169,7 +169,7 @@ async def asyncio_detailed(
 
      `{id}` is base58 or hex; `grant` is a link the app made (`BlobRef::grant`).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
@@ -206,7 +206,7 @@ async def asyncio(
 
      `{id}` is base58 or hex; `grant` is a link the app made (`BlobRef::grant`).
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
     Args:
         app (str):
