@@ -378,11 +378,6 @@ pub(super) struct CreateAppBody {
     /// organization; empty: the owner alone.
     #[serde(default)]
     grants: Option<Vec<crate::types::Grant>>,
-    /// The single access mode clients before 1.0.0-rc.33 sent. Refused, never ignored:
-    /// read as no grants it would admit the whole organization to an instance the client
-    /// meant to keep to a few (`ACCESS_REMOVED`).
-    #[serde(default)]
-    access: Option<serde::de::IgnoredAny>,
     /// Arguments for the app's `init`, as JSON.
     #[serde(default)]
     init_args: Value,
@@ -404,14 +399,22 @@ pub(super) struct CreateAppBody {
 async fn app_create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
-    Json(body): Json<CreateAppBody>,
+    body: axum::body::Bytes,
 ) -> ApiResult {
-    if body.access.is_some() {
+    let raw: Value = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    // The single access mode clients before 1.0.0-rc.33 sent is refused, never ignored:
+    // read as no grants it would admit the whole organization to an instance the client
+    // meant to keep to a few. Judged on the raw body, so `CreateAppBody` (and the API
+    // document clients are generated from) never names it.
+    if raw.get("access").is_some() {
         return Err(ApiError::bad_request(
             "ACCESS_REMOVED",
             "`access` was replaced by `grants`: name who reaches the instance as a list of grants",
         ));
     }
+    let body: CreateAppBody = serde_json::from_value(raw)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
     if let Some(grants) = &body.grants {
         grants_fit(grants)?;
     }
@@ -593,7 +596,6 @@ async fn create_instance(
                         org: Some(org.clone()),
                         new_org: None,
                         grants: body.grants.clone(),
-                        access: None,
                         init_args: Value::Null,
                         metadata: json!({ "unit": { "of": body.name, "as": name } }),
                         deployment: body.deployment.clone(),

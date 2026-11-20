@@ -868,7 +868,7 @@ impl Apps<'_> {
 
     /// Whether an update is available for an app.
     ///
-    /// `GET /apps/{app}/update` (`app_update`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/update` (`app_update`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
     pub async fn update(self, app: &str) -> Result<AppUpdateResponse> {
         let req = Request::new(Method::GET, format!("apps/{}/update", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await

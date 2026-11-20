@@ -432,7 +432,7 @@ export function createRoutes(api: RouteClient) {
       /**
        * Whether an update is available for an app.
        *
-       * `GET /apps/{app}/update` (`app_update`). **Who:** whoever the app's access admits (a public app: anyone).
+       * `GET /apps/{app}/update` (`app_update`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       update: (args: operations['app_update']['parameters']['path'], options?: MethodOptions): Promise<operations['app_update']['responses'][200]['content']['application/json']> =>

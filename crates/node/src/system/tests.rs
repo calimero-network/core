@@ -7341,15 +7341,15 @@ fn only_an_organizations_owner_and_admins_approve_its_upgrades() {
             .unwrap(),
         );
     }
-    for (id, access) in [
-        ("mine", json!({ "kind": "org" })),
-        ("onteam", json!({ "kind": "team", "team": "t" })),
+    for (id, grants) in [
+        ("mine", json!([{ "kind": "org" }])),
+        ("onteam", json!([{ "kind": "team", "team": "t" }])),
     ] {
         let _prev = m.state.apps.insert(
             id.into(),
             serde_json::from_value(json!({
                 "appId": id, "name": id, "group": 4, "bundle": "b1", "owner": "dan",
-                "org": "cust", "access": access, "replicas": [1], "createdAt": 0,
+                "org": "cust", "grants": grants, "replicas": [1], "createdAt": 0,
                 "release": { "package": "p", "version": "1.0.0" }
             }))
             .unwrap(),
@@ -7494,7 +7494,7 @@ fn only_an_organizations_owner_and_admins_approve_its_upgrades() {
         "own".into(),
         serde_json::from_value(json!({
             "appId": "own", "name": "own", "group": 5, "bundle": "b1", "owner": "pam",
-            "org": "pub", "access": { "kind": "org" }, "replicas": [1], "createdAt": 0,
+            "org": "pub", "grants": [{ "kind": "org" }], "replicas": [1], "createdAt": 0,
             "release": { "package": "p", "version": "1.0.0" }
         }))
         .unwrap(),

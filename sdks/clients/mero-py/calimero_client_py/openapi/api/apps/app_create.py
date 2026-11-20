@@ -113,8 +113,9 @@ def sync_detailed(
     else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
     version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
     is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; absent: the organization; empty:
-    the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`). `initArgs`
-    go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init`
+    the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`; the single
+    `access` mode of earlier releases is `400 ACCESS_REMOVED`, never read as no grants). `initArgs` go
+    to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init`
     committed; `compute` says whether the app has a compute component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
@@ -157,8 +158,9 @@ def sync(
     else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
     version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
     is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; absent: the organization; empty:
-    the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`). `initArgs`
-    go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init`
+    the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`; the single
+    `access` mode of earlier releases is `400 ACCESS_REMOVED`, never read as no grants). `initArgs` go
+    to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init`
     committed; `compute` says whether the app has a compute component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
@@ -196,8 +198,9 @@ async def asyncio_detailed(
     else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
     version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
     is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; absent: the organization; empty:
-    the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`). `initArgs`
-    go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init`
+    the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`; the single
+    `access` mode of earlier releases is `400 ACCESS_REMOVED`, never read as no grants). `initArgs` go
+    to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init`
     committed; `compute` says whether the app has a compute component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
@@ -238,8 +241,9 @@ async def asyncio(
     else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
     version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
     is `409 FEATURE_NOT_ACTIVE`. `grants` say who reaches it (#Grant; absent: the organization; empty:
-    the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`). `initArgs`
-    go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init`
+    the owner alone; any grant needs cluster version 1.0.0-rc.33, `409 FEATURE_NOT_ACTIVE`; the single
+    `access` mode of earlier releases is `400 ACCESS_REMOVED`, never read as no grants). `initArgs` go
+    to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init`
     committed; `compute` says whether the app has a compute component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
