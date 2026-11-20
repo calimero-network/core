@@ -533,3 +533,38 @@ async fn a_team_and_two_partners_reach_one_instance_by_their_grants() {
     assert_eq!(reads(&carol, &app).await.unwrap(), json!("v"));
     refused(&reads(&bob, &app).await.unwrap_err(), "404");
 }
+
+/// A client from before grants that still sends the single `access` mode is refused, not
+/// ignored: absent grants would admit the whole organization, so an instance it meant to keep
+/// to a few accounts (a private channel) would open to everyone in it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_old_clients_access_field_is_refused_not_read_as_no_grants() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let bob_id = id(&bob).await;
+    let _ok = alice
+        .packages()
+        .upload(release(ALLOWS, None))
+        .await
+        .unwrap();
+    let acme = s(&alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]);
+    let refused_create = alice
+        .apps()
+        .create(typed(json!({
+            "name": "private", "package": ALLOWS, "org": acme,
+            "access": { "kind": "accounts", "accounts": [bob_id] },
+        })))
+        .await
+        .map(|r| r.app_id)
+        .unwrap_err();
+    refused(&refused_create, "400");
+    assert!(refused_create.to_string().contains("ACCESS_REMOVED"), "{refused_create}");
+    let apps = alice.apps().list(None, None).await.map(wire).unwrap();
+    assert_eq!(apps["apps"].as_array().map(Vec::len), Some(0), "{apps}");
+}
