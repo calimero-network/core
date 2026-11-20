@@ -6,6 +6,9 @@ sidebar:
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import DecisionMatrix from '../../../components/diagrams/DecisionMatrix.astro';
+import DeploymentModel from '../../../components/diagrams/DeploymentModel.astro';
+import SecretLookup from '../../../components/diagrams/SecretLookup.astro';
 
 Attestation proves a node runs a trusted image *today*. Three later decisions
 could still put an app's data in front of something new:
@@ -40,6 +43,15 @@ With `operator`, each row's decision is the operator's instead
 (`POST /ops/releases`, `/ops/apps/{app}/upgrade`, `/ops/orgs/{org}/upgrade`,
 `/ops/outbound`). Whichever side does not hold a decision is refused by the API
 (`403`) and, should a command get that far, by `apply`.
+
+The three decisions sit among the others that shape what an app runs and
+where its data may go:
+
+<DecisionMatrix />
+
+Read a row across: who may make the decision, what they present for it, and
+where a node refuses anyone else; a row's operator path exists only where the
+cluster's governance gives the operator that decision.
 
 ## Fixed at genesis, attested with every receipt key
 
@@ -317,10 +329,10 @@ a publisher's run (`POST /orgs/{org}/packages/{package}/upgrade { version,
 migrate? }`, by an owner or admin of the publisher) moves only the instances of
 the organizations its starter is an owner or admin of. Anyone else is refused
 `403` before any passkey, and `apply` refuses the entry
-(`Feature::OwnerApprovedUpgrades`, 1.0.0-rc.32; `UpgradeApp`,
+(`Feature::OwnerApprovedUpgrades`, 1.0.0-rc.33; `UpgradeApp`,
 `StartUpgradeRun` and `CreateApiKey { owner_approves }`).
 
-Until every node runs 1.0.0-rc.32, the rule before holds, and entries logged
+Until every node runs 1.0.0-rc.33, the rule before holds, and entries logged
 before it replay as they applied: for `owner` (the default) the app's owner, or
 whoever holds `MANAGE_APPLICATION` on its team or across its organization; for
 `publisher` the publisher organization's `MANAGE_APPLICATION` holders, for
@@ -387,6 +399,37 @@ grant, for the operator and for whoever acts for the owner.
 Where deployments are `granted`, creating a [deployment](#deployments) and
 offering an app in one need the same grant, held by the account acting.
 
+<SeqDiagram
+  id="d-granted-cluster"
+  title="Granted deployers: the operator, then the cluster's owner"
+  lanes={[
+    { label: 'Operator', color: '#8b949e' },
+    { label: 'Node API', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: 'Cluster owner', color: '#a371f7' },
+    { label: 'Account', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /ops/deployments/granted (signed): open → granted, never back' },
+    { from: 0, to: 1, label: 'POST /ops/deployers { deployer, until? } (signed)' },
+    { from: 1, to: 2, label: 'GrantDeployer: the operator\'s signature' },
+    { type: 'divider', label: 'deployers: owner' },
+    { from: 0, to: 1, label: 'POST /ops/cluster-owner { owner } (signed), once' },
+    { from: 1, to: 2, label: 'SetClusterOwner: operator signatures refused from here on' },
+    { from: 3, to: 1, label: 'POST /deployers { deployer, until? } + passkey' },
+    { from: 1, to: 2, label: 'GrantDeployer: the owner\'s consent' },
+    { type: 'divider', label: 'an install' },
+    { from: 4, to: 1, label: 'POST /packages/install { package, version }' },
+    { from: 1, to: 1, label: 'a live grant (account:<id>, or org:<id> held org-wide)? else 403 DEPLOY_NOT_GRANTED, nothing fetched' },
+    { from: 1, to: 2, label: 'InstallPackage: the grant judged again at installedAt' },
+  ]}
+/>
+
+Read it top to bottom: the operator grants until it names the cluster's owner
+(only where `deployers: owner`), the owner grants with a passkey from then on,
+and an install goes ahead only for an account whose grant is live at the
+install's own time.
+
 The governance JSON names `deployments` and `deployers` only when they are not
 the defaults, after the other three fields, so a cluster deployed with the
 defaults attests the same bytes as before
@@ -438,6 +481,13 @@ releases themselves are stored once and may be offered by several
 deployments, each independent of the others. A developer's walk-through,
 from creating one to withdrawing an offer:
 [Offer your app to customers](/cloud/offer-your-app/).
+
+<DeploymentModel />
+
+The developer's side (left) holds the offers and the secret values; every
+instance, with the apps its release creates, sits in the customer's
+organization (right), which owns and governs it, and its usage is labelled
+with both.
 
 **Who manages it**: for an account owner, that account; for an organization,
 whoever holds `MANAGE_APPLICATION` there organization-wide (the owner and
@@ -516,6 +566,12 @@ deployment reads that value for a name its own release declares, only to its
 declared hosts; the instance itself, whose release does not declare it, never
 gets it.
 
+<SecretLookup />
+
+Each step is tried only for a name the running release declares; the first
+value found is used, and the gate still sends it only to that secret's
+declared hosts.
+
 **Releases**: `DELETE /packages/{p}[/{v}]` is refused for a release any
 deployment offers, whoever installed it first; a release no deployment
 offers keeps the rules it had (its first installer uninstalls it once no app
@@ -575,7 +631,7 @@ yet" is one read), and per app:
   organization). The app's `approvedReleases` is that party's set, which for a
   publisher's package is not the scope's own;
 - `upgradesHeldBy`: who upgrades it: `operator`, else `owner` (the owner and
-  admins of its organization; before 1.0.0-rc.32, what its release's manifest
+  admins of its organization; before 1.0.0-rc.33, what its release's manifest
   declares, `owner` or `publisher`);
 - newer releases it could upgrade to (one with the same WASM included: its
   frontend may differ), its last upgrade (each end's release) with the actor's kind

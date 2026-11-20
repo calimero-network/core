@@ -567,7 +567,7 @@ is its command line.
     `calimero_bundle::UpgradeAuthority`, kept on `PackageVersion::upgrades`;
     absent = `owner`) and its key bound or not; not the app's creator as a
     member, a team's lead, a `MANAGE_APPLICATION` holder, nor the publisher for
-    another organization's instance (`Feature::OwnerApprovedUpgrades`, rc.32).
+    another organization's instance (`Feature::OwnerApprovedUpgrades`, rc.33).
     `SystemState::may_upgrade(app, account, owner_approves)`; at apply
     `UpgradeApp`, `StartUpgradeRun` (its starter, before the run's apps are
     derived) and `CreateApiKey` judge it when their `owner_approves` flag is set

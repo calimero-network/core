@@ -25,7 +25,7 @@ New code reads the app's data, so an upgrade is one of the three decisions
   `MANAGE_APPLICATION`, or the publisher, for an instance of another
   organization. Anyone else is refused `403` before the passkey, and `apply`
   refuses the entry (`ownerApprovedUpgrades`, below). Until every node runs
-  1.0.0-rc.32 the rule before holds, and entries logged before it replay as they
+  1.0.0-rc.33 the rule before holds, and entries logged before it replay as they
   applied: for `owner` the app's owner or whoever holds `MANAGE_APPLICATION` on
   its team or organization-wide; for `publisher` the publisher organization's
   `MANAGE_APPLICATION` holders, for every instance, and nobody until its key is
@@ -47,6 +47,48 @@ New code reads the app's data, so an upgrade is one of the three decisions
   release to a `publisher` one.
 - **Operator**: only the operator (`POST /ops/apps/{app}/upgrade`), to a release
   it installed itself.
+
+**An instance from a deployment** moves only to the release its
+[deployment](/protocol/governance/#deployments) offers for its package: the
+deployment's managers choose the release (`OfferApp`), and whoever holds the
+instance's upgrades only accepts it or not. Another version, another package
+or a raw bundle is refused `409 OUTSIDE_DEPLOYMENT` before the step-up, an
+organization's, publisher's or unit's run notes such an instance as failed,
+and `UpgradeApp` refuses it again where it applies.
+
+<SeqDiagram
+  id="d-deployment-upgrade"
+  title="Upgrading an instance from a deployment"
+  lanes={[
+    { label: 'Developer', color: '#f0883e' },
+    { label: 'Node API', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: 'Instance owner', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /deployments/{id}/apps { app, package, version: 1.3.0 } + passkey' },
+    { from: 1, to: 2, label: 'OfferApp: the offer moves to chat@1.3.0' },
+    { type: 'divider', label: 'the customer\'s instance still runs chat@1.2.0' },
+    { from: 3, to: 1, label: 'POST /apps/{app}/upgrade { } (no version: accept the offer)' },
+    { from: 1, to: 3, label: '412: step-up over { bundle, migrate, manifest } of 1.3.0', dashed: true },
+    { from: 3, to: 1, label: 'the same + passkey assertion' },
+    { from: 1, to: 2, label: 'UpgradeApp { in_deployment }: the offer judged again' },
+    { from: 1, to: 3, label: 'the instance runs chat@1.3.0', dashed: true },
+    { type: 'divider', label: 'anything but the offer' },
+    { from: 3, to: 1, label: '{ version: 1.1.0 }, another package, or a raw bundle' },
+    { from: 1, to: 3, label: '409 OUTSIDE_DEPLOYMENT, before any step-up', dashed: true },
+    { from: 2, to: 2, label: 'an entry that got this far: refused at apply' },
+  ]}
+/>
+
+The developer decides the target, the organization's owner and admins decide
+whether to take it, and
+nothing else is reachable; with `upgrades: publisher` the publisher's run
+takes the owner's place, held to the same offer. An app the instance created
+(a unit's member) carries the same deployment and moves only with its unit, in
+a unit upgrade to the release the deployment offers (`POST
+/apps/{app}/upgrade-unit`): alone, or in a unit run to any other release, it is
+refused `409 OUTSIDE_DEPLOYMENT`, before any passkey is asked for.
 
 An owner or admin of the app's organization may hand one app's upgrades to CI
 with an [upgrade key](/protocol/identities/#upgrade-keys): made once with a
@@ -240,8 +282,8 @@ run, then each app upgraded in turn. There are three kinds, by who starts it:
 
 | Run | Route | Who | Apps it covers | Consent |
 | --- | --- | --- | --- | --- |
-| An organization's | `POST /orgs/{org}/upgrade { package, version, team?, cascade? }` | Its owner or an admin, where owners hold app upgrades (before 1.0.0-rc.32: a holder of `MANAGE_APPLICATION` there, on `team` or organization-wide) | The organization's apps that run a release of `package`; with `team`, only those with `team` access to it, and with `cascade` to the teams below it too | `org:<org> / __upgrade_org / { package, version, team, cascade, migrate }` |
-| A publisher's | `POST /orgs/{org}/packages/{package}/upgrade { version }` | An owner or admin of the [publisher](/protocol/governance/#publishers) of `package` (before 1.0.0-rc.32: an organization-wide `MANAGE_APPLICATION` holder there) | Every instance of `package` that the starter may upgrade: those of the organizations they are an owner or admin of, never another's (before 1.0.0-rc.32: every instance, chiefly those whose release declares `upgrades: publisher`) | `org:<org> / __upgrade_published / { package, version, migrate }` |
+| An organization's | `POST /orgs/{org}/upgrade { package, version, team?, cascade? }` | Its owner or an admin, where owners hold app upgrades (before 1.0.0-rc.33: a holder of `MANAGE_APPLICATION` there, on `team` or organization-wide) | The organization's apps that run a release of `package`; with `team`, only those with `team` access to it, and with `cascade` to the teams below it too | `org:<org> / __upgrade_org / { package, version, team, cascade, migrate }` |
+| A publisher's | `POST /orgs/{org}/packages/{package}/upgrade { version }` | An owner or admin of the [publisher](/protocol/governance/#publishers) of `package` (before 1.0.0-rc.33: an organization-wide `MANAGE_APPLICATION` holder there) | Every instance of `package` that the starter may upgrade: those of the organizations they are an owner or admin of, never another's (before 1.0.0-rc.33: every instance, chiefly those whose release declares `upgrades: publisher`) | `org:<org> / __upgrade_published / { package, version, migrate }` |
 | The operator's | `POST /ops/orgs/{org}/upgrade { package, version, team?, cascade? }` | The operator, where governance gives it app upgrades | As an organization's run | The operator key's signature over `org:<org> / __upgrade_org / …` ([The operator](/protocol/operator/#the-credential)) |
 
 `meroctl group upgrade trigger <org> --package P --version V [--group T
@@ -461,7 +503,7 @@ the cluster's system log; the other nodes go on.
 | `currentRules` | `RequireCurrentRules`, the system leader's one-time mark after which every entry applies under this release's rules; an earlier release cannot read it. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.19 |
 | `wholeUnits` | `CreateApp` of a unit member with its instance's deployment (`unit_offer`, the offer that covers it), and `DeleteApp` taking an instance's unit with it (`members`); an earlier release ignores both fields, so it would refuse the member as not offered and keep the members running | 1.0.0-rc.32 |
 | `deploymentSecrets` | `SetDeploymentSecret` and `ClearDeploymentSecret`, a deployment's managers setting a secret's value for every instance created from it; an earlier release cannot read them, so an instance led from it would send the operator's value, or none, where another leader sends the deployment's | 1.0.0-rc.32 |
-| `ownerApprovedUpgrades` | `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey` with `owner_approves`: only an owner or admin of the app's organization upgrades it, starts a run of it or makes and uses an upgrade key for it; an earlier release ignores the field and would apply a member's, a team lead's or a publisher's upgrade where a later one refuses it. Once the logged cluster version brings it, an entry without the flag is judged by it too | 1.0.0-rc.32 |
+| `ownerApprovedUpgrades` | `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey` with `owner_approves`: only an owner or admin of the app's organization upgrades it, starts a run of it or makes and uses an upgrade key for it; an earlier release ignores the field and would apply a member's, a team lead's or a publisher's upgrade where a later one refuses it. Once the logged cluster version brings it, an entry without the flag is judged by it too | 1.0.0-rc.33 |
 | `upgradeInDeployment` | `UpgradeApp` with `in_deployment`: an instance from a deployment moves only to the release its deployment offers; an earlier release ignores the field and would move it where a later one refuses | 1.0.0-rc.32 |
 | `expireProofs` | `ExpireProofs`, the system leader's one-time mark after which a sign-in's or sign-up's proof is forgotten once the session it opened expires (at a later entry's own time), and a sign-in whose session expired by then is refused; an earlier release cannot read it, and would keep every proof. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.31 |
 | `backupKeys` | `SetBackupKey` and `ImportHolder`, the recovery disk's backup keys and a holder's import; an earlier release cannot read them | 1.0.0-rc.20 |

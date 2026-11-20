@@ -1,0 +1,127 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-decision-matrix">
+<svg viewBox="0 0 760 470" role="img" aria-label="Who decides what. Install a package: any account on an open cluster; on a granted one only with a live deployer grant, its own or its organization's; the operator always; with an unbound session or unscoped API key; enforced at the API before any fetch and again at apply. Offer a release: the deployment's managers, with passkey consent and a grant where granted; enforced at apply. Upgrade an instance: the owner and admins of its organization, whatever the release's manifest says, or the operator where governance says so; an instance from a deployment only to the release it offers; a passkey step-up over the exact target, an upgrade key, or the operator's signature; enforced at the API and at apply. Approve node images: APPROVE_RELEASES holders of the publisher organization, else of the app's organization, or the operator; enforced by the replicas that hold the data. Approve outbound hosts: the app's organization's org-wide MANAGE_APPLICATION holders, or the operator; enforced at apply and by the outbound gate. Set deployment secrets: the deployment's managers with a step-up over the name and fingerprint; at the API and at apply. Set instance secrets: the instance's owner or its organization's app managers with a step-up over the name and fingerprint; at the API, written to the app's own log." xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="760" height="470" rx="10" fill="#0f0f16"/>
+  <text x="380" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">who decides what, with which proof, judged where</text>
+
+  <!-- header -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="12" y="38" width="736" height="26" rx="4" fill="#161b22" stroke="#444c56"/>
+    <text x="22" y="55" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">decision</text>
+    <text x="152" y="55" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">who</text>
+    <text x="434" y="55" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">consent / proof</text>
+    <text x="604" y="55" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">where enforced</text>
+  </g>
+
+  <!-- 1 install -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="12" y1="116" x2="748" y2="116" stroke="#30363d"/>
+    <text x="22" y="82" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">install a</text>
+    <text x="22" y="95" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">package</text>
+    <text x="152" y="80" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">open: any account. granted: a live deployer</text>
+    <text x="152" y="93" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">grant, its own or its org's (org-wide</text>
+    <text x="152" y="106" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">MANAGE_APPLICATION). The operator: always</text>
+    <text x="434" y="80" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">unbound session or unscoped</text>
+    <text x="434" y="93" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">API key; grant judged at</text>
+    <text x="434" y="106" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">the install's own time</text>
+    <text x="604" y="80" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">API, before any fetch</text>
+    <text x="604" y="93" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">(403 DEPLOY_NOT_GRANTED);</text>
+    <text x="604" y="106" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">apply again</text>
+  </g>
+
+  <!-- 2 offer -->
+  <g class="seq-step" style="--step-i:2">
+    <line x1="12" y1="168" x2="748" y2="168" stroke="#30363d"/>
+    <text x="22" y="134" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">offer a</text>
+    <text x="22" y="147" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">release</text>
+    <text x="152" y="132" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">the deployment's managers (its owner account,</text>
+    <text x="152" y="145" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">or its org's org-wide MANAGE_APPLICATION),</text>
+    <text x="152" y="158" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">who see the release; a grant where granted</text>
+    <text x="434" y="132" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">passkey consent:</text>
+    <text x="434" y="145" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">deployment:&#123;id&#125; /</text>
+    <text x="434" y="158" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">__offer_app</text>
+    <text x="604" y="132" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">apply, on every node</text>
+  </g>
+
+  <!-- 3 upgrade -->
+  <g class="seq-step" style="--step-i:3">
+    <line x1="12" y1="236" x2="748" y2="236" stroke="#30363d"/>
+    <text x="22" y="186" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">upgrade an</text>
+    <text x="22" y="199" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">instance</text>
+    <text x="152" y="184" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">the owner and admins of its organization,</text>
+    <text x="152" y="197" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">whatever the manifest's upgrades: says (not a</text>
+    <text x="152" y="210" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">member or the publisher); or the operator.</text>
+    <text x="152" y="226" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="8">From a deployment: only to the offered release</text>
+    <text x="434" y="184" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">passkey step-up over</text>
+    <text x="434" y="197" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">&#123; bundle, migrate, manifest &#125;,</text>
+    <text x="434" y="210" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">or an upgrade key; the</text>
+    <text x="434" y="223" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">operator's signature</text>
+    <text x="604" y="184" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">API and apply</text>
+    <text x="604" y="197" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">(UpgradeApp);</text>
+    <text x="604" y="210" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="8">409 OUTSIDE_DEPLOYMENT</text>
+    <text x="604" y="223" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="8">at both</text>
+  </g>
+
+  <!-- 4 node images -->
+  <g class="seq-step" style="--step-i:4">
+    <line x1="12" y1="288" x2="748" y2="288" stroke="#30363d"/>
+    <text x="22" y="254" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">approve</text>
+    <text x="22" y="267" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">node images</text>
+    <text x="152" y="252" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">APPROVE_RELEASES holders of the publisher org</text>
+    <text x="152" y="265" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">(key unbound: the app's own org); or the</text>
+    <text x="152" y="278" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">operator (--release-approvals operator)</text>
+    <text x="434" y="252" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">passkey consent,</text>
+    <text x="434" y="265" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">POST /orgs/&#123;org&#125;/releases;</text>
+    <text x="434" y="278" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">signed POST /ops/releases</text>
+    <text x="604" y="252" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">the replicas that hold</text>
+    <text x="604" y="265" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">the data (may_send),</text>
+    <text x="604" y="278" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">placement</text>
+  </g>
+
+  <!-- 5 outbound -->
+  <g class="seq-step" style="--step-i:5">
+    <line x1="12" y1="340" x2="748" y2="340" stroke="#30363d"/>
+    <text x="22" y="306" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">approve</text>
+    <text x="22" y="319" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">outbound hosts</text>
+    <text x="152" y="304" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">the app's org: org-wide MANAGE_APPLICATION,</text>
+    <text x="152" y="317" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">per publisher key; or the operator</text>
+    <text x="152" y="330" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">(--outbound-approvals operator)</text>
+    <text x="434" y="304" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">passkey consent,</text>
+    <text x="434" y="317" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">POST /orgs/&#123;org&#125;/outbound;</text>
+    <text x="434" y="330" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">signed POST /ops/outbound</text>
+    <text x="604" y="304" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">apply; the outbound</text>
+    <text x="604" y="317" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">gate on the node that</text>
+    <text x="604" y="330" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">runs the request</text>
+  </g>
+
+  <!-- 6 deployment secrets -->
+  <g class="seq-step" style="--step-i:6">
+    <line x1="12" y1="392" x2="748" y2="392" stroke="#30363d"/>
+    <text x="22" y="358" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">set deployment</text>
+    <text x="22" y="371" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">secrets</text>
+    <text x="152" y="356" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">the deployment's managers; only a name a</text>
+    <text x="152" y="369" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">release it offers (or one those use) declares</text>
+    <text x="434" y="356" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">step-up over</text>
+    <text x="434" y="369" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">&#123; name, fingerprint &#125;;</text>
+    <text x="434" y="382" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">never the value</text>
+    <text x="604" y="356" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">API (404 UNDECLARED_</text>
+    <text x="604" y="369" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">SECRET); apply works out</text>
+    <text x="604" y="382" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">the fingerprint again</text>
+  </g>
+
+  <!-- 7 instance secrets -->
+  <g class="seq-step" style="--step-i:7">
+    <text x="22" y="410" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">set instance</text>
+    <text x="22" y="423" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">secrets</text>
+    <text x="152" y="408" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">the instance's owner, or whoever manages its</text>
+    <text x="152" y="421" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">org's apps; a name its release declares</text>
+    <text x="434" y="408" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">step-up over</text>
+    <text x="434" y="421" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">&#123; name, fingerprint &#125;</text>
+    <text x="604" y="408" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">API; a hidden row in</text>
+    <text x="604" y="421" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">the app's own log</text>
+    <text x="380" y="454" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">passkey: a fresh assertion after 412 CONFIRM_REQUIRED · signed: with the operator's key</text>
+  </g>
+</svg>
+</Figure>

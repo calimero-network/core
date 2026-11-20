@@ -77,7 +77,7 @@ NOT_COVERED = [
     ("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
      "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
      "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
-     "below cluster version 1.0.0-rc.32 (`Feature::OwnerApprovedUpgrades`), and the owner's upgrade after the "
+     "below cluster version 1.0.0-rc.33 (`Feature::OwnerApprovedUpgrades`), and the owner's upgrade after the "
      "roll is already the `kv-package` case's (`extend`: the organization's owner upgrades on the new release). "
      "`system::tests::only_an_organizations_owner_and_admins_approve_its_upgrades` covers the replay, and "
      "`a_member_needs_the_capability_to_create_apps_or_invite`, `the_leader_checks_upgrade_authority_again` and "
