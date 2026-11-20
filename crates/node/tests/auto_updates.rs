@@ -133,9 +133,26 @@ async fn updated(dev: &calimero_client::Client, d: &str) -> Value {
     get(dev, &format!("deployments/{d}/rollout")).await.unwrap()["apps"][0]["updated"].clone()
 }
 
-/// A few of the system leader's passes ([`calimero_node::node::AUTO_UPDATE_EVERY`]).
-async fn passes() {
-    tokio::time::sleep(calimero_node::node::AUTO_UPDATE_EVERY * 3).await;
+/// One of the system leader's passes, run now on the leader rather than waited for (one
+/// comes every [`calimero_node::node::AUTO_UPDATE_EVERY`]): it is the same decision, so a
+/// pass that applies nothing here is one the leader's own would. Answers how many applied.
+async fn pass(c: &Cluster) -> usize {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(leader) = c
+            .nodes
+            .iter()
+            .flatten()
+            .find(|r| r.node.system.status().is_leader)
+        {
+            return leader.node.auto_update_once().await;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no system leader"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 async fn read(c: &calimero_client::Client, app: &str, key: &str) -> Value {
@@ -215,7 +232,7 @@ async fn a_green_update_applies_after_its_hold_and_is_undone_within_a_week() {
 
     // Nothing applies before the hold: the leader's passes leave it where it is.
     shift_update_clock(DAY - 600);
-    passes().await;
+    assert_eq!(pass(&c).await, 0);
     assert_eq!(running(&alice, &app).await, "1.0.0");
     let nothing = get(&alice, &format!("apps/{app}/undo")).await.unwrap();
     assert_eq!(nothing["available"], false, "{nothing}");
@@ -291,7 +308,7 @@ async fn a_green_update_applies_after_its_hold_and_is_undone_within_a_week() {
         .await
         .unwrap();
     // The release it undid never applies on its own again.
-    passes().await;
+    assert_eq!(pass(&c).await, 0);
     assert_eq!(running(&alice, &app).await, "1.0.0");
 
     // A manual upgrade takes a restore point too; past a week it is no longer undone.
@@ -434,7 +451,7 @@ async fn a_deployments_offer_rolls_out_in_waves_its_managers_pause_and_resume() 
         .unwrap();
     assert!(paused["apps"][0]["paused"]["by"].is_string(), "{paused}");
     shift_update_clock(30 * DAY);
-    passes().await;
+    assert_eq!(pass(&c).await, 0);
     assert_eq!(updated(&dev, &d).await, 1);
     // Resumed with a shorter pause between waves: the later waves open and reach all.
     let resumed = dev
