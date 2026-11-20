@@ -1390,7 +1390,13 @@ mod tests {
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in rc24.iter().chain(&rc29).chain(&rc30).chain(&rc32).chain(&rc33) {
+        for &feature in rc24
+            .iter()
+            .chain(&rc29)
+            .chain(&rc30)
+            .chain(&rc32)
+            .chain(&rc33)
+        {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
