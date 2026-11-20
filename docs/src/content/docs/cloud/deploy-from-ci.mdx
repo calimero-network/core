@@ -12,9 +12,10 @@ upgrades that app to signed releases of its package with the key alone.
 
 ## 1. Make the key (once, with a passkey)
 
-Whoever may upgrade the app makes it: the app's owner or, for an
-organization's app, a holder of `MANAGE_APPLICATION` (for a `publisher`
-package, the publisher's holders).
+Whoever may upgrade the app makes it: an owner or admin of the app's
+organization ([Who may upgrade](/protocol/upgrades/#who-may-upgrade)). The key's
+upgrades are judged by the same rule on its account each time: once that
+account is no longer an owner or admin there, the key upgrades nothing.
 
 ```bash
 meroctl account api-key create --label ci --upgrades my-app --ttl-secs 7776000

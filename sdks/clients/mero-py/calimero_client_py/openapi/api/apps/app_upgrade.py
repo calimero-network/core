@@ -104,15 +104,16 @@ def sync_detailed(
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
-    code only: the state stays and is read by the new code. Whoever the package's manifest names
-    (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{
-    bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade
-    leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details`
-    (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error`
-    is the app log's error value (`null` when it ran), free-form: the app's own. An instance created
-    from a deployment moves only to the release its deployment offers for its package (naming no version
-    accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`,
-    before the step-up.
+    code only: the state stays and is read by the new code. An owner or admin of the app's organization,
+    whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a
+    cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{
+    bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the
+    same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED`
+    with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are
+    no migrations in this version). `error` is the app log's error value (`null` when it ran), free-
+    form: the app's own. An instance created from a deployment moves only to the release its deployment
+    offers for its package (naming no version accepts that offer): another version, another package or a
+    `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -151,15 +152,16 @@ def sync(
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
-    code only: the state stays and is read by the new code. Whoever the package's manifest names
-    (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{
-    bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade
-    leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details`
-    (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error`
-    is the app log's error value (`null` when it ran), free-form: the app's own. An instance created
-    from a deployment moves only to the release its deployment offers for its package (naming no version
-    accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`,
-    before the step-up.
+    code only: the state stays and is read by the new code. An owner or admin of the app's organization,
+    whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a
+    cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{
+    bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the
+    same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED`
+    with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are
+    no migrations in this version). `error` is the app log's error value (`null` when it ran), free-
+    form: the app's own. An instance created from a deployment moves only to the release its deployment
+    offers for its package (naming no version accepts that offer): another version, another package or a
+    `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -193,15 +195,16 @@ async def asyncio_detailed(
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
-    code only: the state stays and is read by the new code. Whoever the package's manifest names
-    (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{
-    bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade
-    leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details`
-    (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error`
-    is the app log's error value (`null` when it ran), free-form: the app's own. An instance created
-    from a deployment moves only to the release its deployment offers for its package (naming no version
-    accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`,
-    before the step-up.
+    code only: the state stays and is read by the new code. An owner or admin of the app's organization,
+    whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a
+    cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{
+    bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the
+    same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED`
+    with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are
+    no migrations in this version). `error` is the app log's error value (`null` when it ran), free-
+    form: the app's own. An instance created from a deployment moves only to the release its deployment
+    offers for its package (naming no version accepts that offer): another version, another package or a
+    `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -238,15 +241,16 @@ async def asyncio(
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
-    code only: the state stays and is read by the new code. Whoever the package's manifest names
-    (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{
-    bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade
-    leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details`
-    (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error`
-    is the app log's error value (`null` when it ran), free-form: the app's own. An instance created
-    from a deployment moves only to the release its deployment offers for its package (naming no version
-    accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`,
-    before the step-up.
+    code only: the state stays and is read by the new code. An owner or admin of the app's organization,
+    whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a
+    cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{
+    bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the
+    same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED`
+    with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are
+    no migrations in this version). `error` is the app log's error value (`null` when it ran), free-
+    form: the app's own. An instance created from a deployment moves only to the release its deployment
+    offers for its package (naming no version accepts that offer): another version, another package or a
+    `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

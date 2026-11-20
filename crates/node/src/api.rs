@@ -101,7 +101,10 @@ pub(crate) use orgs::{
 };
 pub use pipeline_events::MAX_RUN_SUBSCRIBERS_PER_APP;
 pub(crate) use public_links::VisitorLimits;
-pub(crate) use upgrades::{refuse_stalled, unit_plan, upgrade_app, upgrade_unit, UpgradeBody};
+pub(crate) use upgrades::{
+    owner_approves, refuse_stalled, unit_plan, upgrade_app, upgrade_refusal, upgrade_unit,
+    UpgradeBody,
+};
 // The request bodies the OpenAPI registry names as `super::<Body>`.
 #[cfg(test)]
 use {
@@ -1968,6 +1971,7 @@ async fn scope_report(
     let bound = p.bound_app();
     let key_apps = p.api_key.as_ref().and_then(|k| k.apps.as_ref());
     let mut out = node.sys(|s| {
+        let owner_approves = s.owner_approves(false);
         let keep = |a: &crate::types::AppRecord| {
             // An organization's apps, or (no `org`) the account's own,
             // wherever they are.
@@ -1976,7 +1980,7 @@ async fn scope_report(
                 None => a.owner == account,
             };
             in_scope
-                && (s.may_reach(a, Some(account)) || s.may_upgrade(a, account))
+                && (s.may_reach(a, Some(account)) || s.may_upgrade(a, account, owner_approves))
                 && bound.is_none_or(|pkg| {
                     s.bundles
                         .get(&a.bundle)

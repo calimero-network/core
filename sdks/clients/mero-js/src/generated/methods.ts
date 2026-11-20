@@ -456,6 +456,14 @@ export function createRoutes(api: RouteClient) {
       unlink: (args: operations['app_unlink']['parameters']['path'] & operations['app_unlink']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_unlink']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"DELETE","path":"/apps/{app}/links/{name}","pathParams":["app","name"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_unlink']['responses'][200]['content']['application/json']>,
       /**
+       * Whether an update is available for an app.
+       *
+       * `GET /apps/{app}/update` (`app_update`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      update: (args: operations['app_update']['parameters']['path'], options?: MethodOptions): Promise<operations['app_update']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/update","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_update']['responses'][200]['content']['application/json']>,
+      /**
        * Upgrade an app instance.
        *
        * `POST /apps/{app}/upgrade` (`app_upgrade`). **Who:** an account holder (a passkey session not bound to an app's frontend).

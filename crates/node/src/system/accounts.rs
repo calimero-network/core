@@ -409,6 +409,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             record,
             owner_in_org,
             owner_in_team,
+            owner_approves,
             ..
         } => {
             if !s.accounts.contains_key(&record.account) {
@@ -419,6 +420,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     &record,
                     scope,
                     OwnerRule::logged(owner_in_org, owner_in_team),
+                    s.owner_approves(owner_approves),
                 )?;
             }
             let keys = s

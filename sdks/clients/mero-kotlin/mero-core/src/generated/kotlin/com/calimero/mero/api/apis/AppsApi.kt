@@ -58,6 +58,7 @@ import com.calimero.mero.api.models.AppSecrets200Response
 import com.calimero.mero.api.models.AppStorage200Response
 import com.calimero.mero.api.models.AppTransferRequest
 import com.calimero.mero.api.models.AppUnlinkRequest
+import com.calimero.mero.api.models.AppUpdate200Response
 import com.calimero.mero.api.models.AppUpgrade200Response
 import com.calimero.mero.api.models.AppUpgradeRequest
 import com.calimero.mero.api.models.AppUpgradeUnitRequest
@@ -361,7 +362,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps
      * Create an app instance
-     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;grants&#x60; say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, &#x60;409 FEATURE_NOT_ACTIVE&#x60;). &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;grants&#x60; say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, &#x60;409 FEATURE_NOT_ACTIVE&#x60;; the single &#x60;access&#x60; mode of earlier releases is &#x60;400 ACCESS_REMOVED&#x60;, never read as no grants). &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param appCreateRequest 
      * @return AppCreate200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -393,7 +394,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps
      * Create an app instance
-     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;grants&#x60; say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, &#x60;409 FEATURE_NOT_ACTIVE&#x60;). &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;. Every app is in an organization, chosen by the release&#39;s signed &#x60;instanceOrg&#x60; (a raw bundle: &#x60;either&#x60;): &#x60;standalone&#x60; makes a new organization with the instance (its name &#x60;newOrg.name&#x60;, else the instance&#39;s), and naming &#x60;org&#x60; is &#x60;400 STANDALONE_INSTANCE&#x60;; &#x60;org&#x60; goes into &#x60;org&#x60;, else the caller&#39;s only organization (&#x60;400 ORG_REQUIRED&#x60; with several, &#x60;409 NO_ORGANIZATION&#x60; with none; &#x60;newOrg&#x60; is &#x60;400 ORG_INSTANCE&#x60;); &#x60;either&#x60; goes into &#x60;org&#x60;, a new one when &#x60;newOrg&#x60; asks, else the caller&#39;s only one, else (none) a new one, &#x60;400 ORG_REQUIRED&#x60; with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller&#39;s personal organization, and &#x60;newOrg&#x60; is &#x60;409 FEATURE_NOT_ACTIVE&#x60;. &#x60;grants&#x60; say who reaches it (#Grant; absent: the organization; empty: the owner alone; any grant needs cluster version 1.0.0-rc.33, &#x60;409 FEATURE_NOT_ACTIVE&#x60;; the single &#x60;access&#x60; mode of earlier releases is &#x60;400 ACCESS_REMOVED&#x60;, never read as no grants). &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param appCreateRequest 
      * @return ApiResponse<AppCreate200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -2282,9 +2283,82 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     }
 
     /**
+     * GET /apps/{app}/update
+     * Whether an update is available for an app
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @return AppUpdate200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appUpdate(app: kotlin.String) : AppUpdate200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appUpdateWithHttpInfo(app = app)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppUpdate200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/update
+     * Whether an update is available for an app
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @return ApiResponse<AppUpdate200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appUpdateWithHttpInfo(app: kotlin.String) : ApiResponse<AppUpdate200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appUpdateRequestConfig(app = app)
+
+        return@withContext request<Unit, AppUpdate200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appUpdate
+     *
+     * @param app 
+     * @return RequestConfig
+     */
+    fun appUpdateRequestConfig(app: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/update".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
      * POST /apps/{app}/upgrade
      * Upgrade an app instance
-     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. Whoever the package&#39;s manifest names (&#x60;upgrades&#x60;: the owner, or its publisher&#39;s &#x60;MANAGE_APPLICATION&#x60; holders), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. An owner or admin of the app&#39;s organization, whatever the package&#39;s manifest declares (&#x60;403 FORBIDDEN&#x60; for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUpgradeRequest 
      * @return AppUpgrade200Response
@@ -2317,7 +2391,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/upgrade
      * Upgrade an app instance
-     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. Whoever the package&#39;s manifest names (&#x60;upgrades&#x60;: the owner, or its publisher&#39;s &#x60;MANAGE_APPLICATION&#x60; holders), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. An owner or admin of the app&#39;s organization, whatever the package&#39;s manifest declares (&#x60;403 FORBIDDEN&#x60; for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUpgradeRequest 
      * @return ApiResponse<AppUpgrade200Response?>

@@ -74,7 +74,7 @@ type Services = BTreeMap<String, String>;
 /// release), service `service`. `404` for an unknown deployment; `400
 /// NOT_OFFERED` for a package or version it does not offer. `CreateApp`
 /// checks the offer again where it applies.
-pub(super) async fn offered_bundle(
+pub(crate) async fn offered_bundle(
     node: &Node,
     id: &str,
     package: &str,
@@ -399,8 +399,22 @@ pub(super) struct CreateAppBody {
 async fn app_create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
-    Json(body): Json<CreateAppBody>,
+    body: axum::body::Bytes,
 ) -> ApiResult {
+    let raw: Value = serde_json::from_slice(&body)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    // The single access mode clients before 1.0.0-rc.33 sent is refused, never ignored:
+    // read as no grants it would admit the whole organization to an instance the client
+    // meant to keep to a few. Judged on the raw body, so `CreateAppBody` (and the API
+    // document clients are generated from) never names it.
+    if raw.get("access").is_some() {
+        return Err(ApiError::bad_request(
+            "ACCESS_REMOVED",
+            "`access` was replaced by `grants`: name who reaches the instance as a list of grants",
+        ));
+    }
+    let body: CreateAppBody = serde_json::from_value(raw)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
     if let Some(grants) = &body.grants {
         grants_fit(grants)?;
     }

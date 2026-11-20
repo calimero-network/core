@@ -38,7 +38,7 @@ Generated from core's `docs/public/openapi.json`.
 | `blob_revoke(app, id)` | `POST /apps/{app}/blobs/{id}/revoke` | Invalidate a blob's grants |
 | `blob_upload(app, sealed=…, body, content_type='application/octet-stream')` | `POST /apps/{app}/blobs` | Upload a blob. *Refusals:* `400 USE_FILES_API`, `429 QUOTA_EXCEEDED` |
 | `call(app, method, args=…, idempotency_key=…, confirm=None)` | `POST /apps/{app}/intents` | Call a method. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 TIMEOUT` |
-| `create(name=…, bundle=…, package=…, version=…, service=…, org=…, new_org=…, grants=…, init_args=…, metadata=…, deployment=…)` | `POST /apps` | Create an app instance. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 NOT_OFFERED`, `400 NO_SUCH_SERVICE`, `400 ORG_INSTANCE`, `400 ORG_REQUIRED`, `400 STANDALONE_INSTANCE`, `400 VERSION_REQUIRED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_ORGANIZATION`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 INIT_FAILED`, `429 QUOTA_EXCEEDED` |
+| `create(name=…, bundle=…, package=…, version=…, service=…, org=…, new_org=…, grants=…, init_args=…, metadata=…, deployment=…)` | `POST /apps` | Create an app instance. *Refusals:* `400 ACCESS_REMOVED`, `400 AMBIGUOUS_COMPUTE`, `400 NOT_OFFERED`, `400 NO_SUCH_SERVICE`, `400 ORG_INSTANCE`, `400 ORG_REQUIRED`, `400 STANDALONE_INSTANCE`, `400 VERSION_REQUIRED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_ORGANIZATION`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 INIT_FAILED`, `429 QUOTA_EXCEEDED` |
 | `delegate(app, target, confirm=None)` | `PUT /apps/{app}/delegations/{target}` | Let an app call another as you. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NOTHING_TO_DELEGATE` |
 | `delegations(app)` | `GET /apps/{app}/delegations` | What you let an app do as you |
 | `delete(app)` | `DELETE /apps/{app}` | Delete an app. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 UNIT_MEMBER` |
@@ -81,6 +81,7 @@ Generated from core's `docs/public/openapi.json`.
 | `transfer(app, to, confirm=None)` | `POST /apps/{app}/transfer` | Hand an app to another account. **passkey** |
 | `undelegate(app, target)` | `DELETE /apps/{app}/delegations/{target}` | Take back what an app may do on another as you. *Refusals:* `404 NOT_DELEGATED`, `409 FEATURE_NOT_ACTIVE` |
 | `unlink(app, name, confirm=None)` | `DELETE /apps/{app}/links/{name}` | Detach an app attached to an app. **passkey**. *Refusals:* `404 NOT_ATTACHED`, `409 FEATURE_NOT_ACTIVE` |
+| `update(app)` | `GET /apps/{app}/update` | Whether an update is available for an app |
 | `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `409 CONFLICT`, `409 OUTSIDE_DEPLOYMENT`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
 | `upgrade_unit(app, version, confirm=None)` | `POST /apps/{app}/upgrade-unit` | Upgrade an app and the apps it created, in one consent. **passkey**. *Refusals:* `400 NOT_A_UNIT`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 USES_NOT_INSTALLED` |
 | `upload_abort(app, upload)` | `DELETE /apps/{app}/files/uploads/{upload}` | Abort an upload |

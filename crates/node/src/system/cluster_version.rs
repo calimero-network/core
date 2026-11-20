@@ -152,6 +152,11 @@ pub enum Feature {
     /// (`SystemState::ordinary_orgs`), so an entry before it replays as it applied; an
     /// earlier release drops the recorded mode, so it is recorded only from this version.
     OrdinaryOrgs,
+    /// `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey` with `owner_approves`: only an
+    /// owner or admin of the app's organization approves its upgrades
+    /// (`SystemState::approves_upgrades`). An earlier release ignores the field and would
+    /// apply a member's, a team lead's or a publisher's upgrade where a later one refuses it.
+    OwnerApprovedUpgrades,
     /// Guests: an instance's listed accounts reach it without joining its organization
     /// where its release (`PackageVersion::guests`) and its organization (`allowGuests`)
     /// allow; `SetOrgSettings { allow_guests }`, and instance invites (`CreateAppInvite`, `RevokeAppInvite`,
@@ -178,7 +183,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 40] = [
+pub const FEATURES: [Feature; 41] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -215,6 +220,7 @@ pub const FEATURES: [Feature; 40] = [
     Feature::DeploymentUsedSecrets,
     Feature::UpgradeInDeployment,
     Feature::OrdinaryOrgs,
+    Feature::OwnerApprovedUpgrades,
     Feature::Guests,
     Feature::AccessGrants,
     Feature::KeepTeamApps,
@@ -262,6 +268,7 @@ impl Feature {
             Self::DeploymentUsedSecrets => "deploymentUsedSecrets",
             Self::UpgradeInDeployment => "upgradeInDeployment",
             Self::OrdinaryOrgs => "ordinaryOrgs",
+            Self::OwnerApprovedUpgrades => "ownerApprovedUpgrades",
             Self::Guests => "guests",
             Self::AccessGrants => "accessGrants",
             Self::KeepTeamApps => "keepTeamApps",
@@ -307,9 +314,11 @@ impl Feature {
             | Self::DeploymentUsedSecrets
             | Self::UpgradeInDeployment
             | Self::OrdinaryOrgs => "1.0.0-rc.32",
-            Self::Guests | Self::AccessGrants | Self::KeepTeamApps | Self::PublicLinks => {
-                "1.0.0-rc.33"
-            }
+            Self::OwnerApprovedUpgrades
+            | Self::Guests
+            | Self::AccessGrants
+            | Self::KeepTeamApps
+            | Self::PublicLinks => "1.0.0-rc.33",
         }
     }
 }
@@ -532,8 +541,11 @@ impl SystemCmd {
         match self {
             Self::SetClusterVersion { .. } => vec![Feature::ClusterVersion],
             Self::StartUpgradeRun {
-                by_release, run, ..
-            } if *by_release || !run.targets.is_empty() => {
+                by_release,
+                run,
+                owner_approves,
+                ..
+            } => {
                 let mut f = Vec::new();
                 if *by_release {
                     f.push(Feature::PublishedRunByRelease);
@@ -541,8 +553,29 @@ impl SystemCmd {
                 if !run.targets.is_empty() {
                     f.push(Feature::UnitUpgrade);
                 }
+                if *owner_approves {
+                    f.push(Feature::OwnerApprovedUpgrades);
+                }
                 f
             }
+            Self::UpgradeApp {
+                in_deployment,
+                owner_approves,
+                ..
+            } if *in_deployment || *owner_approves => {
+                let mut f = Vec::new();
+                if *in_deployment {
+                    f.push(Feature::UpgradeInDeployment);
+                }
+                if *owner_approves {
+                    f.push(Feature::OwnerApprovedUpgrades);
+                }
+                f
+            }
+            Self::CreateApiKey {
+                owner_approves: true,
+                ..
+            } => vec![Feature::OwnerApprovedUpgrades],
             Self::MoveApp {
                 accounts_in_app_team,
                 org_quotas,
@@ -584,10 +617,6 @@ impl SystemCmd {
             Self::SetDeploymentSecret { .. } | Self::ClearDeploymentSecret { .. } => {
                 vec![Feature::DeploymentSecrets]
             }
-            Self::UpgradeApp {
-                in_deployment: true,
-                ..
-            } => vec![Feature::UpgradeInDeployment],
             Self::SetPools { .. } => vec![Feature::ComputePools],
             Self::ScopeApps {
                 apps, by_release, ..
@@ -738,7 +767,6 @@ impl SystemCmd {
             | Self::SetAppMetadata { .. }
             | Self::SetPasskeyLabel { .. }
             | Self::UpgradeFailed { .. }
-            | Self::StartUpgradeRun { .. }
             | Self::FinishUpgradeRun { .. }
             | Self::SetAlias { .. }
             | Self::SetOrgRole { .. }
@@ -920,6 +948,7 @@ mod tests {
                 ),
                 consent: Value::Null,
                 by_release: true,
+                owner_approves: false,
             },
             Feature::AppTeamJoin => SystemCmd::ScopeApps {
                 org: "org".into(),
@@ -1053,6 +1082,8 @@ mod tests {
                 "actor": "alice" })),
             Feature::KeepTeamApps => entry(json!({ "op": "deleteTeam", "org": "org",
                 "team": "t", "actor": "alice", "apps_need_consent": true, "keep_apps": true })),
+            Feature::OwnerApprovedUpgrades => entry(json!({ "op": "upgradeApp",
+                "app_id": "app", "bundle": "b", "actor": "a", "owner_approves": true })),
             Feature::PublicLinks => entry(json!({ "op": "setOrgSettings", "org": "org",
                 "settings": { "allowPublicLinks": false }, "actor": "alice" })),
             Feature::Pipelines => install(json!({
@@ -1484,8 +1515,9 @@ mod tests {
         }
         // rc.32's (a deployment's secrets, whole units, secrets of used releases, an
         // upgrade kept on its deployment's offer, a release's instance mode) wait for every
-        // node on rc.32, rc.33's (guests, access grants, a team deleted keeping its
-        // instances, public links) for every node on rc.33.
+        // node on rc.32, and rc.33's (upgrades only an organization's owner and admins
+        // approve, guests, access grants, a team deleted keeping its instances, public
+        // links) for every node on rc.33.
         assert_eq!(
             rc32,
             [
@@ -1499,6 +1531,7 @@ mod tests {
         assert_eq!(
             rc33,
             [
+                Feature::OwnerApprovedUpgrades,
                 Feature::Guests,
                 Feature::AccessGrants,
                 Feature::KeepTeamApps,

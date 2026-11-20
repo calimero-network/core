@@ -2132,7 +2132,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/upgrade
      * Start an upgrade run
-     * Upgrade every app of the organization (or of &#x60;team&#x60;, with &#x60;cascade&#x60; its subtree) that runs &#x60;package&#x60; to &#x60;version&#x60;, with one passkey assertion over the whole run; whoever holds &#x60;MANAGE_APPLICATION&#x60; there. Each app is upgraded as &#x60;POST /apps/{app}/upgrade&#x60; would; &#x60;GET /orgs/{org}/upgrades/{run}&#x60; follows it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Upgrade every app of the organization (or of &#x60;team&#x60;, with &#x60;cascade&#x60; its subtree) that runs &#x60;package&#x60; to &#x60;version&#x60;, with one passkey assertion over the whole run; the organization&#39;s owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds &#x60;MANAGE_APPLICATION&#x60; there). Each app is upgraded as &#x60;POST /apps/{app}/upgrade&#x60; would; &#x60;GET /orgs/{org}/upgrades/{run}&#x60; follows it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param orgUpgradeRequest 
      * @return UpgradeRun
@@ -2165,7 +2165,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/upgrade
      * Start an upgrade run
-     * Upgrade every app of the organization (or of &#x60;team&#x60;, with &#x60;cascade&#x60; its subtree) that runs &#x60;package&#x60; to &#x60;version&#x60;, with one passkey assertion over the whole run; whoever holds &#x60;MANAGE_APPLICATION&#x60; there. Each app is upgraded as &#x60;POST /apps/{app}/upgrade&#x60; would; &#x60;GET /orgs/{org}/upgrades/{run}&#x60; follows it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Upgrade every app of the organization (or of &#x60;team&#x60;, with &#x60;cascade&#x60; its subtree) that runs &#x60;package&#x60; to &#x60;version&#x60;, with one passkey assertion over the whole run; the organization&#39;s owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds &#x60;MANAGE_APPLICATION&#x60; there). Each app is upgraded as &#x60;POST /apps/{app}/upgrade&#x60; would; &#x60;GET /orgs/{org}/upgrades/{run}&#x60; follows it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param orgUpgradeRequest 
      * @return ApiResponse<UpgradeRun?>
@@ -2438,7 +2438,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/packages/{package}/upgrade
      * Upgrade every instance of a publisher&#39;s package
-     * An upgrade run over every app on the cluster that runs the package, by its publisher&#39;s &#x60;MANAGE_APPLICATION&#x60; holders.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * An upgrade run, by an owner or admin of the publisher organization, over the apps that run the package in the organizations they are an owner or admin of (the publisher&#39;s own included), never another organization&#39;s: those are upgraded by their own owner and admins. On a cluster still below 1.0.0-rc.32, as before: by the publisher&#39;s &#x60;MANAGE_APPLICATION&#x60; holders, over every instance its publisher upgrades.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param `package` 
      * @param publisherUpgradeRequest 
@@ -2472,7 +2472,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/packages/{package}/upgrade
      * Upgrade every instance of a publisher&#39;s package
-     * An upgrade run over every app on the cluster that runs the package, by its publisher&#39;s &#x60;MANAGE_APPLICATION&#x60; holders.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * An upgrade run, by an owner or admin of the publisher organization, over the apps that run the package in the organizations they are an owner or admin of (the publisher&#39;s own included), never another organization&#39;s: those are upgraded by their own owner and admins. On a cluster still below 1.0.0-rc.32, as before: by the publisher&#39;s &#x60;MANAGE_APPLICATION&#x60; holders, over every instance its publisher upgrades.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param `package` 
      * @param publisherUpgradeRequest 
