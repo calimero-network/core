@@ -410,6 +410,15 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             "/code",
         ],
     );
+    // The update's class, policy and approval (C10), apart from the sheet's snapshot.
+    let mut snapshot = snapshot;
+    let update = snapshot
+        .as_object_mut()
+        .and_then(|o| o.remove("update"))
+        .unwrap();
+    assert_eq!(update["approval"]["step"], "only", "{update}");
+    assert_eq!(update["policy"]["source"], "default", "{update}");
+    assert!(update["class"].is_string(), "{update}");
     // The confirmation code: the same in the create answer and the model,
     // and the documented derivation from the request id.
     assert_eq!(model["code"], made["code"], "{made}");
@@ -3930,8 +3939,8 @@ async fn an_update_shows_its_class_and_takes_two_approvers_on_the_pages() {
 
     // The admin's updates page: locked until their passkey, then the update waits there.
     let bob_in_app = c.client(0);
-    let mut bob_app_key = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
-    let _s = bob_in_app.sign_in(&mut bob_app_key).await.unwrap();
+    let mut bob_in_app_passkey = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = bob_in_app.sign_in(&mut bob_in_app_passkey).await.unwrap();
     let made = ask(&bob_in_app, &back, "updates", json!({})).await.unwrap();
     let hub_url = made["url"].as_str().unwrap().to_owned();
     assert!(hub_url.contains("/updates/"), "{made}");
@@ -3949,7 +3958,7 @@ async fn an_update_shows_its_class_and_takes_two_approvers_on_the_pages() {
         )
         .await;
     assert_eq!(code, 409, "{early}");
-    let mut bob_page = SoftAuthenticator::with_key(&bob_app_key, "localhost", &node_origin);
+    let mut bob_page = SoftAuthenticator::with_key(&bob_in_app_passkey, "localhost", &node_origin);
     let ((code, done), args) = hub.approve(&c, &mut bob_page).await;
     assert_eq!(code, 200, "{done}");
     assert_eq!(args["__method"], "__view_updates", "{args}");
