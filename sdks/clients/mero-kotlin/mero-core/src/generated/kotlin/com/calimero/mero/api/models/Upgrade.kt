@@ -30,7 +30,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second.
+ * The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second. `auto`: it applied on its own under the app's update policy (`by` is `policy:auto-update`); `undo`: it undid the upgrade before it (`fromRelease` the release undone).
  *
  * @param from 
  * @param to 
@@ -45,6 +45,8 @@ import kotlinx.serialization.Contextual
  * @param propertyClass 
  * @param reasons 
  * @param approvedBy 
+ * @param auto 
+ * @param undo 
  */
 @Serializable
 
@@ -88,7 +90,13 @@ data class Upgrade (
     val reasons: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>? = null,
 
     @SerialName(value = "approvedBy")
-    val approvedBy: kotlin.String? = null
+    val approvedBy: kotlin.String? = null,
+
+    @SerialName(value = "auto")
+    val auto: kotlin.Boolean? = null,
+
+    @SerialName(value = "undo")
+    val undo: kotlin.Boolean? = null
 
 ) {
 

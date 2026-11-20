@@ -61,6 +61,9 @@ import com.calimero.mero.api.models.AppSecretSetRequest
 import com.calimero.mero.api.models.AppSecrets200Response
 import com.calimero.mero.api.models.AppStorage200Response
 import com.calimero.mero.api.models.AppTransferRequest
+import com.calimero.mero.api.models.AppUndo200Response
+import com.calimero.mero.api.models.AppUndoRequest
+import com.calimero.mero.api.models.AppUndoView200Response
 import com.calimero.mero.api.models.AppUnlinkRequest
 import com.calimero.mero.api.models.AppUpdate200Response
 import com.calimero.mero.api.models.AppUpgrade200Response
@@ -2500,6 +2503,156 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.DELETE,
             path = "/apps/{app}/delegations/{target}".replace("{"+"app"+"}", encodeURIComponent(app.toString())).replace("{"+"target"+"}", encodeURIComponent(target.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /apps/{app}/undo
+     * Undo an app&#39;s last upgrade
+     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appUndoRequest 
+     * @return AppUndo200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appUndo(app: kotlin.String, appUndoRequest: AppUndoRequest) : AppUndo200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appUndoWithHttpInfo(app = app, appUndoRequest = appUndoRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppUndo200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /apps/{app}/undo
+     * Undo an app&#39;s last upgrade
+     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appUndoRequest 
+     * @return ApiResponse<AppUndo200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appUndoWithHttpInfo(app: kotlin.String, appUndoRequest: AppUndoRequest) : ApiResponse<AppUndo200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appUndoRequestConfig(app = app, appUndoRequest = appUndoRequest)
+
+        return@withContext request<AppUndoRequest, AppUndo200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appUndo
+     *
+     * @param app 
+     * @param appUndoRequest 
+     * @return RequestConfig
+     */
+    fun appUndoRequestConfig(app: kotlin.String, appUndoRequest: AppUndoRequest) : RequestConfig<AppUndoRequest> {
+        val localVariableBody = appUndoRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/apps/{app}/undo".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /apps/{app}/undo
+     * The upgrade an app may undo
+     * For whoever may read the app. &#x60;available&#x60;: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point&#39;s node answering); else &#x60;reason&#x60; says why. &#x60;apps&#x60;: the app, and the members its unit&#39;s upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @return AppUndoView200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appUndoView(app: kotlin.String) : AppUndoView200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appUndoViewWithHttpInfo(app = app)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppUndoView200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/undo
+     * The upgrade an app may undo
+     * For whoever may read the app. &#x60;available&#x60;: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point&#39;s node answering); else &#x60;reason&#x60; says why. &#x60;apps&#x60;: the app, and the members its unit&#39;s upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @return ApiResponse<AppUndoView200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appUndoViewWithHttpInfo(app: kotlin.String) : ApiResponse<AppUndoView200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appUndoViewRequestConfig(app = app)
+
+        return@withContext request<Unit, AppUndoView200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appUndoView
+     *
+     * @param app 
+     * @return RequestConfig
+     */
+    fun appUndoViewRequestConfig(app: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/undo".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

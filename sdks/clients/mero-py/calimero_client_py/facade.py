@@ -78,6 +78,8 @@ from .openapi.api.apps import app_secrets as _app_secrets
 from .openapi.api.apps import app_storage as _app_storage
 from .openapi.api.apps import app_transfer as _app_transfer
 from .openapi.api.apps import app_undelegate as _app_undelegate
+from .openapi.api.apps import app_undo as _app_undo
+from .openapi.api.apps import app_undo_view as _app_undo_view
 from .openapi.api.apps import app_unlink as _app_unlink
 from .openapi.api.apps import app_update as _app_update
 from .openapi.api.apps import app_upgrade as _app_upgrade
@@ -241,6 +243,9 @@ from .openapi.api.sign_up_and_deployments import deployment_list as _deployment_
 from .openapi.api.sign_up_and_deployments import deployment_offer as _deployment_offer
 from .openapi.api.sign_up_and_deployments import deployment_orgs as _deployment_orgs
 from .openapi.api.sign_up_and_deployments import (
+    deployment_rollout as _deployment_rollout,
+)
+from .openapi.api.sign_up_and_deployments import (
     deployment_secret_clear as _deployment_secret_clear,
 )
 from .openapi.api.sign_up_and_deployments import (
@@ -252,6 +257,8 @@ from .openapi.api.sign_up_and_deployments import (
 from .openapi.api.sign_up_and_deployments import (
     deployment_withdraw as _deployment_withdraw,
 )
+from .openapi.api.sign_up_and_deployments import rollout_pause as _rollout_pause
+from .openapi.api.sign_up_and_deployments import rollout_resume as _rollout_resume
 from .openapi.api.sign_up_and_deployments import (
     sign_up_invite_create as _sign_up_invite_create,
 )
@@ -283,6 +290,7 @@ from .openapi.models import AppPolicySetBody
 from .openapi.models import AppSecretSetBody
 from .openapi.models import AppTeamsScopeBody
 from .openapi.models import AppTransferBody
+from .openapi.models import AppUndoBody
 from .openapi.models import AppUnlinkBody
 from .openapi.models import AppUpgradeBody
 from .openapi.models import AppUpgradeUnitBody
@@ -370,6 +378,8 @@ from .openapi.models import RefreshBody
 from .openapi.models import RegisterBeginBody
 from .openapi.models import RegisterFinishBody
 from .openapi.models import RestoreRecoverHolderBody
+from .openapi.models import RolloutPauseBody
+from .openapi.models import RolloutResumeBody
 from .openapi.models import SignUpInviteCreateBody
 from .openapi.models import SignUpSetBody
 from .openapi.models import TeamCreateBody
@@ -709,6 +719,15 @@ _APP_TRANSFER = Operation(
 _APP_UNDELEGATE = Operation(
     _app_undelegate,
     "app_undelegate",
+    body="none",
+    answer="json",
+)
+_APP_UNDO = Operation(
+    _app_undo, "app_undo", body=AppUndoBody, answer="json", confirm=True
+)
+_APP_UNDO_VIEW = Operation(
+    _app_undo_view,
+    "app_undo_view",
     body="none",
     answer="json",
 )
@@ -1939,6 +1958,35 @@ class Apps(Group):
             None,
         )
 
+    def undo(self, *, app, confirm=None):
+        """Undo an app's last upgrade (`POST /apps/{app}/undo`, `app_undo`).
+
+        An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: AppUndoResponse200
+        """
+        return self._run(_APP_UNDO, (app,), {}, {}, confirm=confirm)
+
+    def undo_view(self, *, app):
+        """The upgrade an app may undo (`GET /apps/{app}/undo`, `app_undo_view`).
+
+        For whoever may read the app. `available`: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point's node answering); else `reason` says why. `apps`: the app, and the members its unit's upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.
+
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+
+        Args:
+            app: path
+
+        Returns: AppUndoViewResponse200
+        """
+        return self._run(_APP_UNDO_VIEW, (app,), {}, None)
+
     def unlink(self, *, app, name, confirm=None):
         """Detach an app attached to an app (`DELETE /apps/{app}/links/{name}`, `app_unlink`).
 
@@ -3008,6 +3056,22 @@ _DEPLOYMENT_ORGS = Operation(
     body="none",
     answer="json",
 )
+_DEPLOYMENT_ROLLOUT = Operation(
+    _deployment_rollout,
+    "deployment_rollout",
+    body="none",
+    answer="json",
+)
+_ROLLOUT_PAUSE = Operation(
+    _rollout_pause, "rollout_pause", body=RolloutPauseBody, answer="json", confirm=True
+)
+_ROLLOUT_RESUME = Operation(
+    _rollout_resume,
+    "rollout_resume",
+    body=RolloutResumeBody,
+    answer="json",
+    confirm=True,
+)
 _DEPLOYMENT_SECRET_CLEAR = Operation(
     _deployment_secret_clear,
     "deployment_secret_clear",
@@ -3206,6 +3270,72 @@ class Deployments(Group):
         Returns: DeploymentOrgsResponse200
         """
         return self._run(_DEPLOYMENT_ORGS, (id,), {}, None)
+
+    def rollout(self, *, id):
+        """How a deployment's offers roll out (`GET /deployments/{id}/rollout`, `deployment_rollout`).
+
+        For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner's or admin's own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.
+
+        **Who:** signed in (a session or an API key).
+
+        Args:
+            id: path
+
+        Returns: DeploymentRolloutResponse200
+        """
+        return self._run(_DEPLOYMENT_ROLLOUT, (id,), {}, None)
+
+    def rollout_pause(self, *, id, app, wave_hours=UNSET, confirm=None):
+        """Pause a deployment's rollout (`POST /deployments/{id}/rollout/{app}/pause`, `rollout_pause`).
+
+        A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: true, waveHours }`: no more of its instances move to the offered release on their own; the waves open stay open. `waveHours` (1 to 168, `400 BAD_ROLLOUT`) sets the pause between waves. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            id: path
+            app: path
+            wave_hours: body `waveHours`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: RolloutPauseResponse200
+        """
+        return self._run(
+            _ROLLOUT_PAUSE,
+            (
+                id,
+                app,
+            ),
+            {},
+            {"waveHours": wave_hours},
+            confirm=confirm,
+        )
+
+    def rollout_resume(self, *, id, app, wave_hours=UNSET, confirm=None):
+        """Resume a deployment's rollout (`POST /deployments/{id}/rollout/{app}/resume`, `rollout_resume`).
+
+        A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: false, waveHours }`: it goes on from the wave open at the pause, and the next opens a full `waveHours` later. A rollout paused on its failures resumes the same way.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            id: path
+            app: path
+            wave_hours: body `waveHours`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: RolloutResumeResponse200
+        """
+        return self._run(
+            _ROLLOUT_RESUME,
+            (
+                id,
+                app,
+            ),
+            {},
+            {"waveHours": wave_hours},
+            confirm=confirm,
+        )
 
     def secret_clear(self, *, id, name, confirm=None):
         """Remove a deployment's value of a secret (`DELETE /deployments/{id}/secrets/{name}`, `deployment_secret_clear`).
