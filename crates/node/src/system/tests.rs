@@ -11978,7 +11978,11 @@ fn an_update_policy_is_an_owners_or_admins_and_bounded() {
     );
     let (policy, source) = m.state.upgrade_policy_of(&m.state.apps["oa"]);
     assert_eq!((policy, source), (UpgradePolicy::default(), "default"));
-    assert!(!policy.auto_sealed && !policy.second_approver && policy.hold_hours == 24);
+    assert!(
+        policy.auto_apply == crate::types::AutoApply::Never
+            && !policy.second_approver
+            && policy.hold_hours == 24
+    );
     assert_eq!(
         m.run_unproven(set(None, Some(strict), "bob", Value::Null)),
         Err(NOT_AN_UPGRADE_APPROVER.to_owned()),
@@ -11988,7 +11992,7 @@ fn an_update_policy_is_an_owners_or_admins_and_bounded() {
         &mut m,
         &mut alice,
         ("org:org", "__set_upgrade_policy"),
-        &json!({ "app": null, "policy": { "autoSealed": false, "holdHours": 24, "secondApprover": true } }),
+        &json!({ "app": null, "policy": { "autoApply": "never", "holdHours": 24, "secondApprover": true } }),
         &json!({ "app": null, "policy": null }),
         |c| set(None, Some(strict), "alice", c),
     );
@@ -12008,7 +12012,7 @@ fn an_update_policy_is_an_owners_or_admins_and_bounded() {
         );
     }
     let own = UpgradePolicy {
-        auto_sealed: true,
+        auto_apply: crate::types::AutoApply::NoDestinations,
         hold_hours: 168,
         second_approver: false,
     };
@@ -12032,7 +12036,7 @@ fn an_update_policy_is_an_owners_or_admins_and_bounded() {
         "dropped: the organization's again"
     );
     // Unknown fields are refused; every field may be left out.
-    assert!(serde_json::from_value::<UpgradePolicy>(json!({ "autoApply": true })).is_err());
+    assert!(serde_json::from_value::<UpgradePolicy>(json!({ "autoApply": "always" })).is_err());
     assert_eq!(
         serde_json::from_value::<UpgradePolicy>(json!({})).unwrap(),
         UpgradePolicy::default()

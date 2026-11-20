@@ -90,7 +90,7 @@ class UpgradePolicies(DeepCase):
         org = new_org(pia, "Policy Org")
         pia.raw("post", f"orgs/{org}/upgrade-policy", {"policy": {"secondApprover": True, "holdHours": 48}})
         s = {"org": org, "policy": pia.get(f"orgs/{org}/upgrade-policy")}
-        eq(s["policy"]["policy"], {"autoSealed": False, "holdHours": 48, "secondApprover": True},
+        eq(s["policy"]["policy"], {"autoApply": "never", "holdHours": 48, "secondApprover": True},
            "the update policy as set")
         return s
 

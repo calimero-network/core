@@ -2020,7 +2020,7 @@ async fn an_instance_shows_its_update_and_who_may_approve_it() {
         json!({
             "app": inst, "running": { "package": "com.test.notes", "version": "1.0.0" },
             "available": null, "mayApprove": true, "approvers": "owner-and-admins",
-            "policy": { "autoSealed": false, "holdHours": 24, "secondApprover": false,
+            "policy": { "autoApply": "never", "holdHours": 24, "secondApprover": false,
                 "source": "default" },
             "pendingApprovals": [],
         })

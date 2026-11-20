@@ -5726,12 +5726,17 @@ public enum Components {
                 case maxFuelPerDeveloperPerDay
             }
         }
-        /// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoSealed` (default off) and `holdHours` (24 to 168, default 24): a green update of an app that stays Sealed (no destination outside the cluster before or after, members counted) applying on its own after the hold; stored and validated now, carried out by a later release.
+        /// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applying on its own after the hold; stored and validated now, carried out by a later release.
         ///
         /// - Remark: Generated from `#/components/schemas/UpgradePolicy`.
         public struct UpgradePolicy: Codable, Hashable, Sendable {
-            /// - Remark: Generated from `#/components/schemas/UpgradePolicy/autoSealed`.
-            public var autoSealed: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/UpgradePolicy/autoApply`.
+            @frozen public enum AutoApplyPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case never = "never"
+                case noDestinations = "noDestinations"
+            }
+            /// - Remark: Generated from `#/components/schemas/UpgradePolicy/autoApply`.
+            public var autoApply: Components.Schemas.UpgradePolicy.AutoApplyPayload
             /// - Remark: Generated from `#/components/schemas/UpgradePolicy/holdHours`.
             public var holdHours: Swift.Int64
             /// - Remark: Generated from `#/components/schemas/UpgradePolicy/secondApprover`.
@@ -5739,20 +5744,20 @@ public enum Components {
             /// Creates a new `UpgradePolicy`.
             ///
             /// - Parameters:
-            ///   - autoSealed:
+            ///   - autoApply:
             ///   - holdHours:
             ///   - secondApprover:
             public init(
-                autoSealed: Swift.Bool,
+                autoApply: Components.Schemas.UpgradePolicy.AutoApplyPayload,
                 holdHours: Swift.Int64,
                 secondApprover: Swift.Bool
             ) {
-                self.autoSealed = autoSealed
+                self.autoApply = autoApply
                 self.holdHours = holdHours
                 self.secondApprover = secondApprover
             }
             public enum CodingKeys: String, CodingKey {
-                case autoSealed
+                case autoApply
                 case holdHours
                 case secondApprover
             }
@@ -22934,8 +22939,13 @@ public enum Operations {
                         public var approvers: Operations.AppUpdate.Output.Ok.Body.JsonPayload.ApproversPayload
                         /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy`.
                         public struct PolicyPayload: Codable, Hashable, Sendable {
-                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/autoSealed`.
-                            public var autoSealed: Swift.Bool
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/autoApply`.
+                            @frozen public enum AutoApplyPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                                case never = "never"
+                                case noDestinations = "noDestinations"
+                            }
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/autoApply`.
+                            public var autoApply: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload.AutoApplyPayload
                             /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/holdHours`.
                             public var holdHours: Swift.Int64
                             /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/secondApprover`.
@@ -22951,23 +22961,23 @@ public enum Operations {
                             /// Creates a new `PolicyPayload`.
                             ///
                             /// - Parameters:
-                            ///   - autoSealed:
+                            ///   - autoApply:
                             ///   - holdHours:
                             ///   - secondApprover:
                             ///   - source:
                             public init(
-                                autoSealed: Swift.Bool,
+                                autoApply: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload.AutoApplyPayload,
                                 holdHours: Swift.Int64,
                                 secondApprover: Swift.Bool,
                                 source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload.SourcePayload
                             ) {
-                                self.autoSealed = autoSealed
+                                self.autoApply = autoApply
                                 self.holdHours = holdHours
                                 self.secondApprover = secondApprover
                                 self.source = source
                             }
                             public enum CodingKeys: String, CodingKey {
-                                case autoSealed
+                                case autoApply
                                 case holdHours
                                 case secondApprover
                                 case source
@@ -23705,8 +23715,13 @@ public enum Operations {
                 public struct JsonPayload: Codable, Hashable, Sendable {
                     /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy`.
                     public struct PolicyPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/autoSealed`.
-                        public var autoSealed: Swift.Bool?
+                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/autoApply`.
+                        @frozen public enum AutoApplyPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                            case never = "never"
+                            case noDestinations = "noDestinations"
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/autoApply`.
+                        public var autoApply: Operations.AppPolicySet.Input.Body.JsonPayload.PolicyPayload.AutoApplyPayload?
                         /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/holdHours`.
                         public var holdHours: Swift.Int64?
                         /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/secondApprover`.
@@ -23714,20 +23729,20 @@ public enum Operations {
                         /// Creates a new `PolicyPayload`.
                         ///
                         /// - Parameters:
-                        ///   - autoSealed:
+                        ///   - autoApply:
                         ///   - holdHours:
                         ///   - secondApprover:
                         public init(
-                            autoSealed: Swift.Bool? = nil,
+                            autoApply: Operations.AppPolicySet.Input.Body.JsonPayload.PolicyPayload.AutoApplyPayload? = nil,
                             holdHours: Swift.Int64? = nil,
                             secondApprover: Swift.Bool? = nil
                         ) {
-                            self.autoSealed = autoSealed
+                            self.autoApply = autoApply
                             self.holdHours = holdHours
                             self.secondApprover = secondApprover
                         }
                         public enum CodingKeys: String, CodingKey {
-                            case autoSealed
+                            case autoApply
                             case holdHours
                             case secondApprover
                         }
@@ -41534,8 +41549,13 @@ public enum Operations {
                 public struct JsonPayload: Codable, Hashable, Sendable {
                     /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy`.
                     public struct PolicyPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/autoSealed`.
-                        public var autoSealed: Swift.Bool?
+                        /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/autoApply`.
+                        @frozen public enum AutoApplyPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                            case never = "never"
+                            case noDestinations = "noDestinations"
+                        }
+                        /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/autoApply`.
+                        public var autoApply: Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload.AutoApplyPayload?
                         /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/holdHours`.
                         public var holdHours: Swift.Int64?
                         /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/secondApprover`.
@@ -41543,20 +41563,20 @@ public enum Operations {
                         /// Creates a new `PolicyPayload`.
                         ///
                         /// - Parameters:
-                        ///   - autoSealed:
+                        ///   - autoApply:
                         ///   - holdHours:
                         ///   - secondApprover:
                         public init(
-                            autoSealed: Swift.Bool? = nil,
+                            autoApply: Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload.AutoApplyPayload? = nil,
                             holdHours: Swift.Int64? = nil,
                             secondApprover: Swift.Bool? = nil
                         ) {
-                            self.autoSealed = autoSealed
+                            self.autoApply = autoApply
                             self.holdHours = holdHours
                             self.secondApprover = secondApprover
                         }
                         public enum CodingKeys: String, CodingKey {
-                            case autoSealed
+                            case autoApply
                             case holdHours
                             case secondApprover
                         }

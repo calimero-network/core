@@ -3504,7 +3504,7 @@ async fn a_red_update_waits_for_a_second_approver() {
     assert_eq!(policy["source"], "default", "{policy}");
     assert_eq!(
         policy["policy"],
-        json!({ "autoSealed": false, "holdHours": 24, "secondApprover": false })
+        json!({ "autoApply": "never", "holdHours": 24, "secondApprover": false })
     );
     let path = format!("orgs/{org}/upgrade-policy");
     let bad = post(

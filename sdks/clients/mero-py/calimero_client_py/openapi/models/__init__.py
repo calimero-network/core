@@ -85,6 +85,9 @@ from .app_move_response_200 import AppMoveResponse200
 from .app_openapi_response_200 import AppOpenapiResponse200
 from .app_policy_set_body import AppPolicySetBody
 from .app_policy_set_body_policy_type_0 import AppPolicySetBodyPolicyType0
+from .app_policy_set_body_policy_type_0_auto_apply import (
+    AppPolicySetBodyPolicyType0AutoApply,
+)
 from .app_restore import AppRestore
 from .app_restore_source import AppRestoreSource
 from .app_run_logs_response_200 import AppRunLogsResponse200
@@ -133,6 +136,9 @@ from .app_update_response_200_available_type_0_source import (
     AppUpdateResponse200AvailableType0Source,
 )
 from .app_update_response_200_policy import AppUpdateResponse200Policy
+from .app_update_response_200_policy_auto_apply import (
+    AppUpdateResponse200PolicyAutoApply,
+)
 from .app_update_response_200_policy_source import AppUpdateResponse200PolicySource
 from .app_update_response_200_running_type_0 import AppUpdateResponse200RunningType0
 from .app_upgrade_body import AppUpgradeBody
@@ -497,6 +503,9 @@ from .org_pending_upgrades_additional_property_targets_additional_property impor
 )
 from .org_policy_set_body import OrgPolicySetBody
 from .org_policy_set_body_policy_type_0 import OrgPolicySetBodyPolicyType0
+from .org_policy_set_body_policy_type_0_auto_apply import (
+    OrgPolicySetBodyPolicyType0AutoApply,
+)
 from .org_publisher_body import OrgPublisherBody
 from .org_publisher_response_200 import OrgPublisherResponse200
 from .org_quotas import OrgQuotas
@@ -730,6 +739,7 @@ from .upgrade_class import UpgradeClass
 from .upgrade_pending import UpgradePending
 from .upgrade_pending_nodes_item import UpgradePendingNodesItem
 from .upgrade_policy import UpgradePolicy
+from .upgrade_policy_auto_apply import UpgradePolicyAutoApply
 from .upgrade_run import UpgradeRun
 from .upgrade_run_failed import UpgradeRunFailed
 from .upgrade_run_targets import UpgradeRunTargets
@@ -824,6 +834,7 @@ __all__ = (
     "AppOpenapiResponse200",
     "AppPolicySetBody",
     "AppPolicySetBodyPolicyType0",
+    "AppPolicySetBodyPolicyType0AutoApply",
     "AppRestore",
     "AppRestoreSource",
     "ApprovedReleases",
@@ -861,6 +872,7 @@ __all__ = (
     "AppUpdateResponse200AvailableType0Egress",
     "AppUpdateResponse200AvailableType0Source",
     "AppUpdateResponse200Policy",
+    "AppUpdateResponse200PolicyAutoApply",
     "AppUpdateResponse200PolicySource",
     "AppUpdateResponse200RunningType0",
     "AppUpgradeBody",
@@ -1162,6 +1174,7 @@ __all__ = (
     "OrgPendingUpgradesAdditionalPropertyTargetsAdditionalProperty",
     "OrgPolicySetBody",
     "OrgPolicySetBodyPolicyType0",
+    "OrgPolicySetBodyPolicyType0AutoApply",
     "OrgPublisherBody",
     "OrgPublisherResponse200",
     "OrgQuotas",
@@ -1373,6 +1386,7 @@ __all__ = (
     "UpgradePending",
     "UpgradePendingNodesItem",
     "UpgradePolicy",
+    "UpgradePolicyAutoApply",
     "UpgradeRun",
     "UpgradeRunFailed",
     "UpgradeRunTargets",

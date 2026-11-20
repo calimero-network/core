@@ -31,7 +31,7 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param autoSealed 
+ * @param autoApply 
  * @param holdHours 
  * @param secondApprover 
  * @param source 
@@ -40,8 +40,8 @@ import kotlinx.serialization.Contextual
 
 data class AppUpdate200ResponsePolicy (
 
-    @SerialName(value = "autoSealed")
-    val autoSealed: kotlin.Boolean,
+    @SerialName(value = "autoApply")
+    val autoApply: AppUpdate200ResponsePolicy.AutoApply,
 
     @SerialName(value = "holdHours")
     val holdHours: kotlin.Long,
@@ -54,6 +54,16 @@ data class AppUpdate200ResponsePolicy (
 
 ) {
 
+    /**
+     * 
+     *
+     * Values: NEVER,NO_DESTINATIONS
+     */
+    @Serializable
+    enum class AutoApply(val value: kotlin.String) {
+        @SerialName(value = "never") NEVER("never"),
+        @SerialName(value = "noDestinations") NO_DESTINATIONS("noDestinations");
+    }
     /**
      * 
      *

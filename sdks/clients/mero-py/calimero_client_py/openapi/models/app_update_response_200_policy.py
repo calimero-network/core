@@ -6,6 +6,9 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..models.app_update_response_200_policy_auto_apply import (
+    AppUpdateResponse200PolicyAutoApply,
+)
 from ..models.app_update_response_200_policy_source import (
     AppUpdateResponse200PolicySource,
 )
@@ -17,20 +20,20 @@ T = TypeVar("T", bound="AppUpdateResponse200Policy")
 class AppUpdateResponse200Policy:
     """
     Attributes:
-        auto_sealed (bool):
+        auto_apply (AppUpdateResponse200PolicyAutoApply):
         hold_hours (int):
         second_approver (bool):
         source (AppUpdateResponse200PolicySource):
     """
 
-    auto_sealed: bool
+    auto_apply: AppUpdateResponse200PolicyAutoApply
     hold_hours: int
     second_approver: bool
     source: AppUpdateResponse200PolicySource
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        auto_sealed = self.auto_sealed
+        auto_apply = self.auto_apply.value
 
         hold_hours = self.hold_hours
 
@@ -42,7 +45,7 @@ class AppUpdateResponse200Policy:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "autoSealed": auto_sealed,
+                "autoApply": auto_apply,
                 "holdHours": hold_hours,
                 "secondApprover": second_approver,
                 "source": source,
@@ -54,7 +57,7 @@ class AppUpdateResponse200Policy:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        auto_sealed = d.pop("autoSealed")
+        auto_apply = AppUpdateResponse200PolicyAutoApply(d.pop("autoApply"))
 
         hold_hours = d.pop("holdHours")
 
@@ -63,7 +66,7 @@ class AppUpdateResponse200Policy:
         source = AppUpdateResponse200PolicySource(d.pop("source"))
 
         app_update_response_200_policy = cls(
-            auto_sealed=auto_sealed,
+            auto_apply=auto_apply,
             hold_hours=hold_hours,
             second_approver=second_approver,
             source=source,

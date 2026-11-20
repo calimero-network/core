@@ -1130,19 +1130,16 @@ pub const MAX_CLASS_REASONS: usize = 64;
 /// (`SystemCmd::SetUpgradePolicy`), for one app or every app of the organization. Every
 /// field may be left out (its default); an unknown one is refused.
 ///
-/// Only `second_approver` changes what applies in this release. `auto_sealed` and
+/// Only `second_approver` changes what applies in this release. `auto_apply` and
 /// `hold_hours` are stored and validated now; applying green updates on their own after
 /// the hold (with a restore point and waves) is a later release's, which only adds the
 /// execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpgradePolicy {
-    /// A green update (the same signer and state version, no new destination, no new way to
-    /// act as the person) of an app that stays Sealed (no destination outside the cluster
-    /// before or after, its members counted: any external endpoint is not Sealed) applies on
-    /// its own after the hold. Off by default: nothing updates by default.
+    /// Which updates apply on their own after the hold ([`AutoApply`]): none by default.
     #[serde(default)]
-    pub auto_sealed: bool,
+    pub auto_apply: AutoApply,
     /// How long a green update waits before it applies on its own, in hours:
     /// [`MIN_HOLD_HOURS`] to [`MAX_HOLD_HOURS`], 24 by default.
     #[serde(default = "default_hold_hours")]
@@ -1153,6 +1150,21 @@ pub struct UpgradePolicy {
     pub second_approver: bool,
 }
 
+/// Which updates an update policy lets apply on their own, after its hold
+/// ([`UpgradePolicy::auto_apply`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoApply {
+    /// None: every update waits for an owner's or admin's approval. The default: nothing
+    /// updates by default.
+    #[default]
+    Never,
+    /// A green update (the same signer and state version, no new destination, no new way to
+    /// act as the person) of an app whose unit has no destinations before or after it (no
+    /// `outbound` prefix or secret host, members counted: no data leaves Calimero).
+    NoDestinations,
+}
+
 const fn default_hold_hours() -> u32 {
     MIN_HOLD_HOURS
 }
@@ -1160,7 +1172,7 @@ const fn default_hold_hours() -> u32 {
 impl Default for UpgradePolicy {
     fn default() -> Self {
         Self {
-            auto_sealed: false,
+            auto_apply: AutoApply::Never,
             hold_hours: default_hold_hours(),
             second_approver: false,
         }

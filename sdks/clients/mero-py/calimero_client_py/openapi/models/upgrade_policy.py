@@ -6,6 +6,8 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..models.upgrade_policy_auto_apply import UpgradePolicyAutoApply
+
 T = TypeVar("T", bound="UpgradePolicy")
 
 
@@ -13,23 +15,24 @@ T = TypeVar("T", bound="UpgradePolicy")
 class UpgradePolicy:
     """How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST
     /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover`
-    (default off): a red update needs two distinct owners or admins. `autoSealed` (default off) and `holdHours` (24 to
-    168, default 24): a green update of an app that stays Sealed (no destination outside the cluster before or after,
-    members counted) applying on its own after the hold; stored and validated now, carried out by a later release.
+    (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a
+    green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and
+    `holdHours` (24 to 168, default 24): such an update applying on its own after the hold; stored and validated now,
+    carried out by a later release.
 
         Attributes:
-            auto_sealed (bool):
+            auto_apply (UpgradePolicyAutoApply):
             hold_hours (int):
             second_approver (bool):
     """
 
-    auto_sealed: bool
+    auto_apply: UpgradePolicyAutoApply
     hold_hours: int
     second_approver: bool
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        auto_sealed = self.auto_sealed
+        auto_apply = self.auto_apply.value
 
         hold_hours = self.hold_hours
 
@@ -39,7 +42,7 @@ class UpgradePolicy:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "autoSealed": auto_sealed,
+                "autoApply": auto_apply,
                 "holdHours": hold_hours,
                 "secondApprover": second_approver,
             }
@@ -50,14 +53,14 @@ class UpgradePolicy:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        auto_sealed = d.pop("autoSealed")
+        auto_apply = UpgradePolicyAutoApply(d.pop("autoApply"))
 
         hold_hours = d.pop("holdHours")
 
         second_approver = d.pop("secondApprover")
 
         upgrade_policy = cls(
-            auto_sealed=auto_sealed,
+            auto_apply=auto_apply,
             hold_hours=hold_hours,
             second_approver=second_approver,
         )

@@ -6,6 +6,9 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..models.app_policy_set_body_policy_type_0_auto_apply import (
+    AppPolicySetBodyPolicyType0AutoApply,
+)
 from ..types import UNSET, Unset
 from typing import Union
 
@@ -16,18 +19,20 @@ T = TypeVar("T", bound="AppPolicySetBodyPolicyType0")
 class AppPolicySetBodyPolicyType0:
     """
     Attributes:
-        auto_sealed (Union[Unset, bool]):
+        auto_apply (Union[Unset, AppPolicySetBodyPolicyType0AutoApply]):
         hold_hours (Union[Unset, int]):
         second_approver (Union[Unset, bool]):
     """
 
-    auto_sealed: Union[Unset, bool] = UNSET
+    auto_apply: Union[Unset, AppPolicySetBodyPolicyType0AutoApply] = UNSET
     hold_hours: Union[Unset, int] = UNSET
     second_approver: Union[Unset, bool] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        auto_sealed = self.auto_sealed
+        auto_apply: Union[Unset, str] = UNSET
+        if not isinstance(self.auto_apply, Unset):
+            auto_apply = self.auto_apply.value
 
         hold_hours = self.hold_hours
 
@@ -36,8 +41,8 @@ class AppPolicySetBodyPolicyType0:
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
-        if auto_sealed is not UNSET:
-            field_dict["autoSealed"] = auto_sealed
+        if auto_apply is not UNSET:
+            field_dict["autoApply"] = auto_apply
         if hold_hours is not UNSET:
             field_dict["holdHours"] = hold_hours
         if second_approver is not UNSET:
@@ -48,14 +53,19 @@ class AppPolicySetBodyPolicyType0:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        auto_sealed = d.pop("autoSealed", UNSET)
+        _auto_apply = d.pop("autoApply", UNSET)
+        auto_apply: Union[Unset, AppPolicySetBodyPolicyType0AutoApply]
+        if isinstance(_auto_apply, Unset):
+            auto_apply = UNSET
+        else:
+            auto_apply = AppPolicySetBodyPolicyType0AutoApply(_auto_apply)
 
         hold_hours = d.pop("holdHours", UNSET)
 
         second_approver = d.pop("secondApprover", UNSET)
 
         app_policy_set_body_policy_type_0 = cls(
-            auto_sealed=auto_sealed,
+            auto_apply=auto_apply,
             hold_hours=hold_hours,
             second_approver=second_approver,
         )

@@ -1336,7 +1336,7 @@ is its command line.
   app?, policy? }` by an owner or admin (`approves_upgrades`), consent `org:<org> /
   __set_upgrade_policy / system::upgrade_policy_args`, kept on `Org::upgrade_policy` and
   `Org::app_upgrade_policies` (a move drops the app's, `move_app`); `types::UpgradePolicy
-  { autoSealed, holdHours, secondApprover }`, `holdHours` in `MIN_HOLD_HOURS..=MAX_HOLD_HOURS`
+  { autoApply: never | noDestinations, holdHours, secondApprover }`, `holdHours` in `MIN_HOLD_HOURS..=MAX_HOLD_HOURS`
   (`BAD_UPGRADE_POLICY`); `SystemState::upgrade_policy_of` (app, org, default). Only
   `secondApprover` acts now: `ApproveUpgrade` (consent `<app> / __approve_upgrade /
   system::approve_upgrade_args`, `POST /apps/{app}/upgrade-approvals { version, unit? }`)
@@ -1349,8 +1349,8 @@ is its command line.
   of the upgrade's `at`, approver still an owner or admin, not every covered app at its
   target), else `SECOND_APPROVAL_REQUIRED`; `drop_spent_approvals` after each upgrade.
   The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
-  `autoSealed` (a green update of an app that stays Sealed, no egress before or after)
-  and `holdHours` are stored and validated only: the hold, auto-apply,
+  `autoApply` (`noDestinations`: a green update of an app whose unit has no destinations
+  before or after) and `holdHours` are stored and validated only: the hold, auto-apply,
   restore points and waves are C9. Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
   /apps/{app}/upgrade-policy` (`policy_json`), `GET /apps/{app}/update` adds `policy`,
   `pendingApprovals`, `available.approvalsNeeded`/`approvedBy`

@@ -814,11 +814,49 @@ pub struct QuotaSettings {
     pub extra: Map<String, Value>,
 }
 
-/// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoSealed` (default off) and `holdHours` (24 to 168, default 24): a green update of an app that stays Sealed (no destination outside the cluster before or after, members counted) applying on its own after the hold; stored and validated now, carried out by a later release.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum UpgradePolicyAutoApply {
+    /// `never`.
+    Never,
+    /// `noDestinations`.
+    NoDestinations,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl UpgradePolicyAutoApply {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Never => "never",
+            Self::NoDestinations => "noDestinations",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for UpgradePolicyAutoApply {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for UpgradePolicyAutoApply {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "never" => Self::Never,
+            "noDestinations" => Self::NoDestinations,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applying on its own after the hold; stored and validated now, carried out by a later release.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UpgradePolicy {
-    #[serde(rename = "autoSealed")]
-    pub auto_sealed: bool,
+    #[serde(rename = "autoApply")]
+    pub auto_apply: UpgradePolicyAutoApply,
     #[serde(rename = "holdHours")]
     pub hold_hours: u64,
     #[serde(rename = "secondApprover")]
@@ -3706,6 +3744,44 @@ impl<'de> Deserialize<'de> for AppUpdateResponseApprovers {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppUpdateResponsePolicyAutoApply {
+    /// `never`.
+    Never,
+    /// `noDestinations`.
+    NoDestinations,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppUpdateResponsePolicyAutoApply {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Never => "never",
+            Self::NoDestinations => "noDestinations",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppUpdateResponsePolicyAutoApply {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppUpdateResponsePolicyAutoApply {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "never" => Self::Never,
+            "noDestinations" => Self::NoDestinations,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AppUpdateResponsePolicySource {
     /// `app`.
     App,
@@ -3749,8 +3825,8 @@ impl<'de> Deserialize<'de> for AppUpdateResponsePolicySource {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateResponsePolicy {
-    #[serde(rename = "autoSealed")]
-    pub auto_sealed: bool,
+    #[serde(rename = "autoApply")]
+    pub auto_apply: AppUpdateResponsePolicyAutoApply,
     #[serde(rename = "holdHours")]
     pub hold_hours: u64,
     #[serde(rename = "secondApprover")]
@@ -3812,11 +3888,49 @@ pub struct AppApproveUpgradeResponse {
     pub extra: Map<String, Value>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppPolicySetRequestPolicyAutoApply {
+    /// `never`.
+    Never,
+    /// `noDestinations`.
+    NoDestinations,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppPolicySetRequestPolicyAutoApply {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Never => "never",
+            Self::NoDestinations => "noDestinations",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppPolicySetRequestPolicyAutoApply {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppPolicySetRequestPolicyAutoApply {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "never" => Self::Never,
+            "noDestinations" => Self::NoDestinations,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppPolicySetRequestPolicy {
-    #[serde(rename = "autoSealed")]
+    #[serde(rename = "autoApply")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_sealed: Option<bool>,
+    pub auto_apply: Option<AppPolicySetRequestPolicyAutoApply>,
     #[serde(rename = "holdHours")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_hours: Option<u64>,
@@ -6510,7 +6624,7 @@ pub struct TeamSetMemberRequest {
     pub capabilities: Option<u64>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OrgUpdatesResponse {
     pub org: String,
     pub policy: UpgradePolicy,
@@ -6536,11 +6650,49 @@ pub struct OrgUpgradeRequest {
     pub operator_proof: Option<OperatorProof>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum OrgPolicySetRequestPolicyAutoApply {
+    /// `never`.
+    Never,
+    /// `noDestinations`.
+    NoDestinations,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl OrgPolicySetRequestPolicyAutoApply {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Never => "never",
+            Self::NoDestinations => "noDestinations",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for OrgPolicySetRequestPolicyAutoApply {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for OrgPolicySetRequestPolicyAutoApply {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "never" => Self::Never,
+            "noDestinations" => Self::NoDestinations,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OrgPolicySetRequestPolicy {
-    #[serde(rename = "autoSealed")]
+    #[serde(rename = "autoApply")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_sealed: Option<bool>,
+    pub auto_apply: Option<OrgPolicySetRequestPolicyAutoApply>,
     #[serde(rename = "holdHours")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_hours: Option<u64>,

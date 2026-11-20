@@ -29,9 +29,9 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoSealed` (default off) and `holdHours` (24 to 168, default 24): a green update of an app that stays Sealed (no destination outside the cluster before or after, members counted) applying on its own after the hold; stored and validated now, carried out by a later release.
+ * How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applying on its own after the hold; stored and validated now, carried out by a later release.
  *
- * @param autoSealed 
+ * @param autoApply 
  * @param holdHours 
  * @param secondApprover 
  */
@@ -39,8 +39,8 @@ import kotlinx.serialization.Contextual
 
 data class UpgradePolicy (
 
-    @SerialName(value = "autoSealed")
-    val autoSealed: kotlin.Boolean,
+    @SerialName(value = "autoApply")
+    val autoApply: UpgradePolicy.AutoApply,
 
     @SerialName(value = "holdHours")
     val holdHours: kotlin.Long,
@@ -50,6 +50,16 @@ data class UpgradePolicy (
 
 ) {
 
+    /**
+     * 
+     *
+     * Values: NEVER,NO_DESTINATIONS
+     */
+    @Serializable
+    enum class AutoApply(val value: kotlin.String) {
+        @SerialName(value = "never") NEVER("never"),
+        @SerialName(value = "noDestinations") NO_DESTINATIONS("noDestinations");
+    }
 
 }
 

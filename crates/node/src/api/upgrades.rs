@@ -1655,7 +1655,7 @@ pub(super) async fn update_view(
         "available": available,
         "mayApprove": may_approve,
         "approvers": approvers,
-        "policy": { "autoSealed": policy.auto_sealed, "holdHours": policy.hold_hours,
+        "policy": { "autoApply": policy.auto_apply, "holdHours": policy.hold_hours,
             "secondApprover": policy.second_approver, "source": source },
         "pendingApprovals": pending,
     })

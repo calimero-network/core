@@ -283,11 +283,11 @@ force and its `source`). Moving an app to another organization drops its own.
 | Field | Default | Effect |
 | --- | --- | --- |
 | `secondApprover` | off | A red (or unclassified) update needs two distinct owners or admins |
-| `autoSealed` | off | A green update of an app that stays Sealed (no egress before or after, members counted) applies on its own after the hold (stored only, see below) |
+| `autoApply` | `never` | `noDestinations`: a green update of an app whose unit has no destinations before or after it (no data leaves Calimero) applies on its own after the hold (stored only, see below) |
 | `holdHours` | 24 | How long a green update waits before applying on its own: 24 to 168 (`400 BAD_UPGRADE_POLICY`) |
 
 Nothing updates on its own by default, and nothing does in this release:
-`autoSealed` and `holdHours` are stored and validated now, so the release that
+`autoApply` and `holdHours` are stored and validated now, so the release that
 adds the hold timer, restore points and waves (C9 in the design) only adds their
 execution.
 

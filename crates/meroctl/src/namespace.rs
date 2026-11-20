@@ -186,6 +186,13 @@ pub enum NamespaceCmd {
     },
 }
 
+/// `--auto-apply`: which updates apply on their own after the hold.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum AutoApply {
+    Never,
+    NoDestinations,
+}
+
 /// An update policy's changes (`org upgrade-policy`, `instance upgrade-policy`): none
 /// reads it; any sets it, starting from the one set at that scope (else the one in force).
 #[derive(Debug, clap::Args)]
@@ -193,15 +200,16 @@ pub struct PolicyArgs {
     /// A red update needs two distinct owners or admins.
     #[arg(long)]
     second_approver: Option<bool>,
-    /// Green (Sealed) updates apply on their own after the hold (stored now; applied
-    /// by a later release).
-    #[arg(long)]
-    auto_sealed: Option<bool>,
+    /// Which updates apply on their own after the hold: `never`, or `no-destinations` (a
+    /// green update of an app whose unit sends data nowhere outside Calimero, before or
+    /// after). Stored now; applied by a later release.
+    #[arg(long, value_enum)]
+    auto_apply: Option<AutoApply>,
     /// How long a green update waits before applying on its own: 24 to 168 hours.
     #[arg(long)]
     hold_hours: Option<u32>,
     /// Drop the policy set at this scope.
-    #[arg(long, conflicts_with_all = ["second_approver", "auto_sealed", "hold_hours"])]
+    #[arg(long, conflicts_with_all = ["second_approver", "auto_apply", "hold_hours"])]
     clear: bool,
     #[arg(long)]
     dev_passkey: Option<PathBuf>,
@@ -217,7 +225,7 @@ impl PolicyArgs {
         if self.clear {
             return Ok(Some(None));
         }
-        if self.second_approver.is_none() && self.auto_sealed.is_none() && self.hold_hours.is_none()
+        if self.second_approver.is_none() && self.auto_apply.is_none() && self.hold_hours.is_none()
         {
             return Ok(None);
         }
@@ -229,8 +237,11 @@ impl PolicyArgs {
         if let Some(on) = self.second_approver {
             policy["secondApprover"] = json!(on);
         }
-        if let Some(on) = self.auto_sealed {
-            policy["autoSealed"] = json!(on);
+        if let Some(auto) = self.auto_apply {
+            policy["autoApply"] = json!(match auto {
+                AutoApply::Never => "never",
+                AutoApply::NoDestinations => "noDestinations",
+            });
         }
         if let Some(hours) = self.hold_hours {
             policy["holdHours"] = json!(hours);

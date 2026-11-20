@@ -24,9 +24,9 @@ class OrgUpdatesResponse200:
         policy (UpgradePolicy): How an organization's owner and admins let an app's updates apply (`POST
             /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave
             any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins.
-            `autoSealed` (default off) and `holdHours` (24 to 168, default 24): a green update of an app that stays Sealed
-            (no destination outside the cluster before or after, members counted) applying on its own after the hold; stored
-            and validated now, carried out by a later release.
+            `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before
+            or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applying on its
+            own after the hold; stored and validated now, carried out by a later release.
         updates (list[Any]):
         next_ (Union[None, str]):
     """
