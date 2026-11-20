@@ -55,6 +55,7 @@ import com.calimero.mero.api.models.AppSecrets200Response
 import com.calimero.mero.api.models.AppStorage200Response
 import com.calimero.mero.api.models.AppTransferRequest
 import com.calimero.mero.api.models.AppUnlinkRequest
+import com.calimero.mero.api.models.AppUpdate200Response
 import com.calimero.mero.api.models.AppUpgrade200Response
 import com.calimero.mero.api.models.AppUpgradeRequest
 import com.calimero.mero.api.models.AppUpgradeUnitRequest
@@ -2046,9 +2047,82 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     }
 
     /**
+     * GET /apps/{app}/update
+     * Whether an update is available for an app
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * @param app 
+     * @return AppUpdate200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appUpdate(app: kotlin.String) : AppUpdate200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appUpdateWithHttpInfo(app = app)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppUpdate200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/update
+     * Whether an update is available for an app
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * @param app 
+     * @return ApiResponse<AppUpdate200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appUpdateWithHttpInfo(app: kotlin.String) : ApiResponse<AppUpdate200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appUpdateRequestConfig(app = app)
+
+        return@withContext request<Unit, AppUpdate200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appUpdate
+     *
+     * @param app 
+     * @return RequestConfig
+     */
+    fun appUpdateRequestConfig(app: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/update".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
      * POST /apps/{app}/upgrade
      * Upgrade an app instance
-     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. Whoever the package&#39;s manifest names (&#x60;upgrades&#x60;: the owner, or its publisher&#39;s &#x60;MANAGE_APPLICATION&#x60; holders), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. An owner or admin of the app&#39;s organization, whatever the package&#39;s manifest declares (&#x60;403 FORBIDDEN&#x60; for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUpgradeRequest 
      * @return AppUpgrade200Response
@@ -2081,7 +2155,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/upgrade
      * Upgrade an app instance
-     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. Whoever the package&#39;s manifest names (&#x60;upgrades&#x60;: the owner, or its publisher&#39;s &#x60;MANAGE_APPLICATION&#x60; holders), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. An owner or admin of the app&#39;s organization, whatever the package&#39;s manifest declares (&#x60;403 FORBIDDEN&#x60; for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUpgradeRequest 
      * @return ApiResponse<AppUpgrade200Response?>

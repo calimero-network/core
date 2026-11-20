@@ -117,6 +117,13 @@ from .app_transfer_body import AppTransferBody
 from .app_undelegate_response_200 import AppUndelegateResponse200
 from .app_unlink_body import AppUnlinkBody
 from .app_unlink_response_200 import AppUnlinkResponse200
+from .app_update_response_200 import AppUpdateResponse200
+from .app_update_response_200_approvers import AppUpdateResponse200Approvers
+from .app_update_response_200_available_type_0 import AppUpdateResponse200AvailableType0
+from .app_update_response_200_available_type_0_source import (
+    AppUpdateResponse200AvailableType0Source,
+)
+from .app_update_response_200_running_type_0 import AppUpdateResponse200RunningType0
 from .app_upgrade_body import AppUpgradeBody
 from .app_upgrade_response_200 import AppUpgradeResponse200
 from .app_upgrade_unit_body import AppUpgradeUnitBody
@@ -767,6 +774,11 @@ __all__ = (
     "AppUndelegateResponse200",
     "AppUnlinkBody",
     "AppUnlinkResponse200",
+    "AppUpdateResponse200",
+    "AppUpdateResponse200Approvers",
+    "AppUpdateResponse200AvailableType0",
+    "AppUpdateResponse200AvailableType0Source",
+    "AppUpdateResponse200RunningType0",
     "AppUpgradeBody",
     "AppUpgradeResponse200",
     "AppUpgradeUnitBody",

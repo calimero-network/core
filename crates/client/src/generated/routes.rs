@@ -808,6 +808,14 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 
+    /// Whether an update is available for an app.
+    ///
+    /// `GET /apps/{app}/update` (`app_update`). Who: whoever the app's access admits (a public app: anyone).
+    pub async fn update(self, app: &str) -> Result<AppUpdateResponse> {
+        let req = Request::new(Method::GET, format!("apps/{}/update", route::segment(app)));
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// Upgrade an app instance.
     ///
     /// `POST /apps/{app}/upgrade` (`app_upgrade`). Who: an account holder (a passkey session not bound to an app's frontend).

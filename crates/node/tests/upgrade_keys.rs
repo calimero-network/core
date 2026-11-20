@@ -466,6 +466,7 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
             owner_in_org: true,
             owner_in_team: true,
             in_deployment: false,
+            owner_approves: false,
         })
         .unwrap()
     };
@@ -483,4 +484,115 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
     let e = append(&c, &upgrade(&next, &key)).await.unwrap_err();
     assert!(e.contains("revoked"), "{e}");
     assert_ne!(running(&alice, &app).await, next);
+}
+
+/// An upgrade key is an owner's or admin's of the app's organization
+/// (`Feature::OwnerApprovedUpgrades`): a member holding `MANAGE_APPLICATION` may not make
+/// one (`403`, before the passkey), an admin may, and the key's upgrades are judged by the
+/// same rule where they are made: once its account is no longer an admin, it upgrades
+/// nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_upgrade_key_is_an_owners_or_admins_of_the_apps_organization() {
+    const MANAGE_APPLICATION: u64 = 1 << 4;
+    let c = Cluster::start(3).await;
+    let (alice, mut apk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bpk) = signed_up(&c, 1, "bob").await;
+    let kv = kv_wasm();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
+    for (version, wasm) in [("1.0.0", kv.clone()), ("1.1.0", variant(&kv, "one-one"))] {
+        let _ = alice
+            .packages()
+            .upload(mpk("com.test.team-ci", version, &wasm, &publisher))
+            .await
+            .unwrap();
+    }
+    let org = alice
+        .orgs()
+        .create("Docs", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut apk))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob.orgs().invite_redeem(&token).await.unwrap();
+    let bob_id = account_id(&bob).await;
+    let _ok = alice
+        .orgs()
+        .capabilities(
+            &org,
+            MANAGE_APPLICATION,
+            Some(&bob_id),
+            None,
+            Some(&mut apk),
+        )
+        .await
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({
+            "name": "docs", "package": "com.test.team-ci", "version": "1.0.0", "org": org,
+        })))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let e = bob
+        .auth()
+        .apikey_create(
+            typed(json!({ "label": "ci", "upgrades": { "app": app } })),
+            None,
+        )
+        .await
+        .map(|k| k.key_id)
+        .unwrap_err();
+    assert_eq!(code(&e), Some("FORBIDDEN"), "{e}");
+    assert!(e.to_string().contains("owner or admin"), "{e}");
+    let set_role = |role: &'static str| {
+        let alice = &alice;
+        let org = org.clone();
+        let bob_id = bob_id.clone();
+        async move |pk: &mut calimero_identity::testing::SoftAuthenticator| {
+            let _ok = alice
+                .orgs()
+                .set_member(&org, &bob_id, typed(json!(role)), Some(pk))
+                .await
+                .unwrap();
+        }
+    };
+    set_role("admin")(&mut apk).await;
+    let key = bob
+        .auth()
+        .apikey_create(
+            typed(json!({ "label": "ci", "upgrades": { "app": app } })),
+            Some(&mut bpk),
+        )
+        .await
+        .map(|k| k.key)
+        .unwrap();
+    set_role("member")(&mut apk).await;
+
+    let ci = c.client(2);
+    ci.use_api_key(&key).await;
+    let e = ci
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.1.0" })), None)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), Some("FORBIDDEN"), "{e}");
+    assert_eq!(
+        running(&alice, &app).await,
+        bundle_of(&alice, "com.test.team-ci", "1.0.0").await
+    );
 }

@@ -152,10 +152,15 @@ pub enum Feature {
     /// (`SystemState::ordinary_orgs`), so an entry before it replays as it applied; an
     /// earlier release drops the recorded mode, so it is recorded only from this version.
     OrdinaryOrgs,
+    /// `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey` with `owner_approves`: only an
+    /// owner or admin of the app's organization approves its upgrades
+    /// (`SystemState::approves_upgrades`). An earlier release ignores the field and would
+    /// apply a member's, a team lead's or a publisher's upgrade where a later one refuses it.
+    OwnerApprovedUpgrades,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 36] = [
+pub const FEATURES: [Feature; 37] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -192,6 +197,7 @@ pub const FEATURES: [Feature; 36] = [
     Feature::DeploymentUsedSecrets,
     Feature::UpgradeInDeployment,
     Feature::OrdinaryOrgs,
+    Feature::OwnerApprovedUpgrades,
 ];
 
 impl Feature {
@@ -235,6 +241,7 @@ impl Feature {
             Self::DeploymentUsedSecrets => "deploymentUsedSecrets",
             Self::UpgradeInDeployment => "upgradeInDeployment",
             Self::OrdinaryOrgs => "ordinaryOrgs",
+            Self::OwnerApprovedUpgrades => "ownerApprovedUpgrades",
         }
     }
 
@@ -276,6 +283,7 @@ impl Feature {
             | Self::DeploymentUsedSecrets
             | Self::UpgradeInDeployment
             | Self::OrdinaryOrgs => "1.0.0-rc.32",
+            Self::OwnerApprovedUpgrades => "1.0.0-rc.33",
         }
     }
 }
@@ -498,8 +506,11 @@ impl SystemCmd {
         match self {
             Self::SetClusterVersion { .. } => vec![Feature::ClusterVersion],
             Self::StartUpgradeRun {
-                by_release, run, ..
-            } if *by_release || !run.targets.is_empty() => {
+                by_release,
+                run,
+                owner_approves,
+                ..
+            } => {
                 let mut f = Vec::new();
                 if *by_release {
                     f.push(Feature::PublishedRunByRelease);
@@ -507,8 +518,29 @@ impl SystemCmd {
                 if !run.targets.is_empty() {
                     f.push(Feature::UnitUpgrade);
                 }
+                if *owner_approves {
+                    f.push(Feature::OwnerApprovedUpgrades);
+                }
                 f
             }
+            Self::UpgradeApp {
+                in_deployment,
+                owner_approves,
+                ..
+            } if *in_deployment || *owner_approves => {
+                let mut f = Vec::new();
+                if *in_deployment {
+                    f.push(Feature::UpgradeInDeployment);
+                }
+                if *owner_approves {
+                    f.push(Feature::OwnerApprovedUpgrades);
+                }
+                f
+            }
+            Self::CreateApiKey {
+                owner_approves: true,
+                ..
+            } => vec![Feature::OwnerApprovedUpgrades],
             Self::MoveApp {
                 accounts_in_app_team,
                 org_quotas,
@@ -532,10 +564,6 @@ impl SystemCmd {
             Self::SetDeploymentSecret { .. } | Self::ClearDeploymentSecret { .. } => {
                 vec![Feature::DeploymentSecrets]
             }
-            Self::UpgradeApp {
-                in_deployment: true,
-                ..
-            } => vec![Feature::UpgradeInDeployment],
             Self::SetPools { .. } => vec![Feature::ComputePools],
             Self::ScopeApps {
                 apps, by_release, ..
@@ -681,7 +709,6 @@ impl SystemCmd {
             | Self::SetAppMetadata { .. }
             | Self::SetPasskeyLabel { .. }
             | Self::UpgradeFailed { .. }
-            | Self::StartUpgradeRun { .. }
             | Self::FinishUpgradeRun { .. }
             | Self::SetAlias { .. }
             | Self::SetOrgRole { .. }
@@ -766,6 +793,7 @@ mod tests {
     const RC29: &str = "1.0.0-rc.29";
     const RC31: &str = "1.0.0-rc.31";
     const RC32: &str = "1.0.0-rc.32";
+    const RC33: &str = "1.0.0-rc.33";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -862,6 +890,7 @@ mod tests {
                 ),
                 consent: Value::Null,
                 by_release: true,
+                owner_approves: false,
             },
             Feature::AppTeamJoin => SystemCmd::ScopeApps {
                 org: "org".into(),
@@ -993,6 +1022,8 @@ mod tests {
             Feature::UpgradeInDeployment => entry(json!({ "op": "upgradeApp",
                 "app_id": "app", "bundle": "b", "actor": "a", "in_deployment": true })),
             Feature::OrdinaryOrgs => install(json!({ "instanceOrg": "standalone" })),
+            Feature::OwnerApprovedUpgrades => entry(json!({ "op": "upgradeApp",
+                "app_id": "app", "bundle": "b", "actor": "a", "owner_approves": true })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1281,7 +1312,7 @@ mod tests {
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
             .iter()
-            .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC31, RC32].contains(&f.since()));
+            .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33].contains(&f.since()));
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -1352,12 +1383,20 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC24);
         let (rc29, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC29);
-        let (rc30, rc32): (Vec<Feature>, Vec<Feature>) =
+        let (rc30, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC31);
+        let (rc32, rc33): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC32);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in rc24.iter().chain(&rc29).chain(&rc30).chain(&rc32) {
+        for &feature in rc24
+            .iter()
+            .chain(&rc29)
+            .chain(&rc30)
+            .chain(&rc32)
+            .chain(&rc33)
+        {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1375,7 +1414,7 @@ mod tests {
         for &feature in &rc24 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in rc29.iter().chain(&rc30).chain(&rc32) {
+        for &feature in rc29.iter().chain(&rc30).chain(&rc32).chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1394,7 +1433,7 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.31's wait for every node on rc.31.
-        for &feature in rc30.iter().chain(&rc32) {
+        for &feature in rc30.iter().chain(&rc32).chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1413,7 +1452,9 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.32's (a deployment's secrets, whole units, secrets of used releases, an
-        // upgrade kept on its deployment's offer, a release's instance mode) wait for every node on rc.32.
+        // upgrade kept on its deployment's offer, a release's instance mode) wait for every
+        // node on rc.32, and rc.33's (upgrades only an organization's owner and admins
+        // approve) for every node on rc.33.
         assert_eq!(
             rc32,
             [
@@ -1424,7 +1465,8 @@ mod tests {
                 Feature::OrdinaryOrgs
             ]
         );
-        for &feature in &rc32 {
+        assert_eq!(rc33, [Feature::OwnerApprovedUpgrades]);
+        for &feature in rc32.iter().chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1454,6 +1496,24 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc32 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        for &feature in &rc33 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC32))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC33;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC33.into(),
+            nodes: (1..=3).map(|id| (id, RC33.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc33 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

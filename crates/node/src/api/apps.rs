@@ -74,7 +74,7 @@ type Services = BTreeMap<String, String>;
 /// release), service `service`. `404` for an unknown deployment; `400
 /// NOT_OFFERED` for a package or version it does not offer. `CreateApp`
 /// checks the offer again where it applies.
-pub(super) async fn offered_bundle(
+pub(crate) async fn offered_bundle(
     node: &Node,
     id: &str,
     package: &str,

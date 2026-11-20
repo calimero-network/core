@@ -2071,9 +2071,16 @@ impl SystemState {
     }
 
     /// The instances a publisher's run of `package` covers: every one whose
-    /// bundle came out of `package` that `account` may upgrade.
+    /// bundle came out of `package` that `account` may upgrade (with
+    /// `owner_approves`, those of the organizations it is an owner or admin of).
     #[must_use]
-    pub fn published_run_apps(&self, package: &str, account: &str, by_release: bool) -> Vec<AppId> {
+    pub fn published_run_apps(
+        &self,
+        package: &str,
+        account: &str,
+        by_release: bool,
+        owner_approves: bool,
+    ) -> Vec<AppId> {
         self.apps
             .values()
             .filter(|a| {
@@ -2089,7 +2096,7 @@ impl SystemState {
                         .and_then(|b| b.package.as_ref())
                         .is_some_and(|at| at.package == package)
                 };
-                runs && self.may_upgrade(a, account)
+                runs && self.may_upgrade(a, account, owner_approves)
             })
             .map(|a| a.app_id.clone())
             .collect()
@@ -2105,6 +2112,7 @@ impl SystemState {
         run: &crate::types::UpgradeRun,
         consent: &Value,
         by_release: bool,
+        owner_approves: bool,
     ) -> Vec<AppId> {
         let st = serde_json::from_value::<crate::proof::Statement>(consent.clone()).ok();
         match st.as_ref().map(|st| st.method.as_str()) {
@@ -2131,7 +2139,7 @@ impl SystemState {
                 })
                 .unwrap_or_default(),
             Some("__upgrade_published") => {
-                self.published_run_apps(&run.package, &run.by, by_release)
+                self.published_run_apps(&run.package, &run.by, by_release, owner_approves)
             }
             Some("__upgrade_org_retry") => st
                 .and_then(|st| {
@@ -2811,14 +2819,6 @@ impl SystemState {
         !self.upgrades_of(r).is_owner() && self.publisher_of(r).is_none()
     }
 
-    /// Whether `account` may upgrade `app`. For a `publisher` package whose
-    /// key is bound to an organization: whoever holds `MANAGE_APPLICATION`
-    /// in that organization, org-wide, and nobody else; while the key is
-    /// unbound, nobody. Otherwise (`owner`):
-    /// its owner (of an org app, while a member: [`Self::owner_acts`]), or,
-    /// for an org app, whoever
-    /// [manages the organization's apps](Self::manages_apps) on the app's
-    /// team.
     /// Whether upgrade key `key` may move `app_id` to `bundle` at `at`: the
     /// key upgrades that app, has not expired, and `bundle` is a service of
     /// an installed release of the key's package, whose pinned signer is
@@ -2870,8 +2870,9 @@ impl SystemState {
         &self,
         record: &ApiKeyRecord,
         scope: &crate::types::UpgradeScope,
+        owner_approves: bool,
     ) -> Result<(), &'static str> {
-        self.upgrade_key_fits_as_logged(record, scope, OwnerRule::CURRENT)
+        self.upgrade_key_fits_as_logged(record, scope, OwnerRule::CURRENT, owner_approves)
     }
 
     /// [`Self::upgrade_key_fits`], with the app's owner judged as
@@ -2881,6 +2882,7 @@ impl SystemState {
         record: &ApiKeyRecord,
         scope: &crate::types::UpgradeScope,
         rule: OwnerRule,
+        owner_approves: bool,
     ) -> Result<(), &'static str> {
         if record.apps.is_some()
             || record.methods.is_some()
@@ -2890,8 +2892,12 @@ impl SystemState {
             return Err("an upgrade key has no other scope");
         }
         let app = self.apps.get(&scope.app).ok_or("no such app")?;
-        if !self.may_upgrade_as_logged(app, &record.account, rule) {
-            return Err("an upgrade key needs an account that may upgrade the app");
+        if !self.may_upgrade_as_logged(app, &record.account, rule, owner_approves) {
+            return Err(if owner_approves {
+                NOT_AN_UPGRADE_APPROVER
+            } else {
+                "an upgrade key needs an account that may upgrade the app"
+            });
         }
         let package = self.packages.get(&scope.package).ok_or("no such package")?;
         if package.signer_id != scope.signer {
@@ -2907,15 +2913,54 @@ impl SystemState {
         Ok(())
     }
 
+    /// Whether `account` may upgrade `app`.
+    ///
+    /// With `owner_approves` (the rule from
+    /// [`cluster_version::Feature::OwnerApprovedUpgrades`] on): an owner or admin of the
+    /// app's organization ([`Self::approves_upgrades`]), whatever its package declares,
+    /// and nobody else: not the app's creator as a member, a team's lead or a holder of
+    /// `MANAGE_APPLICATION`, nor the publisher's organization for an instance elsewhere.
+    ///
+    /// Without it, as before: for a `publisher` package whose key is bound to an
+    /// organization, whoever holds `MANAGE_APPLICATION` in that organization, org-wide,
+    /// and nobody else; while the key is unbound, nobody. Otherwise (`owner`): its owner
+    /// (of an org app, while a member: [`Self::owner_acts`]), or, for an org app, whoever
+    /// [manages the organization's apps](Self::manages_apps) on the app's team.
     #[must_use]
-    pub fn may_upgrade(&self, app: &AppRecord, account: &str) -> bool {
-        self.may_upgrade_as_logged(app, account, OwnerRule::CURRENT)
+    pub fn may_upgrade(&self, app: &AppRecord, account: &str, owner_approves: bool) -> bool {
+        self.may_upgrade_as_logged(app, account, OwnerRule::CURRENT, owner_approves)
+    }
+
+    /// Whether `account` approves the upgrades of `org`'s apps under the rule
+    /// [`cluster_version::Feature::OwnerApprovedUpgrades`] brings: its owner or an admin
+    /// (`OrgRole::Admin` or above). Every app of `org` is theirs to upgrade, on any team,
+    /// of any package.
+    #[must_use]
+    pub fn approves_upgrades(&self, org: &str, account: &str) -> bool {
+        self.is_org_admin(org, account)
+    }
+
+    /// Whether the rule [`cluster_version::Feature::OwnerApprovedUpgrades`] brings
+    /// judges an upgrade now: an entry that says so (`owner_approves`), or the logged
+    /// cluster version, which every node of the cluster applies alike.
+    #[must_use]
+    pub fn owner_approves(&self, flagged: bool) -> bool {
+        flagged || self.cluster_brings(cluster_version::Feature::OwnerApprovedUpgrades)
     }
 
     /// [`Self::may_upgrade`], with the owner judged as the release that
     /// logged the command did ([`OwnerRule`]).
     #[must_use]
-    pub fn may_upgrade_as_logged(&self, app: &AppRecord, account: &str, rule: OwnerRule) -> bool {
+    pub fn may_upgrade_as_logged(
+        &self,
+        app: &AppRecord,
+        account: &str,
+        rule: OwnerRule,
+        owner_approves: bool,
+    ) -> bool {
+        if owner_approves {
+            return self.approves_upgrades(&app.org, account);
+        }
         let release = self.governing_release(app);
         if !self.upgrades_of(release).is_owner() {
             return self
@@ -4812,6 +4857,11 @@ pub const MAX_SCOPE_KEEP: usize = 1024;
 /// The longest app team name, in characters.
 pub const MAX_APP_TEAM_NAME_CHARS: usize = 64;
 
+/// An upgrade, upgrade run or upgrade key, under
+/// [`cluster_version::Feature::OwnerApprovedUpgrades`], by an account that is not an
+/// owner or admin of the app's organization.
+pub const NOT_AN_UPGRADE_APPROVER: &str =
+    "only an owner or admin of the app's organization approves its upgrades";
 /// An `UpgradeApp { run }` the run does not name.
 pub const NOT_IN_RUN: &str = "the upgrade is not one its run names";
 /// An `UpgradeApp { run }` for an app the run already moved or failed.
@@ -5028,6 +5078,13 @@ pub enum SystemCmd {
         /// applied unless the logged cluster version brings the rule.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         in_deployment: bool,
+        /// Only an owner or admin of the app's organization approves its upgrades
+        /// ([`SystemState::approves_upgrades`]). The API sets it once every node reads it
+        /// ([`cluster_version::Feature::OwnerApprovedUpgrades`]); absent (`false`) in an
+        /// entry an earlier release logged, which replays as it applied, unless the logged
+        /// cluster version brings the rule ([`SystemState::cluster_brings`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        owner_approves: bool,
     },
     TransferApp {
         app_id: AppId,
@@ -5284,6 +5341,13 @@ pub enum SystemCmd {
         /// logged, which replays judging the owner without the team.
         #[serde(default)]
         owner_in_team: bool,
+        /// Only an owner or admin of the app's organization approves its upgrades, and so makes or uses an upgrade key for it
+        /// ([`SystemState::approves_upgrades`]). The API sets it once every node reads it
+        /// ([`cluster_version::Feature::OwnerApprovedUpgrades`]); absent (`false`) in an
+        /// entry an earlier release logged, which replays as it applied, unless the logged
+        /// cluster version brings the rule ([`SystemState::cluster_brings`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        owner_approves: bool,
     },
     RevokeApiKey {
         key_id: String,
@@ -5887,6 +5951,13 @@ pub enum SystemCmd {
         /// was first recorded from, as that release did.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         by_release: bool,
+        /// Only an owner or admin of the app's organization approves its upgrades, so only they start a run of it (a publisher's run covers only the organizations they are one of)
+        /// ([`SystemState::approves_upgrades`]). The API sets it once every node reads it
+        /// ([`cluster_version::Feature::OwnerApprovedUpgrades`]); absent (`false`) in an
+        /// entry an earlier release logged, which replays as it applied, unless the logged
+        /// cluster version brings the rule ([`SystemState::cluster_brings`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        owner_approves: bool,
     },
     FinishUpgradeRun {
         org: OrgId,

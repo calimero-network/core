@@ -34,7 +34,7 @@ shared or dedicated:
 | Decision | `owner` side: who holds it | Who acts | Where |
 | --- | --- | --- | --- |
 | Release (node image) approvals | The app's **publisher**: the organization its package's signing key is bound to ([Publishers](#publishers)). For a package whose key is not bound yet, or a raw bundle (development only), the app's owning organization | Members of that organization holding `APPROVE_RELEASES` (its owner and admins hold it) | `POST /orgs/{org}/releases` |
-| App upgrades | Per app, as its package's signed manifest declares (`upgrades`): **`owner`** (the default): the instance's owner, or its organization's `MANAGE_APPLICATION` holders; **`publisher`**: the publisher organization's `MANAGE_APPLICATION` holders, for every instance | The holder, with a passkey step-up over the exact upgrade | `POST /apps/{app}/upgrade`, `POST /orgs/{org}/upgrade` (owner side), `POST /orgs/{org}/packages/{package}/upgrade` (publisher side) |
+| App upgrades | The app's owning organization, whatever its package's manifest declares ([App upgrades](#app-upgrades)) | Its owner and admins, each with a passkey step-up over the exact upgrade | `POST /apps/{app}/upgrade`, `POST /orgs/{org}/upgrade`, the consent page's upgrade sheet |
 | Outbound approvals | The app's owning organization, per publisher key | `MANAGE_APPLICATION` holders organization-wide | `POST /orgs/{org}/outbound` |
 | Who publishes a package | The holder of the package's pinned signing key, whatever governance says | A member holding `APPROVE_RELEASES` in the organization, sending the key's signature | `POST /orgs/{org}/publishers` |
 | Release deadlines | Always the operator ([below](#release-deadlines)) | The operator | `POST /ops/releases/{version}/deadline` |
@@ -167,8 +167,7 @@ package that ships it is refused at install (`409`, `SHIPS_IN_OTHER_PACKAGE`).
 | Decision | Bound key: the publisher's | Unbound key, or a raw bundle (the fallback) |
 | --- | --- | --- |
 | Which mero-tee releases hold the instance ([Release approvals](#release-approvals)) | The publisher's `approvedReleases`, set by its `APPROVE_RELEASES` holders | The instance's own organization's set (an account's own apps: its personal organization's) |
-| Upgrades, for a package declaring `upgrades: publisher` ([App upgrades](#app-upgrades)) | The publisher's organization-wide `MANAGE_APPLICATION` holders, one instance at a time or all of them in a [publisher run](/protocol/upgrades/#upgrade-runs) | Nobody: `409` until the key is bound |
-| Upgrades, for a package declaring `upgrades: owner` (the default) | Unchanged: the instance's owner or its organization's managers | The same |
+| Upgrades ([App upgrades](#app-upgrades)), whatever the package declares | Unchanged: the owner and admins of the instance's own organization; the publisher's [run](/protocol/upgrades/#upgrade-runs) moves only the instances of organizations its starter is an owner or admin of | The same |
 | The package's registered origins ([Registered origins](/protocol/identities/#registered-origins)) | The publisher's organization-wide `MANAGE_APPLICATION` holders | The package's first installer |
 | Outbound approvals ([below](#outbound-approvals)) | Unchanged: always the instance's own organization, per publisher key | The same |
 
@@ -184,9 +183,8 @@ organization.
 
 1. **Before binding.** Each instance's own organization approves the node
    images that may hold it: Globex's set for Globex's instance, Ann's personal
-   organization's for hers. Nobody can upgrade either instance (`409`): the
-   package says its publisher upgrades, and no organization has proved it is
-   the publisher.
+   organization's for hers. Each customer's owner and admins upgrade their
+   own instance, as they will after the binding.
 2. **Binding.** An Acme admin reads `GET /publishers/did:key:z6Mk…acme`
    (`generation: 0`), has the key's holder sign the message for Acme at
    generation 0, and sends it with her passkey. The log records generation 1.
@@ -195,10 +193,11 @@ organization.
    Acme approves it once (`POST /orgs/{acme}/releases`) and the replicas send
    both instances' data to nodes on it. Globex's own set no longer governs its
    instance of `chat`.
-3. **Shipping 1.1.** Acme publishes `chat` 1.1 to the registry and runs
+3. **Shipping 1.1.** Acme publishes `chat` 1.1 to the registry. Its run,
    `POST /orgs/{acme}/packages/chat/upgrade { version: "1.1.0" }` with one
-   passkey step-up: every instance moves, Globex's and Ann's included. Neither
-   customer can upgrade their own instance.
+   passkey step-up, moves Acme's own instances only. Globex's owner or an admin
+   moves Globex's instance, from Globex's frontend through the consent page or
+   with `POST /apps/{app}/upgrade`; Acme cannot.
 4. **Moving the key.** Acme reorganizes into a new organization, Acme Labs.
    The key signs again, for Acme Labs at generation 1, and an
    `APPROVE_RELEASES` holder there sends it. Acme loses every decision above
@@ -315,19 +314,29 @@ which the new code reads as it is: no migration runs
 operator decides, `POST /ops/apps/{app}/upgrade` and organization-wide runs
 through `/ops/orgs/{org}/upgrade` upgrade to a release the operator installed
 itself (`/ops/packages`, recorded as installed by `operator`). Otherwise each
-app's package says who upgrades it, in its signed manifest
-(`upgrades: "owner" | "publisher"`, `calimero_bundle::UpgradeAuthority`):
+app is upgraded by its own organization: its **owner and admins**
+(`OrgRole::Admin` or above, `SystemState::approves_upgrades`), and nobody else.
+Not the member who created the app, a team's lead, or a member holding
+`MANAGE_APPLICATION`; and not the publisher, for an instance of another
+organization, whatever the package's manifest declares
+(`upgrades: "owner" | "publisher"`, `calimero_bundle::UpgradeAuthority`), its
+key bound or not. A person approves from inside the app: its frontend reads
+`GET /apps/{app}/update` (whether a release is available, and `mayApprove`) and
+opens the [consent page](/protocol/consent-page/)'s upgrade sheet. An
+organization's run (`POST /orgs/{org}/upgrade`) and an upgrade key
+([Upgrade keys](/protocol/upgrades/#upgrade-keys)) need the same owner or admin;
+a publisher's run (`POST /orgs/{org}/packages/{package}/upgrade { version,
+migrate? }`, by an owner or admin of the publisher) moves only the instances of
+the organizations its starter is an owner or admin of. Anyone else is refused
+`403` before any passkey, and `apply` refuses the entry
+(`Feature::OwnerApprovedUpgrades`, 1.0.0-rc.33; `UpgradeApp`,
+`StartUpgradeRun` and `CreateApiKey { owner_approves }`).
 
-- **`owner`** (the default when the manifest leaves `upgrades` out): the
-  app's owner may upgrade it, and so may, for an organization's app, whoever
-  holds `MANAGE_APPLICATION` on its team or across the organization: its
-  owner, an admin, the team's leads, or a member granted the capability
-  ([Organizations](/protocol/organizations/#capabilities)).
-- **`publisher`**: the publisher organization's `MANAGE_APPLICATION` holders
-  (organization-wide) upgrade every instance, whoever owns it, alone or all at
-  once (`POST /orgs/{org}/packages/{package}/upgrade { version, migrate? }`).
-  The instance's owner cannot. Until the package's key is bound to an
-  organization, nobody upgrades its instances (`409`).
+Until every node runs 1.0.0-rc.33, the rule before holds, and entries logged
+before it replay as they applied: for `owner` (the default) the app's owner, or
+whoever holds `MANAGE_APPLICATION` on its team or across its organization; for
+`publisher` the publisher organization's `MANAGE_APPLICATION` holders, for
+every instance, and nobody (`409`) until its key is bound.
 
 Each acts with their own passkey step-up over the exact upgrade (`consent` on
 `UpgradeApp`). The declaration may only loosen toward owners: a release
@@ -621,8 +630,9 @@ yet" is one read), and per app:
   `operator`, `publisher` (a bound key) or `owner` (the app's own
   organization). The app's `approvedReleases` is that party's set, which for a
   publisher's package is not the scope's own;
-- `upgradesHeldBy`: who upgrades it: `operator`, or what its release's
-  manifest declares, `owner` or `publisher`;
+- `upgradesHeldBy`: who upgrades it: `operator`, else `owner` (the owner and
+  admins of its organization; before 1.0.0-rc.33, what its release's manifest
+  declares, `owner` or `publisher`);
 - newer releases it could upgrade to (one with the same WASM included: its
   frontend may differ), its last upgrade (each end's release) with the actor's kind
   (`owner`, `member`, `operator`), and each replica's release and whether it

@@ -1936,3 +1936,166 @@ async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
         .unwrap_err();
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 }
+
+/// `GET /apps/{app}/update`, as `who` reads it.
+async fn update_of(who: &Client, app: &str) -> Value {
+    who.transport()
+        .json(calimero_client::Request::new(
+            reqwest::Method::GET,
+            format!("apps/{app}/update"),
+        ))
+        .await
+        .unwrap()
+}
+
+/// An app's frontend reads whether an update is there and whether the person may approve
+/// it (`GET /apps/{app}/update`): for an instance from a deployment, the release its
+/// developer offers once it differs from the one running, whether or not its customer
+/// sees that release; for any other, the newest newer release the caller sees. Only an
+/// owner or admin of the instance's organization approves (`mayApprove`), never a member,
+/// not even the one who created the instance, who is refused `403` before any passkey.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_instance_shows_its_update_and_who_may_approve_it() {
+    const CREATE_APP: u32 = 1 << 0;
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let (carol, mut carol_pk) = signed_up(&c, 1, "carol").await;
+    let (bob, mut bob_pk) = signed_up(&c, 2, "bob").await;
+    for version in ["1.0.0", "2.0.0"] {
+        let _ok = alice
+            .packages()
+            .upload(release("com.test.notes", version))
+            .await
+            .unwrap();
+    }
+    let d = deploy(
+        &alice,
+        &mut alice_pk,
+        "alpha",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &d,
+        "notes",
+        "com.test.notes",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
+
+    // Carol's organization, with bob a member who may create apps and holds
+    // MANAGE_APPLICATION there; bob creates the instance.
+    let globex = org(&carol, "Globex").await;
+    join(&carol, &mut carol_pk, &globex, &bob).await;
+    let bob_id = account_of(&bob).await;
+    set_caps(
+        &carol,
+        &mut carol_pk,
+        &globex,
+        &bob_id,
+        MANAGE_APPLICATION | CREATE_APP,
+    )
+    .await;
+    let inst = instance(&bob, &d, "com.test.notes", None, Some(&globex))
+        .await
+        .unwrap();
+
+    let u = update_of(&carol, &inst).await;
+    assert_eq!(
+        u,
+        json!({
+            "app": inst, "running": { "package": "com.test.notes", "version": "1.0.0" },
+            "available": null, "mayApprove": true, "approvers": "owner-and-admins",
+        })
+    );
+    let u = update_of(&bob, &inst).await;
+    assert_eq!(u["mayApprove"], json!(false), "{u}");
+
+    // The developer offers 2.0.0: it is available, which neither customer installed.
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &d,
+        "notes",
+        "com.test.notes",
+        "2.0.0",
+    )
+    .await
+    .unwrap();
+    for who in [&carol, &bob] {
+        let u = update_of(who, &inst).await;
+        assert_eq!(
+            u["available"],
+            json!({ "package": "com.test.notes", "version": "2.0.0", "source": "deployment" }),
+            "{u}"
+        );
+    }
+    // The member who created it may not approve it: 403, before any passkey.
+    let e = bob
+        .apps()
+        .upgrade(&inst, typed(json!({ "version": "2.0.0" })), None)
+        .await
+        .unwrap_err();
+    forbidden(&e);
+    assert!(e.to_string().contains("owner or admin"), "{e}");
+    let e = bob
+        .apps()
+        .upgrade(
+            &inst,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut bob_pk),
+        )
+        .await
+        .unwrap_err();
+    forbidden(&e);
+    // Made an admin, they may.
+    let _ok = carol
+        .orgs()
+        .set_member(&globex, &bob_id, typed(json!("admin")), Some(&mut carol_pk))
+        .await
+        .unwrap();
+    assert_eq!(update_of(&bob, &inst).await["mayApprove"], json!(true));
+
+    // An instance from no deployment: the newest newer release its reader sees.
+    let own = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "own", "package": "com.test.notes", "version": "1.0.0" }),
+        ))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let u = update_of(&alice, &own).await;
+    assert_eq!(
+        u["available"],
+        json!({ "package": "com.test.notes", "version": "2.0.0", "source": "release" }),
+        "{u}"
+    );
+    assert_eq!(u["mayApprove"], json!(true), "{u}");
+    let _ok = alice
+        .apps()
+        .upgrade(
+            &own,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut alice_pk),
+        )
+        .await
+        .unwrap();
+    let u = update_of(&alice, &own).await;
+    assert_eq!(u["available"], Value::Null, "{u}");
+    assert_eq!(u["running"]["version"], json!("2.0.0"), "{u}");
+    // Someone the app does not admit learns nothing of it.
+    let e = carol
+        .transport()
+        .json(calimero_client::Request::new(
+            reqwest::Method::GET,
+            format!("apps/{own}/update"),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+}

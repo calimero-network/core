@@ -745,9 +745,10 @@ async fn an_owner_opening_their_own_invite_leaves_it_for_the_invitee() {
 }
 
 /// Member capabilities: a member who is not an admin creates apps in the
-/// organization only with `CREATE_APP`, invites only with `INVITE_MEMBERS`,
-/// and upgrades another's org app only with `MANAGE_APPLICATION` (none by
-/// default), with their own passkey.
+/// organization only with `CREATE_APP` and invites only with `INVITE_MEMBERS`.
+/// Upgrading an org app is the organization's owner's and admins' alone
+/// (`Feature::OwnerApprovedUpgrades`): `MANAGE_APPLICATION` does not give it, nor
+/// does creating the app; an admin upgrades with their own passkey.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_member_needs_the_capability_to_create_apps_or_invite() {
     const CREATE_APP: u32 = 1 << 0;
@@ -819,7 +820,7 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
         )
         .await
         .unwrap();
-    let _bobs = bob.apps().create(in_org("b")).await.unwrap();
+    let bobs = bob.apps().create(in_org("b")).await.unwrap();
     let _invite = bob
         .orgs()
         .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut bob_pk))
@@ -862,7 +863,7 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
             .upgrade(&alices, typed(json!({ "bundle": next })), Some(&mut bob_pk))
             .await
             .unwrap_err(),
-        "MANAGE_APPLICATION",
+        "owner or admin",
     );
     let _ok = alice
         .orgs()
@@ -873,6 +874,21 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
             None,
             Some(&mut a),
         )
+        .await
+        .unwrap();
+    // Neither MANAGE_APPLICATION nor having created the app lets a member upgrade.
+    for app in [&alices, &bobs.app_id] {
+        let e = bob
+            .apps()
+            .upgrade(app, typed(json!({ "bundle": next })), Some(&mut bob_pk))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().starts_with("403"), "{e}");
+        refused(e, "owner or admin");
+    }
+    let _ok = alice
+        .orgs()
+        .set_member(&org, &bob_id, typed(json!("admin")), Some(&mut a))
         .await
         .unwrap();
     let _upgraded = bob
@@ -5863,12 +5879,16 @@ async fn publisher_binding(cl: &Client, key: &ed25519_dalek::SigningKey, org: &s
     })
 }
 
-/// A publisher binds its package's key with the key's signature, then
-/// upgrades its customers' instances of a `publisher` package, which the
-/// customer may not (and nobody may before the binding); a later release may
-/// give upgrades to owners, never back.
+/// A publisher binds its package's key with the key's signature; its approvals then
+/// decide which node releases hold its customers' instances. Upgrading a customer's
+/// instance of a `publisher` package is the customer organization's owner's and
+/// admins' (`Feature::OwnerApprovedUpgrades`), its key bound or not: the publisher's
+/// run moves only the instances of organizations its starter is an owner or admin
+/// of, none of the customer's. A later release may give upgrades to owners, never
+/// back. Before the rule, entries replay as they applied
+/// (`system::tests::only_an_organizations_owner_and_admins_approve_its_upgrades`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
+async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
     use calimero_bundle::UpgradeAuthority::{Owner, Publisher};
     let c = Cluster::start(3).await;
     let (pam, mut pam_pk) = signed_up(&c, 0, "pam").await;
@@ -5899,18 +5919,19 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
         .await
         .map(|a| a.app_id)
         .unwrap();
-
-    // Until the key is bound, nobody upgrades a `publisher` package.
-    let e = cora
+    let own = pam
         .apps()
-        .upgrade(&inst, typed(json!({ "version": "1.0.0" })), None)
+        .create(typed(
+            json!({ "name": "own", "package": "com.test.pub", "org": publisher }),
+        ))
         .await
-        .unwrap_err();
-    assert!(e.to_string().starts_with("409"), "{e}");
-    // The reports say so: the release declares `publisher`, but with the key
-    // unbound the instance's own organization approves its node releases.
+        .map(|a| a.app_id)
+        .unwrap();
+
+    // The customer's owner and admins hold its upgrades; with the key unbound, the
+    // instance's own organization approves its node releases.
     let a = reported_app(&cora, &format!("orgs/{customer}/apps"), &inst).await;
-    assert_eq!(a["upgradesHeldBy"], json!("publisher"), "{a}");
+    assert_eq!(a["upgradesHeldBy"], json!("owner"), "{a}");
     assert_eq!(a["releasesApprovedBy"], json!("owner"), "{a}");
     assert_eq!(a["publisher"]["org"], Value::Null, "{a}");
 
@@ -5945,7 +5966,7 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
     ops.use_api_key("ops-secret").await;
     let a = reported_app(&ops, "ops/apps", &inst).await;
     assert_eq!(a["releasesApprovedBy"], json!("publisher"), "{a}");
-    assert_eq!(a["upgradesHeldBy"], json!("publisher"), "{a}");
+    assert_eq!(a["upgradesHeldBy"], json!("owner"), "{a}");
     // The same signature again is spent.
     let e = pam
         .transport()
@@ -5957,23 +5978,10 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
 
-    let _ok = pam
-        .packages()
-        .upload(release("1.1.0", &variant(&kv, "v2"), Publisher))
-        .await
-        .unwrap();
-    // The customer no longer upgrades it.
-    let e = cora
-        .apps()
-        .upgrade(
-            &inst,
-            typed(json!({ "version": "1.1.0" })),
-            Some(&mut cora_pk),
-        )
-        .await
-        .unwrap_err();
-    assert!(e.to_string().starts_with("403"), "{e}");
-    // The publisher does, for every instance.
+    let v2 = release("1.1.0", &variant(&kv, "v2"), Publisher);
+    let _ok = pam.packages().upload(v2.clone()).await.unwrap();
+    let _ok = cora.packages().upload(v2).await.unwrap();
+    // The publisher's run moves its own organization's instance, never the customer's.
     let run = pam
         .orgs()
         .publisher_upgrade(&publisher, "com.test.pub", "1.1.0", None, Some(&mut pam_pk))
@@ -5981,7 +5989,32 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
         .map(wire)
         .unwrap();
     let run = finished_run(&pam, &publisher, run["runId"].as_str().unwrap()).await;
-    assert_eq!(run["done"], json!([inst]), "{run}");
+    assert_eq!(run["done"], json!([own]), "{run}");
+    assert_eq!(run["apps"], json!([own]), "{run}");
+    let running = cora.apps().get(&inst).await.map(wire).unwrap();
+    assert_eq!(running["release"]["version"], json!("1.0.0"), "{running}");
+    // The publisher may not upgrade the customer's instance by itself either.
+    let e = pam
+        .apps()
+        .upgrade(
+            &inst,
+            typed(json!({ "version": "1.1.0" })),
+            Some(&mut pam_pk),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+    assert!(e.to_string().contains("owner or admin"), "{e}");
+    // The customer's owner does.
+    let _ok = cora
+        .apps()
+        .upgrade(
+            &inst,
+            typed(json!({ "version": "1.1.0" })),
+            Some(&mut cora_pk),
+        )
+        .await
+        .unwrap();
 
     // Upgrades go to owners in a later release, never back.
     let _ok = pam

@@ -1062,7 +1062,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/apikeys
      * Make an API key
-     * Scoped to &#x60;apps&#x60; and &#x60;methods&#x60;, read-only or not, for &#x60;ttlSecs&#x60;; &#x60;upgrades&#x60; makes an upgrade key, which signs upgrades of one app in place of a passkey. &#x60;412&#x60; first. The key is shown once.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Scoped to &#x60;apps&#x60; and &#x60;methods&#x60;, read-only or not, for &#x60;ttlSecs&#x60;; &#x60;upgrades&#x60; makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app&#39;s organization makes one (&#x60;403 FORBIDDEN&#x60;), and its upgrades are judged by that rule again where they apply. &#x60;412&#x60; first. The key is shown once.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param apikeyCreateRequest 
      * @return ApikeyCreate200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -1094,7 +1094,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /auth/apikeys
      * Make an API key
-     * Scoped to &#x60;apps&#x60; and &#x60;methods&#x60;, read-only or not, for &#x60;ttlSecs&#x60;; &#x60;upgrades&#x60; makes an upgrade key, which signs upgrades of one app in place of a passkey. &#x60;412&#x60; first. The key is shown once.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Scoped to &#x60;apps&#x60; and &#x60;methods&#x60;, read-only or not, for &#x60;ttlSecs&#x60;; &#x60;upgrades&#x60; makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app&#39;s organization makes one (&#x60;403 FORBIDDEN&#x60;), and its upgrades are judged by that rule again where they apply. &#x60;412&#x60; first. The key is shown once.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param apikeyCreateRequest 
      * @return ApiResponse<ApikeyCreate200Response?>
      * @throws IllegalStateException If the request is not correctly configured
