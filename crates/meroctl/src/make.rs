@@ -131,7 +131,7 @@ pub enum InstanceOrg {
     Either,
 }
 
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 pub struct PackArgs {
     /// The app's crate: reads `[package.metadata.calimero]` (`package`,
     /// `min-runtime-version`, `frontend-dir`, `services`) and the crate's
@@ -271,6 +271,104 @@ pub struct PublishArgs {
     /// List the package publicly (a new package is private by default).
     #[arg(long)]
     pub public: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ReleaseArgs {
+    /// The release's version (semver): newer than every release of the
+    /// package the cluster has installed.
+    #[arg(long, conflicts_with = "app_version")]
+    pub version: String,
+    /// What `pack` takes (DIR defaults to `.`).
+    #[command(flatten)]
+    pub pack: PackArgs,
+    /// Also push the `.mpk` to the app registry first (`app publish`).
+    #[arg(long)]
+    pub publish: bool,
+    /// The registry, with `--publish`.
+    #[arg(
+        long,
+        env = "CALIMERO_REGISTRY_URL",
+        default_value = "https://apps.calimero.network"
+    )]
+    pub registry: String,
+    /// The registry API key, or with `--org` the Cloud organization's
+    /// `ck_live_` key (`app publish --api-key`).
+    #[arg(long, env = "CALIMERO_REGISTRY_API_KEY", hide_env_values = true)]
+    pub registry_api_key: Option<String>,
+    /// Publish as a Calimero Cloud organization (`app publish --org`).
+    #[arg(long, requires = "publish")]
+    pub org: Option<String>,
+    /// The Cloud, for `--org`.
+    #[arg(
+        long,
+        env = "CALIMERO_CLOUD_URL",
+        default_value = "https://cloud.calimero.network"
+    )]
+    pub cloud: String,
+    /// List the package publicly (`app publish --public`).
+    #[arg(long, requires = "publish")]
+    pub public: bool,
+}
+
+impl ReleaseArgs {
+    /// `pack`'s arguments for this release: its version, and DIR `.` when
+    /// nothing else names the components.
+    pub fn pack_args(&self) -> PackArgs {
+        let mut pack = self.pack.clone();
+        pack.app_version = Some(self.version.clone());
+        let named = pack.dir.is_some()
+            || pack.wasm.is_some()
+            || pack.compute.is_some()
+            || !pack.services.is_empty();
+        if !named {
+            pack.dir = Some(PathBuf::from("."));
+        }
+        pack
+    }
+
+    /// The package the release is of, read as `pack` reads it (no build).
+    pub fn package(&self) -> eyre::Result<String> {
+        let pack = self.pack_args();
+        let meta = pack
+            .dir
+            .as_deref()
+            .map(crate_meta)
+            .transpose()?
+            .unwrap_or_default();
+        package_of(&pack, &meta)
+    }
+
+    /// `app publish`'s arguments for the `.mpk` `pack` wrote.
+    pub fn publish_args(&self, mpk: PathBuf) -> PublishArgs {
+        PublishArgs {
+            mpk,
+            registry: self.registry.clone(),
+            api_key: self.registry_api_key.clone(),
+            org: self.org.clone(),
+            cloud: self.cloud.clone(),
+            public: self.public,
+        }
+    }
+}
+
+/// Refuse a release `version` that is not semver, or not newer than every
+/// one of `installed` (the package's releases on the cluster).
+pub fn check_newer<'v>(
+    package: &str,
+    version: &str,
+    installed: impl IntoIterator<Item = &'v str>,
+) -> eyre::Result<()> {
+    let new = semver::Version::parse(version)
+        .map_err(|e| eyre!("--version {version}: not a semver version ({e}), e.g. 1.4.0"))?;
+    let newest = installed
+        .into_iter()
+        .filter_map(|v| semver::Version::parse(v).ok())
+        .max();
+    if let Some(newest) = newest.filter(|n| *n >= new) {
+        bail!("{package}@{version} is not newer than {newest}, the newest release the cluster has installed");
+    }
+    Ok(())
 }
 
 /// `app new`, as `dev new` always did.
@@ -882,6 +980,18 @@ fn pack_services(
 }
 
 /// `app pack`: the manifest the node reads, signed, and every file it names, as a `.mpk`.
+/// The package `pack` writes a release of: `--package`, else DIR's metadata.
+fn package_of(a: &PackArgs, meta: &CrateMeta) -> eyre::Result<String> {
+    a.package
+        .clone()
+        .or_else(|| meta.package.clone())
+        .ok_or_else(|| {
+            eyre!(
+                "give --package, or a DIR whose Cargo.toml has [package.metadata.calimero] package"
+            )
+        })
+}
+
 pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     let meta = a
         .dir
@@ -889,15 +999,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
         .map(crate_meta)
         .transpose()?
         .unwrap_or_default();
-    let package = a
-        .package
-        .clone()
-        .or_else(|| meta.package.clone())
-        .ok_or_else(|| {
-            eyre!(
-                "give --package, or a DIR whose Cargo.toml has [package.metadata.calimero] package"
-            )
-        })?;
+    let package = package_of(a, &meta)?;
     let version = a
         .app_version
         .clone()
@@ -1250,4 +1352,26 @@ async fn registry_token(
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| eyre!("the Cloud answered no token"))
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::check_newer;
+
+    /// A release must be semver and newer than every release installed.
+    #[test]
+    fn a_release_is_newer_than_every_installed_one() {
+        check_newer("p", "1.4.0", []).unwrap();
+        check_newer("p", "1.4.0", ["1.3.0", "1.3.9", "not-semver"]).unwrap();
+        let same = check_newer("p", "1.4.0", ["1.4.0"])
+            .unwrap_err()
+            .to_string();
+        assert!(same.contains("not newer than 1.4.0"), "{same}");
+        let older = check_newer("p", "1.3.0", ["1.2.0", "1.10.0"])
+            .unwrap_err()
+            .to_string();
+        assert!(older.contains("not newer than 1.10.0"), "{older}");
+        let loose = check_newer("p", "1.4", []).unwrap_err().to_string();
+        assert!(loose.contains("not a semver version"), "{loose}");
+    }
 }

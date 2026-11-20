@@ -930,6 +930,8 @@ fn scenario(root: &Path, url: &str) {
         "{unknown}"
     );
 
+    deployments(root, url, &alice, pk, &kv);
+
     // network, attest.
     assert_eq!(alice.run(&["network", "status"])["ok"], true);
     let proven = alice.run(&["attest", "app", "notes"]);
@@ -973,6 +975,221 @@ fn scenario(root: &Path, url: &str) {
         .unwrap_err()
         .contains("which node"));
     let _ = alice_id;
+}
+
+/// `meroctl app release` and `meroctl deployment`: a release shipped in one
+/// step (and a version not newer refused before anything is built), offered
+/// in a deployment named by its name, its secret set from stdin (never an
+/// argument, never answered back), a customer's instance counted per
+/// organization, and the deployment taken down again.
+#[allow(clippy::too_many_lines)]
+fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
+    // The app's crate: its package, its outbound prefix and the secret it declares.
+    let app = root.join("dep-app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        "[package]\nname = \"dep\"\nversion = \"0.1.0\"\n\n[package.metadata.calimero]\n\
+         package = \"com.test.dep\"\noutbound = [\"https://api.example.com/v1/\"]\n\n\
+         [package.metadata.calimero.secrets.API_KEY]\nhosts = [\"api.example.com\"]\n\
+         description = \"the API's key\"\nrequired = false\n",
+    )
+    .unwrap();
+    // A WASM of each release's own: one that ships in another signer's package
+    // is refused, and the node names an instance's release by its WASM.
+    let wasm = app.join("app.wasm");
+    let release = |version: &str| {
+        std::fs::write(&wasm, variant(kv, &format!("dep-{version}"))).unwrap();
+        alice.try_run(&[
+            "app",
+            "release",
+            path(&app),
+            "--wasm",
+            path(&wasm),
+            "--version",
+            version,
+        ])
+    };
+    let shipped = release("1.0.0").unwrap();
+    assert_eq!(shipped["package"], "com.test.dep", "{shipped}");
+    assert_eq!(shipped["installed"]["version"], "1.0.0", "{shipped}");
+    assert!(app.join("dist/com.test.dep-1.0.0.mpk").exists());
+    for stale in ["1.0.0", "0.9.0"] {
+        let refused = release(stale).unwrap_err();
+        assert!(refused.contains("not newer than 1.0.0"), "{refused}");
+    }
+    assert!(!app.join("dist/com.test.dep-0.9.0.mpk").exists());
+    let _ = release("1.1.0").unwrap();
+
+    // A deployment of this account, named by its name from here on.
+    let asked = alice
+        .try_run(&["deployment", "create", "acme-apps", "--owner", "account"])
+        .unwrap_err();
+    assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
+    let created = alice.run(&[
+        "deployment",
+        "create",
+        "acme-apps",
+        "--owner",
+        "account",
+        "--dev-passkey",
+        pk,
+    ]);
+    let id = s(&created["id"]);
+    let listed = alice.run(&["deployment", "list"]);
+    assert_eq!(listed["deployments"][0]["id"], id.as_str(), "{listed}");
+
+    // Offer: a new app names its package; the next offer keeps it.
+    let new_app = alice
+        .try_run(&[
+            "deployment",
+            "offer",
+            "acme-apps",
+            "notes",
+            "1.0.0",
+            "--dev-passkey",
+            pk,
+        ])
+        .unwrap_err();
+    assert!(new_app.contains("--package"), "{new_app}");
+    let _ = alice.run(&[
+        "deployment",
+        "offer",
+        "acme-apps",
+        "notes",
+        "1.0.0",
+        "--package",
+        "com.test.dep",
+        "--dev-passkey",
+        pk,
+    ]);
+    let _ = alice.run(&[
+        "deployment",
+        "offer",
+        "acme-apps",
+        "notes",
+        "1.1.0",
+        "--dev-passkey",
+        pk,
+    ]);
+    let got = alice.run(&["deployment", "get", "acme-apps"]);
+    assert_eq!(got["id"], id.as_str(), "{got}");
+    assert_eq!(got["apps"][0]["version"], "1.1.0", "{got}");
+    assert_eq!(got["apps"][0]["package"], "com.test.dep", "{got}");
+
+    // A secret's value comes from stdin and is never answered or listed.
+    let secret_set = |extra: &[&str], value: &str| {
+        use std::io::Write as _;
+        let mut args = vec!["deployment", "secret", "set", "acme-apps", "API_KEY"];
+        args.extend_from_slice(extra);
+        let mut child = alice
+            .cmd()
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(value.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let asked = secret_set(&[], "sk-test-1\n");
+    assert!(!asked.status.success());
+    assert!(String::from_utf8_lossy(&asked.stderr).contains("CONFIRM_REQUIRED"));
+    let empty = secret_set(&["--dev-passkey", pk], "");
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("no value for API_KEY"));
+    let set = secret_set(&["--dev-passkey", pk], "sk-test-1\n");
+    assert!(
+        set.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    let set_out = String::from_utf8_lossy(&set.stdout).into_owned();
+    assert!(!set_out.contains("sk-test-1"), "{set_out}");
+    let secrets = alice.run(&["deployment", "secret", "list", "acme-apps"]);
+    let row = &secrets["secrets"]["API_KEY"];
+    assert_eq!(row["set"], true, "{secrets}");
+    assert!(row["fingerprint"].is_string(), "{secrets}");
+    assert!(!secrets.to_string().contains("sk-test-1"), "{secrets}");
+    let _ = alice.run(&[
+        "deployment",
+        "secret",
+        "clear",
+        "acme-apps",
+        "API_KEY",
+        "--dev-passkey",
+        pk,
+    ]);
+    let secrets = alice.run(&["deployment", "secret", "list", "acme-apps"]);
+    assert_eq!(secrets["secrets"]["API_KEY"]["set"], false, "{secrets}");
+
+    // A customer makes an instance from the offer; usage counts it per organization.
+    let bob = Meroctl {
+        home: root.join("bob-deployments"),
+    };
+    let bob_pk = root.join("bob-deployments-passkey.json");
+    let _ = bob.run(&["node", "add", "local", url, "--allow-mock"]);
+    let _ = bob.run(&["login", "--dev-passkey", path(&bob_pk), "--name", "bob"]);
+    let bobs_org = s(&bob.run(&["org", "create", "Globex"])["orgId"]);
+    let made = bob.run(&[
+        "raw",
+        "post",
+        "/apps",
+        &json!({ "deployment": id, "package": "com.test.dep", "org": bobs_org, "name": "n" })
+            .to_string(),
+    ]);
+    let customer_app = s(&made["appId"]);
+    let usage = alice.run(&["deployment", "usage", "acme-apps", "--by", "org"]);
+    assert_eq!(usage["orgs"][0]["orgId"], bobs_org.as_str(), "{usage}");
+    assert_eq!(usage["orgs"][0]["instances"], 1, "{usage}");
+    assert_eq!(usage["orgs"][0]["apps"][0]["version"], "1.1.0", "{usage}");
+    let csv = alice.run(&["deployment", "usage", "acme-apps", "--by", "org", "--csv"]);
+    let csv = s(&csv);
+    let mut lines = csv.lines();
+    assert_eq!(
+        lines.next(),
+        Some("org_id,name,instances,members,active_members_30d,releases,first_created_at")
+    );
+    assert!(
+        lines.next().is_some_and(
+            |l| l.starts_with(&format!("{bobs_org},Globex,1,1,")) && l.contains("notes@1.1.0")
+        ),
+        "{csv}"
+    );
+    let since = alice
+        .try_run(&[
+            "deployment",
+            "usage",
+            "acme-apps",
+            "--by",
+            "org",
+            "--since",
+            "2026-11-01",
+        ])
+        .unwrap_err();
+    assert!(since.contains("not supported by the node yet"), "{since}");
+    assert_eq!(
+        alice.run(&["deployment", "orgs", "acme-apps"])["orgs"][0]["orgId"],
+        bobs_org.as_str()
+    );
+
+    // Taken down: withdrawn once no instance runs it, then deleted.
+    let _ = bob.run(&["instance", "delete", &customer_app]);
+    let _ = alice.run(&[
+        "deployment",
+        "withdraw",
+        "acme-apps",
+        "notes",
+        "--dev-passkey",
+        pk,
+    ]);
+    let _ = alice.run(&["deployment", "delete", "acme-apps", "--dev-passkey", pk]);
+    assert_eq!(alice.run(&["deployment", "list"])["deployments"], json!([]));
 }
 
 /// `meroctl proxy`: a node's API as plain HTTP on loopback, every request

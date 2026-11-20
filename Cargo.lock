@@ -3754,6 +3754,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
+ "libc",
  "meroctl-compute",
  "meroctl-sign",
  "rand_chacha 0.10.0",
