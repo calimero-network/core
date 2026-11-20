@@ -409,13 +409,6 @@ later core release without losing data. `crates/node/tests/fault/upgrade_path.py
 proves it for the release pinned in [`.github/upgrade-from`](https://github.com/calimero-network/core/blob/master/.github/upgrade-from),
 the latest published one, against this tree:
 
-:::note[The pin today]
-`.github/upgrade-from` holds `hard-cutover: 5194` (1.0.0-rc.33: an instance's
-access is its list of grants, and access written before is not read), so the job
-reports the cutover and runs nothing until the PR that moves the pin to the first
-published release after it.
-:::
-
 <Steps>
 
 1. **The old cluster.** Three `merod run --dev` nodes and a job node start on

@@ -85,7 +85,7 @@ is gone, and with it the field `access` on
 (its `[[cutover]]` entry); requests and answers carry `grants`. No reader of the
 earlier shape is kept: an instance record or a `setAccess` entry an earlier
 release wrote is not read, so a cluster on an earlier release is recreated on
-1.0.0-rc.33, not rolled (`.github/upgrade-from` says `hard-cutover: 5194`, and
+1.0.0-rc.33, not rolled (#5194 declared it in `.github/upgrade-from`, and
 mdma's `CUTOVERS` starts an epoch at 1.0.0-rc.33). Clients move to `grants`;
 nothing admits a caller without an account any more (`anyone` is any signed-in
 account).
