@@ -217,7 +217,8 @@ above. No other image tags are pushed: there is no `edge` or per-commit image.
   master moved on, the job's error prints the `gh api` commands to create the
   tag and release by hand; only a human runs them.
 - Majors: the fleet bump skips a major jump (see the shared rules), so a core
-  major needs its consumers moved deliberately, and `workflow_dispatch` on
+  major needs its consumers moved deliberately. The npm SDKs are the exception:
+  they move to the release's version from any line (`--allow-major`). `workflow_dispatch` on
   `fleet-bump.yml` (`dry_run` is on by default there) re-runs a bump for a
   version or a subset of repositories.
 
