@@ -151,8 +151,6 @@ from .openapi.api.ops import ops_release_deadline as _ops_release_deadline
 from .openapi.api.ops import ops_release_deadline_lift as _ops_release_deadline_lift
 from .openapi.api.ops import ops_remove_node as _ops_remove_node
 from .openapi.api.ops import ops_restore as _ops_restore
-from .openapi.api.ops import ops_sealed_endpoints_get as _ops_sealed_endpoints_get
-from .openapi.api.ops import ops_sealed_endpoints_set as _ops_sealed_endpoints_set
 from .openapi.api.ops import ops_served as _ops_served
 from .openapi.api.ops import ops_set_backup_key as _ops_set_backup_key
 from .openapi.api.ops import ops_set_replicas as _ops_set_replicas
@@ -324,7 +322,6 @@ from .openapi.models import OpsRegisterNodeBody
 from .openapi.models import OpsReleaseBody
 from .openapi.models import OpsReleaseDeadlineBody
 from .openapi.models import OpsRestoreBody
-from .openapi.models import OpsSealedEndpointsSetBody
 from .openapi.models import OpsSetBackupKeyBody
 from .openapi.models import OpsSetReplicasBody
 from .openapi.models import OpsSignUpInviteCreateBody
@@ -1058,7 +1055,7 @@ class Apps(Group):
     def egress(self, *, app):
         """Where an app's unit may send data (`GET /apps/{app}/egress`, `app_egress`).
 
-        For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`) covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no egress.
+        For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
 
         **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -1886,7 +1883,7 @@ class Apps(Group):
     def update(self, *, app):
         """Whether an update is available for an app (`GET /apps/{app}/update`, `app_update`).
 
-        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
 
         **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -3490,19 +3487,6 @@ _OPS_REMOVE_NODE = Operation(
 _OPS_RESTORE = Operation(
     _ops_restore, "ops_restore", body=OpsRestoreBody, answer="json", operator=True
 )
-_OPS_SEALED_ENDPOINTS_GET = Operation(
-    _ops_sealed_endpoints_get,
-    "ops_sealed_endpoints_get",
-    body="none",
-    answer="json",
-)
-_OPS_SEALED_ENDPOINTS_SET = Operation(
-    _ops_sealed_endpoints_set,
-    "ops_sealed_endpoints_set",
-    body=OpsSealedEndpointsSetBody,
-    answer="json",
-    operator=True,
-)
 _OPS_SERVED = Operation(
     _ops_served,
     "ops_served",
@@ -4191,38 +4175,6 @@ class Ops(Group):
             (app,),
             {},
             {"backup": backup, "recovery": recovery},
-            operator_proof=operator_proof,
-        )
-
-    def sealed_endpoints_get(self):
-        """The sealed endpoints (`GET /ops/sealed-endpoints`, `ops_sealed_endpoints_get`).
-
-        The `https://` prefixes the operator vouches keep what is sent there inside a TEE (private inference, say), sorted; `[]` until set. A unit whose every egress destination one of them covers is Sealed (`GET /apps/{app}/egress`).
-
-        **Who:** the ops token.
-
-        Returns: OpsSealedEndpointsGetResponse200
-        """
-        return self._run(_OPS_SEALED_ENDPOINTS_GET, (), {}, None)
-
-    def sealed_endpoints_set(self, *, endpoints, operator_proof=None):
-        """Set the sealed endpoints (`POST /ops/sealed-endpoints`, `ops_sealed_endpoints_set`).
-
-        Replaces the list. Signed over `cluster / __set_sealed_endpoints / { endpoints }` with the list sorted. At most 64 distinct `outbound` prefixes (`https://`, a host and an optional path, no query, fragment or credentials, at most 2048 bytes; `400 BAD_SEALED_ENDPOINTS`, before the signature is asked for); `[]` clears it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. Answers the list as kept.
-
-        **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
-
-        Args:
-            endpoints: body `endpoints`
-            operator_proof: an operator seed (hex), a signer, a ready `operatorProof`, or False
-
-        Returns: OpsSealedEndpointsSetResponse200
-        """
-        return self._run(
-            _OPS_SEALED_ENDPOINTS_SET,
-            (),
-            {},
-            {"endpoints": endpoints},
             operator_proof=operator_proof,
         )
 
@@ -5663,7 +5615,7 @@ class Packages(Group):
     def capabilities(self, *, package, version, service=UNSET):
         """A release's capabilities (`GET /packages/{package}/{version}/capabilities`, `package_capabilities`).
 
-        What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `egress` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own egress), and `sealed` whether the cluster's sealed endpoints cover all of it; all three `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+        What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
 
         **Who:** signed in (a session or an API key).
 

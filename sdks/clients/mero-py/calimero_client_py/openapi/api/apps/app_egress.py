@@ -73,13 +73,13 @@ def sync_detailed(
 ) -> Response[Union[AppEgressResponse200, Error]]:
     """Where an app's unit may send data
 
-     For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound`
-    prefix, and a declared secret's host no prefix names) of the release the instance runs and of each
-    app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one
-    of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`)
-    covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own
-    `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no
-    egress.
+     For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination
+    (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs
+    and of each app it created with it (`links`, transitively; never an attached app), sorted; empty
+    when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the
+    platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each
+    member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and
+    own destinations. A development bundle declares none.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -112,13 +112,13 @@ def sync(
 ) -> Optional[Union[AppEgressResponse200, Error]]:
     """Where an app's unit may send data
 
-     For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound`
-    prefix, and a declared secret's host no prefix names) of the release the instance runs and of each
-    app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one
-    of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`)
-    covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own
-    `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no
-    egress.
+     For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination
+    (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs
+    and of each app it created with it (`links`, transitively; never an attached app), sorted; empty
+    when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the
+    platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each
+    member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and
+    own destinations. A development bundle declares none.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -146,13 +146,13 @@ async def asyncio_detailed(
 ) -> Response[Union[AppEgressResponse200, Error]]:
     """Where an app's unit may send data
 
-     For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound`
-    prefix, and a declared secret's host no prefix names) of the release the instance runs and of each
-    app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one
-    of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`)
-    covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own
-    `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no
-    egress.
+     For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination
+    (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs
+    and of each app it created with it (`links`, transitively; never an attached app), sorted; empty
+    when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the
+    platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each
+    member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and
+    own destinations. A development bundle declares none.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -183,13 +183,13 @@ async def asyncio(
 ) -> Optional[Union[AppEgressResponse200, Error]]:
     """Where an app's unit may send data
 
-     For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound`
-    prefix, and a declared secret's host no prefix names) of the release the instance runs and of each
-    app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one
-    of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`)
-    covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own
-    `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no
-    egress.
+     For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination
+    (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs
+    and of each app it created with it (`links`, transitively; never an attached app), sorted; empty
+    when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the
+    platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each
+    member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and
+    own destinations. A development bundle declares none.
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 

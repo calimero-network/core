@@ -35,8 +35,7 @@ class PackageCapabilitiesResponse200:
         secrets (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
         uses (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
         abi (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-        egress (Union[None, list[str]]):
-        sealed (Union[None, bool]):
+        destinations (Union[None, list[str]]):
         members (Union['PackageCapabilitiesResponse200MembersType0', None]):
     """
 
@@ -53,8 +52,7 @@ class PackageCapabilitiesResponse200:
     secrets: Any
     uses: Any
     abi: Any
-    egress: Union[None, list[str]]
-    sealed: Union[None, bool]
+    destinations: Union[None, list[str]]
     members: Union["PackageCapabilitiesResponse200MembersType0", None]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -92,15 +90,12 @@ class PackageCapabilitiesResponse200:
 
         abi = self.abi
 
-        egress: Union[None, list[str]]
-        if isinstance(self.egress, list):
-            egress = self.egress
+        destinations: Union[None, list[str]]
+        if isinstance(self.destinations, list):
+            destinations = self.destinations
 
         else:
-            egress = self.egress
-
-        sealed: Union[None, bool]
-        sealed = self.sealed
+            destinations = self.destinations
 
         members: Union[None, dict[str, Any]]
         if isinstance(self.members, PackageCapabilitiesResponse200MembersType0):
@@ -125,8 +120,7 @@ class PackageCapabilitiesResponse200:
                 "secrets": secrets,
                 "uses": uses,
                 "abi": abi,
-                "egress": egress,
-                "sealed": sealed,
+                "destinations": destinations,
                 "members": members,
             }
         )
@@ -181,27 +175,20 @@ class PackageCapabilitiesResponse200:
 
         abi = d.pop("abi")
 
-        def _parse_egress(data: object) -> Union[None, list[str]]:
+        def _parse_destinations(data: object) -> Union[None, list[str]]:
             if data is None:
                 return data
             try:
                 if not isinstance(data, list):
                     raise TypeError()
-                egress_type_0 = cast(list[str], data)
+                destinations_type_0 = cast(list[str], data)
 
-                return egress_type_0
+                return destinations_type_0
             except:  # noqa: E722
                 pass
             return cast(Union[None, list[str]], data)
 
-        egress = _parse_egress(d.pop("egress"))
-
-        def _parse_sealed(data: object) -> Union[None, bool]:
-            if data is None:
-                return data
-            return cast(Union[None, bool], data)
-
-        sealed = _parse_sealed(d.pop("sealed"))
+        destinations = _parse_destinations(d.pop("destinations"))
 
         def _parse_members(
             data: object,
@@ -236,8 +223,7 @@ class PackageCapabilitiesResponse200:
             secrets=secrets,
             uses=uses,
             abi=abi,
-            egress=egress,
-            sealed=sealed,
+            destinations=destinations,
             members=members,
         )
 

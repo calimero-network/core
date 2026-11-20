@@ -43,8 +43,6 @@ class AppUpdateResponse200AvailableType0:
         reasons (Union[Unset, list[Union['UpdateReasonType0', 'UpdateReasonType1', 'UpdateReasonType2',
             'UpdateReasonType3', 'UpdateReasonType4', 'UpdateReasonType5']]]):
         egress (Union[Unset, AppUpdateResponse200AvailableType0Egress]):
-        sealed_before (Union[Unset, bool]):
-        sealed_after (Union[Unset, bool]):
         state_version_changed (Union[Unset, bool]):
         new_methods (Union[Unset, list[str]]):
         removed_methods (Union[Unset, list[str]]):
@@ -69,8 +67,6 @@ class AppUpdateResponse200AvailableType0:
         ],
     ] = UNSET
     egress: Union[Unset, "AppUpdateResponse200AvailableType0Egress"] = UNSET
-    sealed_before: Union[Unset, bool] = UNSET
-    sealed_after: Union[Unset, bool] = UNSET
     state_version_changed: Union[Unset, bool] = UNSET
     new_methods: Union[Unset, list[str]] = UNSET
     removed_methods: Union[Unset, list[str]] = UNSET
@@ -122,10 +118,6 @@ class AppUpdateResponse200AvailableType0:
         if not isinstance(self.egress, Unset):
             egress = self.egress.to_dict()
 
-        sealed_before = self.sealed_before
-
-        sealed_after = self.sealed_after
-
         state_version_changed = self.state_version_changed
 
         new_methods: Union[Unset, list[str]] = UNSET
@@ -153,10 +145,6 @@ class AppUpdateResponse200AvailableType0:
             field_dict["reasons"] = reasons
         if egress is not UNSET:
             field_dict["egress"] = egress
-        if sealed_before is not UNSET:
-            field_dict["sealedBefore"] = sealed_before
-        if sealed_after is not UNSET:
-            field_dict["sealedAfter"] = sealed_after
         if state_version_changed is not UNSET:
             field_dict["stateVersionChanged"] = state_version_changed
         if new_methods is not UNSET:
@@ -277,10 +265,6 @@ class AppUpdateResponse200AvailableType0:
         else:
             egress = AppUpdateResponse200AvailableType0Egress.from_dict(_egress)
 
-        sealed_before = d.pop("sealedBefore", UNSET)
-
-        sealed_after = d.pop("sealedAfter", UNSET)
-
         state_version_changed = d.pop("stateVersionChanged", UNSET)
 
         new_methods = cast(list[str], d.pop("newMethods", UNSET))
@@ -296,8 +280,6 @@ class AppUpdateResponse200AvailableType0:
             class_=class_,
             reasons=reasons,
             egress=egress,
-            sealed_before=sealed_before,
-            sealed_after=sealed_after,
             state_version_changed=state_version_changed,
             new_methods=new_methods,
             removed_methods=removed_methods,

@@ -45,8 +45,7 @@ import kotlinx.serialization.Contextual
  * @param secrets Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param uses Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param abi Free-form JSON: its shape is not this API's (see the description around it for whose it is).
- * @param egress 
- * @param `sealed` 
+ * @param destinations 
  * @param members 
  */
 @Serializable
@@ -95,11 +94,8 @@ data class PackageCapabilities200Response (
     @Contextual @SerialName(value = "abi")
     val abi: kotlinx.serialization.json.JsonElement?,
 
-    @SerialName(value = "egress")
-    val egress: kotlin.collections.List<kotlin.String>?,
-
-    @SerialName(value = "sealed")
-    val `sealed`: kotlin.Boolean?,
+    @SerialName(value = "destinations")
+    val destinations: kotlin.collections.List<kotlin.String>?,
 
     @Contextual @SerialName(value = "members")
     val members: kotlin.collections.Map<kotlin.String, UnitMember>?
