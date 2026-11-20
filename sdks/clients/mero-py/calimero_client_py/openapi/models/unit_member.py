@@ -22,14 +22,14 @@ class UnitMember:
             package (str):
             version (str):
             signer (str):
-            egress (list[str]):
+            destinations (list[str]):
             app (Union[Unset, str]):
     """
 
     package: str
     version: str
     signer: str
-    egress: list[str]
+    destinations: list[str]
     app: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -40,7 +40,7 @@ class UnitMember:
 
         signer = self.signer
 
-        egress = self.egress
+        destinations = self.destinations
 
         app = self.app
 
@@ -51,7 +51,7 @@ class UnitMember:
                 "package": package,
                 "version": version,
                 "signer": signer,
-                "egress": egress,
+                "destinations": destinations,
             }
         )
         if app is not UNSET:
@@ -68,7 +68,7 @@ class UnitMember:
 
         signer = d.pop("signer")
 
-        egress = cast(list[str], d.pop("egress"))
+        destinations = cast(list[str], d.pop("destinations"))
 
         app = d.pop("app", UNSET)
 
@@ -76,7 +76,7 @@ class UnitMember:
             package=package,
             version=version,
             signer=signer,
-            egress=egress,
+            destinations=destinations,
             app=app,
         )
 

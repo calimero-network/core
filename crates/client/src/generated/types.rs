@@ -822,7 +822,7 @@ pub struct UnitMember {
     pub package: String,
     pub version: String,
     pub signer: String,
-    pub egress: Vec<String>,
+    pub destinations: Vec<String>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -2635,10 +2635,7 @@ pub struct AppDelegateResponse {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppEgressResponse {
     pub app: String,
-    pub egress: Vec<String>,
-    pub sealed: bool,
-    #[serde(rename = "sealedEndpoints")]
-    pub sealed_endpoints: Vec<String>,
+    pub destinations: Vec<String>,
     pub members: BTreeMap<String, UnitMember>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
@@ -3330,12 +3327,6 @@ pub struct AppUpdateResponseAvailable {
     pub reasons: Option<Vec<UpdateReason>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress: Option<AppUpdateResponseAvailableEgress>,
-    #[serde(rename = "sealedBefore")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sealed_before: Option<bool>,
-    #[serde(rename = "sealedAfter")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sealed_after: Option<bool>,
     #[serde(rename = "stateVersionChanged")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_version_changed: Option<bool>,
@@ -5577,22 +5568,6 @@ pub struct OpsRecoveryFilesResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OpsSealedEndpointsGetResponse {
-    pub endpoints: Vec<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OpsSealedEndpointsSetResponse {
-    pub endpoints: Vec<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpsServedResponseOriginsItem {
     pub origin: String,
     pub host: String,
@@ -6227,8 +6202,7 @@ pub struct PackageCapabilitiesResponse {
     pub uses: Value,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub abi: Value,
-    pub egress: Option<Vec<String>>,
-    pub sealed: Option<bool>,
+    pub destinations: Option<Vec<String>>,
     pub members: Option<BTreeMap<String, UnitMember>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]

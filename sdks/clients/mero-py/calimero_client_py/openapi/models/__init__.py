@@ -426,9 +426,6 @@ from .ops_restore_body import OpsRestoreBody
 from .ops_restore_body_recovery import OpsRestoreBodyRecovery
 from .ops_restore_response_200 import OpsRestoreResponse200
 from .ops_restore_response_200_backup import OpsRestoreResponse200Backup
-from .ops_sealed_endpoints_get_response_200 import OpsSealedEndpointsGetResponse200
-from .ops_sealed_endpoints_set_body import OpsSealedEndpointsSetBody
-from .ops_sealed_endpoints_set_response_200 import OpsSealedEndpointsSetResponse200
 from .ops_served_response_200 import OpsServedResponse200
 from .ops_served_response_200_origins_item import OpsServedResponse200OriginsItem
 from .ops_set_backup_key_body import OpsSetBackupKeyBody
@@ -1070,9 +1067,6 @@ __all__ = (
     "OpsRestoreBodyRecovery",
     "OpsRestoreResponse200",
     "OpsRestoreResponse200Backup",
-    "OpsSealedEndpointsGetResponse200",
-    "OpsSealedEndpointsSetBody",
-    "OpsSealedEndpointsSetResponse200",
     "OpsServedResponse200",
     "OpsServedResponse200OriginsItem",
     "OpsSetBackupKeyBody",

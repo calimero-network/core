@@ -670,70 +670,6 @@ async fn ops_prices_set(
     Ok(Json(json!({})))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct SealedEndpointsBody {
-    endpoints: Vec<String>,
-    #[serde(default, rename = "operatorProof")]
-    operator_proof: Option<OperatorProofBody>,
-}
-
-/// Replace the cluster's sealed endpoints: the operator's decision, signed
-/// (`cluster / __set_sealed_endpoints / { endpoints }`), over the list sorted. Checked
-/// before the operator is asked to sign: at most `MAX_SEALED_ENDPOINTS` distinct `outbound`
-/// prefixes (`400 BAD_SEALED_ENDPOINTS`), and `Feature::SealedEndpoints` active
-/// (`409 FEATURE_NOT_ACTIVE`).
-async fn ops_sealed_endpoints_set(
-    State(node): State<Arc<Node>>,
-    headers: HeaderMap,
-    Json(b): Json<SealedEndpointsBody>,
-) -> ApiResult {
-    operator(&node, &headers)?;
-    let mut endpoints = b.endpoints;
-    let given = endpoints.len();
-    endpoints.sort();
-    endpoints.dedup();
-    if given > crate::system::MAX_SEALED_ENDPOINTS
-        || endpoints.len() != given
-        || !endpoints
-            .iter()
-            .all(|e| calimero_bundle::is_outbound_url(e))
-    {
-        return Err(ApiError::bad_request(
-            "BAD_SEALED_ENDPOINTS",
-            crate::system::BAD_SEALED_ENDPOINTS
-                .split_once(": ")
-                .map_or(crate::system::BAD_SEALED_ENDPOINTS, |(_, why)| why),
-        ));
-    }
-    node.require_features(&[crate::system::cluster_version::Feature::SealedEndpoints])
-        .await?;
-    let proof = operator_proof(
-        &node,
-        "cluster",
-        "__set_sealed_endpoints",
-        &json!({ "endpoints": endpoints }),
-        b.operator_proof,
-    )?;
-    let _ok = node
-        .sys_write(&SystemCmd::SetSealedEndpoints {
-            endpoints: endpoints.clone(),
-            proof,
-        })
-        .await?;
-    Ok(Json(json!({ "endpoints": endpoints })))
-}
-
-/// The cluster's sealed endpoints, sorted (`[]` until set).
-async fn ops_sealed_endpoints_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
-    operator(&node, &headers)?;
-    // An operator reads back what it just set, through any node.
-    let _caught_up = node.sys_fresh().await;
-    Ok(Json(
-        json!({ "endpoints": node.sys(|s| s.sealed_endpoints.clone()) }),
-    ))
-}
-
 /// The price table, or `{}` until one is set.
 async fn ops_prices_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
@@ -920,8 +856,4 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
         .route("/ops/pools", get(ops_pools_get).post(ops_pools_set))
         .route("/ops/prices", get(ops_prices_get).post(ops_prices_set))
-        .route(
-            "/ops/sealed-endpoints",
-            get(ops_sealed_endpoints_get).post(ops_sealed_endpoints_set),
-        )
 }

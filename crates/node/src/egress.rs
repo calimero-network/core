@@ -1,6 +1,8 @@
 //! Where an app's unit may send data, and whether an update changes it (C5): the unit's
-//! releases read for the shared classifier (`calimero_bundle::update`), judged against the
-//! cluster's sealed endpoints (`SystemState::sealed_endpoints`, `SetSealedEndpoints`).
+//! releases read for the shared classifier (`calimero_bundle::update`). Only destinations
+//! are reported: every `outbound` prefix and secret host of the unit, an empty list meaning
+//! no data leaves Calimero. The platform never vouches for an external endpoint, a TEE
+//! included; an app that wants to trust one verifies it in its own code.
 //!
 //! A unit is an app and the apps it created with it (`AppRecord::links`, transitively;
 //! never an `attached` app, which its owner runs apart). Three reads use it:
@@ -31,11 +33,6 @@ pub(crate) struct Placed {
 
 /// Where each of an instance's own members moves, by its `uses` name: (package, version).
 type Moves = BTreeMap<String, (String, String)>;
-
-/// The cluster's sealed endpoints, sorted.
-pub(crate) fn sealed_endpoints(node: &Node) -> Vec<String> {
-    node.sys(|s| s.sealed_endpoints.clone())
-}
 
 /// The classifier's facts for the installed release `at`.
 async fn release_at(node: &Node, at: &PackageRef) -> Result<Release, ApiError> {
@@ -171,8 +168,7 @@ async fn placed(
     Ok(Some(out))
 }
 
-/// The update of `app` to `version` of the package it runs, classified against the
-/// cluster's sealed endpoints: with `whole_unit`, the instance's members move to the
+/// The update of `app` to `version` of the package it runs, classified: with `whole_unit`, the instance's members move to the
 /// releases the target's `uses` pick for them (`POST /apps/{app}/upgrade-unit`), else they
 /// stay where they are (`POST /apps/{app}/upgrade`). `None` when the instance runs no
 /// package release.
@@ -202,17 +198,14 @@ pub(crate) async fn update(
     let Some(after) = placed(node, app, Some((&target, &moves))).await? else {
         return Ok(None);
     };
-    Ok(Some(classify(
-        &before.unit,
-        &after.unit,
-        &sealed_endpoints(node),
-    )))
+    Ok(Some(classify(&before.unit, &after.unit)))
 }
 
 /// A unit's egress as the API answers it: `egress` (sorted destinations over the app and
-/// its members), `sealed`, and each member by path with its package, version, own egress
+/// its members; empty: no data leaves Calimero) as `destinations`, and each member by path with
+/// its package, version, own destinations
 /// and (for an instance) app id.
-pub(crate) fn describe(placed: &Placed, endpoints: &[String]) -> Value {
+pub(crate) fn describe(placed: &Placed) -> Value {
     let members: serde_json::Map<String, Value> = placed
         .unit
         .members
@@ -222,7 +215,7 @@ pub(crate) fn describe(placed: &Placed, endpoints: &[String]) -> Value {
                 "package": r.package,
                 "version": r.version,
                 "signer": r.signer,
-                "egress": r.egress(),
+                "destinations": r.egress(),
             });
             if let Some(id) = placed.apps.get(path) {
                 m["app"] = json!(id);
@@ -231,8 +224,7 @@ pub(crate) fn describe(placed: &Placed, endpoints: &[String]) -> Value {
         })
         .collect();
     json!({
-        "egress": placed.unit.egress(),
-        "sealed": placed.unit.sealed(endpoints),
+        "destinations": placed.unit.egress(),
         "members": members,
     })
 }

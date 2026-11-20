@@ -51,32 +51,6 @@ class Approvals(DeepCase):
 
 
 @case
-class SealedEndpoints(DeepCase):
-    name = "sealed-endpoints"
-    area = "Ops"
-    since = "1.0.0-rc.34"
-    seeds = "the operator's signed list of sealed endpoints (`ops set-sealed-endpoints`)"
-    verifies = "the list as set on every node; replaced on the new release and read back the same everywhere"
-
-    def populate(self, w):
-        w.fleet.operate("set-sealed-endpoints", json.dumps(["https://inference.near.ai/"]))
-        s = {"list": ops(w, "GET", "ops/sealed-endpoints")}
-        eq(s["list"], {"endpoints": ["https://inference.near.ai/"]}, "the sealed endpoints as set")
-        return s
-
-    def check(self, w, s):
-        for n in w.members():
-            eq(ops(w, "GET", "ops/sealed-endpoints", node=n), s["list"], f"the sealed endpoints on node {n}")
-
-    def exercise(self, w, s):
-        w.fleet.operate("set-sealed-endpoints",
-                        json.dumps(["https://inference.near.ai/", "https://cloud-api.near.ai/v1/"]))
-        s["list"] = ops(w, "GET", "ops/sealed-endpoints")
-        eq(s["list"], {"endpoints": ["https://cloud-api.near.ai/v1/", "https://inference.near.ai/"]},
-           "the sealed endpoints replaced, sorted")
-
-
-@case
 class OpsState(DeepCase):
     name = "ops-state"
     area = "Ops"

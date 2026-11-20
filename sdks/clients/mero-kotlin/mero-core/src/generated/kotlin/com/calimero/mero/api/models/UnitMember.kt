@@ -34,7 +34,7 @@ import kotlinx.serialization.Contextual
  * @param `package` 
  * @param version 
  * @param signer 
- * @param egress 
+ * @param destinations 
  * @param app 
  */
 @Serializable
@@ -50,8 +50,8 @@ data class UnitMember (
     @SerialName(value = "signer")
     val signer: kotlin.String,
 
-    @SerialName(value = "egress")
-    val egress: kotlin.collections.List<kotlin.String>,
+    @SerialName(value = "destinations")
+    val destinations: kotlin.collections.List<kotlin.String>,
 
     @SerialName(value = "app")
     val app: kotlin.String? = null

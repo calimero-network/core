@@ -201,8 +201,6 @@ Generated from core's `docs/public/openapi.json`.
 | `release_deadline_lift(version, operator_proof=None)` | `DELETE /ops/releases/{version}/deadline` | Lift a release deadline. **operator** |
 | `remove_node(id, operator_proof=None)` | `DELETE /ops/nodes/{id}` | Remove a node. **operator**. *Refusals:* `400 LAST_NODE` |
 | `restore(app, backup=…, recovery=…, operator_proof=None)` | `POST /ops/apps/{app}/restore` | Restore an app from its sealed backup. **operator**. *Refusals:* `400 BAD_BACKUP`, `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 UNATTESTED_RECOVERY_FILE`, `404 BACKUP_NOT_FOUND`, `409 BACKUP_FROM_NEWER_RELEASE`, `409 BUNDLE_GONE`, `409 MOVE_IN_PROGRESS`, `409 NO_BACKUP_DIR`, `409 RECOVERY_SEGMENTS_MISSING`, `409 UNKNOWN_BACKUP_FORMAT`, `409 UPGRADE_PENDING` |
-| `sealed_endpoints_get()` | `GET /ops/sealed-endpoints` | The sealed endpoints |
-| `sealed_endpoints_set(endpoints, operator_proof=None)` | `POST /ops/sealed-endpoints` | Set the sealed endpoints. **operator**. *Refusals:* `400 BAD_SEALED_ENDPOINTS`, `409 FEATURE_NOT_ACTIVE` |
 | `served()` | `GET /ops/served-origins` | Custom domains to serve |
 | `set_backup_key(public_key, operator_proof=None)` | `POST /ops/backup-key` | Set the operator's backup key. **operator**. *Refusals:* `400 BAD_BACKUP_KEY`, `409 FEATURE_NOT_ACTIVE` |
 | `set_replicas(app, replicas, operator_proof=None)` | `POST /ops/apps/{app}/replicas` | Move an app's replicas. **operator**. *Refusals:* `400 DUPLICATE_REPLICA`, `400 JOB_NODE`, `400 TOO_FEW`, `400 UNKNOWN_NODE`, `409 MOVE_IN_PROGRESS`, `409 RUNTIME_TOO_OLD` |

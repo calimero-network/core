@@ -2428,31 +2428,6 @@ impl Ops<'_> {
         route::json(self.client.transport(), req, None, operator, false).await
     }
 
-    /// The sealed endpoints.
-    ///
-    /// `GET /ops/sealed-endpoints` (`ops_sealed_endpoints_get`). Who: the ops token.
-    pub async fn sealed_endpoints_get(self) -> Result<OpsSealedEndpointsGetResponse> {
-        let req = Request::new(Method::GET, "ops/sealed-endpoints");
-        route::json(self.client.transport(), req, None, None, false).await
-    }
-
-    /// Set the sealed endpoints.
-    ///
-    /// `POST /ops/sealed-endpoints` (`ops_sealed_endpoints_set`). Who: the ops token.
-    ///
-    /// Operator: answers `428 OPERATOR_SIGNATURE_REQUIRED` first where governance gives the decision to the operator; `operator` signs the statement it names, without it the refusal is returned.
-    pub async fn sealed_endpoints_set(
-        self,
-        endpoints: Vec<String>,
-        operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<OpsSealedEndpointsSetResponse> {
-        let mut fields = Map::new();
-        route::put(&mut fields, "endpoints", &endpoints)?;
-        let body = Value::Object(fields);
-        let req = Request::new(Method::POST, "ops/sealed-endpoints").json(body);
-        route::json(self.client.transport(), req, None, operator, false).await
-    }
-
     /// Custom domains to serve.
     ///
     /// `GET /ops/served-origins` (`ops_served`). Who: the ops token.

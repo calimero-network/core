@@ -20,16 +20,12 @@ class AppEgressResponse200:
     """
     Attributes:
         app (str):
-        egress (list[str]):
-        sealed (bool):
-        sealed_endpoints (list[str]):
+        destinations (list[str]):
         members (AppEgressResponse200Members):
     """
 
     app: str
-    egress: list[str]
-    sealed: bool
-    sealed_endpoints: list[str]
+    destinations: list[str]
     members: "AppEgressResponse200Members"
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -38,11 +34,7 @@ class AppEgressResponse200:
 
         app = self.app
 
-        egress = self.egress
-
-        sealed = self.sealed
-
-        sealed_endpoints = self.sealed_endpoints
+        destinations = self.destinations
 
         members = self.members.to_dict()
 
@@ -51,9 +43,7 @@ class AppEgressResponse200:
         field_dict.update(
             {
                 "app": app,
-                "egress": egress,
-                "sealed": sealed,
-                "sealedEndpoints": sealed_endpoints,
+                "destinations": destinations,
                 "members": members,
             }
         )
@@ -67,19 +57,13 @@ class AppEgressResponse200:
         d = dict(src_dict)
         app = d.pop("app")
 
-        egress = cast(list[str], d.pop("egress"))
-
-        sealed = d.pop("sealed")
-
-        sealed_endpoints = cast(list[str], d.pop("sealedEndpoints"))
+        destinations = cast(list[str], d.pop("destinations"))
 
         members = AppEgressResponse200Members.from_dict(d.pop("members"))
 
         app_egress_response_200 = cls(
             app=app,
-            egress=egress,
-            sealed=sealed,
-            sealed_endpoints=sealed_endpoints,
+            destinations=destinations,
             members=members,
         )
 

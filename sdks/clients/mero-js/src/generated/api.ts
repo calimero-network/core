@@ -283,7 +283,7 @@ export interface paths {
         };
         /**
          * Where an app's unit may send data
-         * @description For whoever may read the app (`GET /apps/{app}`'s rule). `egress`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted. `sealed`: whether one of the cluster's sealed endpoints (`sealedEndpoints`, the operator's `POST /ops/sealed-endpoints`) covers each; no egress is sealed. `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own egress. A development bundle declares no egress.
+         * @description For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
          *
          *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
@@ -1153,7 +1153,7 @@ export interface paths {
         };
         /**
          * Whether an update is available for an app
-         * @description For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+         * @description For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
          *
          *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
@@ -2952,34 +2952,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/ops/sealed-endpoints": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * The sealed endpoints
-         * @description The `https://` prefixes the operator vouches keep what is sent there inside a TEE (private inference, say), sorted; `[]` until set. A unit whose every egress destination one of them covers is Sealed (`GET /apps/{app}/egress`).
-         *
-         *     **Who:** the ops token.
-         */
-        get: operations["ops_sealed_endpoints_get"];
-        put?: never;
-        /**
-         * Set the sealed endpoints
-         * @description Replaces the list. Signed over `cluster / __set_sealed_endpoints / { endpoints }` with the list sorted. At most 64 distinct `outbound` prefixes (`https://`, a host and an optional path, no query, fragment or credentials, at most 2048 bytes; `400 BAD_SEALED_ENDPOINTS`, before the signature is asked for); `[]` clears it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. Answers the list as kept.
-         *
-         *     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
-         */
-        post: operations["ops_sealed_endpoints_set"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/ops/served-origins": {
         parameters: {
             query?: never;
@@ -3997,7 +3969,7 @@ export interface paths {
         };
         /**
          * A release's capabilities
-         * @description What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `egress` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own egress), and `sealed` whether the cluster's sealed endpoints cover all of it; all three `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+         * @description What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -4584,7 +4556,7 @@ export interface components {
             package: string;
             version: string;
             signer: string;
-            egress: string[];
+            destinations: string[];
         };
         /** @description Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. */
         UpdateReason: {
@@ -6261,9 +6233,7 @@ export interface operations {
                 content: {
                     "application/json": {
                         app: string;
-                        egress: string[];
-                        sealed: boolean;
-                        sealedEndpoints: string[];
+                        destinations: string[];
                         members: {
                             [key: string]: components["schemas"]["UnitMember"];
                         };
@@ -9687,8 +9657,6 @@ export interface operations {
                                 added: string[];
                                 removed: string[];
                             };
-                            sealedBefore?: boolean;
-                            sealedAfter?: boolean;
                             stateVersionChanged?: boolean;
                             newMethods?: string[];
                             removedMethods?: string[];
@@ -15938,120 +15906,6 @@ export interface operations {
             };
         };
     };
-    ops_sealed_endpoints_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        endpoints: string[];
-                    };
-                };
-            };
-            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    ops_sealed_endpoints_set: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    endpoints: string[];
-                    operatorProof?: components["schemas"]["OperatorProof"];
-                };
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        endpoints: string[];
-                    };
-                };
-            };
-            /** @description `BAD_SEALED_ENDPOINTS` */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description `BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description `OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement. `details` of `OPERATOR_SIGNATURE_REQUIRED`: a `OperatorSignatureRequired`. */
-            428: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
     ops_served: {
         parameters: {
             query?: never;
@@ -20051,8 +19905,7 @@ export interface operations {
                         uses: unknown;
                         /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
                         abi: unknown;
-                        egress: string[] | null;
-                        sealed: boolean | null;
+                        destinations: string[] | null;
                         members: {
                             [key: string]: components["schemas"]["UnitMember"];
                         } | null;
