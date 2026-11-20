@@ -502,7 +502,7 @@ class OrgsFacade internal constructor(
     /**
      * Change the organization's settings
      *
-     * `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+     * `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
      *
      * **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -515,9 +515,10 @@ class OrgsFacade internal constructor(
     suspend fun settings(
         org: kotlin.String,
         allowGuests: kotlin.Boolean? = null,
+        allowPublicLinks: kotlin.Boolean? = null,
         passkey: PasskeyProvider? = null,
     ): OrgSettings200Response =
-        api(passkey, null, emptySet()).organizations.orgSettings(org = org, orgSettingsRequest = OrgSettingsRequest(allowGuests = allowGuests))
+        api(passkey, null, emptySet()).organizations.orgSettings(org = org, orgSettingsRequest = OrgSettingsRequest(allowGuests = allowGuests, allowPublicLinks = allowPublicLinks))
 
     /**
      * Start an upgrade run

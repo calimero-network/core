@@ -6945,6 +6945,497 @@
         }
       }
     },
+    "/apps/{app}/public-links": {
+      "post": {
+        "operationId": "public_link_create",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Make a public link of an instance",
+        "description": "A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor (`Caller::Visitor { link, key }`), whatever its access: send `Authorization: Bearer vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing `\"calimero.visitor.v1\\0\" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's clock. Whoever may change the instance's access, while its organization allows public links (`409 PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "expiresAt": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "ratePerMinute": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "link": {
+                      "type": "string"
+                    },
+                    "token": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "link",
+                    "token"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_REQUEST`: the request is malformed; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_REQUEST",
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE",
+              "WRONG_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`; `PUBLIC_LINKS_OFF`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE",
+              "PUBLIC_LINKS_OFF"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          },
+          "429": {
+            "description": "`QUOTA_EXCEEDED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "QUOTA_EXCEEDED"
+            ]
+          }
+        }
+      },
+      "get": {
+        "operationId": "public_link_list",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "An instance's public links",
+        "description": "For whoever may change its access: each link's key, terms and creator, never a token.\n\n**Who:** a passkey session (an API key is refused).",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "a passkey session (an API key is refused)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "links": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "link": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "expiresAt": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "expired": {
+                            "type": "boolean"
+                          },
+                          "ratePerMinute": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "createdBy": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "link",
+                          "label",
+                          "expiresAt",
+                          "expired",
+                          "ratePerMinute",
+                          "createdBy",
+                          "createdAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "links"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/public-links/{link}": {
+      "delete": {
+        "operationId": "public_link_revoke",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Revoke a public link",
+        "description": "Its creator, or whoever may change the instance's access; it admits nobody from the next request. `412` first.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "link",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmOnly"
+              }
+            }
+          },
+          "description": "May be absent."
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
     "/apps/{app}/runs": {
       "get": {
         "operationId": "app_runs",
@@ -25427,7 +25918,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Change the organization's settings",
-        "description": "`allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.\n\n**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "`allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.\n\n**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -25457,6 +25948,9 @@
                   "allowGuests": {
                     "type": "boolean"
                   },
+                  "allowPublicLinks": {
+                    "type": "boolean"
+                  },
                   "confirm": {
                     "$ref": "#/components/schemas/Confirm"
                   }
@@ -25479,11 +25973,15 @@
                     },
                     "allowGuests": {
                       "type": "boolean"
+                    },
+                    "allowPublicLinks": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
                     "org",
-                    "allowGuests"
+                    "allowGuests",
+                    "allowPublicLinks"
                   ]
                 }
               }
@@ -29962,12 +30460,54 @@
             "required": [
               "kind"
             ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "link"
+                ]
+              },
+              "link": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "expiresAt": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "ratePerMinute": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "createdBy": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "kind",
+              "link",
+              "ratePerMinute",
+              "createdBy",
+              "createdAt"
+            ]
           }
         ],
         "discriminator": {
           "propertyName": "kind"
         },
-        "description": "One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account. At most 16 teams and 1000 accounts."
+        "description": "One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account, who comes in only through a public link; `link`: a public link, whose token's holders call the instance's public methods as anonymous visitors (its key, never a token; made and revoked on `/apps/{app}/public-links` only, shown to whoever may change the instance's access, and kept as they are by `POST /apps/{app}/access`). At most 16 teams and 1000 accounts."
       },
       "OrgRole": {
         "type": "string",
@@ -31689,6 +32229,9 @@
           "allowGuests": {
             "type": "boolean"
           },
+          "allowPublicLinks": {
+            "type": "boolean"
+          },
           "mode": {
             "type": "string",
             "enum": [
@@ -31741,7 +32284,7 @@
           "memberMetadata",
           "upgradeRuns"
         ],
-        "description": "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33)."
+        "description": "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33)."
       },
       "Team": {
         "type": "object",

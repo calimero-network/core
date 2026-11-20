@@ -303,6 +303,8 @@ from .grant_type_2 import GrantType2
 from .grant_type_2_kind import GrantType2Kind
 from .grant_type_3 import GrantType3
 from .grant_type_3_kind import GrantType3Kind
+from .grant_type_4 import GrantType4
+from .grant_type_4_kind import GrantType4Kind
 from .group_status import GroupStatus
 from .health_response_200 import HealthResponse200
 from .init_failed import InitFailed
@@ -545,6 +547,11 @@ from .presence_get_response_200_present_item import PresenceGetResponse200Presen
 from .presence_publish_body import PresencePublishBody
 from .presence_publish_response_200 import PresencePublishResponse200
 from .proof_only import ProofOnly
+from .public_link_create_body import PublicLinkCreateBody
+from .public_link_create_response_200 import PublicLinkCreateResponse200
+from .public_link_list_response_200 import PublicLinkListResponse200
+from .public_link_list_response_200_links_item import PublicLinkListResponse200LinksItem
+from .public_link_revoke_response_200 import PublicLinkRevokeResponse200
 from .publisher_binding_response_200 import PublisherBindingResponse200
 from .publisher_upgrade_body import PublisherUpgradeBody
 from .quota_changes import QuotaChanges
@@ -935,6 +942,8 @@ __all__ = (
     "GrantType2Kind",
     "GrantType3",
     "GrantType3Kind",
+    "GrantType4",
+    "GrantType4Kind",
     "GroupStatus",
     "HealthResponse200",
     "InitFailed",
@@ -1143,6 +1152,11 @@ __all__ = (
     "PresencePublishBody",
     "PresencePublishResponse200",
     "ProofOnly",
+    "PublicLinkCreateBody",
+    "PublicLinkCreateResponse200",
+    "PublicLinkListResponse200",
+    "PublicLinkListResponse200LinksItem",
+    "PublicLinkRevokeResponse200",
     "PublisherBindingResponse200",
     "PublisherUpgradeBody",
     "QuotaChanges",

@@ -174,10 +174,16 @@ pub enum Feature {
     /// `DeleteTeam` keeping the instances only the team admitted (`keep_apps`): they lose its
     /// grants and keep the rest. An earlier release ignores the field and deletes them.
     KeepTeamApps,
+    /// Public links: `CreatePublicLink` and `RevokePublicLink` (an instance's link that
+    /// lets anonymous visitors call its `#[app::public]` methods), and `SetOrgSettings`
+    /// naming `allowPublicLinks`. An earlier release cannot decode the commands or drops
+    /// the setting; a visitor's call names `Caller::Visitor` in the app's log, which an
+    /// earlier replica cannot decode, so visitors are admitted only at this version too.
+    PublicLinks,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 40] = [
+pub const FEATURES: [Feature; 41] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -218,6 +224,7 @@ pub const FEATURES: [Feature; 40] = [
     Feature::Guests,
     Feature::AccessGrants,
     Feature::KeepTeamApps,
+    Feature::PublicLinks,
 ];
 
 impl Feature {
@@ -265,6 +272,7 @@ impl Feature {
             Self::Guests => "guests",
             Self::AccessGrants => "accessGrants",
             Self::KeepTeamApps => "keepTeamApps",
+            Self::PublicLinks => "publicLinks",
         }
     }
 
@@ -309,7 +317,8 @@ impl Feature {
             Self::OwnerApprovedUpgrades
             | Self::Guests
             | Self::AccessGrants
-            | Self::KeepTeamApps => "1.0.0-rc.33",
+            | Self::KeepTeamApps
+            | Self::PublicLinks => "1.0.0-rc.33",
         }
     }
 }
@@ -582,6 +591,16 @@ impl SystemCmd {
                 f
             }
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
+            Self::SetOrgSettings { settings, .. } if settings.allow_public_links.is_some() => {
+                let mut f = vec![Feature::PublicLinks];
+                if settings.allow_guests.is_some() {
+                    f.insert(0, Feature::Guests);
+                }
+                f
+            }
+            Self::CreatePublicLink { .. } | Self::RevokePublicLink { .. } => {
+                vec![Feature::AccessGrants, Feature::PublicLinks]
+            }
             Self::SetOrgSettings { .. } | Self::RevokeAppInvite { .. } => vec![Feature::Guests],
             Self::CreateAppInvite { .. } | Self::RedeemAppInvite { .. } => {
                 vec![Feature::Guests, Feature::AccessGrants]
@@ -1065,6 +1084,8 @@ mod tests {
                 "team": "t", "actor": "alice", "apps_need_consent": true, "keep_apps": true })),
             Feature::OwnerApprovedUpgrades => entry(json!({ "op": "upgradeApp",
                 "app_id": "app", "bundle": "b", "actor": "a", "owner_approves": true })),
+            Feature::PublicLinks => entry(json!({ "op": "setOrgSettings", "org": "org",
+                "settings": { "allowPublicLinks": false }, "actor": "alice" })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1495,8 +1516,8 @@ mod tests {
         // rc.32's (a deployment's secrets, whole units, secrets of used releases, an
         // upgrade kept on its deployment's offer, a release's instance mode) wait for every
         // node on rc.32, and rc.33's (upgrades only an organization's owner and admins
-        // approve, guests, access grants, a team deleted keeping its instances) for every
-        // node on rc.33.
+        // approve, guests, access grants, a team deleted keeping its instances, public
+        // links) for every node on rc.33.
         assert_eq!(
             rc32,
             [
@@ -1513,7 +1534,8 @@ mod tests {
                 Feature::OwnerApprovedUpgrades,
                 Feature::Guests,
                 Feature::AccessGrants,
-                Feature::KeepTeamApps
+                Feature::KeepTeamApps,
+                Feature::PublicLinks
             ]
         );
         for &feature in rc32.iter().chain(&rc33) {

@@ -693,6 +693,67 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Make a public link of an instance.
+    ///
+    /// `POST /apps/{app}/public-links` (`public_link_create`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn public_link_create(
+        self,
+        app: &str,
+        label: Option<&str>,
+        expires_at: Option<u64>,
+        rate_per_minute: Option<u64>,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<PublicLinkCreateResponse> {
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "label", label)?;
+        route::put_some(&mut fields, "expiresAt", expires_at)?;
+        route::put_some(&mut fields, "ratePerMinute", rate_per_minute)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("apps/{}/public-links", route::segment(app)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// An instance's public links.
+    ///
+    /// `GET /apps/{app}/public-links` (`public_link_list`). Who: a passkey session (an API key is refused).
+    pub async fn public_link_list(self, app: &str) -> Result<PublicLinkListResponse> {
+        let req = Request::new(
+            Method::GET,
+            format!("apps/{}/public-links", route::segment(app)),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Revoke a public link.
+    ///
+    /// `DELETE /apps/{app}/public-links/{link}` (`public_link_revoke`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn public_link_revoke(
+        self,
+        app: &str,
+        link: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<Map<String, Value>> {
+        let body = Value::Object(Map::new());
+        let req = Request::new(
+            Method::DELETE,
+            format!(
+                "apps/{}/public-links/{}",
+                route::segment(app),
+                route::segment(link)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
     /// One compute run.
     ///
     /// `GET /apps/{app}/runs/{run}` (`app_run`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
@@ -3147,10 +3208,12 @@ impl Orgs<'_> {
         self,
         org: &str,
         allow_guests: Option<bool>,
+        allow_public_links: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
     ) -> Result<OrgSettingsResponse> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "allowGuests", allow_guests)?;
+        route::put_some(&mut fields, "allowPublicLinks", allow_public_links)?;
         let body = Value::Object(fields);
         let req = Request::new(
             Method::POST,

@@ -446,6 +446,33 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `GET /apps/{app}/presence/stream`.
     /// - Remark: Generated from `#/paths//apps/{app}/presence/stream/get(presence_stream)`.
     func presenceStream(_ input: Operations.PresenceStream.Input) async throws -> Operations.PresenceStream.Output
+    /// An instance's public links
+    ///
+    /// For whoever may change its access: each link's key, terms and creator, never a token.
+    ///
+    /// **Who:** a passkey session (an API key is refused).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/public-links`.
+    /// - Remark: Generated from `#/paths//apps/{app}/public-links/get(public_link_list)`.
+    func publicLinkList(_ input: Operations.PublicLinkList.Input) async throws -> Operations.PublicLinkList.Output
+    /// Make a public link of an instance
+    ///
+    /// A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor (`Caller::Visitor { link, key }`), whatever its access: send `Authorization: Bearer vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing `"calimero.visitor.v1\0" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's clock. Whoever may change the instance's access, while its organization allows public links (`409 PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/public-links`.
+    /// - Remark: Generated from `#/paths//apps/{app}/public-links/post(public_link_create)`.
+    func publicLinkCreate(_ input: Operations.PublicLinkCreate.Input) async throws -> Operations.PublicLinkCreate.Output
+    /// Revoke a public link
+    ///
+    /// Its creator, or whoever may change the instance's access; it admits nobody from the next request. `412` first.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/public-links/{link}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/public-links/{link}/delete(public_link_revoke)`.
+    func publicLinkRevoke(_ input: Operations.PublicLinkRevoke.Input) async throws -> Operations.PublicLinkRevoke.Output
     /// An app's compute runs
     ///
     /// Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.
@@ -1305,7 +1332,7 @@ public protocol APIProtocol: Sendable {
     func orgReleaseApproval(_ input: Operations.OrgReleaseApproval.Input) async throws -> Operations.OrgReleaseApproval.Output
     /// Change the organization's settings
     ///
-    /// `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+    /// `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
     ///
     /// **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -2443,6 +2470,61 @@ extension APIProtocol {
         try await presenceStream(Operations.PresenceStream.Input(
             path: path,
             headers: headers
+        ))
+    }
+    /// An instance's public links
+    ///
+    /// For whoever may change its access: each link's key, terms and creator, never a token.
+    ///
+    /// **Who:** a passkey session (an API key is refused).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/public-links`.
+    /// - Remark: Generated from `#/paths//apps/{app}/public-links/get(public_link_list)`.
+    public func publicLinkList(
+        path: Operations.PublicLinkList.Input.Path,
+        headers: Operations.PublicLinkList.Input.Headers = .init()
+    ) async throws -> Operations.PublicLinkList.Output {
+        try await publicLinkList(Operations.PublicLinkList.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Make a public link of an instance
+    ///
+    /// A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor (`Caller::Visitor { link, key }`), whatever its access: send `Authorization: Bearer vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing `"calimero.visitor.v1\0" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's clock. Whoever may change the instance's access, while its organization allows public links (`409 PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/public-links`.
+    /// - Remark: Generated from `#/paths//apps/{app}/public-links/post(public_link_create)`.
+    public func publicLinkCreate(
+        path: Operations.PublicLinkCreate.Input.Path,
+        headers: Operations.PublicLinkCreate.Input.Headers = .init(),
+        body: Operations.PublicLinkCreate.Input.Body
+    ) async throws -> Operations.PublicLinkCreate.Output {
+        try await publicLinkCreate(Operations.PublicLinkCreate.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Revoke a public link
+    ///
+    /// Its creator, or whoever may change the instance's access; it admits nobody from the next request. `412` first.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/public-links/{link}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/public-links/{link}/delete(public_link_revoke)`.
+    public func publicLinkRevoke(
+        path: Operations.PublicLinkRevoke.Input.Path,
+        headers: Operations.PublicLinkRevoke.Input.Headers = .init(),
+        body: Operations.PublicLinkRevoke.Input.Body? = nil
+    ) async throws -> Operations.PublicLinkRevoke.Output {
+        try await publicLinkRevoke(Operations.PublicLinkRevoke.Input(
+            path: path,
+            headers: headers,
+            body: body
         ))
     }
     /// An app's compute runs
@@ -4108,7 +4190,7 @@ extension APIProtocol {
     }
     /// Change the organization's settings
     ///
-    /// `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+    /// `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
     ///
     /// **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -4950,7 +5032,7 @@ public enum Components {
                 case signature
             }
         }
-        /// One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account. At most 16 teams and 1000 accounts.
+        /// One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account, who comes in only through a public link; `link`: a public link, whose token's holders call the instance's public methods as anonymous visitors (its key, never a token; made and revoked on `/apps/{app}/public-links` only, shown to whoever may change the instance's access, and kept as they are by `POST /apps/{app}/access`). At most 16 teams and 1000 accounts.
         ///
         /// - Remark: Generated from `#/components/schemas/Grant`.
         @frozen public enum Grant: Codable, Hashable, Sendable {
@@ -4958,6 +5040,8 @@ public enum Components {
             case account(Components.Schemas.GrantAccount)
             /// - Remark: Generated from `#/components/schemas/Grant/GrantAnyone`.
             case anyone(Components.Schemas.GrantAnyone)
+            /// - Remark: Generated from `#/components/schemas/Grant/GrantLink`.
+            case link(Components.Schemas.GrantLink)
             /// - Remark: Generated from `#/components/schemas/Grant/GrantOrg`.
             case org(Components.Schemas.GrantOrg)
             /// - Remark: Generated from `#/components/schemas/Grant/GrantTeam`.
@@ -4976,6 +5060,8 @@ public enum Components {
                     self = .account(try .init(from: decoder))
                 case "anyone":
                     self = .anyone(try .init(from: decoder))
+                case "link":
+                    self = .link(try .init(from: decoder))
                 case "org":
                     self = .org(try .init(from: decoder))
                 case "team":
@@ -4993,6 +5079,8 @@ public enum Components {
                 case let .account(value):
                     try value.encode(to: encoder)
                 case let .anyone(value):
+                    try value.encode(to: encoder)
+                case let .link(value):
                     try value.encode(to: encoder)
                 case let .org(value):
                     try value.encode(to: encoder)
@@ -6980,7 +7068,7 @@ public enum Components {
                 case upgrades
             }
         }
-        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).
+        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).
         ///
         /// - Remark: Generated from `#/components/schemas/Org`.
         public struct Org: Codable, Hashable, Sendable {
@@ -7182,6 +7270,8 @@ public enum Components {
             public var personal: Swift.Bool?
             /// - Remark: Generated from `#/components/schemas/Org/allowGuests`.
             public var allowGuests: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/Org/allowPublicLinks`.
+            public var allowPublicLinks: Swift.Bool?
             /// - Remark: Generated from `#/components/schemas/Org/mode`.
             @frozen public enum ModePayload: String, Codable, Hashable, Sendable, CaseIterable {
                 case legacy = "legacy"
@@ -7237,6 +7327,7 @@ public enum Components {
             ///   - allApps:
             ///   - personal:
             ///   - allowGuests:
+            ///   - allowPublicLinks:
             ///   - mode:
             ///   - releaseApprovers:
             ///   - publishes:
@@ -7257,6 +7348,7 @@ public enum Components {
                 allApps: [Swift.String]? = nil,
                 personal: Swift.Bool? = nil,
                 allowGuests: Swift.Bool? = nil,
+                allowPublicLinks: Swift.Bool? = nil,
                 mode: Components.Schemas.Org.ModePayload? = nil,
                 releaseApprovers: [Swift.String]? = nil,
                 publishes: [Swift.String]? = nil,
@@ -7277,6 +7369,7 @@ public enum Components {
                 self.allApps = allApps
                 self.personal = personal
                 self.allowGuests = allowGuests
+                self.allowPublicLinks = allowPublicLinks
                 self.mode = mode
                 self.releaseApprovers = releaseApprovers
                 self.publishes = publishes
@@ -7298,6 +7391,7 @@ public enum Components {
                 case allApps
                 case personal
                 case allowGuests
+                case allowPublicLinks
                 case mode
                 case releaseApprovers
                 case publishes
@@ -8653,6 +8747,63 @@ public enum Components {
             }
             public enum CodingKeys: String, CodingKey {
                 case kind
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/GrantLink`.
+        public struct GrantLink: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/GrantLink/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case link = "link"
+            }
+            /// - Remark: Generated from `#/components/schemas/GrantLink/kind`.
+            public var kind: Components.Schemas.GrantLink.KindPayload
+            /// - Remark: Generated from `#/components/schemas/GrantLink/link`.
+            public var link: Swift.String
+            /// - Remark: Generated from `#/components/schemas/GrantLink/label`.
+            public var label: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/GrantLink/expiresAt`.
+            public var expiresAt: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/GrantLink/ratePerMinute`.
+            public var ratePerMinute: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/GrantLink/createdBy`.
+            public var createdBy: Swift.String
+            /// - Remark: Generated from `#/components/schemas/GrantLink/createdAt`.
+            public var createdAt: Swift.Int64
+            /// Creates a new `GrantLink`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - link:
+            ///   - label:
+            ///   - expiresAt:
+            ///   - ratePerMinute:
+            ///   - createdBy:
+            ///   - createdAt:
+            public init(
+                kind: Components.Schemas.GrantLink.KindPayload,
+                link: Swift.String,
+                label: Swift.String? = nil,
+                expiresAt: Swift.Int64? = nil,
+                ratePerMinute: Swift.Int64,
+                createdBy: Swift.String,
+                createdAt: Swift.Int64
+            ) {
+                self.kind = kind
+                self.link = link
+                self.label = label
+                self.expiresAt = expiresAt
+                self.ratePerMinute = ratePerMinute
+                self.createdBy = createdBy
+                self.createdAt = createdAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case link
+                case label
+                case expiresAt
+                case ratePerMinute
+                case createdBy
+                case createdAt
             }
         }
         /// - Remark: Generated from `#/components/schemas/AppScopeOrg`.
@@ -19453,6 +19604,580 @@ public enum Operations {
             public static var allCases: [Self] {
                 [
                     .textEventStream
+                ]
+            }
+        }
+    }
+    /// An instance's public links
+    ///
+    /// For whoever may change its access: each link's key, terms and creator, never a token.
+    ///
+    /// **Who:** a passkey session (an API key is refused).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/public-links`.
+    /// - Remark: Generated from `#/paths//apps/{app}/public-links/get(public_link_list)`.
+    public enum PublicLinkList {
+        public static let id: Swift.String = "public_link_list"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.PublicLinkList.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.PublicLinkList.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.PublicLinkList.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.PublicLinkList.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.PublicLinkList.Input.Path,
+                headers: Operations.PublicLinkList.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload`.
+                        public struct LinksPayloadPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/link`.
+                            public var link: Swift.String
+                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/label`.
+                            public var label: Swift.String?
+                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/expiresAt`.
+                            public var expiresAt: Swift.Int64?
+                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/expired`.
+                            public var expired: Swift.Bool
+                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/ratePerMinute`.
+                            public var ratePerMinute: Swift.Int64
+                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/createdBy`.
+                            public var createdBy: Swift.String
+                            /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/LinksPayload/createdAt`.
+                            public var createdAt: Swift.Int64
+                            /// Creates a new `LinksPayloadPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - link:
+                            ///   - label:
+                            ///   - expiresAt:
+                            ///   - expired:
+                            ///   - ratePerMinute:
+                            ///   - createdBy:
+                            ///   - createdAt:
+                            public init(
+                                link: Swift.String,
+                                label: Swift.String? = nil,
+                                expiresAt: Swift.Int64? = nil,
+                                expired: Swift.Bool,
+                                ratePerMinute: Swift.Int64,
+                                createdBy: Swift.String,
+                                createdAt: Swift.Int64
+                            ) {
+                                self.link = link
+                                self.label = label
+                                self.expiresAt = expiresAt
+                                self.expired = expired
+                                self.ratePerMinute = ratePerMinute
+                                self.createdBy = createdBy
+                                self.createdAt = createdAt
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case link
+                                case label
+                                case expiresAt
+                                case expired
+                                case ratePerMinute
+                                case createdBy
+                                case createdAt
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/links`.
+                        public typealias LinksPayload = [Operations.PublicLinkList.Output.Ok.Body.JsonPayload.LinksPayloadPayload]
+                        /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/json/links`.
+                        public var links: Operations.PublicLinkList.Output.Ok.Body.JsonPayload.LinksPayload
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - links:
+                        public init(links: Operations.PublicLinkList.Output.Ok.Body.JsonPayload.LinksPayload) {
+                            self.links = links
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case links
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/public-links/GET/responses/200/content/application\/json`.
+                    case json(Operations.PublicLinkList.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.PublicLinkList.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.PublicLinkList.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.PublicLinkList.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/public-links/get(public_link_list)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.PublicLinkList.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.PublicLinkList.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Make a public link of an instance
+    ///
+    /// A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor (`Caller::Visitor { link, key }`), whatever its access: send `Authorization: Bearer vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing `"calimero.visitor.v1\0" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's clock. Whoever may change the instance's access, while its organization allows public links (`409 PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/public-links`.
+    /// - Remark: Generated from `#/paths//apps/{app}/public-links/post(public_link_create)`.
+    public enum PublicLinkCreate {
+        public static let id: Swift.String = "public_link_create"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.PublicLinkCreate.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.PublicLinkCreate.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.PublicLinkCreate.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.PublicLinkCreate.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/requestBody/json/label`.
+                    public var label: Swift.String?
+                    /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/requestBody/json/expiresAt`.
+                    public var expiresAt: Swift.Int64?
+                    /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/requestBody/json/ratePerMinute`.
+                    public var ratePerMinute: Swift.Int64?
+                    /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - label:
+                    ///   - expiresAt:
+                    ///   - ratePerMinute:
+                    ///   - confirm:
+                    public init(
+                        label: Swift.String? = nil,
+                        expiresAt: Swift.Int64? = nil,
+                        ratePerMinute: Swift.Int64? = nil,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.label = label
+                        self.expiresAt = expiresAt
+                        self.ratePerMinute = ratePerMinute
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case label
+                        case expiresAt
+                        case ratePerMinute
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.label = try container.decodeIfPresent(
+                            Swift.String.self,
+                            forKey: .label
+                        )
+                        self.expiresAt = try container.decodeIfPresent(
+                            Swift.Int64.self,
+                            forKey: .expiresAt
+                        )
+                        self.ratePerMinute = try container.decodeIfPresent(
+                            Swift.Int64.self,
+                            forKey: .ratePerMinute
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "label",
+                            "expiresAt",
+                            "ratePerMinute",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/requestBody/content/application\/json`.
+                case json(Operations.PublicLinkCreate.Input.Body.JsonPayload)
+            }
+            public var body: Operations.PublicLinkCreate.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.PublicLinkCreate.Input.Path,
+                headers: Operations.PublicLinkCreate.Input.Headers = .init(),
+                body: Operations.PublicLinkCreate.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/responses/200/content/json/link`.
+                        public var link: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/responses/200/content/json/token`.
+                        public var token: Swift.String
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - link:
+                        ///   - token:
+                        public init(
+                            link: Swift.String,
+                            token: Swift.String
+                        ) {
+                            self.link = link
+                            self.token = token
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case link
+                            case token
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/public-links/POST/responses/200/content/application\/json`.
+                    case json(Operations.PublicLinkCreate.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.PublicLinkCreate.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.PublicLinkCreate.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.PublicLinkCreate.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/public-links/post(public_link_create)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.PublicLinkCreate.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.PublicLinkCreate.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Revoke a public link
+    ///
+    /// Its creator, or whoever may change the instance's access; it admits nobody from the next request. `412` first.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/public-links/{link}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/public-links/{link}/delete(public_link_revoke)`.
+    public enum PublicLinkRevoke {
+        public static let id: Swift.String = "public_link_revoke"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/public-links/{link}/DELETE/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/public-links/{link}/DELETE/path/app`.
+                public var app: Swift.String
+                /// - Remark: Generated from `#/paths/apps/{app}/public-links/{link}/DELETE/path/link`.
+                public var link: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                ///   - link:
+                public init(
+                    app: Swift.String,
+                    link: Swift.String
+                ) {
+                    self.app = app
+                    self.link = link
+                }
+            }
+            public var path: Operations.PublicLinkRevoke.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/public-links/{link}/DELETE/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.PublicLinkRevoke.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.PublicLinkRevoke.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.PublicLinkRevoke.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/public-links/{link}/DELETE/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/public-links/{link}/DELETE/requestBody/content/application\/json`.
+                case json(Components.Schemas.ConfirmOnly)
+            }
+            public var body: Operations.PublicLinkRevoke.Input.Body?
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.PublicLinkRevoke.Input.Path,
+                headers: Operations.PublicLinkRevoke.Input.Headers = .init(),
+                body: Operations.PublicLinkRevoke.Input.Body? = nil
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/public-links/{link}/DELETE/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/public-links/{link}/DELETE/responses/200/content/application\/json`.
+                    case json(OpenAPIRuntime.OpenAPIObjectContainer)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: OpenAPIRuntime.OpenAPIObjectContainer {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.PublicLinkRevoke.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.PublicLinkRevoke.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/public-links/{link}/delete(public_link_revoke)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.PublicLinkRevoke.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.PublicLinkRevoke.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
                 ]
             }
         }
@@ -37133,7 +37858,7 @@ public enum Operations {
     }
     /// Change the organization's settings
     ///
-    /// `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+    /// `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
     ///
     /// **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -37173,22 +37898,28 @@ public enum Operations {
                 public struct JsonPayload: Codable, Hashable, Sendable {
                     /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/json/allowGuests`.
                     public var allowGuests: Swift.Bool?
+                    /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/json/allowPublicLinks`.
+                    public var allowPublicLinks: Swift.Bool?
                     /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/requestBody/json/confirm`.
                     public var confirm: Components.Schemas.Confirm?
                     /// Creates a new `JsonPayload`.
                     ///
                     /// - Parameters:
                     ///   - allowGuests:
+                    ///   - allowPublicLinks:
                     ///   - confirm:
                     public init(
                         allowGuests: Swift.Bool? = nil,
+                        allowPublicLinks: Swift.Bool? = nil,
                         confirm: Components.Schemas.Confirm? = nil
                     ) {
                         self.allowGuests = allowGuests
+                        self.allowPublicLinks = allowPublicLinks
                         self.confirm = confirm
                     }
                     public enum CodingKeys: String, CodingKey {
                         case allowGuests
+                        case allowPublicLinks
                         case confirm
                     }
                     public init(from decoder: any Decoder) throws {
@@ -37197,12 +37928,17 @@ public enum Operations {
                             Swift.Bool.self,
                             forKey: .allowGuests
                         )
+                        self.allowPublicLinks = try container.decodeIfPresent(
+                            Swift.Bool.self,
+                            forKey: .allowPublicLinks
+                        )
                         self.confirm = try container.decodeIfPresent(
                             Components.Schemas.Confirm.self,
                             forKey: .confirm
                         )
                         try decoder.ensureNoAdditionalProperties(knownKeys: [
                             "allowGuests",
+                            "allowPublicLinks",
                             "confirm"
                         ])
                     }
@@ -37237,21 +37973,27 @@ public enum Operations {
                         public var org: Swift.String
                         /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/json/allowGuests`.
                         public var allowGuests: Swift.Bool
+                        /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/json/allowPublicLinks`.
+                        public var allowPublicLinks: Swift.Bool
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
                         ///   - org:
                         ///   - allowGuests:
+                        ///   - allowPublicLinks:
                         public init(
                             org: Swift.String,
-                            allowGuests: Swift.Bool
+                            allowGuests: Swift.Bool,
+                            allowPublicLinks: Swift.Bool
                         ) {
                             self.org = org
                             self.allowGuests = allowGuests
+                            self.allowPublicLinks = allowPublicLinks
                         }
                         public enum CodingKeys: String, CodingKey {
                             case org
                             case allowGuests
+                            case allowPublicLinks
                         }
                     }
                     /// - Remark: Generated from `#/paths/orgs/{org}/settings/POST/responses/200/content/application\/json`.

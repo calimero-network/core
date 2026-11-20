@@ -2541,7 +2541,7 @@ fn once_organizations_are_ordinary_a_personal_one_is_like_any_other() {
     assert!(!m.state.may_reach(&m.state.apps["gift"], Some("bob")));
 }
 
-/// Guests (`Feature::Guests`): an account listed on an instance (its `accounts` access)
+/// Guests (`Feature::Guests`): an account named on an instance (an `account` grant)
 /// that is not a member of its organization reaches it, and the apps its unit created for
 /// it, only from the logged version on and only while both the release it runs (`guests:
 /// allowed`) and its organization (`allowGuests`, its owner's or an admin's with a passkey)
@@ -2619,6 +2619,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
         org: "org".into(),
         settings: OrgSettings {
             allow_guests: Some(allow),
+            allow_public_links: None,
         },
         actor: actor.into(),
         consent,
@@ -2785,6 +2786,185 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     assert!(o.get("allowGuests").is_none(), "{o}");
     let st = serde_json::to_value(&m.state).unwrap();
     assert!(st.get("appInvites").is_none());
+}
+
+/// Public links (`Feature::PublicLinks`): whoever may change an instance's access makes one
+/// with their passkey over its terms, while the organization allows public links; a link
+/// admits visitors only from the logged version on, until it expires, is revoked, its
+/// organization turns links off, or its instance goes. Only the token's key is logged.
+#[test]
+fn a_public_link_admits_visitors_while_it_and_its_organization_allow() {
+    use super::cluster_version::Feature;
+    use super::{OrgSettings, PUBLIC_LINKS_OFF, PUBLIC_LINK_GONE};
+    use crate::types::PublicLink;
+    let (mut m, mut alice, _bob, _carol) = proven_cluster();
+    let _prev = m.state.apps.insert(
+        "forms".into(),
+        serde_json::from_value(json!({
+            "appId": "forms", "name": "forms", "group": 2, "bundle": "b", "owner": "alice",
+            "org": "org", "replicas": [1], "createdAt": 0, "grants": [{ "kind": "org" }],
+        }))
+        .unwrap(),
+    );
+    let key = crate::proof::public_link_key("pl_token");
+    let link = |expires_at: Option<u64>| PublicLink {
+        app: "forms".into(),
+        label: Some("Survey".into()),
+        expires_at,
+        rate_per_minute: 30,
+        created_by: String::new(),
+        created_at: 10,
+    };
+    let create = |key: &str, actor: &str, consent: Value, expires_at: Option<u64>| {
+        SystemCmd::CreatePublicLink {
+            link_key: key.into(),
+            link: link(expires_at),
+            actor: actor.into(),
+            consent,
+        }
+    };
+    assert_eq!(
+        create(&key, "alice", Value::Null, None).features(),
+        [Feature::AccessGrants, Feature::PublicLinks]
+    );
+    // A member who may not change the instance's access makes none.
+    assert!(m
+        .run_unproven(create(&key, "bob", Value::Null, None))
+        .is_err());
+    needs_consent(
+        &mut m,
+        &mut alice,
+        ("forms", "__create_public_link"),
+        &super::public_link_args(&key, &link(None)),
+        &json!({ "linkKey": key, "label": null, "expiresAt": null, "ratePerMinute": 30 }),
+        |c| create(&key, "alice", c, None),
+    );
+    // The link is one more grant of the instance, beside its `org` grant; it admits no
+    // account.
+    let forms = &m.state.apps["forms"];
+    assert_eq!(forms.access.link(&key).unwrap().created_by, "alice");
+    assert_eq!(forms.access.grants()[0], crate::types::Grant::Org);
+    assert!(m.state.may_reach(forms, Some("bob")));
+    assert!(!m.state.may_reach(forms, None));
+    // Setting the grants keeps the link as it is; a link it does not hold is never made
+    // that way.
+    let set = |access: Value| SystemCmd::SetAccess {
+        app_id: "forms".into(),
+        access: serde_json::from_value(access).unwrap(),
+        actor: "alice".into(),
+        owner_in_org: true,
+        owner_in_team: true,
+    };
+    let _ok = m.run_unproven(set(json!([]))).unwrap();
+    assert!(m.state.apps["forms"].access.link(&key).is_some());
+    let forged = json!([{ "kind": "link", "link": "forged",
+        "ratePerMinute": 600, "createdBy": "alice", "createdAt": 0 }]);
+    assert_eq!(
+        m.run_unproven(set(forged)),
+        Err(
+            "a public link is made with its own consent, not by setting the instance's access"
+                .to_owned()
+        )
+    );
+    let _ok = m.run_unproven(set(json!([{ "kind": "org" }]))).unwrap();
+    assert_eq!(m.state.apps["forms"].access.links().len(), 1);
+    // Below the version it admits nobody (no visitor is ever written below it).
+    assert!(m.state.public_link_admits(&key, 20).is_none());
+    let rc33 = "1.0.0-rc.33";
+    let _ok = m
+        .run_unproven(SystemCmd::SetClusterVersion {
+            version: rc33.into(),
+            nodes: (1..=4).map(|id| (id, rc33.to_owned())).collect(),
+        })
+        .unwrap();
+    assert!(m.state.public_link_admits(&key, 20).is_some());
+
+    // The organization turns links off: no new one, and the existing one admits nobody.
+    let settings = |allow: bool| SystemCmd::SetOrgSettings {
+        org: "org".into(),
+        settings: OrgSettings {
+            allow_guests: None,
+            allow_public_links: Some(allow),
+        },
+        actor: "alice".into(),
+        consent: Value::Null,
+    };
+    assert_eq!(settings(false).features(), [Feature::PublicLinks]);
+    let _ok = m.run_unproven(settings(false)).unwrap();
+    assert!(m.state.public_link_admits(&key, 20).is_none());
+    assert_eq!(
+        m.run_unproven(create("other", "alice", Value::Null, None)),
+        Err(PUBLIC_LINKS_OFF.to_owned())
+    );
+    let _ok = m.run_unproven(settings(true)).unwrap();
+    assert!(m.state.public_link_admits(&key, 20).is_some());
+
+    // An expired link admits nobody.
+    let _ok = m
+        .run_unproven(create("soon", "alice", Value::Null, Some(100)))
+        .unwrap();
+    assert!(m.state.public_link_admits("soon", 99).is_some());
+    assert!(m.state.public_link_admits("soon", 100).is_none());
+
+    // Revoked by its creator with a passkey; gone after.
+    let revoke = |c: Value| SystemCmd::RevokePublicLink {
+        app_id: "forms".into(),
+        link_key: key.clone(),
+        actor: "alice".into(),
+        consent: c,
+    };
+    needs_consent(
+        &mut m,
+        &mut alice,
+        ("forms", "__revoke_public_link"),
+        &json!({ "linkKey": key }),
+        &json!({ "linkKey": "other" }),
+        revoke,
+    );
+    assert!(m.state.public_link_admits(&key, 20).is_none());
+    assert_eq!(
+        m.run_unproven(revoke(Value::Null)),
+        Err(PUBLIC_LINK_GONE.to_owned())
+    );
+    // Dropped with its instance.
+    m.state.remove_app("forms");
+    assert_eq!(m.state.public_link_count(), 0);
+    let st = serde_json::to_value(&m.state).unwrap();
+    assert!(st.get("publicLinks").is_none());
+    let o = serde_json::to_value(&m.state.orgs["org"]).unwrap();
+    assert!(o.get("allowPublicLinks").is_none(), "{o}");
+}
+
+/// A visitor's proof is its own key's signature over the link, its key and a time near
+/// the node's clock: another key's, another link's, a stale or a future one are refused.
+#[test]
+fn a_visitors_proof_names_its_link_key_and_time() {
+    use crate::proof::{public_link_key, sign_visitor, verify_visitor, VISITOR_PROOF_WINDOW_SECS};
+    let link = public_link_key("pl_token");
+    assert_ne!(
+        link,
+        crate::proof::invite_key("pl_token"),
+        "a link is not an invite"
+    );
+    let (key, sig) = sign_visitor(&[9; 32], &link, 1_000);
+    assert!(verify_visitor(&link, &key, 1_000, &sig, 1_000).is_ok());
+    assert!(verify_visitor(&link, &key, 1_000, &sig, 1_000 + VISITOR_PROOF_WINDOW_SECS).is_ok());
+    assert!(verify_visitor(&link, &key, 1_000, &sig, 1_001 + VISITOR_PROOF_WINDOW_SECS).is_err());
+    assert!(
+        verify_visitor(&link, &key, 1_001, &sig, 1_000).is_err(),
+        "another time"
+    );
+    let other = public_link_key("pl_other");
+    assert!(
+        verify_visitor(&other, &key, 1_000, &sig, 1_000).is_err(),
+        "another link"
+    );
+    let (key2, _) = sign_visitor(&[8; 32], &link, 1_000);
+    assert!(
+        verify_visitor(&link, &key2, 1_000, &sig, 1_000).is_err(),
+        "another key"
+    );
+    assert!(verify_visitor(&link, &key.to_uppercase(), 1_000, &sig, 1_000).is_err());
 }
 
 /// An instance's access is a list of grants: a team, named members and guests together ("team
@@ -3062,7 +3242,7 @@ fn a_team_deleted_keeping_its_instances_leaves_them_their_other_grants() {
         ),
         // Only u.
         ("e", grants(json!([{ "kind": "team", "team": "u" }]))),
-        // u as one mode.
+        // u alone.
         ("m", Access::team("u".into())),
         // u and t: keeps t either way.
         (

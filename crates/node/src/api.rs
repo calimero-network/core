@@ -83,6 +83,7 @@ mod passkeys;
 mod pipeline_events;
 pub(crate) mod pipeline_receipt;
 mod pipelines;
+mod public_links;
 mod recovery;
 mod restore;
 mod sign_up;
@@ -99,6 +100,7 @@ pub(crate) use orgs::{
     CapabilitiesBody, InviteBody,
 };
 pub use pipeline_events::MAX_RUN_SUBSCRIBERS_PER_APP;
+pub(crate) use public_links::VisitorLimits;
 pub(crate) use upgrades::{
     owner_approves, refuse_stalled, unit_plan, upgrade_app, upgrade_refusal, upgrade_unit,
     UpgradeBody,
@@ -128,6 +130,7 @@ use {
         TeamUpdateBody,
     },
     packages::{InstallBody, PublisherBody},
+    public_links::PublicLinkBody,
     recovery::{RecoveryBegin, RecoveryFinish, RecoveryKeyBody, RecoveryStart, RecoveryStartBody},
     sign_up::{OpsSignUpInviteBody, SignUpBody, SignUpInviteBody},
     upgrades::{OpsUpgradeBody, OrgUpgradeBody, PublisherUpgradeBody},
@@ -149,6 +152,7 @@ pub(crate) const AREA_SOURCES: &[(&str, &str)] = &[
     ("ops", include_str!("api/ops.rs")),
     ("orgs", include_str!("api/orgs.rs")),
     ("packages", include_str!("api/packages.rs")),
+    ("public_links", include_str!("api/public_links.rs")),
     ("recovery", include_str!("api/recovery.rs")),
     ("sign_up", include_str!("api/sign_up.rs")),
     ("upgrades", include_str!("api/upgrades.rs")),
@@ -633,7 +637,22 @@ async fn principal(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>
     if p.as_ref().is_some_and(Principal::upgrade_key) {
         return Err(upgrade_key_only());
     }
+    // A visitor's credential opens its instance's public methods (`gate`) and nothing else.
+    if p.as_ref()
+        .is_some_and(|p| matches!(p.caller, Caller::Visitor { .. }))
+    {
+        return Err(visitor_only());
+    }
     Ok(p)
+}
+
+/// What a visitor's credential gets on any route but its instance's calls and views.
+fn visitor_only() -> ApiError {
+    ApiError::new(
+        403,
+        public_links::VISITOR_ONLY,
+        "a visitor through a public link calls only the instance's public methods",
+    )
 }
 
 /// What an upgrade key gets on any route but its app's upgrade.
@@ -660,6 +679,9 @@ async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal
     // index): a session or key revoked through another node is refused here
     // at once, not once this replica catches up.
     let (sys_index, _caught_up) = node.sys_fresh_index().await;
+    if let Some(rest) = token.strip_prefix(public_links::VISITOR_PREFIX) {
+        return public_links::visitor(node, rest, sys_index).map(Some);
+    }
     if let Some(_key) = token.strip_prefix("cal_") {
         let hash = calimero_identity::api_key_hash(token);
         let rec = node
@@ -1262,7 +1284,19 @@ async fn gate(
     method: &str,
     write: bool,
 ) -> Result<Principal, ApiError> {
-    let p = principal(node, headers).await?;
+    let p = credential(node, headers).await?;
+    if p.as_ref().is_some_and(Principal::upgrade_key) {
+        return Err(upgrade_key_only());
+    }
+    // A visitor through a public link: its instance's methods only, whatever its access; the
+    // ABI's `public` flag is judged where the call runs.
+    if let Some(v) = p
+        .as_ref()
+        .filter(|p| matches!(p.caller, Caller::Visitor { .. }))
+    {
+        public_links::visitor_gate(node, v, app, method).await?;
+        return Ok(v.clone());
+    }
     if let Some(p) = &p {
         p.within(node, app)?;
     }
@@ -2205,6 +2239,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/recover/holder", post(restore::recover_holder))
         .route("/ops/recovery-files", get(restore::ops_recovery_files))
         .merge(auth::routes())
+        .merge(public_links::routes())
         .merge(recovery::routes())
         .merge(backup_keys::routes())
         .merge(packages::routes())

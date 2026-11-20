@@ -80,7 +80,9 @@ fn caller(caller: &host::Caller) -> types::Caller {
             key_id: key_id.clone(),
             account: account.clone(),
         }),
-        host::Caller::Public => types::Caller::Public,
+        // A component built before 0.5.6 sees an anonymous caller; `context.visitor` names
+        // the visitor.
+        host::Caller::Public | host::Caller::Visitor { .. } => types::Caller::Public,
         host::Caller::System => types::Caller::System,
         host::Caller::App(app) => types::Caller::App(app.clone()),
     }
@@ -210,6 +212,20 @@ impl context::Host for StoreData {
 
     fn unit_of(&mut self) -> Result<Option<String>> {
         Ok(self.host.unit_of())
+    }
+
+    fn grant_scope(&mut self) -> Result<Option<String>> {
+        Ok(self.host.grant_scope())
+    }
+
+    fn visitor(&mut self) -> Result<Option<types::VisitorCaller>> {
+        Ok(match self.host.caller() {
+            host::Caller::Visitor { link, key } => Some(types::VisitorCaller {
+                link: link.clone(),
+                key: key.clone(),
+            }),
+            _ => None,
+        })
     }
 
     fn app_owner(&mut self) -> Result<String> {

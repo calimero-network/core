@@ -81,6 +81,7 @@ fn who() -> String {
         env::Caller::Account(a) => format!("account:{a}"),
         env::Caller::ApiKey { key_id, .. } => format!("key:{key_id}"),
         env::Caller::App(a) => format!("app:{a}"),
+        env::Caller::Visitor { link, key } => format!("visitor:{link}:{key}"),
         other => format!("other:{other:?}"),
     };
     match env::via() {
@@ -187,6 +188,14 @@ impl Kv {
     #[app::view]
     pub fn unit_of(&self) -> app::Result<Option<String>> {
         Ok(env::unit_of())
+    }
+
+    /// The scope of the caller's grant (`env::grant_scope`): what the instance's managers set
+    /// on the person's grant, which the app would use to keep a guest to part of it; none for
+    /// a caller reaching the app another way.
+    #[app::view]
+    pub fn grant_scope(&self) -> app::Result<Option<String>> {
+        Ok(env::grant_scope())
     }
 
     /// Sets `key`; emits `Inserted` for a new key, `Updated` for an existing one.
@@ -487,6 +496,23 @@ impl Kv {
     #[app::view]
     #[app::allow(app = "*")]
     pub fn who_view(&self) -> app::Result<String> {
+        Ok(who())
+    }
+
+    /// A public method: anyone the instance lets in calls it, a visitor through a public
+    /// link included (whatever the instance's access). Stores who signed under `sign:<who>`
+    /// and answers who it was (`visitor:<link>:<key>` for a visitor).
+    #[app::public]
+    pub fn sign_guestbook(&mut self, note: String) -> app::Result<String> {
+        let who = who();
+        let _event = self.upsert(&format!("sign:{who}"), &note)?;
+        Ok(who)
+    }
+
+    /// A public view: who is calling (`visitor:<link>:<key>` for a visitor).
+    #[app::view]
+    #[app::public]
+    pub fn whoami_public(&self) -> app::Result<String> {
         Ok(who())
     }
 

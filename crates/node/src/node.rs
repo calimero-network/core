@@ -533,6 +533,8 @@ pub struct Node {
     pub(crate) blob_guards: Arc<blob_guards::BlobGuards>,
     /// How many exports each account has asked of this node lately.
     pub(crate) export_limits: crate::api::ExportLimits,
+    /// Visitors' calls through each public link, per visitor key (`api::VisitorLimits`).
+    pub(crate) visitor_limits: crate::api::VisitorLimits,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -1070,6 +1072,7 @@ impl Node {
             uploads: component::Uploads::default(),
             blob_guards: Arc::default(),
             export_limits: crate::api::ExportLimits::default(),
+            visitor_limits: crate::api::VisitorLimits::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,

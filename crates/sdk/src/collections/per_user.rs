@@ -35,7 +35,9 @@ impl<T, S: Store> StateField for PerUser<T, S> {
 fn caller_account() -> Result<String, AppError> {
     match env::caller() {
         Caller::Account(account) | Caller::ApiKey { account, .. } => Ok(account),
-        Caller::Public | Caller::System | Caller::App(_) => Err(AppError::login_required()),
+        Caller::Public | Caller::Visitor { .. } | Caller::System | Caller::App(_) => {
+            Err(AppError::login_required())
+        }
     }
 }
 

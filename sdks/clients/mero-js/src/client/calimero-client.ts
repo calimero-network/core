@@ -10,6 +10,7 @@
  * ```
  */
 
+import { Visitor } from './visitor.js';
 import {
   DEFAULT_RETRY,
   NodeTransport,
@@ -446,6 +447,19 @@ export class CalimeroClient {
   /** Authenticate every request with an API key. */
   useApiKey(key: string): void {
     this.transport.useApiKey(key);
+  }
+
+  /**
+   * Call as an anonymous visitor through a public link (`link`: its token, from the link's
+   * URL), with the visitor's own Ed25519 key (`seed`: 32 bytes, from {@link newVisitorSeed},
+   * kept in local storage to stay the same visitor). Each request is signed fresh; only the
+   * instance's `#[app::public]` methods answer. Answers the visitor (its `link` and
+   * `publicKey`, how the app names it).
+   */
+  async useVisitor({ link, seed }: { link: string; seed: Uint8Array }): Promise<Visitor> {
+    const visitor = await Visitor.create(link, seed);
+    this.transport.useVisitor(() => visitor.bearer());
+    return visitor;
   }
 
   useSession(session: CalimeroSession): void {
