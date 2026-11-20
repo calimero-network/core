@@ -64,6 +64,10 @@ features = ["python"]
 module-name = "calimero_client_py._native"
 python-packages = ["calimero"]
 manifest-path = "Cargo.toml"
+# The sdist is laid out from the workspace root, so the project's LICENSE sits
+# under sdks/clients/mero-py/ there; PKG-INFO names it at the root, and PyPI
+# refuses an sdist whose License-File is missing. Put a copy at the root.
+include = [{ path = "LICENSE", format = "sdist" }]
 
 [tool.black]
 line-length = 88
