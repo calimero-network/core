@@ -55,12 +55,12 @@ extension CalimeroClient {
 
         /// Create an app instance: `POST /apps` (`app_create`).
         ///
-        /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization. Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+        /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
         ///
         /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
         @discardableResult
-        public func create(name: Swift.String? = nil, bundle: Swift.String? = nil, package: Swift.String? = nil, version: Swift.String? = nil, service: Swift.String? = nil, org: Swift.String? = nil, access: Components.Schemas.Access? = nil, initArgs: OpenAPIRuntime.OpenAPIValueContainer? = nil, metadata: OpenAPIRuntime.OpenAPIValueContainer? = nil, deployment: Swift.String? = nil) async throws -> Operations.AppCreate.Output.Ok.Body.JsonPayload {
-            let input = Operations.AppCreate.Input(body: .json(.init(name: name, bundle: bundle, package: package, version: version, service: service, org: org, access: access, initArgs: initArgs, metadata: metadata, deployment: deployment)))
+        public func create(name: Swift.String? = nil, bundle: Swift.String? = nil, package: Swift.String? = nil, version: Swift.String? = nil, service: Swift.String? = nil, org: Swift.String? = nil, newOrg: Operations.AppCreate.Input.Body.JsonPayload.NewOrgPayload? = nil, access: Components.Schemas.Access? = nil, initArgs: OpenAPIRuntime.OpenAPIValueContainer? = nil, metadata: OpenAPIRuntime.OpenAPIValueContainer? = nil, deployment: Swift.String? = nil) async throws -> Operations.AppCreate.Output.Ok.Body.JsonPayload {
+            let input = Operations.AppCreate.Input(body: .json(.init(name: name, bundle: bundle, package: package, version: version, service: service, org: org, newOrg: newOrg, access: access, initArgs: initArgs, metadata: metadata, deployment: deployment)))
             return try await client.perform { api in
                 try await api.appCreate(input).ok.body.json
             }
@@ -302,7 +302,7 @@ extension CalimeroClient {
 
         /// Hand an app to another account: `POST /apps/{app}/transfer` (`app_transfer`).
         ///
-        /// The owner (for an organization's app, while a member and in the app's team), or an organization admin; an organization's app only to a member. Answers `null`.
+        /// The owner (for an organization's app, while a member and in the app's team), or an organization admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for; below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal one). Answers `null`.
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         public func transfer(app: Swift.String, to: Swift.String, passkey: (any PasskeyProvider)? = nil) async throws {
@@ -797,7 +797,7 @@ extension CalimeroClient {
 
         /// The account's own apps: `GET /auth/apps` (`account_apps`).
         ///
-        /// The apps the account owns, in any organization (a package-bound session: its package's), with its personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
+        /// The apps the account owns, in any organization (a package-bound session: its package's), with its only organization's `approvedReleases` (below cluster version 1.0.0-rc.32 its personal organization's): each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
@@ -1041,7 +1041,7 @@ extension CalimeroClient {
 
         /// The caller's account: `GET /auth/me` (`me`).
         ///
-        /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: the one made at sign-up, where its instances go unless they name another; its approvals are that organization's), recovery state, and how the caller came (`via`).
+        /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
@@ -1350,7 +1350,7 @@ extension CalimeroClient {
 
         /// The organizations a deployment serves: `GET /deployments/{id}/orgs` (`deployment_orgs`).
         ///
-        /// For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or in a personal organization, are only counted (`outsideOrgs`). Never who the members are.
+        /// For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (`outsideOrgs`). Never who the members are.
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
@@ -1707,7 +1707,7 @@ extension CalimeroClient {
 
         /// Create an organization: `POST /orgs` (`org_create`).
         ///
-        /// `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.
+        /// `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account's are those it creates here (or with a `standalone` instance) or is invited to; before, every account also had a personal organization from sign-up (`personal` in `/auth/me`).
         ///
         /// **Who:** a passkey session (an API key is refused).
         @discardableResult

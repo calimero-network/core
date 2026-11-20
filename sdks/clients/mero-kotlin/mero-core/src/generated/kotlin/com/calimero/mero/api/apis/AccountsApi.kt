@@ -93,7 +93,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /auth/apps
      * The account&#39;s own apps
-     * The apps the account owns, in any organization (a package-bound session: its package&#39;s), with its personal organization&#39;s &#x60;approvedReleases&#x60;: each app&#39;s release, the newer releases it may upgrade to, its last upgrade, its replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** signed in (a session or an API key).
+     * The apps the account owns, in any organization (a package-bound session: its package&#39;s), with its only organization&#39;s &#x60;approvedReleases&#x60; (below cluster version 1.0.0-rc.32 its personal organization&#39;s): each app&#39;s release, the newer releases it may upgrade to, its last upgrade, its replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** signed in (a session or an API key).
      * @param after  (optional)
      * @param limit  (optional)
      * @return AccountApps200Response
@@ -126,7 +126,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /auth/apps
      * The account&#39;s own apps
-     * The apps the account owns, in any organization (a package-bound session: its package&#39;s), with its personal organization&#39;s &#x60;approvedReleases&#x60;: each app&#39;s release, the newer releases it may upgrade to, its last upgrade, its replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** signed in (a session or an API key).
+     * The apps the account owns, in any organization (a package-bound session: its package&#39;s), with its only organization&#39;s &#x60;approvedReleases&#x60; (below cluster version 1.0.0-rc.32 its personal organization&#39;s): each app&#39;s release, the newer releases it may upgrade to, its last upgrade, its replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** signed in (a session or an API key).
      * @param after  (optional)
      * @param limit  (optional)
      * @return ApiResponse<AccountApps200Response?>
@@ -1571,7 +1571,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /auth/me
      * The caller&#39;s account
-     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: the one made at sign-up, where its instances go unless they name another; its approvals are that organization&#39;s), recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
+     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
      * @return Me200Response
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1602,7 +1602,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /auth/me
      * The caller&#39;s account
-     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: the one made at sign-up, where its instances go unless they name another; its approvals are that organization&#39;s), recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
+     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
      * @return ApiResponse<Me200Response?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception

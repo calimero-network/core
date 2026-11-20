@@ -302,15 +302,21 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if s.orgs.contains_key(&org_id) {
                 return Err("organization exists");
             }
+            if personal && s.ordinary_orgs() {
+                return Err(super::NO_PERSONAL_ORGS);
+            }
             if personal {
                 if s.personal_org_of(&actor).is_some() {
                     return Err(PERSONAL_ORG_EXISTS);
                 }
             } else {
+                // Once organizations are ordinary, a personal one made before counts too.
                 let owned = s
                     .orgs
                     .values()
-                    .filter(|o| !o.personal && o.members.get(&actor) == Some(&OrgRole::Owner))
+                    .filter(|o| {
+                        !s.acts_personal(o) && o.members.get(&actor) == Some(&OrgRole::Owner)
+                    })
                     .count();
                 if owned >= s.quotas.max_orgs_per_account as usize {
                     return Err("quota exceeded: organizations");

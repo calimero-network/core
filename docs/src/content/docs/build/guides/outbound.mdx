@@ -179,8 +179,8 @@ asks for nothing.
   a release signed by someone else starts with nothing approved.
 - **Per organization.** It holds for every app of the package in the
   organization. An app created without naming an organization is in its
-  owner's personal organization, approved the same way on
-  `/orgs/{personal org}/outbound` (there are no per-account approvals since
+  owner's only organization, or one made with it, approved the same way on
+  `/orgs/{org}/outbound` (there are no per-account approvals since
   1.0.0-rc.20).
 - **Releases only add.** A prefix a later release declares that the owner was
   never shown answers `AwaitingApproval` until approved; the rest keep working.
@@ -194,7 +194,7 @@ asks for nothing.
 
 With `meroctl`: `org outbound <org> --package <pkg> [--prefix <p>]… [--replace]`,
 and `account outbound --package <pkg> …`, which does the same on the account's
-personal organization. On a development cluster add `--dev-passkey <file>` to
+only organization. On a development cluster add `--dev-passkey <file>` to
 approve the step-up.
 
 An app's frontend can also ask for the approval on the node's consent page

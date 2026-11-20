@@ -1951,13 +1951,20 @@ async fn scope_report(
             .map(|a| report::app_json(s, a, &releases, &runtimes, Reader::Account(account)))
             .collect();
         // The organization's set, or for the account's own apps its personal
+        // organization's before organizations are ordinary, after it its only
         // organization's (each app's own is in its entry).
         let approved = match org {
             Some(o) => s.approved_for(o),
-            None => s.personal_org_of(account).and_then(|o| s.approved_for(o)),
+            None => s
+                .personal_org_of(account)
+                .or_else(|| match s.orgs_of(account).as_slice() {
+                    [one] => Some(*one),
+                    _ => None,
+                })
+                .and_then(|o| s.approved_for(o)),
         };
         let scope = match org {
-            Some(o) if s.orgs.get(o).is_some_and(|o| o.personal) => {
+            Some(o) if s.orgs.get(o).is_some_and(|o| s.acts_personal(o)) => {
                 json!({ "kind": "org", "org": o, "personal": true })
             }
             Some(o) => json!({ "kind": "org", "org": o }),

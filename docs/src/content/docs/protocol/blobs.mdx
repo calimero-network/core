@@ -192,7 +192,7 @@ A node that stops hosting a deleted app drops the bytes of its files.
 The count and the app's log are not one atomic step.
 When a record's commit fails, the leader checks whether it was logged and settles the count either way.
 A crash between the two can still leave an over-count.
-Transferring an app from a personal organization to someone outside it, which moves it to their personal organization, is refused if its files would pass that organization's quota.
+Below cluster version 1.0.0-rc.32, transferring an app from a personal organization to someone outside it, which moved it to their personal organization, was refused if its files would pass that organization's quota; from that version an app is transferred only within its organization.
 `GET /auth/usage` shows an account's file bytes per payer.
 
 ## Publishing a compute output

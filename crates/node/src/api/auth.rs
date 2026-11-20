@@ -322,6 +322,18 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
         .require_features(&[crate::system::cluster_version::Feature::InviteCapabilities])
         .await
         .is_ok();
+    // Once organizations are ordinary a sign-up makes none: an account's organizations
+    // are those it creates (with an instance, or `POST /orgs`) or is invited to. Before,
+    // every account has its personal organization from the start, approving the release
+    // it signed up through.
+    let personal_org = node
+        .require_features(&[crate::system::cluster_version::Feature::OrdinaryOrgs])
+        .await
+        .is_err()
+        .then(|| crate::system::PersonalOrgSeed {
+            org_id: typed_id::<16>(),
+            release: Some(node.own_release()),
+        });
     let invite = invite.map(|token| crate::system::SignUpRedemption {
         invite_key: crate::proof::invite_key(token),
         now,
@@ -338,12 +350,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
             }),
             consent: super::consent_value(&consent)?,
             at: now,
-            // Every account has its personal organization from the start,
-            // approving the release it signed up through.
-            personal_org: Some(crate::system::PersonalOrgSeed {
-                org_id: typed_id::<16>(),
-                release: Some(node.own_release()),
-            }),
+            personal_org,
         })
         .await?;
     Ok(session_answer(&account_id, &token, &session))

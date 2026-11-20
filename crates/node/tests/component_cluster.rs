@@ -10,7 +10,7 @@ use std::time::Duration;
 use calimero_client::types::{AppCreateRequest, OrgRole, TeamJoin, ViewsRequestConsistency};
 use calimero_client::{Client, Policy, Request};
 use calimero_identity::testing::SoftAuthenticator;
-use common::{signed_up, typed, wire, Cluster, ORIGIN};
+use common::{home_org, signed_up, typed, wire, Cluster, ORIGIN};
 use futures_util::StreamExt;
 use reqwest::Method;
 use serde_json::{json, Value};
@@ -1017,15 +1017,16 @@ async fn apps_see_the_callers_organization_role_and_teams() {
         .unwrap_err();
     assert_eq!(err.code(), Some("APP_ERROR"), "{err}");
 
-    // Made without naming an organization, the app is in her personal one,
-    // and sees her standing there alone.
+    // Made in an organization of her own, the app sees her standing there alone.
     let solo = alice
         .apps()
-        .create(typed(json!({ "name": "solo", "bundle": &bundle })))
+        .create(typed(
+            json!({ "name": "solo", "bundle": &bundle, "newOrg": { "name": "Solo" } }),
+        ))
         .await
         .map(|a| a.app_id)
         .unwrap();
-    let home = json!(alice.personal_org().await.unwrap());
+    let home = alice.apps().get(&solo).await.map(wire).unwrap()["org"].clone();
     assert_ne!(home, json!(org));
     let me = alice
         .apps()
@@ -1812,8 +1813,8 @@ async fn an_owner_removed_from_the_organization_no_longer_manages_its_app() {
 }
 
 /// An owner who is a member of the app's organization manages it as before,
-/// and so does the owner of an app in their personal organization, which goes
-/// to the new owner's personal organization when handed to someone outside it.
+/// and so does the owner of an app in an organization of their own (made with it),
+/// which is handed only to a member of that organization.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_member_owner_and_a_personal_owner_still_manage_their_apps() {
     let c = Cluster::start(3).await;
@@ -1839,7 +1840,9 @@ async fn a_member_owner_and_a_personal_owner_still_manage_their_apps() {
         .unwrap();
     let personal = bob
         .apps()
-        .create(typed(json!({ "name": "mine", "bundle": &bundle })))
+        .create(typed(
+            json!({ "name": "mine", "bundle": &bundle, "newOrg": { "name": "Bob's" } }),
+        ))
         .await
         .map(|a| a.app_id)
         .unwrap();
@@ -1850,22 +1853,27 @@ async fn a_member_owner_and_a_personal_owner_still_manage_their_apps() {
         let _ok = set_metadata(&bob, app, json!({ "pinned": true }))
             .await
             .unwrap();
-        bob.apps()
-            .transfer(app, &carol_id, Some(&mut b))
-            .await
-            .unwrap();
     }
+    bob.apps()
+        .transfer(&in_org, &carol_id, Some(&mut b))
+        .await
+        .unwrap();
+    // Carol is not a member of Bob's own organization: refused before the passkey.
+    let err = bob
+        .apps()
+        .transfer(&personal, &carol_id, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("REJECTED"), "{err}");
     all_applied(&c).await;
-    // It went to her personal organization.
-    let carols = carol.apps().get(&personal).await.map(wire).unwrap()["org"].clone();
-    assert_eq!(carols, json!(carol.personal_org().await.unwrap()));
-    assert_ne!(carols, json!(org));
-    for app in [&in_org, &personal] {
-        let record = carol.apps().get(app).await.map(wire).unwrap();
-        assert_eq!(record["owner"], json!(carol_id), "{record}");
-        assert_eq!(record["metadata"], json!({ "pinned": true }), "{record}");
-        let _ok = carol.apps().delete(app).await.unwrap();
-    }
+    let record = carol.apps().get(&in_org).await.map(wire).unwrap();
+    assert_eq!(record["owner"], json!(carol_id), "{record}");
+    assert_eq!(record["metadata"], json!({ "pinned": true }), "{record}");
+    let _ok = carol.apps().delete(&in_org).await.unwrap();
+    let record = bob.apps().get(&personal).await.map(wire).unwrap();
+    assert_eq!(record["metadata"], json!({ "pinned": true }), "{record}");
+    assert_ne!(record["org"], json!(org), "{record}");
+    let _ok = bob.apps().delete(&personal).await.unwrap();
     let _unused = &mut cpk;
 }
 
@@ -5315,6 +5323,7 @@ fn mpk_full(
         frontend: None,
         frontend_aliases: Vec::new(),
         upgrades: None,
+        instance_org: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         secrets: secrets.map(|s| {
             s.iter()
@@ -5457,7 +5466,7 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
     let _ = alice
         .orgs()
         .outbound_approval(
-            &alice.personal_org().await.unwrap(),
+            &home_org(&alice).await,
             PACKAGE,
             Some(typed(json!("manifest"))),
             Some(false),
@@ -5586,7 +5595,7 @@ async fn a_release_fills_only_the_secrets_it_declares() {
         let _ = alice
             .orgs()
             .outbound_approval(
-                &alice.personal_org().await.unwrap(),
+                &home_org(&alice).await,
                 package,
                 Some(typed(json!("manifest"))),
                 Some(false),
@@ -5806,7 +5815,7 @@ async fn a_deployments_secret_reaches_its_instances_unless_they_set_their_own() 
     let _ = alice
         .orgs()
         .outbound_approval(
-            &alice.personal_org().await.unwrap(),
+            &home_org(&alice).await,
             PACKAGE,
             Some(typed(json!("manifest"))),
             Some(false),
@@ -6118,7 +6127,7 @@ async fn a_deployments_secret_never_reaches_a_package_it_does_not_offer() {
         .unwrap();
 
     // The customer's instance from the deployment, its outbound approved in their org.
-    let bobs_org = bob.personal_org().await.unwrap();
+    let bobs_org = home_org(&bob).await;
     let app = bob
         .apps()
         .create(AppCreateRequest {
@@ -6309,7 +6318,7 @@ async fn a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it() {
     let _ = alice
         .orgs()
         .outbound_approval(
-            &alice.personal_org().await.unwrap(),
+            &home_org(&alice).await,
             USED,
             Some(typed(json!("manifest"))),
             Some(false),
@@ -6436,7 +6445,7 @@ async fn an_owner_sets_its_instances_own_secret_and_it_goes_only_where_declared(
     let _ = alice
         .orgs()
         .outbound_approval(
-            &alice.personal_org().await.unwrap(),
+            &home_org(&alice).await,
             PACKAGE,
             Some(typed(json!("manifest"))),
             Some(false),
@@ -7276,7 +7285,7 @@ async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
     let _ = alice
         .orgs()
         .outbound_approval(
-            &alice.personal_org().await.unwrap(),
+            &home_org(&alice).await,
             PACKAGE,
             Some(typed(json!("manifest"))),
             Some(false),
@@ -7529,8 +7538,8 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
 
 /// Review item 3, D75 (spec v0.26): `orgs-of` answers only the app's own organization.
 /// Carol is a member of the app's org and the owner of another; a component in the
-/// app's org learns only her role there, and an app in Alice's personal organization
-/// (made when it named none) learns only that one: Alice's role, nothing of Carol's.
+/// app's org learns only her role there, and an app in an organization of Alice's own
+/// (made with it, `newOrg`) learns only that one: Alice's role, nothing of Carol's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_component_sees_no_organization_but_its_own() {
     use calimero_app_host::{Directory as _, OrgRole};
@@ -7587,7 +7596,9 @@ async fn a_component_sees_no_organization_but_its_own() {
         .unwrap();
     let personal = alice
         .apps()
-        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .create(typed(
+            json!({ "name": "kv", "bundle": &bundle, "newOrg": { "name": "Mine" } }),
+        ))
         .await
         .map(|a| a.app_id)
         .unwrap();
@@ -7609,19 +7620,17 @@ async fn a_component_sees_no_organization_but_its_own() {
     assert_eq!(
         dir.orgs_of(&carol_id),
         Vec::new(),
-        "an app in a personal organization saw its caller's orgs"
+        "an app in its own organization saw its caller's orgs"
     );
     let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let mine = node
-        .sys(|s| s.personal_org_of(&alice_id).cloned())
-        .expect("the instance made Alice's personal organization");
+    let mine = node.sys(|s| s.apps[&personal].org.clone());
     assert_eq!(
         dir.orgs_of(&alice_id),
         vec![(mine, OrgRole::Owner)],
-        "an app in a personal organization saw more than its own"
+        "an app in its own organization saw more than its own"
     );
 }
 
@@ -8309,7 +8318,9 @@ async fn only_the_owner_and_org_admins_read_an_apps_usage() {
         .unwrap();
     let personal = alice
         .apps()
-        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .create(typed(
+            json!({ "name": "kv", "bundle": &bundle, "newOrg": { "name": "Mine" } }),
+        ))
         .await
         .map(|a| a.app_id)
         .unwrap();
@@ -8436,16 +8447,21 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
         "the owner paid for the org's app: {me}"
     );
 
-    // One in her personal organization is that organization's, and only it.
+    // One in an organization of her own is that organization's, and only it.
     let personal = alice
         .apps()
-        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .create(typed(
+            json!({ "name": "kv", "bundle": &bundle, "newOrg": { "name": "Mine" } }),
+        ))
         .await
         .map(|a| a.app_id)
         .unwrap();
     set(&alice, &personal, "p").await.unwrap();
     let mine = figure(&app_usage(&alice, &personal).await["today"]["fuel"]);
-    let home = alice.personal_org().await.unwrap();
+    let home = alice.apps().get(&personal).await.map(wire).unwrap()["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert_ne!(home, acme);
     let theirs = alice.orgs().usage(&home).await.map(wire).unwrap();
     assert_eq!(figure(&theirs["developerFuelToday"]), mine, "{theirs}");
@@ -8473,7 +8489,9 @@ async fn an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run() 
         .unwrap();
     let personal = alice
         .apps()
-        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .create(typed(
+            json!({ "name": "kv", "bundle": &bundle, "newOrg": { "name": "Mine" } }),
+        ))
         .await
         .map(|a| a.app_id)
         .unwrap();
@@ -8485,8 +8503,11 @@ async fn an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run() 
         .await
         .map(|a| a.app_id)
         .unwrap();
-    // The org burns far more than the owner's personal app will.
-    let home = alice.personal_org().await.unwrap();
+    // The org burns far more than the owner's own app (its own organization) will.
+    let home = alice.apps().get(&personal).await.map(wire).unwrap()["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let mine = figure(&alice.orgs().usage(&home).await.map(wire).unwrap()["developerFuelToday"]);
     let mut org_fuel = 0;
     for i in 0..400 {

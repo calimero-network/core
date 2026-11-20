@@ -281,6 +281,20 @@ impl Cluster {
     }
 }
 
+/// The caller's own organization, as a person's was before sign-ups stopped making one:
+/// its only organization, else one made now ("Home").
+#[allow(dead_code, reason = "a helper each test binary uses or not")]
+pub async fn home_org(client: &Client) -> String {
+    if let Ok(org) = client.sole_org().await {
+        return org;
+    }
+    let made = client.orgs().create("Home", None, None).await.unwrap();
+    serde_json::to_value(made).unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
 pub async fn signed_up(c: &Cluster, i: usize, name: &str) -> (Client, SoftAuthenticator) {
     let client = c.client(i);
     let mut pk = SoftAuthenticator::new("localhost", ORIGIN);

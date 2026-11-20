@@ -25,9 +25,10 @@ of one a node's data still holds; such an app can still be listed and deleted.
   (`POST /bundles`) are for development clusters only too.
 - **Instances.** An app instance (`meroctl instance`) is created with
   `POST /apps { name, bundle, initArgs, org?, access? }` (or `{ name, package,
-  version }`). Every instance is in an organization: naming none puts it in the
-  creator's personal organization, made at sign-up (`meroctl instance create`
-  without `--org`). `initArgs` (JSON) is what `#[app::init]` receives; a failed init answers
+  version }`). Every instance is in an organization, as its release's `instanceOrg`
+  says: naming none puts it in the creator's only organization, or a new one made
+  with it ([Where an instance goes](/protocol/organizations/#where-an-instance-goes);
+  `meroctl instance create` without `--org`). `initArgs` (JSON) is what `#[app::init]` receives; a failed init answers
   `422 INIT_FAILED` instead of leaving a dead instance.
 - **Identity.** `env::caller()` is the caller: an account, an API key (with its
   account), another app, or the system. There are no per-app identities or keys:
@@ -70,7 +71,7 @@ of one a node's data still holds; such an app can still be listed and deleted.
   allows, once that prefix was approved for the publisher by whoever the
   cluster's deployment gave outbound approvals (its governance, which
   `verify_app_cluster` reports). By the owner: `POST /orgs/{org}/outbound`
-  (your own apps': your personal organization's) `{ package, prefixes: "manifest" |
+  (your own apps': their organization's) `{ package, prefixes: "manifest" |
   [...], replace }`, with a passkey assertion (`client.orgs().outbound_approval(..)` in the
   Rust client, `client.orgs.outboundApproval(..)` in mero-js). By the operator: `POST /ops/outbound`. Until then
   the request is refused with `NotApproved` (or `AwaitingApproval` for a prefix

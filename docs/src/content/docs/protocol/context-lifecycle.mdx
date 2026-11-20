@@ -60,9 +60,10 @@ package-bound session:
 3. **Record.** `CreateApp` applies in the system group: the bundle must be
    known, the owner within their app quota, a member (at least `member`) of its
    organization, and a writer of the team for `access: team`.
-   It assigns the app its group number. Every app is in an organization: a
-   request that names none gets its owner's personal organization
-   ([Personal organizations](/protocol/organizations/#personal-organizations)).
+   It assigns the app its group number. Every app is in an organization: the
+   API picks it before, by the release's `instanceOrg` (the one named, the
+   owner's only one, or a new one it writes first;
+   [Where an instance goes](/protocol/organizations/#where-an-instance-goes)).
    The default access is `org`.
 4. **Start the group.** Each replica's reconcile loop starts the group; the
    first replica in the list forms it with all replicas as voters.
@@ -83,7 +84,7 @@ Calls, views and events go through any node ([The write path](/protocol/write-pa
 | Change | Route | Who |
 | --- | --- | --- |
 | Access rule | `POST /apps/{app}/access` | The owner while a member, an admin, or whoever holds `MANAGE_APPLICATION` on its team (and on the team it moves to; org-wide for any access but `team`); a frontend session moves its own package's apps between its channels ([App access](/protocol/organizations/#app-access)) |
-| Owner | `POST /apps/{app}/transfer { to }` | The owner while a member, or an admin, with a passkey; to a member of the organization. An app in a personal organization handed to someone outside it goes to their personal organization ([below](#transferring-an-app)) |
+| Owner | `POST /apps/{app}/transfer { to }` | The owner while a member, or an admin, with a passkey; to a member of the organization ([below](#transferring-an-app)) |
 | Organization | `POST /apps/{app}/move { toOrg, bringMembers? }` | Its manager where it is, as an admin of the target, with a passkey; data stays put ([Moving an app](/protocol/organizations/#moving-an-app)) |
 | Metadata (a title, an icon; at most 16 KiB) | `POST /apps/{app}/metadata` | The owner while a member, or an admin of its organization |
 | An alias for the app | `PUT /auth/aliases/{alias}` | Any account, for an app it reaches; aliases are the account's own ([below](#aliases)) |
@@ -100,7 +101,7 @@ record in the system group changes.
 | --- | --- | --- | --- |
 | Route | `POST /apps/{app}/transfer { to }` | `POST /apps/{app}/move { toOrg, bringMembers? }` | `PUT /auth/aliases/{alias} { app }` |
 | `meroctl` | `instance transfer <app> <account>` | `instance move <app> <org> [--bring-members]` | `instance alias add <alias> <app>`, `instance use <app>` |
-| Changes | `owner` (and the organization, out of a personal one) | `org`, the access rule, the payer | The caller's own names |
+| Changes | `owner` (and, below cluster version 1.0.0-rc.32, the organization, out of a personal one) | `org`, the access rule, the payer | The caller's own names |
 | Who | The app's manager | Its manager where it is, as an admin of the target | Any account that reaches the app |
 | Passkey | `<app> / __transfer / { to }` | `<app> / __move / { toOrg, bringMembers }` | None |
 
@@ -121,13 +122,15 @@ for a quota.
   or an admin of the organization. Otherwise `403`.
 - **To whom**: a member (at least `member`, not a guest) of the app's
   organization. A transfer never moves an organization's app out of it.
-- **The personal-organization rule.** An app in a personal organization
-  handed to someone outside it goes to the new owner's **personal
-  organization**: the node makes it first if they have none, and the log
+- **The personal-organization rule (below cluster version 1.0.0-rc.32).** An
+  app in a personal organization handed to someone outside it went to the new
+  owner's **personal organization**: the node makes it first if they have none, and the log
   refuses the transfer if they still have none (`NO_PERSONAL_ORG`). The app's
   `team` access, which names a team of the organization it left, becomes
   `org`. Its file bytes are charged to the new organization, within its
-  quota, and its compute runs' payer moves with it.
+  quota, and its compute runs' payer moves with it. From that version an
+  organization flagged personal is one like any other, and the transfer is
+  refused (`400 REJECTED`) before the passkey is asked for.
 - **What it means.** Who upgrades the app is now the new owner's (for an
   `owner` package), and with it which code reads the data.
 
@@ -193,15 +196,15 @@ left on the team they named.
   ]}
 />
 
-**Worked example.** Ann made a notes instance in her personal organization
-before Acme existed; it has `org` access there. She is now an admin of Acme
+**Worked example.** Ann made a notes instance in an organization of her own
+(made with it) before Acme existed; it has `org` access there. She is now an admin of Acme
 and moves it in: `POST /apps/{notes}/move { toOrg: "<acme>" }`. She manages
 the app (its owner, in her own organization) and is an admin of the target.
 Acme has app teams, so the instance gets `team` access on Acme's app team for
 `notes`, made now if missing, with Ann leading it. Ann is a member of Acme, so
-the owner rule holds. Acme's approved releases share one with her personal
+the owner rule holds. Acme's approved releases share one with her own
 organization's (the release the replicas run), so the releases rule holds. Acme pays for the instance's files from this entry on.
-Had the instance been on a restricted team of her personal organization, the
+Had the instance been on a restricted team of her own organization, the
 move would have been refused `MOVE_NEEDS_APP_TEAM` until she set its access to
 `org`.
 

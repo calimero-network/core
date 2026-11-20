@@ -81,8 +81,9 @@ def sync_detailed(
     """The account's own apps
 
      The apps the account owns, in any organization (a package-bound session: its package's), with its
-    personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade
-    to, its last upgrade, its replicas' releases and `lastWriteAt`.
+    only organization's `approvedReleases` (below cluster version 1.0.0-rc.32 its personal
+    organization's): each app's release, the newer releases it may upgrade to, its last upgrade, its
+    replicas' releases and `lastWriteAt`.
 
     **Who:** signed in (a session or an API key).
 
@@ -119,8 +120,9 @@ def sync(
     """The account's own apps
 
      The apps the account owns, in any organization (a package-bound session: its package's), with its
-    personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade
-    to, its last upgrade, its replicas' releases and `lastWriteAt`.
+    only organization's `approvedReleases` (below cluster version 1.0.0-rc.32 its personal
+    organization's): each app's release, the newer releases it may upgrade to, its last upgrade, its
+    replicas' releases and `lastWriteAt`.
 
     **Who:** signed in (a session or an API key).
 
@@ -152,8 +154,9 @@ async def asyncio_detailed(
     """The account's own apps
 
      The apps the account owns, in any organization (a package-bound session: its package's), with its
-    personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade
-    to, its last upgrade, its replicas' releases and `lastWriteAt`.
+    only organization's `approvedReleases` (below cluster version 1.0.0-rc.32 its personal
+    organization's): each app's release, the newer releases it may upgrade to, its last upgrade, its
+    replicas' releases and `lastWriteAt`.
 
     **Who:** signed in (a session or an API key).
 
@@ -188,8 +191,9 @@ async def asyncio(
     """The account's own apps
 
      The apps the account owns, in any organization (a package-bound session: its package's), with its
-    personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade
-    to, its last upgrade, its replicas' releases and `lastWriteAt`.
+    only organization's `approvedReleases` (below cluster version 1.0.0-rc.32 its personal
+    organization's): each app's release, the newer releases it may upgrade to, its last upgrade, its
+    replicas' releases and `lastWriteAt`.
 
     **Who:** signed in (a session or an API key).
 

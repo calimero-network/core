@@ -66,10 +66,11 @@ to hold it. See [Concepts](/protocol/concepts/) and
 - **Packages** are signed `.mpk` releases, installed from a registry or
   uploaded, and verified on every node that runs them. A package's frontend is
   served from its own origin.
-- **Every app instance is in an organization.** Signing up makes the account
-  and its *personal organization* in one entry; an instance created without
-  naming an organization goes there, and its approvals (node images, outbound
-  hosts) are that organization's. Shared apps live in organizations people
+- **Every app instance is in an organization.** Signing up makes only the
+  account; an instance goes into an organization its creator is in, or one
+  made with it, as its package declares
+  ([Where an instance goes](/protocol/organizations/#where-an-instance-goes)),
+  and its approvals (node images, outbound hosts) are that organization's. Shared apps live in organizations people
   create and invite others to ([Organizations](/protocol/organizations/)).
 - **Compute** that is too large for a call runs as a compute run on separate
   job nodes (`merod run --job-node`) over the app's sealed files, and returns

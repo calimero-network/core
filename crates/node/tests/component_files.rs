@@ -1476,7 +1476,7 @@ impl Fixture {
     /// test may stop one, or delete the app).
     async fn payer(&self) -> String {
         for c in &self.clients {
-            if let Ok(org) = c.personal_org().await {
+            if let Ok(org) = c.sole_org().await {
                 return org;
             }
         }

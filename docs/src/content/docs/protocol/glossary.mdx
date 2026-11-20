@@ -190,11 +190,17 @@ See [Upgrade keys](/protocol/identities/#upgrade-keys).
 roles `guest < member < admin < owner`, teams, approvals, metadata. Every app
 instance is in exactly one. [Namespace]
 
-**Personal organization** — The organization every account owns from sign-up
-(`CreateAccount { personalOrg }`, named `Personal`, `personal: true`): where an
-instance created without naming an organization goes, and whose approvals are
-the account's own apps'. One per account, outside `maxOrgsPerAccount`. See
+**Personal organization** — Before cluster version 1.0.0-rc.32, the
+organization every account owned from sign-up (`CreateAccount { personalOrg }`,
+named `Personal`, `personal: true`), where an instance naming no organization
+went. From that version a sign-up makes none, and one made before is an
+organization like any other. See
 [Personal organizations](/protocol/organizations/#personal-organizations).
+
+**Instance mode** — Which organization an instance of a package is created in,
+as its signed manifest says (`instanceOrg`): `standalone` (one made with it),
+`org` (one its creator is in) or `either` (the default). See
+[Where an instance goes](/protocol/organizations/#where-an-instance-goes).
 
 **Invite** — A token `inv_…` that adds whoever redeems it to an organization at
 a role and in named teams; only the token's Ed25519 public key is stored.

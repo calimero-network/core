@@ -34,7 +34,7 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param scope The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.
+ * @param scope The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization, below cluster version 1.0.0-rc.32 only). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.
  * @param governance 
  * @param approvedReleases 
  * @param clusterReleases 
@@ -45,7 +45,7 @@ import kotlinx.serialization.Contextual
 
 data class AccountApps200Response (
 
-    /* The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are. */
+    /* The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization, below cluster version 1.0.0-rc.32 only). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are. */
     @Contextual @SerialName(value = "scope")
     val scope: kotlinx.serialization.json.JsonElement?,
 

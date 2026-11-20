@@ -206,7 +206,7 @@ meroctl --ops-token "$OPS_TOKEN" ops backup-key     # check: { holder, key, apps
 
 Where owners upgrade apps, each organization's `MANAGE_APPLICATION` holders
 set its key with a passkey (`POST /orgs/{org}/backup-key`; a person's own
-apps are in their personal organization). Recovery itself is in the
+apps are in an organization like any other). Recovery itself is in the
 runbooks: [Restore an app](/operate/runbooks/#restore-an-app),
 [Found a cluster again](/operate/runbooks/#found-a-cluster-again-from-its-backups),
 [Recover after every key service is gone](/operate/runbooks/#recover-after-every-key-service-is-gone).

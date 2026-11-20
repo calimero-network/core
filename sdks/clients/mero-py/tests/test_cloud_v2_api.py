@@ -151,10 +151,20 @@ def test_app_directory_access_and_upgrade(cluster, wasm):
     alice, alice_pk = person(cluster, 0, "alice-apps")
     carol, _ = person(cluster, 2, "carol-apps")
     bundle = alice.json.packages.bundle_put(body=wasm)["hash"]
-    app = alice.json.apps.create(name="dir", bundle=bundle)["appId"]
+    # Owner-only, in an organization made with it: an `accounts` list reaches only
+    # the organization's members, so carol joins it, and joining alone still
+    # leaves her out.
+    app = alice.json.apps.create(name="dir", bundle=bundle, access={"kind": "owner"})[
+        "appId"
+    ]
     assert app in {a["appId"] for a in alice.json.apps.list()["apps"]}
     assert alice.json.apps.get(app=app)["name"] == "dir"
     alice.json.apps.call(app=app, method="set", args={"key": "k", "value": "v"})
+    carol.json.orgs.invite_redeem(
+        token=alice.json.orgs.invite_create(
+            org=alice.json.apps.get(app=app)["org"], role="member", confirm=alice_pk
+        )["token"]
+    )
 
     with pytest.raises(CloudError):
         carol.json.apps.view(app=app, method="get", args={"key": "k"})
@@ -377,6 +387,12 @@ def test_blobs_presence_transfer_and_upgrade_runs_have_typed_calls(cluster, wasm
         )
     assert code(e.value) == "NOT_FOUND"
 
+    # An app goes only to a member of its organization (made with it): bob joins.
+    bob.json.orgs.invite_redeem(
+        token=alice.json.orgs.invite_create(
+            org=alice.json.apps.get(app=app)["org"], role="member", confirm=pk
+        )["token"]
+    )
     bob_id = bob.json.auth.me()["accountId"]
     alice.json.apps.transfer(app=app, to=bob_id, confirm=pk)
     assert bob.get(f"apps/{app}")["owner"] == bob_id

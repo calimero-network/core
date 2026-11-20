@@ -743,6 +743,20 @@ pub(crate) async fn declared_min_runtime(
         .clone())
 }
 
+/// The instance mode release `v` of `package` declares in its verified manifest
+/// (`instanceOrg`; absent is `either`), for a release recorded before the node kept it.
+pub(crate) async fn declared_instance_org(
+    node: &Node,
+    package: &str,
+    v: &PackageVersion,
+) -> Result<calimero_bundle::InstanceOrg, ApiError> {
+    Ok(release_facts(node, package, v)
+        .await?
+        .manifest
+        .instance_org
+        .unwrap_or_default())
+}
+
 /// The capability card of release `v` of `package` for `service` (its sole
 /// one when `None`), before any app of it exists.
 pub(crate) async fn release_capabilities(
@@ -1172,23 +1186,40 @@ fn scope_of(
     scope: &ScopeBody,
 ) -> Result<(ReleaseScope, Value), ApiError> {
     match scope {
-        // The account's own apps are its personal organization's, made at
-        // sign-up.
+        // The account's own apps: before organizations are ordinary, its personal
+        // organization's, made at sign-up; after, its only organization's (there is no
+        // personal one to stand for them).
         ScopeBody::Account => {
-            let org = node
-                .sys(|s| s.personal_org_of(account).cloned())
-                .ok_or_else(|| ApiError::not_found("no personal organization"))?;
-            Ok((
-                ReleaseScope::Org { org: org.clone() },
-                json!({ "kind": "org", "org": org, "personal": true }),
-            ))
+            if let Some(org) = node.sys(|s| s.personal_org_of(account).cloned()) {
+                return Ok((
+                    ReleaseScope::Org { org: org.clone() },
+                    json!({ "kind": "org", "org": org, "personal": true }),
+                ));
+            }
+            // Shown as the account's own (no name), as the personal one was.
+            let mine: Vec<String> = node.sys(|s| s.orgs_of(account).into_iter().cloned().collect());
+            match mine.as_slice() {
+                [org] => Ok((
+                    ReleaseScope::Org { org: org.clone() },
+                    json!({ "kind": "org", "org": org }),
+                )),
+                [] => Err(ApiError::new(
+                    409,
+                    crate::api::apps::NO_ORGANIZATION,
+                    "you are in no organization",
+                )),
+                _ => Err(ApiError::bad_request(
+                    crate::api::apps::ORG_REQUIRED,
+                    "you are in several organizations: name one",
+                )),
+            }
         }
         ScopeBody::Org(org) => {
             let (name, personal) = node
                 .sys(|s| {
                     let o = s.orgs.get(org)?;
                     o.role(account)?;
-                    Some((o.name.clone(), o.personal))
+                    Some((o.name.clone(), s.acts_personal(o)))
                 })
                 .ok_or_else(|| ApiError::not_found("no such organization"))?;
             let mut shown = json!({ "kind": "org", "org": org, "name": name });
@@ -3008,7 +3039,6 @@ async fn act(
                 req.account.clone(),
                 name.clone(),
                 None,
-                false,
                 app_team.clone(),
                 *capabilities,
             )

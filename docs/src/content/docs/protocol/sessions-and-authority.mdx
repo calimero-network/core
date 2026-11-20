@@ -27,8 +27,8 @@ layers side by side; the detail of each is in the pages it links to.
 <ProtoRequestLayers />
 
 1. **Who.** A person is an **account**. Each of its passkeys is one of its
-   **devices**, and the account owns a **personal organization**, made in the
-   same log entry as the account (`CreateAccount { personalOrg }`). See
+   **devices**. Its apps are in organizations it creates or joins (a sign-up
+   makes none from cluster version 1.0.0-rc.32). See
    [Accounts, passkeys & sessions](/protocol/identities/).
 2. **Session.** Signing in (or signing up) with a passkey opens a **session**.
    Its kind is set by the origin the ceremony ran on, as the passkey's
@@ -253,7 +253,7 @@ unbound session: no consent kind adds an app team to an existing organization.
    example `https://{label}.<apps-domain>/?invite=inv_…`. The frontend's
    redirects keep the query, so the token reaches the page.
 3. **Sign-up.** Bob opens it and signs up with a passkey there. That makes his
-   account and personal organization, as the cluster's
+   account, as the cluster's
    [sign-up policy](/protocol/governance/#sign-up) allows. Under `invite`
    that needs a sign-up invite, which an organization invite is not. His
    session is bound to `chat`.

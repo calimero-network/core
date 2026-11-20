@@ -385,9 +385,31 @@ impl Client {
         Ok(s)
     }
 
+    /// The caller's only organization it may hold apps in (`member` or above in
+    /// `/auth/me`): where an instance that names none goes, and whose approvals are the
+    /// account's own. An error when it is in none or several.
+    pub async fn sole_org(&self) -> Result<String> {
+        let me = self.auth().me().await?;
+        let mut mine = me
+            .orgs
+            .iter()
+            .filter(|o| o.role != crate::generated::types::OrgRole::Guest);
+        match (mine.next(), mine.next()) {
+            (Some(o), None) => Ok(o.org_id.clone()),
+            (None, _) => Err(Error::Transport(eyre::eyre!(
+                "the account is in no organization"
+            ))),
+            (Some(_), Some(_)) => Err(Error::Transport(eyre::eyre!(
+                "the account is in several organizations: name one"
+            ))),
+        }
+    }
+
     /// The caller's personal organization (`personal` in `/auth/me`), made with
-    /// the account at sign-up: where its instances go unless they name
-    /// another, and whose approvals are the account's own.
+    /// the account at sign-up on a cluster before 1.0.0-rc.32: where its instances went
+    /// unless they named another. From 1.0.0-rc.32 a sign-up makes no organization; an
+    /// account's organizations are ordinary ones ([`Self::sole_org`]).
+    #[deprecated(note = "a sign-up makes no personal organization from 1.0.0-rc.32: use sole_org")]
     pub async fn personal_org(&self) -> Result<String> {
         let me = self.auth().me().await?;
         me.orgs

@@ -96,8 +96,9 @@ def sync_detailed(
 
      `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
     members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster
-    version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in
-    `/auth/me`), which this does not make.
+    version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account's
+    are those it creates here (or with a `standalone` instance) or is invited to; before, every account
+    also had a personal organization from sign-up (`personal` in `/auth/me`).
 
     **Who:** a passkey session (an API key is refused).
 
@@ -132,8 +133,9 @@ def sync(
 
      `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
     members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster
-    version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in
-    `/auth/me`), which this does not make.
+    version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account's
+    are those it creates here (or with a `standalone` instance) or is invited to; before, every account
+    also had a personal organization from sign-up (`personal` in `/auth/me`).
 
     **Who:** a passkey session (an API key is refused).
 
@@ -163,8 +165,9 @@ async def asyncio_detailed(
 
      `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
     members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster
-    version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in
-    `/auth/me`), which this does not make.
+    version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account's
+    are those it creates here (or with a `standalone` instance) or is invited to; before, every account
+    also had a personal organization from sign-up (`personal` in `/auth/me`).
 
     **Who:** a passkey session (an API key is refused).
 
@@ -197,8 +200,9 @@ async def asyncio(
 
      `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
     members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster
-    version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in
-    `/auth/me`), which this does not make.
+    version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account's
+    are those it creates here (or with a `standalone` instance) or is invited to; before, every account
+    also had a personal organization from sign-up (`personal` in `/auth/me`).
 
     **Who:** a passkey session (an API key is refused).
 

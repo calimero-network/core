@@ -80,6 +80,7 @@ fn release_with(package: &str, version: &str, frontend: &[(&str, &[u8])]) -> Vec
         }),
         frontend_aliases: Vec::new(),
         upgrades: None,
+        instance_org: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,

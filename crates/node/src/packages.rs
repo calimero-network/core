@@ -465,6 +465,8 @@ impl Node {
                     Components::App
                 },
                 min_runtime_version: Some(manifest.min_runtime_version.clone()),
+                // Every release says, absent being `either`.
+                instance_org: Some(manifest.instance_org.unwrap_or_default()),
             },
             wasm: wasm_by_hash,
         })
@@ -487,6 +489,15 @@ impl Node {
                 .is_err()
         {
             v.release.uses.clear();
+        }
+        // Likewise its instance mode: an older node drops it; the API then reads it from
+        // the `.mpk` (`api::apps::instance_org_of`).
+        if self
+            .require_features(&[crate::system::cluster_version::Feature::OrdinaryOrgs])
+            .await
+            .is_err()
+        {
+            v.release.instance_org = None;
         }
         self.refuse_stalled_install(&v.release.installed_by, &v.signer_id)?;
         // An older node drops `components` and would apply the release as an app's, and drops

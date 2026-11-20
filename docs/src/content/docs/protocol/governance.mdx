@@ -208,15 +208,15 @@ which releases may receive it:
   organization's set (`SystemState::approved_for_release`). The package is that of the release
   the instance runs (`AppRecord::release`), never merely of whichever release
   first shipped the same WASM. Every app is in an organization, so there is
-  no account's set: an account's own apps are judged by its
-  [personal organization's](/protocol/organizations/#personal-organizations).
-  The release of the node an organization was created through (for a
-  personal organization, the node its account signed up through) is approved
-  from the start.
+  no account's set: an account's own apps are judged by the organization
+  they are in ([Where an instance goes](/protocol/organizations/#where-an-instance-goes)).
+  The release of the node an organization was created through (one made with
+  an instance included; for a personal organization from before 1.0.0-rc.32,
+  the node its account signed up through) is approved from the start.
 - **Changing it.** `POST /orgs/{org}/releases` `{ version, approved }` by a
   member holding `APPROVE_RELEASES` there (the owner and admins hold it; a
   member when granted organization-wide, [Capabilities](/protocol/organizations/#capabilities);
-  in a personal organization, its owner), each with a passkey step-up; or `POST /ops/releases` by the operator. The last approved release
+  in an organization of one, its owner), each with a passkey step-up; or `POST /ops/releases` by the operator. The last approved release
   cannot be withdrawn. `GET /orgs/{org}` lists who may approve
   (`releaseApprovers`). An app or console asks for either through the node's
   [consent page](/protocol/consent-page/) (`kind: "release"`, with
@@ -332,7 +332,7 @@ prefix is usable only once it is approved for the app's **publisher** (the
 package's pinned signer) in the app's organization, by whoever holds
 `MANAGE_APPLICATION` across it (`POST /orgs/{org}/outbound`; a grant on one
 team is not enough, since the approval covers every app of the organization;
-for an account's own apps, the owner of its personal organization), with a
+for an account's own apps, the owner of their organization), with a
 passkey step-up, or by the operator (`POST /ops/outbound`). The approval records both
 the prefixes approved and every prefix the approver was shown, so a prefix a
 later release adds reads as *awaiting approval* rather than approved. The
@@ -544,7 +544,8 @@ show it, each paged (`?after=ID&limit=N`, at most 100 per page):
   to anyone else, as `GET /orgs/{org}`).
 - **An account, for its own apps:** `GET /auth/apps`: the apps it owns in
   any organization (scope `{ kind: "account" }`; the top-level
-  `approvedReleases` are its personal organization's, and each app's own set
+  `approvedReleases` are its only organization's (below cluster version
+  1.0.0-rc.32 its personal organization's), and each app's own set
   is in its entry). An app's frontend (a session bound to its package) reads
   only that package's apps, so a developer's app can tell its users that a
   release waits for their approval.
@@ -572,7 +573,7 @@ yet" is one read), and per app:
   is approved.
 
 The scope's own `approvedReleases` and `clusterReleases` describe the
-organization's own set (for `/auth/apps`, the personal organization's): the one that governs its raw uploads,
+organization's own set (for `/auth/apps`, the account's only organization's): the one that governs its raw uploads,
 its unbound packages and, as a publisher, every instance of its packages.
 
 Approving and upgrading stay passkey decisions on the cluster's own origin: a

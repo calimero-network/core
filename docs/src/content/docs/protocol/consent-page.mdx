@@ -140,7 +140,9 @@ replaces each, are side by side in [Sessions & authority](/protocol/sessions-and
 3. **Passkey.** *Approve* posts `POST /consent/{id}/approve`. The node runs the
    very route a signed-in client would run (`/apps/{app}/upgrade`,
    `/orgs/{org}/releases`, `/orgs/{org}/outbound`; `"scope": "account"` is the
-   account's [personal organization](/protocol/organizations/#personal-organizations),
+   account's only organization (below cluster version 1.0.0-rc.32 its
+   [personal organization](/protocol/organizations/#personal-organizations); `400 ORG_REQUIRED`
+   when it is in several, `409 NO_ORGANIZATION` in none),
    since an account approves nothing of its own) with the arguments frozen in the request, so the
    `412 CONFIRM_REQUIRED` challenge commits to exactly what the page showed.
    The page asks the authenticator for a user-verified assertion and posts it

@@ -935,6 +935,8 @@ pub fn rejected(reason: &str) -> ApiError {
         not_a_deployer()
     } else if reason == crate::system::PERSONAL_ORG_EXISTS {
         ApiError::new(409, PERSONAL_ORG_EXISTS, reason)
+    } else if reason == crate::system::NO_PERSONAL_ORGS {
+        ApiError::new(409, "PERSONAL_ORGS_ENDED", reason)
     } else if reason == crate::system::CANNOT_GRANT_UNHELD {
         cannot_grant_unheld()
     } else if reason == crate::system::UNKNOWN_CAPABILITIES {

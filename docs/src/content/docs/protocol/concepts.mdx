@@ -43,8 +43,8 @@ import RaftGroups from '../../../components/diagrams/RaftGroups.astro';
 - **Organization** and **team** — An organization has members with a role
   (`guest`, `member`, `admin`, `owner`) and nested teams. Every app is in an
   organization, reachable by all its members, by one team's, or by listed
-  accounts. Every account has a **personal organization** from sign-up, where
-  an app created without naming one goes. See
+  accounts. A sign-up makes no organization: an instance goes into one its
+  creator is in, or one made with it, as its package declares. See
   [Organizations, teams & access](/protocol/organizations/).
 - **Operator** — Whoever runs the machines. It holds the ops token, reaches the
   [Ops API](/protocol/operator/), and sees counts and Raft status, never app
@@ -60,7 +60,7 @@ cluster "eu1"
 │   ├── bundles          hash → { size, uploaded by, release }
 │   ├── accounts         ada { passkeys, labels, aliases }
 │   ├── credentials      API-key hashes, refresh tokens, used decision proofs
-│   ├── organizations    acme { members, teams, approvals, upgrade runs }, ada's personal one
+│   ├── organizations    acme { members, teams, approvals, upgrade runs }, ada's own
 │   └── apps (directory) app-7f… { bundle, owner, org, access, replicas [1,2,3], group 12 }
 └── app groups
     ├── group 12 on nodes 1,2,3  ← app-7f…'s log and state
