@@ -257,7 +257,7 @@ class TeamDeletedKeepingApps(DeepCase):
         eq(kora.get(f"apps/{s['named']}").get("grants"), [{"kind": "account", "account": s["kobi"]}],
            "the kept instance's other grant")
         eq(kora.get(f"apps/{s['alone']}").get("grants"), [], "the kept instance with none left")
-        eq(kora.view(s["alone"], "get", {"key": "k"}), "kept", "its data")
+        eq(kora.result(s["alone"], "get", {"key": "k"}), "kept", "its data")
         same_decisions(self._decide(w, s), s["decisions"], "instances kept with their team deleted")
 
     def exercise(self, w, s):
