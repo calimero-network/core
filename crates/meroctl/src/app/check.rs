@@ -1,8 +1,8 @@
 //! `meroctl app check`: what the people running an app will see when this release
 //! replaces an earlier one, judged by the classifier the node judges updates with
-//! (`calimero_bundle::update::classify`): green or red with the reasons, whether the
-//! unit is Sealed and where its data can go, new and removed methods, the state version
-//! and the signer. With `--fail-on`, a gate for a release workflow (exit [`EXIT_GATE`]).
+//! (`calimero_bundle::update::classify`): green or red with the reasons, where the
+//! unit's data can go (its destinations; none: it stays in Calimero), new and removed
+//! methods, the state version and the signer. With `--fail-on`, a gate for a release workflow (exit [`EXIT_GATE`]).
 //!
 //! Both sides are units, as the node builds them for a release (`egress::release_unit`):
 //! the release and each app its `uses` creates (mode `create`, transitively, at most
@@ -51,15 +51,6 @@ pub struct CheckArgs {
     /// The service whose ABI is compared, for a package of several services.
     #[arg(long, value_name = "NAME")]
     pub of_service: Option<String>,
-    /// A sealed endpoint of the cluster the app runs on (repeatable), as the operator set
-    /// them (`ops set-sealed-endpoints`). Without it, with a node: the cluster's own list,
-    /// from `GET /ops/sealed-endpoints` with `--ops-token`, else from `--instance`.
-    #[arg(long = "sealed-endpoint", value_name = "PREFIX")]
-    pub sealed_endpoints: Vec<String>,
-    /// An instance you may read on the node: the cluster's sealed endpoints are read from
-    /// its `GET /apps/{app}/egress` (any instance: the list is the cluster's).
-    #[arg(long, short = 'i', value_name = "INSTANCE")]
-    pub instance: Option<String>,
     /// Print the full classification as JSON instead of the summary.
     #[arg(long)]
     pub json: bool,
@@ -126,7 +117,7 @@ struct Report {
 }
 
 async fn check(mut a: CheckArgs, env: Option<&Env>) -> eyre::Result<Report> {
-    for p in a.sealed_endpoints.iter().chain(&a.allow_egress) {
+    for p in &a.allow_egress {
         if !is_outbound_url(p) {
             bail!("{p}: an https:// prefix with a host, no credentials, query or fragment");
         }
@@ -165,17 +156,13 @@ async fn check(mut a: CheckArgs, env: Option<&Env>) -> eyre::Result<Report> {
     }
     let before = at_hand.unit(previous).await?;
     let after = at_hand.unit(candidate).await?;
-    // Last: `--ops-token` replaces the session the package reads went with.
-    let (endpoints, endpoints_from) = sealed_endpoints(&a, env).await?;
-    let c = classify(&before, &after, &endpoints);
+    let c = classify(&before, &after);
     let gate = gate(&c, a.fail_on, &a.allow_egress);
     let out = if a.json {
         serde_json::to_string_pretty(&json!({
             "package": package,
             "from": { "version": before.app.version, "signer": before.app.signer },
             "to": { "version": after.app.version, "signer": after.app.signer },
-            "sealedEndpoints": endpoints,
-            "sealedEndpointsFrom": endpoints_from,
             "classification": c,
             "before": before,
             "after": after,
@@ -192,8 +179,6 @@ async fn check(mut a: CheckArgs, env: Option<&Env>) -> eyre::Result<Report> {
             before: &before,
             after: &after,
             c: &c,
-            endpoints: &endpoints,
-            endpoints_known: endpoints_from.is_some(),
             fail_on: a.fail_on,
             gate: &gate,
         })
@@ -383,31 +368,6 @@ impl AtHand<'_> {
     }
 }
 
-/// The cluster's sealed endpoints and where they came from (`None`: not known, judged
-/// against none).
-async fn sealed_endpoints(
-    a: &CheckArgs,
-    env: Option<&Env>,
-) -> eyre::Result<(Vec<String>, Option<&'static str>)> {
-    if !a.sealed_endpoints.is_empty() {
-        return Ok((a.sealed_endpoints.clone(), Some("--sealed-endpoint")));
-    }
-    let Some(env) = env else {
-        return Ok((Vec::new(), None));
-    };
-    if let Some(token) = &env.ops_token {
-        env.client.use_api_key(token).await;
-        let got = env.client.ops().sealed_endpoints_get().await?;
-        return Ok((got.endpoints, Some("GET /ops/sealed-endpoints")));
-    }
-    if let Some(instance) = &a.instance {
-        let app = env.app(instance).await?;
-        let got = env.client.apps().egress(&app).await?;
-        return Ok((got.sealed_endpoints, Some("GET /apps/{app}/egress")));
-    }
-    Ok((Vec::new(), None))
-}
-
 /// What the gate makes of a classification: the reasons that fail it, and the
 /// destinations `--allow-egress` waived.
 struct Gate {
@@ -460,8 +420,6 @@ struct Judged<'a> {
     before: &'a Unit,
     after: &'a Unit,
     c: &'a Classification,
-    endpoints: &'a [String],
-    endpoints_known: bool,
     fail_on: Option<FailOn>,
     gate: &'a Gate,
 }
@@ -534,32 +492,12 @@ fn summary(j: &Judged<'_>) -> String {
         after.app.package, before.app.version, after.app.version
     );
 
-    let destinations: Vec<String> = c
-        .egress
-        .after
-        .iter()
-        .map(|d| {
-            if j.endpoints.iter().any(|e| covers(e, d)) {
-                format!("{d} (sealed endpoint)")
-            } else {
-                d.clone()
-            }
-        })
-        .collect();
-    let sealed = match (c.sealed_after, c.sealed_before, j.endpoints_known) {
-        (true, true, _) => "yes".to_owned(),
-        (true, false, _) => "yes (was no)".to_owned(),
-        (false, _, false) => {
-            "unknown (no sealed endpoints: --sealed-endpoint, or a node with --ops-token or --instance)"
-                .to_owned()
-        }
-        (false, true, true) => "no (was yes)".to_owned(),
-        (false, false, true) => "no".to_owned(),
+    // Only destinations: an external endpoint, a TEE included, is listed like any other.
+    out += &if c.egress.after.is_empty() {
+        "  Data: stays in Calimero\n".to_owned()
+    } else {
+        format!("  Data can go to: {}\n", c.egress.after.join(", "))
     };
-    out += &format!(
-        "  Sealed: {sealed} · destinations: {}\n",
-        list(&destinations)
-    );
 
     if c.class == Class::Green {
         out += "  Users on automatic updates: apply it on their own (green: same signer, no new destination, same state version)\n";
@@ -665,16 +603,13 @@ mod tests {
     }
 
     fn judge(before: &Unit, after: &Unit, on: Option<FailOn>, allow: &[&str]) -> (String, bool) {
-        let endpoints = vec!["https://inference.near.ai/".to_owned()];
-        let c = classify(before, after, &endpoints);
+        let c = classify(before, after);
         let allow: Vec<String> = allow.iter().map(|p| (*p).to_owned()).collect();
         let gate = gate(&c, on, &allow);
         let text = summary(&Judged {
             before,
             after,
             c: &c,
-            endpoints: &endpoints,
-            endpoints_known: true,
             fail_on: on,
             gate: &gate,
         });
@@ -682,18 +617,17 @@ mod tests {
     }
 
     #[test]
-    fn a_green_update_says_sealed_destinations_and_new_methods() {
+    fn a_green_update_says_where_data_goes_and_new_methods() {
         let before = Unit::of(release("1.3.0", &[AI], &["get"]));
         let after = Unit::of(release("1.4.0", &[AI], &["get", "pin", "unpin"]));
         let (text, passed) = judge(&before, &after, Some(FailOn::Red), &[]);
         assert!(passed);
         assert!(text.starts_with("com.acme.notes 1.3.0 → 1.4.0\n"), "{text}");
         assert!(
-            text.contains(
-                "Sealed: yes · destinations: https://inference.near.ai/v1/ (sealed endpoint)"
-            ),
+            text.contains("  Data can go to: https://inference.near.ai/v1/\n"),
             "{text}"
         );
+        assert!(!text.to_lowercase().contains("sealed"), "{text}");
         assert!(text.contains("apply it on their own (green"), "{text}");
         assert!(
             text.contains("New methods: pin, unpin · removed: none · state version unchanged (1)"),
@@ -711,7 +645,12 @@ mod tests {
         let after = Unit::of(to);
         let (text, passed) = judge(&before, &after, Some(FailOn::Red), &[]);
         assert!(!passed);
-        assert!(text.contains("Sealed: no (was yes)"), "{text}");
+        assert!(
+            text.contains(
+                "  Data can go to: https://api.acme.com/, https://inference.near.ai/v1/\n"
+            ),
+            "{text}"
+        );
         assert!(
             text.contains("wait for a person's approval (red)"),
             "{text}"
@@ -788,24 +727,26 @@ mod tests {
     }
 
     #[test]
-    fn sealed_is_unknown_without_a_list_and_methods_without_an_abi() {
+    fn no_destinations_stay_in_calimero_and_methods_are_unknown_without_an_abi() {
         let before = Unit::of(release("1.3.0", &[ACME], &["get"]));
-        let mut to = release("1.4.0", &[ACME], &[]);
+        let mut to = release("1.4.0", &[], &[]);
         to.methods = None;
         to.state_version = None;
         let after = Unit::of(to);
-        let c = classify(&before, &after, &[]);
+        let c = classify(&before, &after);
         let gate = gate(&c, None, &[]);
         let text = summary(&Judged {
             before: &before,
             after: &after,
             c: &c,
-            endpoints: &[],
-            endpoints_known: false,
             fail_on: None,
             gate: &gate,
         });
-        assert!(text.contains("Sealed: unknown"), "{text}");
+        assert!(text.contains("  Data: stays in Calimero\n"), "{text}");
+        assert!(
+            text.contains("Egress added: none · removed: https://api.acme.com/"),
+            "{text}"
+        );
         assert!(text.contains("Methods: unknown"), "{text}");
         assert!(text.contains("state version 1 → none"), "{text}");
     }

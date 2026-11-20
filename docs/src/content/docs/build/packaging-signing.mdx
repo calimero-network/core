@@ -303,27 +303,31 @@ release replaces the last one, with the same classifier the node uses for the
 upgrade sheet (`calimero_bundle::update`):
 
 ```bash
-meroctl app check --mpk release.mpk --against last.mpk \
-  --sealed-endpoint https://inference.near.ai/
+meroctl app check --mpk release.mpk --against last.mpk
 ```
 
 ```
 com.acme.notes 1.3.0 → 1.4.0
-  Sealed: yes · destinations: https://inference.near.ai/v1/ (sealed endpoint)
+  Data can go to: https://inference.near.ai/v1/
   Users on automatic updates: apply it on their own (green: same signer, no new destination, same state version)
   New methods: pin, unpin · removed: none · state version unchanged (1)
   Egress added: none · removed: none
   Signer: did:key:z6Mk… (unchanged)
 ```
 
+The first line after the versions lists every destination outside Calimero the
+release and the apps it creates may send data to, or says `Data: stays in
+Calimero` when there is none. Any destination outside Calimero is just a
+destination: the platform never vouches for an external endpoint, a TEE
+included. If your app trusts one (a private-inference service, say), verify its
+attestation in your own code; it is still listed.
+
 A release is **red**, and waits for a person's approval, when it is signed by
 another key, can send data somewhere new, declares another state version,
 creates or drops an app that has egress, or newly calls another app's methods as
 the person; each reason is listed. `--against VERSION` reads the installed
 release from a node instead of a file, and the apps a release creates with
-`uses` come from `--uses-mpk FILE` (or that node). Pass the cluster's sealed
-endpoints with `--sealed-endpoint`, or let a node answer them (`--ops-token`,
-or `--instance` of any app you may read).
+`uses` come from `--uses-mpk FILE` (or that node).
 
 In a release workflow, run it before `app publish` (and before `app release`)
 as a gate, so a destination never appears by accident: `--fail-on egress`
@@ -336,7 +340,6 @@ judge.
 - name: What users will see
   run: |
     meroctl app check --mpk dist/release.mpk --against dist/last.mpk \
-      --sealed-endpoint https://inference.near.ai/ \
       --fail-on egress $ALLOW_EGRESS   # e.g. "--allow-egress https://api.acme.com/" from the PR
 ```
 

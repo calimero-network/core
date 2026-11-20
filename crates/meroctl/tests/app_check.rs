@@ -8,7 +8,6 @@ use serde_json::{json, Value};
 
 const AI: &str = "https://inference.near.ai/v1/";
 const ACME: &str = "https://api.acme.com/";
-const SEALED: &str = "https://inference.near.ai/";
 
 fn meroctl(cwd: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_meroctl"))
@@ -81,16 +80,7 @@ fn pack(d: &Path, package: &str, version: &str, methods: &[&str], extra: &[&str]
 }
 
 fn check(d: &Path, candidate: &str, against: &str, extra: &[&str]) -> Output {
-    let mut args = vec![
-        "app",
-        "check",
-        "--mpk",
-        candidate,
-        "--against",
-        against,
-        "--sealed-endpoint",
-        SEALED,
-    ];
+    let mut args = vec!["app", "check", "--mpk", candidate, "--against", against];
     args.extend(extra);
     meroctl(d, &args)
 }
@@ -128,11 +118,10 @@ fn the_same_signer_and_egress_is_green_and_passes_the_gate() {
         "{summary}"
     );
     assert!(
-        summary.contains(&format!(
-            "Sealed: yes · destinations: {AI} (sealed endpoint)"
-        )),
+        summary.contains(&format!("  Data can go to: {AI}\n")),
         "{summary}"
     );
+    assert!(!summary.to_lowercase().contains("sealed"), "{summary}");
     assert!(
         summary.contains("apply it on their own (green"),
         "{summary}"
@@ -150,9 +139,9 @@ fn the_same_signer_and_egress_is_green_and_passes_the_gate() {
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
     let v = json_of(&out);
     assert_eq!(v["classification"]["class"], "green");
-    assert_eq!(v["classification"]["sealedAfter"], true);
+    assert_eq!(v["classification"]["egress"]["after"], json!([AI]));
+    assert!(v["classification"].get("sealedAfter").is_none());
     assert_eq!(v["classification"]["newMethods"], json!(["pin", "unpin"]));
-    assert_eq!(v["sealedEndpointsFrom"], "--sealed-endpoint");
     assert_eq!(v["gate"]["passed"], true);
 }
 
@@ -180,7 +169,10 @@ fn an_added_destination_is_red_and_fails_the_gate_unless_allowed() {
     let out = check(d, "v14.mpk", "v13.mpk", &["--fail-on", "red"]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out));
     let summary = String::from_utf8_lossy(&out.stdout);
-    assert!(summary.contains("Sealed: no (was yes)"), "{summary}");
+    assert!(
+        summary.contains(&format!("  Data can go to: {ACME}, {AI}\n")),
+        "{summary}"
+    );
     assert!(
         summary.contains(&format!("- it can send data somewhere new: {ACME}")),
         "{summary}"
@@ -304,11 +296,21 @@ fn a_member_the_release_creates_is_read_from_its_mpk() {
         "{summary}"
     );
     assert!(
-        summary.contains(&format!(
-            "Sealed: yes · destinations: {AI} (sealed endpoint)"
-        )),
+        summary.contains(&format!("  Data can go to: {AI}\n")),
         "{summary}"
     );
+}
+
+#[test]
+fn a_release_with_no_destination_keeps_data_in_calimero() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    pack(d, "com.acme.notes", "1.3.0", &["get"], &[], "v13.mpk");
+    pack(d, "com.acme.notes", "1.4.0", &["get"], &[], "v14.mpk");
+    let out = check(d, "v14.mpk", "v13.mpk", &["--fail-on", "red"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let summary = String::from_utf8_lossy(&out.stdout);
+    assert!(summary.contains("  Data: stays in Calimero\n"), "{summary}");
 }
 
 #[test]
