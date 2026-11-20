@@ -33,6 +33,7 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param allowGuests 
+ * @param allowPublicLinks 
  * @param confirm 
  */
 @Serializable
@@ -41,6 +42,9 @@ data class OrgSettingsRequest (
 
     @SerialName(value = "allowGuests")
     val allowGuests: kotlin.Boolean? = null,
+
+    @SerialName(value = "allowPublicLinks")
+    val allowPublicLinks: kotlin.Boolean? = null,
 
     @SerialName(value = "confirm")
     val confirm: Confirm? = null

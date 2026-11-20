@@ -1023,14 +1023,44 @@ pub struct OrgSettings {
     /// Whether its instances take guests ([`crate::types::Org::allow_guests`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_guests: Option<bool>,
+    /// Whether its instances' public links admit visitors
+    /// ([`crate::types::Org::allow_public_links`], `Feature::PublicLinks`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_public_links: Option<bool>,
 }
 
 impl OrgSettings {
     /// Whether it changes nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.allow_guests.is_none()
+        self.allow_guests.is_none() && self.allow_public_links.is_none()
     }
+}
+
+/// Public links one instance holds at most ([`crate::types::PublicLink`]).
+pub const MAX_PUBLIC_LINKS_PER_APP: usize = 16;
+/// Public links the cluster holds at most: the system state is one checkpoint.
+pub const MAX_PUBLIC_LINKS: usize = 10_000;
+/// A public link's label, at most this many characters.
+pub const MAX_PUBLIC_LINK_LABEL_CHARS: usize = 64;
+/// The most calls a minute a public link may give one visitor (its `ratePerMinute`).
+pub const MAX_PUBLIC_LINK_RATE: u32 = 600;
+/// A public link's `ratePerMinute` when its request names none.
+pub const DEFAULT_PUBLIC_LINK_RATE: u32 = 60;
+/// A refusal: the instance's organization turned public links off.
+pub const PUBLIC_LINKS_OFF: &str = "the instance's organization does not allow public links";
+/// A refusal: a public link gone, revoked or never made.
+pub const PUBLIC_LINK_GONE: &str = "this public link was revoked or never existed";
+
+/// The arguments a public link's consent states: its key and terms.
+#[must_use]
+pub fn public_link_args(link_key: &str, link: &crate::types::PublicLink) -> Value {
+    json!({
+        "linkKey": link_key,
+        "label": link.label,
+        "expiresAt": link.expires_at,
+        "ratePerMinute": link.rate_per_minute,
+    })
 }
 
 /// The arguments an instance invite's consent states: its key and terms, and its scope when
@@ -2778,6 +2808,57 @@ impl SystemState {
             && self.guest_reaches(app, account)
     }
 
+    /// The scope of `account`'s grant on `app` ([`crate::types::Grant::Account`]): on `app`
+    /// itself, else on the instance whose unit made it ([`Self::guest_holder`]), as a guest's
+    /// reach is judged. The app reads it (`env::grant_scope`); the node never does.
+    #[must_use]
+    pub fn grant_scope(&self, app: &AppRecord, account: &str) -> Option<Value> {
+        app.access
+            .scope_of(account)
+            .or_else(|| self.guest_holder(app).access.scope_of(account))
+            .cloned()
+    }
+
+    /// The public link under `link_key` and the instance whose grants hold it
+    /// ([`crate::types::Grant::Link`]). Links live in their instances' grant lists, so this
+    /// looks through the instances: a visitor's request, and making a link, are its only
+    /// callers.
+    #[must_use]
+    pub fn public_link(&self, link_key: &str) -> Option<(&AppRecord, &crate::types::LinkGrant)> {
+        self.apps
+            .values()
+            .find_map(|a| a.access.link(link_key).map(|l| (a, l)))
+    }
+
+    /// Public links the cluster holds ([`MAX_PUBLIC_LINKS`]).
+    #[must_use]
+    pub fn public_link_count(&self) -> usize {
+        self.apps.values().map(|a| a.access.links().len()).sum()
+    }
+
+    /// The public link under `link_key`, with its instance, while it admits visitors at
+    /// `now`: its instance holds it, it has not expired, the logged version brings public
+    /// links and the instance's organization allows them
+    /// ([`crate::types::Org::allow_public_links`]).
+    #[must_use]
+    pub fn public_link_admits(
+        &self,
+        link_key: &str,
+        now: u64,
+    ) -> Option<(&AppRecord, &crate::types::LinkGrant)> {
+        if !self.cluster_brings(cluster_version::Feature::PublicLinks) {
+            return None;
+        }
+        let (app, link) = self.public_link(link_key)?;
+        if link.expires_at.is_some_and(|at| at <= now) {
+            return None;
+        }
+        self.orgs
+            .get(&app.org)
+            .is_some_and(|o| o.allow_public_links)
+            .then_some((app, link))
+    }
+
     /// Whether `actor` may change `app`'s grants (who it names, its invites): whoever may
     /// change its access ([`Self::owner_acts`], or [`Self::may_set_access`] keeping its member
     /// grants: a team's leads on their team's instance, else who manages the organization's
@@ -4348,6 +4429,9 @@ impl SystemState {
             let fresh = match g {
                 Grant::Org => !std::mem::replace(&mut whole, true),
                 Grant::Anyone => !std::mem::replace(&mut anyone, true),
+                Grant::Link(_) => {
+                    return Err("a public link is made with its own consent, not as a grant");
+                }
                 Grant::Team { team } => {
                     if !o.teams.contains_key(team) {
                         return Err("no such team in the app's organization");
@@ -4414,6 +4498,8 @@ impl SystemState {
             Grant::Team { team } => o.in_team(a, team),
             Grant::Account { account, .. } => account == a && in_app_team(),
             Grant::Anyone => true,
+            // A link admits its visitors, never an account.
+            Grant::Link(_) => false,
         })
     }
 
@@ -4754,6 +4840,8 @@ impl SystemCmd {
             Self::CreateAppInvite { .. } => Area::Apps,
             Self::RevokeAppInvite { .. } => Area::Apps,
             Self::RedeemAppInvite { .. } => Area::Apps,
+            Self::CreatePublicLink { .. } => Area::Apps,
+            Self::RevokePublicLink { .. } => Area::Apps,
             Self::ScopeApps { .. } => Area::Orgs,
             Self::SetRecoveryKey { .. } => Area::Recovery,
             Self::StartRecovery { .. } => Area::Recovery,
@@ -6394,6 +6482,27 @@ pub enum SystemCmd {
     RevokeAppInvite {
         app_id: AppId,
         invite_key: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Make a public link of an instance ([`crate::types::PublicLink`]): whoever may change
+    /// its access ([`SystemState::manages_grants`]), with passkey consent over
+    /// [`public_link_args`] (`<app> / __create_public_link`), while its organization allows
+    /// public links. Only the token's public key is logged.
+    CreatePublicLink {
+        link_key: String,
+        link: crate::types::PublicLink,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Revoke a public link: its creator or whoever may change the instance's access, with
+    /// passkey consent (`<app> / __revoke_public_link / { linkKey }`). It admits nobody from
+    /// the next request.
+    RevokePublicLink {
+        app_id: AppId,
+        link_key: String,
         actor: AccountId,
         #[serde(default)]
         consent: Value,

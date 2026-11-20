@@ -147,6 +147,15 @@ async fn reads(c: &Client, app: &str) -> Result<Value, Error> {
         .map(|v| v.result)
 }
 
+/// What the kv fixture's `grantScope` view answers `c`: the scope of their grant on `app`.
+async fn scope(c: &Client, app: &str) -> Value {
+    c.apps()
+        .view(app, "grantScope", Some(json!({})), None, None)
+        .await
+        .unwrap()
+        .result
+}
+
 fn refused(e: &Error, status: &str) {
     let e = e.to_string();
     assert!(e.starts_with(status), "{e}");
@@ -155,7 +164,7 @@ fn refused(e: &Error, status: &str) {
 async fn guests_switch(c: &Client, pk: &mut SoftAuthenticator, org: &str, allow: bool) {
     let _v = c
         .orgs()
-        .settings(org, Some(allow), Some(pk))
+        .settings(org, Some(allow), None, Some(pk))
         .await
         .map(wire)
         .unwrap();
@@ -414,9 +423,9 @@ async fn an_instance_invite_makes_its_redeemer_a_guest() {
 }
 
 /// An instance admits a team and two partners from outside its organization at once (one
-/// with a scope the app defines); each grant is judged on its own, so a member outside the
-/// team is refused. An invite on it names a member as a named member, and grants set anew
-/// replace the list.
+/// with a scope the app defines, which the app reads to tell them apart); each grant is judged
+/// on its own, so a member outside the team is refused. An invite on it names a member as a
+/// named member, and grants set anew replace the list.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_team_and_two_partners_reach_one_instance_by_their_grants() {
     use calimero_bundle::GuestPolicy;
@@ -491,6 +500,11 @@ async fn a_team_and_two_partners_reach_one_instance_by_their_grants() {
             }
         }
     }
+    // The app tells the scoped partner apart (`env::grant_scope`), to keep them to their
+    // channel; the other partner and the team's member reach the whole of it.
+    assert_eq!(scope(&erin, &app).await, json!(partners.to_string()));
+    assert_eq!(scope(&carol, &app).await, json!(null));
+    assert_eq!(scope(&bob, &app).await, json!(null));
     let seen = erin.apps().get(&app).await.map(wire).unwrap();
     assert_eq!(
         seen["grants"],

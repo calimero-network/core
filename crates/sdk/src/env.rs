@@ -42,6 +42,17 @@ pub enum Caller {
     System,
     /// Another app, by id (a delivered xcall).
     App(String),
+    /// An anonymous visitor through one of the instance's public links: the link (its key)
+    /// and the visitor's own Ed25519 public key (hex), which it proved it holds. It reaches
+    /// only `#[app::public]` methods, has no account and no org role: `require_member` and
+    /// the other guards refuse it with `LoginRequired`. Two visitors have different keys; the
+    /// same browser keeps its key. WIT 0.5.6 (`context.visitor`).
+    Visitor {
+        /// The public link it came through.
+        link: String,
+        /// The visitor's Ed25519 public key, 64 lowercase hex.
+        key: String,
+    },
 }
 
 /// An account's role in an org.
@@ -128,6 +139,26 @@ pub fn linked(name: &str) -> Option<String> {
 /// ```
 pub fn unit_of() -> Option<String> {
     backend::unit_of()
+}
+
+/// The scope of the caller's grant on this instance, as JSON text: what the instance's
+/// managers set on the person's grant (or on the invite that made it), in the app's own
+/// terms, such as `{"channel":"partners"}`. The platform admits people to the instance and
+/// carries this for the app, which decides what it means: a chat keeps a partner invited with
+/// a channel's scope to that channel.
+///
+/// `None` when the caller is no person (an app, a visitor, the system), is named on the
+/// instance without a scope, or reaches it another way (as a member of its organization or a
+/// team, or anyone): the app's whole. WIT 0.5.6 (`context.grant-scope`).
+///
+/// ```ignore
+/// if let Some(scope) = env::grant_scope() {
+///     let scope: Scope = serde_json::from_str(&scope)?;
+///     require(scope.channel == channel)?;
+/// }
+/// ```
+pub fn grant_scope() -> Option<String> {
+    backend::grant_scope()
 }
 
 /// The account that owns the app.

@@ -22,17 +22,21 @@ class OrgSettingsBody:
     """
     Attributes:
         allow_guests (Union[Unset, bool]):
+        allow_public_links (Union[Unset, bool]):
         confirm (Union[Unset, Confirm]): A passkey assertion over the challenge a `412 CONFIRM_REQUIRED` named: the same
             request sent again with it approves exactly that request.
     """
 
     allow_guests: Union[Unset, bool] = UNSET
+    allow_public_links: Union[Unset, bool] = UNSET
     confirm: Union[Unset, "Confirm"] = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.confirm import Confirm
 
         allow_guests = self.allow_guests
+
+        allow_public_links = self.allow_public_links
 
         confirm: Union[Unset, dict[str, Any]] = UNSET
         if not isinstance(self.confirm, Unset):
@@ -43,6 +47,8 @@ class OrgSettingsBody:
         field_dict.update({})
         if allow_guests is not UNSET:
             field_dict["allowGuests"] = allow_guests
+        if allow_public_links is not UNSET:
+            field_dict["allowPublicLinks"] = allow_public_links
         if confirm is not UNSET:
             field_dict["confirm"] = confirm
 
@@ -55,6 +61,8 @@ class OrgSettingsBody:
         d = dict(src_dict)
         allow_guests = d.pop("allowGuests", UNSET)
 
+        allow_public_links = d.pop("allowPublicLinks", UNSET)
+
         _confirm = d.pop("confirm", UNSET)
         confirm: Union[Unset, Confirm]
         if isinstance(_confirm, Unset):
@@ -64,6 +72,7 @@ class OrgSettingsBody:
 
         org_settings_body = cls(
             allow_guests=allow_guests,
+            allow_public_links=allow_public_links,
             confirm=confirm,
         )
 

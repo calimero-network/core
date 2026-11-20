@@ -254,7 +254,10 @@ impl HarnessApps {
 fn forwarded(caller: &HostCaller) -> Option<HostCaller> {
     match caller {
         HostCaller::Account(_) | HostCaller::ApiKey { .. } => Some(caller.clone()),
-        HostCaller::App(_) | HostCaller::Public | HostCaller::System => None,
+        HostCaller::App(_)
+        | HostCaller::Public
+        | HostCaller::System
+        | HostCaller::Visitor { .. } => None,
     }
 }
 
@@ -268,6 +271,10 @@ fn sdk_caller(caller: &HostCaller) -> crate::env::Caller {
         HostCaller::Public => crate::env::Caller::Public,
         HostCaller::System => crate::env::Caller::System,
         HostCaller::App(a) => crate::env::Caller::App(a.clone()),
+        HostCaller::Visitor { link, key } => crate::env::Caller::Visitor {
+            link: link.clone(),
+            key: key.clone(),
+        },
     }
 }
 
@@ -467,6 +474,15 @@ impl TestApp {
     /// Calls with no account.
     pub fn anonymous(&mut self) -> As<'_> {
         self.caller(HostCaller::Public)
+    }
+
+    /// Calls as an anonymous visitor through public link `link`, with the visitor's
+    /// Ed25519 public key `key` (hex): only `#[app::public]` methods answer.
+    pub fn visitor(&mut self, link: &str, key: &str) -> As<'_> {
+        self.caller(HostCaller::Visitor {
+            link: link.to_owned(),
+            key: key.to_owned(),
+        })
     }
 
     /// Calls as the platform.
@@ -1112,7 +1128,8 @@ impl TestApp {
     /// platform's access gate: the harness app is an org app, so an account the org does not
     /// hold (never in it, or removed) is `404 NOT_FOUND`, and every anonymous caller is
     /// `401 UNAUTHENTICATED`, whatever the method's `public` flag (on a node no access grant
-    /// admits a caller without an account). Then the ABI's, as the node makes them: a method
+    /// admits a caller without an account); a visitor through a public link reaches only
+    /// `#[app::public]` methods (`403 FORBIDDEN` for any other). Then the ABI's, as the node makes them: a method
     /// the ABI does not name (or a reserved `__` name) `UnknownMethod`, `init` and timers
     /// `WrongKind`, a `confirm` method as a view `ConfirmNotAView`, any other non-view as a
     /// view `NotAView`, `Forbidden` for System without `allowSystem`, `ConfirmRequired`.
@@ -1179,6 +1196,12 @@ impl TestApp {
         match caller {
             HostCaller::System if !m.allow_system => refuse("Forbidden"),
             HostCaller::App(app) if !m.allows_app(app) => refuse("Forbidden"),
+            // A visitor through a public link reaches only `#[app::public]` methods: the
+            // node answers `403` before anything runs.
+            HostCaller::Visitor { .. } if !m.public => Some(Failure::Refused {
+                status: 403,
+                code: "FORBIDDEN".to_owned(),
+            }),
             _ if m.confirm && !view && !confirmed => Some(Failure::ConfirmRequired),
             _ => None,
         }

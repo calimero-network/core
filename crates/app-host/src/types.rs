@@ -35,10 +35,20 @@ pub enum InvocationKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Caller {
     Account(String),
-    ApiKey { key_id: String, account: String },
+    ApiKey {
+        key_id: String,
+        account: String,
+    },
     Public,
     System,
     App(String),
+    /// An anonymous visitor through one of the instance's public links: the link (its key)
+    /// and the visitor's Ed25519 public key (hex). The WIT `caller` names it `public`, and
+    /// `context.visitor` (0.5.6) names the link and key.
+    Visitor {
+        link: String,
+        key: String,
+    },
 }
 
 /// A timer tick's slot (D34).
@@ -257,6 +267,11 @@ pub trait Directory: Send + Sync {
     /// The app whose unit this one is a member of: the instance whose release created it
     /// (`uses` with `mode: create`). None by default.
     fn unit_of(&self) -> Option<String> {
+        None
+    }
+    /// The scope (JSON text) of `account`'s grant on the app: what its managers set on the
+    /// person's grant for the app to read. None by default.
+    fn grant_scope(&self, _account: &str) -> Option<String> {
         None
     }
 }

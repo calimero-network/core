@@ -102,6 +102,9 @@ from .openapi.api.apps import pipelines_start as _pipelines_start
 from .openapi.api.apps import pipelines_validate as _pipelines_validate
 from .openapi.api.apps import presence_get as _presence_get
 from .openapi.api.apps import presence_publish as _presence_publish
+from .openapi.api.apps import public_link_create as _public_link_create
+from .openapi.api.apps import public_link_list as _public_link_list
+from .openapi.api.apps import public_link_revoke as _public_link_revoke
 from .openapi.api.apps import upload_abort as _upload_abort
 from .openapi.api.apps import upload_begin as _upload_begin
 from .openapi.api.apps import upload_complete as _upload_complete
@@ -348,6 +351,7 @@ from .openapi.models import PipelinesStartBody
 from .openapi.models import PipelinesValidateBody
 from .openapi.models import PresencePublishBody
 from .openapi.models import ProofOnly
+from .openapi.models import PublicLinkCreateBody
 from .openapi.models import PublisherUpgradeBody
 from .openapi.models import QuotaChanges
 from .openapi.models import RecoverySetBody
@@ -602,6 +606,26 @@ _PRESENCE_PUBLISH = Operation(
     "presence_publish",
     body=PresencePublishBody,
     answer="json",
+)
+_PUBLIC_LINK_CREATE = Operation(
+    _public_link_create,
+    "public_link_create",
+    body=PublicLinkCreateBody,
+    answer="json",
+    confirm=True,
+)
+_PUBLIC_LINK_LIST = Operation(
+    _public_link_list,
+    "public_link_list",
+    body="none",
+    answer="json",
+)
+_PUBLIC_LINK_REVOKE = Operation(
+    _public_link_revoke,
+    "public_link_revoke",
+    body=ConfirmOnly,
+    answer="json",
+    confirm=True,
 )
 _APP_RUN = Operation(
     _app_run,
@@ -1564,6 +1588,71 @@ class Apps(Group):
         Returns: PresencePublishResponse200
         """
         return self._run(_PRESENCE_PUBLISH, (app,), {}, {"seq": seq, "state": state})
+
+    def public_link_create(
+        self, *, app, label=UNSET, expires_at=UNSET, rate_per_minute=UNSET, confirm=None
+    ):
+        """Make a public link of an instance (`POST /apps/{app}/public-links`, `public_link_create`).
+
+        A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor (`Caller::Visitor { link, key }`), whatever its access: send `Authorization: Bearer vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing `"calimero.visitor.v1\\0" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's clock. Whoever may change the instance's access, while its organization allows public links (`409 PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            label: body `label`
+            expires_at: body `expiresAt`
+            rate_per_minute: body `ratePerMinute`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: PublicLinkCreateResponse200
+        """
+        return self._run(
+            _PUBLIC_LINK_CREATE,
+            (app,),
+            {},
+            {"label": label, "expiresAt": expires_at, "ratePerMinute": rate_per_minute},
+            confirm=confirm,
+        )
+
+    def public_link_list(self, *, app):
+        """An instance's public links (`GET /apps/{app}/public-links`, `public_link_list`).
+
+        For whoever may change its access: each link's key, terms and creator, never a token.
+
+        **Who:** a passkey session (an API key is refused).
+
+        Args:
+            app: path
+
+        Returns: PublicLinkListResponse200
+        """
+        return self._run(_PUBLIC_LINK_LIST, (app,), {}, None)
+
+    def public_link_revoke(self, *, app, link, confirm=None):
+        """Revoke a public link (`DELETE /apps/{app}/public-links/{link}`, `public_link_revoke`).
+
+        Its creator, or whoever may change the instance's access; it admits nobody from the next request. `412` first.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            link: path
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: PublicLinkRevokeResponse200
+        """
+        return self._run(
+            _PUBLIC_LINK_REVOKE,
+            (
+                app,
+                link,
+            ),
+            {},
+            {},
+            confirm=confirm,
+        )
 
     def run(self, *, app, run):
         """One compute run (`GET /apps/{app}/runs/{run}`, `app_run`).
@@ -5115,22 +5204,29 @@ class Orgs(Group):
             confirm=confirm,
         )
 
-    def settings(self, *, org, allow_guests=UNSET, confirm=None):
+    def settings(
+        self, *, org, allow_guests=UNSET, allow_public_links=UNSET, confirm=None
+    ):
         """Change the organization's settings (`POST /orgs/{org}/settings`, `org_settings`).
 
-        `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
+        `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.
 
         **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
         Args:
             org: path
             allow_guests: body `allowGuests`
+            allow_public_links: body `allowPublicLinks`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
         Returns: OrgSettingsResponse200
         """
         return self._run(
-            _ORG_SETTINGS, (org,), {}, {"allowGuests": allow_guests}, confirm=confirm
+            _ORG_SETTINGS,
+            (org,),
+            {},
+            {"allowGuests": allow_guests, "allowPublicLinks": allow_public_links},
+            confirm=confirm,
         )
 
     def team_create(self, *, org, name, parent=UNSET, join):

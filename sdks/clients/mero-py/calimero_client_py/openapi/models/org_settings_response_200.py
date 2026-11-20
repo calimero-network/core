@@ -15,10 +15,12 @@ class OrgSettingsResponse200:
     Attributes:
         org (str):
         allow_guests (bool):
+        allow_public_links (bool):
     """
 
     org: str
     allow_guests: bool
+    allow_public_links: bool
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -26,12 +28,15 @@ class OrgSettingsResponse200:
 
         allow_guests = self.allow_guests
 
+        allow_public_links = self.allow_public_links
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "org": org,
                 "allowGuests": allow_guests,
+                "allowPublicLinks": allow_public_links,
             }
         )
 
@@ -44,9 +49,12 @@ class OrgSettingsResponse200:
 
         allow_guests = d.pop("allowGuests")
 
+        allow_public_links = d.pop("allowPublicLinks")
+
         org_settings_response_200 = cls(
             org=org,
             allow_guests=allow_guests,
+            allow_public_links=allow_public_links,
         )
 
         org_settings_response_200.additional_properties = d

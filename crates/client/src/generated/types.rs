@@ -381,7 +381,7 @@ pub struct SealedRefusal {
 
 pub use crate::attest::Receipt;
 
-/// One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account. At most 16 teams and 1000 accounts.
+/// One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account, who comes in only through a public link; `link`: a public link, whose token's holders call the instance's public methods as anonymous visitors (its key, never a token; made and revoked on `/apps/{app}/public-links` only, shown to whoever may change the instance's access, and kept as they are by `POST /apps/{app}/access`). At most 16 teams and 1000 accounts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Grant {
@@ -402,6 +402,21 @@ pub enum Grant {
     },
     #[serde(rename = "anyone")]
     Anyone,
+    #[serde(rename = "link")]
+    Link {
+        #[serde(rename = "createdAt")]
+        created_at: u64,
+        link: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(rename = "expiresAt")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<u64>,
+        #[serde(rename = "ratePerMinute")]
+        rate_per_minute: u64,
+        #[serde(rename = "createdBy")]
+        created_by: String,
+    },
 }
 
 /// A member's role in an organization.
@@ -1703,7 +1718,7 @@ pub struct OrgNewWorkStopped {
     pub extra: Map<String, Value>,
 }
 
-/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).
+/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Org {
     #[serde(rename = "orgId")]
@@ -1734,6 +1749,9 @@ pub struct Org {
     #[serde(rename = "allowGuests")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_guests: Option<bool>,
+    #[serde(rename = "allowPublicLinks")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_public_links: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<OrgMode>,
     #[serde(rename = "releaseApprovers")]
@@ -2965,6 +2983,41 @@ pub struct PresenceGetResponsePresentItem {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PresenceGetResponse {
     pub present: Vec<PresenceGetResponsePresentItem>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PublicLinkCreateResponse {
+    pub link: String,
+    pub token: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PublicLinkListResponseLinksItem {
+    pub link: String,
+    pub label: Option<String>,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: Option<u64>,
+    pub expired: bool,
+    #[serde(rename = "ratePerMinute")]
+    pub rate_per_minute: u64,
+    #[serde(rename = "createdBy")]
+    pub created_by: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PublicLinkListResponse {
+    pub links: Vec<PublicLinkListResponseLinksItem>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -5873,6 +5926,8 @@ pub struct OrgSettingsResponse {
     pub org: String,
     #[serde(rename = "allowGuests")]
     pub allow_guests: bool,
+    #[serde(rename = "allowPublicLinks")]
+    pub allow_public_links: bool,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

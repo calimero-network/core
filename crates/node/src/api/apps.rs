@@ -931,6 +931,12 @@ async fn app_get(
     if !reaches(&node, &app, account) {
         return Err(ApiError::not_found("no such app"));
     }
+    // Its public links are its managers' to see.
+    let manages = account.is_some_and(|a| node.sys(|s| s.manages_grants(&app, a)));
+    let mut app = app;
+    if !manages {
+        app.access = app.access.without_links();
+    }
     let mut v = serde_json::to_value(&app).unwrap_or_default();
     // A guest sees none of the organization's people: only their own grant.
     if let Some(a) = account {

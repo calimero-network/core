@@ -986,7 +986,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if let Some(allow) = settings.allow_guests {
                 o.allow_guests = allow;
             }
-            Ok(json!({ "org": org, "allowGuests": o.allow_guests }))
+            if let Some(allow) = settings.allow_public_links {
+                o.allow_public_links = allow;
+            }
+            Ok(json!({
+                "org": org,
+                "allowGuests": o.allow_guests,
+                "allowPublicLinks": o.allow_public_links,
+            }))
         }
         SystemCmd::RevokeInvite {
             org,
@@ -1057,5 +1064,6 @@ pub(super) fn new_org(
         all_apps: BTreeSet::new(),
         personal,
         allow_guests: true,
+        allow_public_links: true,
     }
 }

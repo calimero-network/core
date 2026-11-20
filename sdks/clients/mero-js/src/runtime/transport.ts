@@ -299,6 +299,8 @@ export class NodeTransport implements Transport {
   readonly raw: typeof fetch;
   private auth: string | undefined;
   private current: CalimeroSession | undefined;
+  /** A visitor through a public link: a credential signed fresh for each request. */
+  private visitor: (() => Promise<string>) | undefined;
   /** The refresh under way, which every request that needs one shares. */
   private refreshing: Promise<CalimeroSession> | undefined;
   /** The backoff between retries, for a caller that retries a request the routes do not. */
@@ -353,18 +355,28 @@ export class NodeTransport implements Transport {
   useApiKey(key: string): void {
     this.auth = key;
     this.current = undefined;
+    this.visitor = undefined;
+  }
+
+  /** Authenticate every request with a credential `bearer` signs fresh (a public link's visitor). */
+  useVisitor(bearer: () => Promise<string>): void {
+    this.auth = undefined;
+    this.current = undefined;
+    this.visitor = bearer;
   }
 
   /** Authenticate every request with `session`, refreshed when a node answers `401` to it. */
   useSession(session: CalimeroSession): void {
     this.auth = session.sessionToken;
     this.current = session;
+    this.visitor = undefined;
   }
 
   /** Drop the credential: no request after this carries it. */
   signOut(): void {
     this.auth = undefined;
     this.current = undefined;
+    this.visitor = undefined;
   }
 
   get session(): CalimeroSession | undefined {
@@ -536,7 +548,8 @@ export class NodeTransport implements Transport {
    */
   private async once(method: string, path: string, options: RequestOptions): Promise<Response> {
     const headers: Record<string, string> = {};
-    if (this.auth) headers.authorization = `Bearer ${this.auth}`;
+    const auth = this.visitor ? await this.visitor() : this.auth;
+    if (auth) headers.authorization = `Bearer ${auth}`;
     let payload: BodyInit | undefined;
     if (options.bytes) {
       headers['content-type'] = options.contentType ?? 'application/wasm';

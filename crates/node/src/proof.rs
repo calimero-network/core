@@ -227,6 +227,81 @@ pub fn invite_key(token: &str) -> String {
     hex::encode(invite_signing_key(token).verifying_key().to_bytes())
 }
 
+/// What a public link token's key is derived under (distinct from an invite's, so neither
+/// token stands for the other).
+pub const PUBLIC_LINK_DOMAIN: &[u8] = b"calimero.public-link.v1\0";
+/// What a visitor's proof signs before its fields.
+pub const VISITOR_DOMAIN: &[u8] = b"calimero.visitor.v1\0";
+/// How far a visitor's proof time may be from the node's clock, either way (seconds).
+pub const VISITOR_PROOF_WINDOW_SECS: u64 = 300;
+
+/// A public link token's public key, hex: what `CreatePublicLink` records. Its seed is
+/// `SHA-256("calimero.public-link.v1\0" || token)`; the log keeps only the public half, so a
+/// node that sees the log and not the token cannot let anyone in.
+#[must_use]
+pub fn public_link_key(token: &str) -> String {
+    let seed = sha256(&[PUBLIC_LINK_DOMAIN, token.as_bytes()].concat());
+    hex::encode(
+        ed25519_dalek::SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .to_bytes(),
+    )
+}
+
+/// The bytes a visitor signs with its own key to use public link `link_key` at `at` (Unix
+/// seconds): `"calimero.visitor.v1\0" || link_key || 0 || visitor_key || 0 || at`, the keys
+/// hex, `at` in decimal.
+#[must_use]
+pub fn visitor_message(link_key: &str, visitor_key: &str, at: u64) -> Vec<u8> {
+    let mut m = VISITOR_DOMAIN.to_vec();
+    m.extend_from_slice(link_key.as_bytes());
+    m.push(0);
+    m.extend_from_slice(visitor_key.as_bytes());
+    m.push(0);
+    m.extend_from_slice(at.to_string().as_bytes());
+    m
+}
+
+/// Check a visitor's proof: `signature` (hex) is `visitor_key`'s (64 hex, Ed25519) over
+/// [`visitor_message`], and `at` is within [`VISITOR_PROOF_WINDOW_SECS`] of `now`.
+///
+/// # Errors
+/// What is wrong with it.
+pub fn verify_visitor(
+    link_key: &str,
+    visitor_key: &str,
+    at: u64,
+    signature: &str,
+    now: u64,
+) -> Result<(), &'static str> {
+    if visitor_key.len() != 64
+        || !visitor_key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("a visitor key is 64 lowercase hex");
+    }
+    if at.abs_diff(now) > VISITOR_PROOF_WINDOW_SECS {
+        return Err("the visitor's proof is too old or from the future: sign it again");
+    }
+    let public = hex::decode(visitor_key).map_err(|_| "a visitor key is 64 lowercase hex")?;
+    let signature = hex::decode(signature).map_err(|_| "a visitor's signature is hex")?;
+    UnparsedPublicKey::new(&ED25519, &public)
+        .verify(&visitor_message(link_key, visitor_key, at), &signature)
+        .map_err(|_| "the visitor's proof is not signed with its key")
+}
+
+/// Sign a visitor's proof with the Ed25519 key whose seed is `seed`: the visitor key (hex)
+/// and the signature (hex), as a client sends them.
+#[must_use]
+pub fn sign_visitor(seed: &[u8; 32], link_key: &str, at: u64) -> (String, String) {
+    use ed25519_dalek::Signer;
+    let key = ed25519_dalek::SigningKey::from_bytes(seed);
+    let public = hex::encode(key.verifying_key().to_bytes());
+    let signature = hex::encode(key.sign(&visitor_message(link_key, &public, at)).to_bytes());
+    (public, signature)
+}
+
 /// The bytes a redemption signs: `"calimero.invite-redeem.v1\0" || invite_key
 /// || 0 || account || 0 || now` (the key hex, `now` in decimal Unix seconds).
 #[must_use]

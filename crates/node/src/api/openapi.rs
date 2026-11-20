@@ -717,8 +717,8 @@ fn components() -> Vec<Component> {
         ),
         component(
             "Grant",
-            "One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account. At most 16 teams and 1000 accounts.",
-            r#"{ kind: "org" } | { kind: "team", team: string } | { kind: "account", account: string, scope?: any } | { kind: "anyone" }"#,
+            "One way into an instance; an instance's `grants` are a list of them, and none is its owner alone. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account, who comes in only through a public link; `link`: a public link, whose token's holders call the instance's public methods as anonymous visitors (its key, never a token; made and revoked on `/apps/{app}/public-links` only, shown to whoever may change the instance's access, and kept as they are by `POST /apps/{app}/access`). At most 16 teams and 1000 accounts.",
+            r#"{ kind: "org" } | { kind: "team", team: string } | { kind: "account", account: string, scope?: any } | { kind: "anyone" } | { kind: "link", link: string, label?: string, expiresAt?: uint, ratePerMinute: uint, createdBy: string, createdAt: uint }"#,
         )
         .of::<crate::types::Grant>(),
         component(
@@ -932,8 +932,8 @@ fn components() -> Vec<Component> {
         .of::<crate::types::ApiKeyRecord>(),
         component(
             "Org",
-            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).",
-            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, allowGuests?: bool, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
+            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).",
+            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, allowGuests?: bool, allowPublicLinks?: bool, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
         )
         .of::<OrgAnswer>(),
         component(
@@ -1043,6 +1043,9 @@ struct OrgAnswer {
     /// Always answered (`org_get`), though the state leaves `true` out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     allow_guests: Option<bool>,
+    /// As `allow_guests`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    allow_public_links: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<crate::types::OrgMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1421,6 +1424,22 @@ fn operations() -> Vec<Op> {
             .ok("{}")
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
+        post("/apps/{app}/public-links", "public_link_create", AccountHolder, "Make a public link of an instance")
+            .about("A link whose token lets anyone call the instance's `#[app::public]` methods as an anonymous visitor (`Caller::Visitor { link, key }`), whatever its access: send `Authorization: Bearer vis1.<token>.<visitor key>.<at>.<signature>`, the visitor's own Ed25519 key (64 hex) signing `\"calimero.visitor.v1\\0\" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at` (hex) with `at` within 5 minutes of the node's clock. Whoever may change the instance's access, while its organization allows public links (`409 PUBLIC_LINKS_OFF`). `ratePerMinute` (1 to 600, default 60) bounds each visitor's calls on each node; `expiresAt` (Unix seconds) is optional. The token is answered once; the log keeps only its public key (`link`). At most 16 per instance. `412` first; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.")
+            .json::<super::PublicLinkBody>("{ label?: string, expiresAt?: uint, ratePerMinute?: uint, confirm?: #Confirm }")
+            .ok("{ link: string, token: string }")
+            .step_up()
+            .errors(&[(400, "BAD_REQUEST"), (400, "WRONG_CHALLENGE"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "PUBLIC_LINKS_OFF"), (409, "FEATURE_NOT_ACTIVE"), (429, "QUOTA_EXCEEDED")]),
+        get("/apps/{app}/public-links", "public_link_list", Session, "An instance's public links")
+            .about("For whoever may change its access: each link's key, terms and creator, never a token.")
+            .ok("{ links: { link: string, label: string | null, expiresAt: uint | null, expired: bool, ratePerMinute: uint, createdBy: string, createdAt: uint }[] }")
+            .errors(&[(404, "NOT_FOUND")]),
+        delete("/apps/{app}/public-links/{link}", "public_link_revoke", AccountHolder, "Revoke a public link")
+            .about("Its creator, or whoever may change the instance's access; it admits nobody from the next request. `412` first.")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
+            .ok("{}")
+            .step_up()
+            .errors(&[(404, "NOT_FOUND")]),
         post("/apps/{app}/transfer", "app_transfer", AccountHolder, "Hand an app to another account")
             .about("The owner (for an organization's app, while a member and in the app's team), or an organization admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for; below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal one). Answers `null`.")
             .json::<super::TransferBody>("{ to: string, confirm?: #Confirm }")
@@ -1783,9 +1802,9 @@ fn operations() -> Vec<Op> {
             .ok("{ org: string, app?: string, member?: bool }")
             .errors(&[(409, "GUESTS_NOT_ALLOWED")]),
         post("/orgs/{org}/settings", "org_settings", Session, "Change the organization's settings")
-            .about("`allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.")
-            .json::<super::OrgSettingsBody>("{ allowGuests?: bool, confirm?: #Confirm }")
-            .ok("{ org: string, allowGuests: bool }")
+            .about("`allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.")
+            .json::<super::OrgSettingsBody>("{ allowGuests?: bool, allowPublicLinks?: bool, confirm?: #Confirm }")
+            .ok("{ org: string, allowGuests: bool, allowPublicLinks: bool }")
             .step_up()
             .errors(&[(400, "BAD_REQUEST"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         // ---------------------------------------------------------------- consent
