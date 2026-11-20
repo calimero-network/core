@@ -275,6 +275,9 @@ class PersonalOrg(DeepCase):
     name = "personal-org"
     area = "Organizations"
     since = "1.0.0-rc.20"
+    # From 1.0.0-rc.32 a cluster's organizations are ordinary: no sign-up makes a personal one,
+    # so a roll from rc.32 or later carries none (`ordinary-orgs` covers what replaced them).
+    until = "1.0.0-rc.32"
     seeds = ("instances created without naming an organization, which go to the personal organization made at "
              "sign-up; one of them shared with a named account outside it (an `account` grant)")
     verifies = ("both instances in the one personal organization, marked personal, with their data; the named "
