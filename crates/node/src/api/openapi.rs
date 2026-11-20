@@ -1228,7 +1228,7 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         delete("/auth/aliases/{alias}", "alias_delete", SignedIn, "Remove an alias").ok("{}"),
         post("/auth/apikeys", "apikey_create", AccountHolder, "Make an API key")
-            .about("Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey. `412` first. The key is shown once.")
+            .about("Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.")
             .json::<super::ApiKeyBody>("{ label?: string, apps?: string[], methods?: string[], readOnly?: bool, allowConfirm?: bool, ttlSecs?: uint, upgrades?: { app: string, package?: string }, confirm?: #Confirm }")
             .ok("{ keyId: string, key: string }")
             .step_up()
@@ -1370,11 +1370,15 @@ fn operations() -> Vec<Op> {
             .events("each committed event the caller is in the audience of")
             .errors(&[(429, "RATE_LIMITED"), (503, "UNAVAILABLE")]),
         post("/apps/{app}/upgrade", "app_upgrade", AccountHolder, "Upgrade an app instance")
-            .about("To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. Whoever the package's manifest names (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.")
+            .about("To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.")
             .json::<super::UpgradeBody>("{ bundle?: string, package?: string, version?: string, service?: string, confirm?: #Confirm, migrate?: string }")
             .ok("{ index: uint, status: string, error: any, compute: bool }")
             .step_up()
             .errors(&[(400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "OUTSIDE_DEPLOYMENT"), (409, "OUTSIDE_UNIT_RANGE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
+        get("/apps/{app}/update", "app_update", AppAccess, "Whether an update is available for an app")
+            .about("For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).")
+            .ok("{ app: string, running: { package: string, version: string } | null, available: { package: string, version: string, source: \"deployment\" | \"release\" } | null, mayApprove: bool, approvers: \"owner-and-admins\" | \"operator\" | \"managers\" }")
+            .errors(&[(404, "NOT_FOUND")]),
         post("/apps/{app}/upgrade-unit", "app_upgrade_unit", AccountHolder, "Upgrade an app and the apps it created, in one consent")
             .about("An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.")
             .json::<super::upgrades::UnitUpgradeBody>("{ version: string, confirm?: #Confirm }")
@@ -1598,7 +1602,7 @@ fn operations() -> Vec<Op> {
             .ok("{ apps: uint, developerFuelToday: u64, developerWritesToday: u64, quotas: #Quotas }")
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         post("/orgs/{org}/upgrade", "org_upgrade", AccountHolder, "Start an upgrade run")
-            .about("Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; whoever holds `MANAGE_APPLICATION` there. Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.")
+            .about("Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; the organization's owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.")
             .json::<super::OrgUpgradeBody>("{ package: string, version: string, team?: string, cascade?: bool, migrate?: string, confirm?: #Confirm, operatorProof?: #OperatorProof }")
             .ok("#UpgradeRun")
             .step_up()
@@ -1679,7 +1683,7 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         post("/orgs/{org}/packages/{package}/upgrade", "publisher_upgrade", AccountHolder, "Upgrade every instance of a publisher's package")
-            .about("An upgrade run over every app on the cluster that runs the package, by its publisher's `MANAGE_APPLICATION` holders.")
+            .about("An upgrade run, by an owner or admin of the publisher organization, over the apps that run the package in the organizations they are an owner or admin of (the publisher's own included), never another organization's: those are upgraded by their own owner and admins. On a cluster still below 1.0.0-rc.32, as before: by the publisher's `MANAGE_APPLICATION` holders, over every instance its publisher upgrades.")
             .json::<super::PublisherUpgradeBody>("{ version: string, migrate?: string, confirm?: #Confirm }")
             .ok("#UpgradeRun")
             .step_up()

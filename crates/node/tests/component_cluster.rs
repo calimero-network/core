@@ -4001,10 +4001,10 @@ async fn concurrent_first_uses_of_a_bundle_prepare_it_once() {
 
 /// C1 on the node's upgrade path (Xabi's decision: keep the node's check). Who
 /// may upgrade is judged where the system log applies `UpgradeApp`, on every replica
-/// (`SystemState::may_upgrade`: the owner, or `MANAGE_APPLICATION` in the app's
-/// organization), and by the upgrade route before anything runs. Neither another
-/// account (on a personal component app) nor an org member without
-/// `MANAGE_APPLICATION` (on an org component app) gets an upgrade through, by the route
+/// (`SystemState::may_upgrade`: an owner or admin of the app's organization, from
+/// `Feature::OwnerApprovedUpgrades` on, which the logged cluster version brings here),
+/// and by the upgrade route before anything runs. Neither another account (on a
+/// personal component app) nor an org member (on an org component app) gets an upgrade through, by the route
 /// or by an `UpgradeApp` written straight into the system log past the front check,
 /// through a follower or through the app's leader; each app keeps its bundle on every
 /// replica and in the directory. The owner's own upgrade then goes through, so the
@@ -4124,12 +4124,13 @@ async fn the_leader_checks_upgrade_authority_again() {
                     owner_in_org: true,
                     owner_in_team: true,
                     in_deployment: false,
+                    owner_approves: false,
                 })
                 .await
                 .unwrap_err();
             assert_eq!(e.code, "REJECTED", "{who}, log, node {i}: {e:?}");
             assert!(
-                e.message.contains("needs its owner"),
+                e.message.contains("owner or admin"),
                 "{who}, node {i}: {e:?}"
             );
         }

@@ -518,9 +518,18 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /apps/{app}/transfer`.
     /// - Remark: Generated from `#/paths//apps/{app}/transfer/post(app_transfer)`.
     func appTransfer(_ input: Operations.AppTransfer.Input) async throws -> Operations.AppTransfer.Output
+    /// Whether an update is available for an app
+    ///
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    ///
+    /// **Who:** whoever the app's access admits (a public app: anyone).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/update`.
+    /// - Remark: Generated from `#/paths//apps/{app}/update/get(app_update)`.
+    func appUpdate(_ input: Operations.AppUpdate.Input) async throws -> Operations.AppUpdate.Output
     /// Upgrade an app instance
     ///
-    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. Whoever the package's manifest names (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
+    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -627,7 +636,7 @@ public protocol APIProtocol: Sendable {
     func apikeyList(_ input: Operations.ApikeyList.Input) async throws -> Operations.ApikeyList.Output
     /// Make an API key
     ///
-    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey. `412` first. The key is shown once.
+    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -1233,7 +1242,7 @@ public protocol APIProtocol: Sendable {
     func orgOutboundApproval(_ input: Operations.OrgOutboundApproval.Input) async throws -> Operations.OrgOutboundApproval.Output
     /// Upgrade every instance of a publisher's package
     ///
-    /// An upgrade run over every app on the cluster that runs the package, by its publisher's `MANAGE_APPLICATION` holders.
+    /// An upgrade run, by an owner or admin of the publisher organization, over the apps that run the package in the organizations they are an owner or admin of (the publisher's own included), never another organization's: those are upgraded by their own owner and admins. On a cluster still below 1.0.0-rc.32, as before: by the publisher's `MANAGE_APPLICATION` holders, over every instance its publisher upgrades.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -1357,7 +1366,7 @@ public protocol APIProtocol: Sendable {
     func teamRemoveMember(_ input: Operations.TeamRemoveMember.Input) async throws -> Operations.TeamRemoveMember.Output
     /// Start an upgrade run
     ///
-    /// Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; whoever holds `MANAGE_APPLICATION` there. Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
+    /// Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; the organization's owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -2578,9 +2587,26 @@ extension APIProtocol {
             body: body
         ))
     }
+    /// Whether an update is available for an app
+    ///
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    ///
+    /// **Who:** whoever the app's access admits (a public app: anyone).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/update`.
+    /// - Remark: Generated from `#/paths//apps/{app}/update/get(app_update)`.
+    public func appUpdate(
+        path: Operations.AppUpdate.Input.Path,
+        headers: Operations.AppUpdate.Input.Headers = .init()
+    ) async throws -> Operations.AppUpdate.Output {
+        try await appUpdate(Operations.AppUpdate.Input(
+            path: path,
+            headers: headers
+        ))
+    }
     /// Upgrade an app instance
     ///
-    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. Whoever the package's manifest names (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
+    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -2787,7 +2813,7 @@ extension APIProtocol {
     }
     /// Make an API key
     ///
-    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey. `412` first. The key is shown once.
+    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -3949,7 +3975,7 @@ extension APIProtocol {
     }
     /// Upgrade every instance of a publisher's package
     ///
-    /// An upgrade run over every app on the cluster that runs the package, by its publisher's `MANAGE_APPLICATION` holders.
+    /// An upgrade run, by an owner or admin of the publisher organization, over the apps that run the package in the organizations they are an owner or admin of (the publisher's own included), never another organization's: those are upgraded by their own owner and admins. On a cluster still below 1.0.0-rc.32, as before: by the publisher's `MANAGE_APPLICATION` holders, over every instance its publisher upgrades.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -4211,7 +4237,7 @@ extension APIProtocol {
     }
     /// Start an upgrade run
     ///
-    /// Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; whoever holds `MANAGE_APPLICATION` there. Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
+    /// Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; the organization's owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -20815,9 +20841,245 @@ public enum Operations {
             case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
         }
     }
+    /// Whether an update is available for an app
+    ///
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    ///
+    /// **Who:** whoever the app's access admits (a public app: anyone).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/update`.
+    /// - Remark: Generated from `#/paths//apps/{app}/update/get(app_update)`.
+    public enum AppUpdate {
+        public static let id: Swift.String = "app_update"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/update/GET/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppUpdate.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUpdate.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUpdate.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppUpdate.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.AppUpdate.Input.Path,
+                headers: Operations.AppUpdate.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/app`.
+                        public var app: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/running`.
+                        public struct RunningPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/running/package`.
+                            public var package: Swift.String
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/running/version`.
+                            public var version: Swift.String
+                            /// Creates a new `RunningPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - package:
+                            ///   - version:
+                            public init(
+                                package: Swift.String,
+                                version: Swift.String
+                            ) {
+                                self.package = package
+                                self.version = version
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case package
+                                case version
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/running`.
+                        public var running: Operations.AppUpdate.Output.Ok.Body.JsonPayload.RunningPayload?
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available`.
+                        public struct AvailablePayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/package`.
+                            public var package: Swift.String
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/version`.
+                            public var version: Swift.String
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/source`.
+                            @frozen public enum SourcePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                                case deployment = "deployment"
+                                case release = "release"
+                            }
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/source`.
+                            public var source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.SourcePayload
+                            /// Creates a new `AvailablePayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - package:
+                            ///   - version:
+                            ///   - source:
+                            public init(
+                                package: Swift.String,
+                                version: Swift.String,
+                                source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.SourcePayload
+                            ) {
+                                self.package = package
+                                self.version = version
+                                self.source = source
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case package
+                                case version
+                                case source
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available`.
+                        public var available: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload?
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/mayApprove`.
+                        public var mayApprove: Swift.Bool
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/approvers`.
+                        @frozen public enum ApproversPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                            case ownerAndAdmins = "owner-and-admins"
+                            case _operator = "operator"
+                            case managers = "managers"
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/approvers`.
+                        public var approvers: Operations.AppUpdate.Output.Ok.Body.JsonPayload.ApproversPayload
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - app:
+                        ///   - running:
+                        ///   - available:
+                        ///   - mayApprove:
+                        ///   - approvers:
+                        public init(
+                            app: Swift.String,
+                            running: Operations.AppUpdate.Output.Ok.Body.JsonPayload.RunningPayload? = nil,
+                            available: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload? = nil,
+                            mayApprove: Swift.Bool,
+                            approvers: Operations.AppUpdate.Output.Ok.Body.JsonPayload.ApproversPayload
+                        ) {
+                            self.app = app
+                            self.running = running
+                            self.available = available
+                            self.mayApprove = mayApprove
+                            self.approvers = approvers
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case app
+                            case running
+                            case available
+                            case mayApprove
+                            case approvers
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/application\/json`.
+                    case json(Operations.AppUpdate.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppUpdate.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppUpdate.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppUpdate.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/update/get(app_update)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppUpdate.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppUpdate.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
     /// Upgrade an app instance
     ///
-    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. Whoever the package's manifest names (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
+    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -22964,7 +23226,7 @@ public enum Operations {
     }
     /// Make an API key
     ///
-    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey. `412` first. The key is shown once.
+    /// Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -35622,7 +35884,7 @@ public enum Operations {
     }
     /// Upgrade every instance of a publisher's package
     ///
-    /// An upgrade run over every app on the cluster that runs the package, by its publisher's `MANAGE_APPLICATION` holders.
+    /// An upgrade run, by an owner or admin of the publisher organization, over the apps that run the package in the organizations they are an owner or admin of (the publisher's own included), never another organization's: those are upgraded by their own owner and admins. On a cluster still below 1.0.0-rc.32, as before: by the publisher's `MANAGE_APPLICATION` holders, over every instance its publisher upgrades.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -38137,7 +38399,7 @@ public enum Operations {
     }
     /// Start an upgrade run
     ///
-    /// Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; whoever holds `MANAGE_APPLICATION` there. Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
+    /// Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; the organization's owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///

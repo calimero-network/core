@@ -83,6 +83,20 @@ NOT_COVERED = [
      "`a_deployments_secret_never_reaches_a_package_it_does_not_offer` (`component_cluster.rs`) covers it on "
      "one build, and `an_instance_from_a_deployment_moves_only_to_what_it_offers` (`system::tests`) the "
      "replay of an earlier entry"),
+    ("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
+     "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
+     "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
+     "below cluster version 1.0.0-rc.33 (`Feature::OwnerApprovedUpgrades`), and the owner's upgrade after the "
+     "roll is already the `kv-package` case's (`extend`: the organization's owner upgrades on the new release). "
+     "`system::tests::only_an_organizations_owner_and_admins_approve_its_upgrades` covers the replay, and "
+     "`a_member_needs_the_capability_to_create_apps_or_invite`, `the_leader_checks_upgrade_authority_again` and "
+     "`an_upgrade_key_is_an_owners_or_admins_of_the_apps_organization` the refusals on one build"),
+    ("Deployments", "An app's frontend reads whether an update is available (`GET /apps/{app}/update`) and its "
+     "customer accepts the deployment's offer on the consent page",
+     "needs a deployment and an instance from it, which no case seeds yet (deployments are not seeded, above); "
+     "the route reads the state and stores nothing. `an_instance_shows_its_update_and_who_may_approve_it` "
+     "(`deployments.rs`) and `a_customer_accepts_its_deployments_offer_on_the_page` (`consent_page.rs`) cover "
+     "it on one build"),
     ("Packages", "A release that declares its secrets (`secrets` in the signed manifest, `PackageVersion::secrets`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `secrets`, and a release that "
      "declares them installs only once every node runs this release (`Feature::DeclaredSecrets`); "

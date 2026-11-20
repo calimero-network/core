@@ -101,8 +101,11 @@ def sync_detailed(
 ) -> Response[Union[Error, UpgradeRun]]:
     """Upgrade every instance of a publisher's package
 
-     An upgrade run over every app on the cluster that runs the package, by its publisher's
-    `MANAGE_APPLICATION` holders.
+     An upgrade run, by an owner or admin of the publisher organization, over the apps that run the
+    package in the organizations they are an owner or admin of (the publisher's own included), never
+    another organization's: those are upgraded by their own owner and admins. On a cluster still below
+    1.0.0-rc.32, as before: by the publisher's `MANAGE_APPLICATION` holders, over every instance its
+    publisher upgrades.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -143,8 +146,11 @@ def sync(
 ) -> Optional[Union[Error, UpgradeRun]]:
     """Upgrade every instance of a publisher's package
 
-     An upgrade run over every app on the cluster that runs the package, by its publisher's
-    `MANAGE_APPLICATION` holders.
+     An upgrade run, by an owner or admin of the publisher organization, over the apps that run the
+    package in the organizations they are an owner or admin of (the publisher's own included), never
+    another organization's: those are upgraded by their own owner and admins. On a cluster still below
+    1.0.0-rc.32, as before: by the publisher's `MANAGE_APPLICATION` holders, over every instance its
+    publisher upgrades.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -180,8 +186,11 @@ async def asyncio_detailed(
 ) -> Response[Union[Error, UpgradeRun]]:
     """Upgrade every instance of a publisher's package
 
-     An upgrade run over every app on the cluster that runs the package, by its publisher's
-    `MANAGE_APPLICATION` holders.
+     An upgrade run, by an owner or admin of the publisher organization, over the apps that run the
+    package in the organizations they are an owner or admin of (the publisher's own included), never
+    another organization's: those are upgraded by their own owner and admins. On a cluster still below
+    1.0.0-rc.32, as before: by the publisher's `MANAGE_APPLICATION` holders, over every instance its
+    publisher upgrades.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -220,8 +229,11 @@ async def asyncio(
 ) -> Optional[Union[Error, UpgradeRun]]:
     """Upgrade every instance of a publisher's package
 
-     An upgrade run over every app on the cluster that runs the package, by its publisher's
-    `MANAGE_APPLICATION` holders.
+     An upgrade run, by an owner or admin of the publisher organization, over the apps that run the
+    package in the organizations they are an owner or admin of (the publisher's own included), never
+    another organization's: those are upgraded by their own owner and admins. On a cluster still below
+    1.0.0-rc.32, as before: by the publisher's `MANAGE_APPLICATION` holders, over every instance its
+    publisher upgrades.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

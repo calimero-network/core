@@ -3106,6 +3106,118 @@ pub struct AppStorageResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppUpdateResponseRunning {
+    pub package: String,
+    pub version: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppUpdateResponseAvailableSource {
+    /// `deployment`.
+    Deployment,
+    /// `release`.
+    Release,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppUpdateResponseAvailableSource {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Deployment => "deployment",
+            Self::Release => "release",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppUpdateResponseAvailableSource {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppUpdateResponseAvailableSource {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "deployment" => Self::Deployment,
+            "release" => Self::Release,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppUpdateResponseAvailable {
+    pub package: String,
+    pub version: String,
+    pub source: AppUpdateResponseAvailableSource,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppUpdateResponseApprovers {
+    /// `owner-and-admins`.
+    OwnerAndAdmins,
+    /// `operator`.
+    Operator,
+    /// `managers`.
+    Managers,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppUpdateResponseApprovers {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::OwnerAndAdmins => "owner-and-admins",
+            Self::Operator => "operator",
+            Self::Managers => "managers",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppUpdateResponseApprovers {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppUpdateResponseApprovers {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "owner-and-admins" => Self::OwnerAndAdmins,
+            "operator" => Self::Operator,
+            "managers" => Self::Managers,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppUpdateResponse {
+    pub app: String,
+    pub running: Option<AppUpdateResponseRunning>,
+    pub available: Option<AppUpdateResponseAvailable>,
+    #[serde(rename = "mayApprove")]
+    pub may_approve: bool,
+    pub approvers: AppUpdateResponseApprovers,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppUpgradeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle: Option<String>,

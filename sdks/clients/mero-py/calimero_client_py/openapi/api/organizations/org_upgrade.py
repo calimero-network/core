@@ -94,9 +94,9 @@ def sync_detailed(
     """Start an upgrade run
 
      Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package`
-    to `version`, with one passkey assertion over the whole run; whoever holds `MANAGE_APPLICATION`
-    there. Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}`
-    follows it.
+    to `version`, with one passkey assertion over the whole run; the organization's owner or an admin
+    (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is
+    upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -135,9 +135,9 @@ def sync(
     """Start an upgrade run
 
      Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package`
-    to `version`, with one passkey assertion over the whole run; whoever holds `MANAGE_APPLICATION`
-    there. Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}`
-    follows it.
+    to `version`, with one passkey assertion over the whole run; the organization's owner or an admin
+    (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is
+    upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -171,9 +171,9 @@ async def asyncio_detailed(
     """Start an upgrade run
 
      Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package`
-    to `version`, with one passkey assertion over the whole run; whoever holds `MANAGE_APPLICATION`
-    there. Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}`
-    follows it.
+    to `version`, with one passkey assertion over the whole run; the organization's owner or an admin
+    (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is
+    upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -210,9 +210,9 @@ async def asyncio(
     """Start an upgrade run
 
      Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package`
-    to `version`, with one passkey assertion over the whole run; whoever holds `MANAGE_APPLICATION`
-    there. Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}`
-    follows it.
+    to `version`, with one passkey assertion over the whole run; the organization's owner or an admin
+    (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is
+    upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

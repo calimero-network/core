@@ -1256,13 +1256,12 @@ async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_re
     );
 }
 
-/// A package its publisher upgrades is not the instance owner's to upgrade,
-/// on the page as on the route, and the request is refused before any page
-/// exists: while no organization has bound the key, nobody upgrades it
-/// (409); an owner-upgraded app is never moved back to a publisher release
-/// (403).
+/// A package its publisher upgrades is its organization's owner's and admins' to
+/// upgrade on the page as on the route (`Feature::OwnerApprovedUpgrades`), its key
+/// bound or not; an owner-upgraded app is never moved back to a publisher release,
+/// refused before any page exists (403).
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_publisher_upgraded_package_is_not_upgraded_on_the_owners_page() {
+async fn a_publisher_upgraded_package_is_upgraded_on_its_organizations_page() {
     let c = Cluster::start(3).await;
     let (alice, _) = signed_up(&c, 0, "alice").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
@@ -1308,13 +1307,12 @@ async fn a_publisher_upgraded_package_is_not_upgraded_on_the_owners_page() {
         })
     };
 
-    let e = alice
+    // The key is bound to no organization: the instance's own organization decides.
+    let _page = alice
         .consent()
         .page_create(typed(ask(&held, "2.0.0")))
         .await
-        .unwrap_err();
-    assert_eq!(status(&e), 409, "the key is bound to no organization: {e}");
-    assert!(e.to_string().contains("upgraded by its publisher"), "{e}");
+        .unwrap();
 
     let e = alice
         .consent()
@@ -3071,4 +3069,172 @@ async fn an_upgrade_warns_when_an_attached_app_falls_outside_its_range() {
         json!([format!("calendar runs {cal} 2.0.0, outside ^3")]),
         "{flagged}"
     );
+}
+
+/// An instance from a deployment, upgraded from inside its app: its frontend asks for the
+/// release the developer now offers (naming no version, or naming that one), and the
+/// customer's owner approves it on the node's page, though they never installed or saw
+/// that release. Another version is refused `409 OUTSIDE_DEPLOYMENT`, and a member of the
+/// customer's organization, who created the instance, is refused `403` before any page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_customer_accepts_its_deployments_offer_on_the_page() {
+    const CREATE_APP: u64 = 1 << 0;
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (dev, mut dev_pk) = signed_up(&c, 0, "dev").await;
+    let (carol, mut carol_key) = signed_up(&c, 1, "carol").await;
+    let (bob, bob_key) = signed_up(&c, 2, "bob").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
+    for (version, tag) in [("1.0.0", "v1"), ("1.5.0", "v15"), ("2.0.0", "v2")] {
+        let (mpk, _) = release_of(
+            PACKAGE,
+            version,
+            &variant(&kv_wasm(), tag),
+            &publisher,
+            &Declares::default(),
+        );
+        let _ = dev.packages().upload(mpk).await.unwrap();
+    }
+    let dev_id = account_of(&dev).await;
+    let d = dev
+        .deployments()
+        .create(
+            "acme",
+            typed(json!({ "account": dev_id })),
+            Some(&mut dev_pk),
+        )
+        .await
+        .map(wire)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ok = dev
+        .deployments()
+        .offer(&d, "notes", PACKAGE, "1.0.0", Some(&mut dev_pk))
+        .await
+        .unwrap();
+
+    // Carol's organization; bob, a member who may create apps, creates the instance.
+    let globex = carol
+        .orgs()
+        .create("Globex", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = carol
+        .orgs()
+        .invite_create(
+            &globex,
+            typed(json!({ "role": "member" })),
+            Some(&mut carol_key),
+        )
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob.orgs().invite_redeem(&token).await.unwrap();
+    let bob_id = account_of(&bob).await;
+    let _ok = carol
+        .orgs()
+        .capabilities(
+            &globex,
+            CREATE_APP,
+            Some(&bob_id),
+            None,
+            Some(&mut carol_key),
+        )
+        .await
+        .unwrap();
+    let inst = bob
+        .apps()
+        .create(typed(json!({
+            "name": "notes", "deployment": d, "package": PACKAGE, "org": globex,
+        })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let _ok = dev
+        .deployments()
+        .offer(&d, "notes", PACKAGE, "2.0.0", Some(&mut dev_pk))
+        .await
+        .unwrap();
+
+    // In the app: each person signs in on the package's frontend.
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let back = format!("{app_origin}/");
+    let carol_app = c.client(1);
+    let mut carol_in_app = SoftAuthenticator::with_key(&carol_key, "localhost", &app_origin);
+    let _s = carol_app.sign_in(&mut carol_in_app).await.unwrap();
+    let bob_app = c.client(2);
+    let mut bob_in_app = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = bob_app.sign_in(&mut bob_in_app).await.unwrap();
+
+    // The frontend learns there is an update, and who may approve it.
+    let u = carol_app
+        .transport()
+        .json(Request::new(Method::GET, format!("apps/{inst}/update")))
+        .await
+        .unwrap();
+    assert_eq!(u["available"]["version"], "2.0.0", "{u}");
+    assert_eq!(u["available"]["source"], "deployment", "{u}");
+    assert_eq!(u["mayApprove"], json!(true), "{u}");
+    let u = bob_app
+        .transport()
+        .json(Request::new(Method::GET, format!("apps/{inst}/update")))
+        .await
+        .unwrap();
+    assert_eq!(u["mayApprove"], json!(false), "{u}");
+
+    // A version the deployment does not offer, and a member, are refused.
+    assert_eq!(
+        refused(
+            &carol_app,
+            &back,
+            "upgrade",
+            json!({ "app": inst, "toVersion": "1.5.0" })
+        )
+        .await,
+        409
+    );
+    assert_eq!(
+        refused(&bob_app, &back, "upgrade", json!({ "app": inst })).await,
+        403
+    );
+
+    // The offer, named or not: the owner approves it on the node's page.
+    let made = ask(
+        &carol_app,
+        &back,
+        "upgrade",
+        json!({ "app": inst, "toVersion": "2.0.0" }),
+    )
+    .await
+    .unwrap();
+    assert!(made["url"].is_string(), "{made}");
+    let made = ask(&carol_app, &back, "upgrade", json!({ "app": inst }))
+        .await
+        .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["kind"], "upgrade", "{model}");
+    assert_eq!(model["upgrade"]["to"]["version"], "2.0.0", "{model}");
+    let mut carol_page = SoftAuthenticator::with_key(&carol_in_app, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut carol_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["__method"], "__upgrade", "{args}");
+    let moved = get_until(&carol, &format!("apps/{inst}"), |a| {
+        a["release"]["version"] == "2.0.0"
+    })
+    .await;
+    assert_eq!(moved["deployment"], json!(d), "{moved}");
 }
