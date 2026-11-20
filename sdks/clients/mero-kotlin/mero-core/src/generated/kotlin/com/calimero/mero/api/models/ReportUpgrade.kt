@@ -37,10 +37,13 @@ import kotlinx.serialization.Contextual
  * @param at 
  * @param ok 
  * @param actorKind 
+ * @param propertyClass 
  * @param actor 
  * @param error Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param run 
  * @param apiKey 
+ * @param reasons 
+ * @param approvedBy 
  */
 @Serializable
 
@@ -61,6 +64,9 @@ data class ReportUpgrade (
     @SerialName(value = "actorKind")
     val actorKind: ReportUpgrade.ActorKind,
 
+    @SerialName(value = "class")
+    val propertyClass: ReportUpgrade.PropertyClass? = null,
+
     @SerialName(value = "actor")
     val actor: kotlin.String? = null,
 
@@ -72,7 +78,13 @@ data class ReportUpgrade (
     val run: kotlin.String? = null,
 
     @SerialName(value = "apiKey")
-    val apiKey: kotlin.String? = null
+    val apiKey: kotlin.String? = null,
+
+    @SerialName(value = "reasons")
+    val reasons: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>? = null,
+
+    @SerialName(value = "approvedBy")
+    val approvedBy: kotlin.String? = null
 
 ) {
 
@@ -86,6 +98,16 @@ data class ReportUpgrade (
         @SerialName(value = "owner") OWNER("owner"),
         @SerialName(value = "member") MEMBER("member"),
         @SerialName(value = "operator") OPERATOR("operator");
+    }
+    /**
+     * 
+     *
+     * Values: GREEN,RED
+     */
+    @Serializable
+    enum class PropertyClass(val value: kotlin.String) {
+        @SerialName(value = "green") GREEN("green"),
+        @SerialName(value = "red") RED("red");
     }
 
 }

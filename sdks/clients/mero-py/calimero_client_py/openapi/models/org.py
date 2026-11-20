@@ -13,10 +13,13 @@ from typing import cast, Union
 from typing import Union
 
 if TYPE_CHECKING:
+    from ..models.org_app_upgrade_policies import OrgAppUpgradePolicies
     from ..models.org_upgrade_runs import OrgUpgradeRuns
     from ..models.org_new_work_stopped_type_0 import OrgNewWorkStoppedType0
     from ..models.org_member_metadata import OrgMemberMetadata
     from ..models.org_teams import OrgTeams
+    from ..models.upgrade_policy import UpgradePolicy
+    from ..models.org_pending_upgrades import OrgPendingUpgrades
     from ..models.org_capabilities import OrgCapabilities
     from ..models.org_members import OrgMembers
     from ..models.org_outbound_approvals import OrgOutboundApprovals
@@ -33,7 +36,9 @@ class Org:
     `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later,
     `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version
     it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets
-    it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).
+    it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and
+    `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second
+    (absent when none).
 
         Attributes:
             org_id (str):
@@ -52,6 +57,14 @@ class Org:
             personal (Union[Unset, bool]):
             allow_guests (Union[Unset, bool]):
             allow_public_links (Union[Unset, bool]):
+            upgrade_policy (Union[Unset, UpgradePolicy]): How an organization's owner and admins let an app's updates apply
+                (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may
+                leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins.
+                `autoSealed` (default off) and `holdHours` (24 to 168, default 24): a green update of an app that stays Sealed
+                (no destination outside the cluster before or after, members counted) applying on its own after the hold; stored
+                and validated now, carried out by a later release.
+            app_upgrade_policies (Union[Unset, OrgAppUpgradePolicies]):
+            pending_upgrades (Union[Unset, OrgPendingUpgrades]):
             mode (Union[Unset, OrgMode]):
             release_approvers (Union[Unset, list[str]]):
             publishes (Union[Unset, list[str]]):
@@ -74,6 +87,9 @@ class Org:
     personal: Union[Unset, bool] = UNSET
     allow_guests: Union[Unset, bool] = UNSET
     allow_public_links: Union[Unset, bool] = UNSET
+    upgrade_policy: Union[Unset, "UpgradePolicy"] = UNSET
+    app_upgrade_policies: Union[Unset, "OrgAppUpgradePolicies"] = UNSET
+    pending_upgrades: Union[Unset, "OrgPendingUpgrades"] = UNSET
     mode: Union[Unset, OrgMode] = UNSET
     release_approvers: Union[Unset, list[str]] = UNSET
     publishes: Union[Unset, list[str]] = UNSET
@@ -81,10 +97,13 @@ class Org:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.org_app_upgrade_policies import OrgAppUpgradePolicies
         from ..models.org_upgrade_runs import OrgUpgradeRuns
         from ..models.org_new_work_stopped_type_0 import OrgNewWorkStoppedType0
         from ..models.org_member_metadata import OrgMemberMetadata
         from ..models.org_teams import OrgTeams
+        from ..models.upgrade_policy import UpgradePolicy
+        from ..models.org_pending_upgrades import OrgPendingUpgrades
         from ..models.org_capabilities import OrgCapabilities
         from ..models.org_members import OrgMembers
         from ..models.org_outbound_approvals import OrgOutboundApprovals
@@ -125,6 +144,18 @@ class Org:
         allow_guests = self.allow_guests
 
         allow_public_links = self.allow_public_links
+
+        upgrade_policy: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.upgrade_policy, Unset):
+            upgrade_policy = self.upgrade_policy.to_dict()
+
+        app_upgrade_policies: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.app_upgrade_policies, Unset):
+            app_upgrade_policies = self.app_upgrade_policies.to_dict()
+
+        pending_upgrades: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.pending_upgrades, Unset):
+            pending_upgrades = self.pending_upgrades.to_dict()
 
         mode: Union[Unset, str] = UNSET
         if not isinstance(self.mode, Unset):
@@ -173,6 +204,12 @@ class Org:
             field_dict["allowGuests"] = allow_guests
         if allow_public_links is not UNSET:
             field_dict["allowPublicLinks"] = allow_public_links
+        if upgrade_policy is not UNSET:
+            field_dict["upgradePolicy"] = upgrade_policy
+        if app_upgrade_policies is not UNSET:
+            field_dict["appUpgradePolicies"] = app_upgrade_policies
+        if pending_upgrades is not UNSET:
+            field_dict["pendingUpgrades"] = pending_upgrades
         if mode is not UNSET:
             field_dict["mode"] = mode
         if release_approvers is not UNSET:
@@ -186,10 +223,13 @@ class Org:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.org_app_upgrade_policies import OrgAppUpgradePolicies
         from ..models.org_upgrade_runs import OrgUpgradeRuns
         from ..models.org_new_work_stopped_type_0 import OrgNewWorkStoppedType0
         from ..models.org_member_metadata import OrgMemberMetadata
         from ..models.org_teams import OrgTeams
+        from ..models.upgrade_policy import UpgradePolicy
+        from ..models.org_pending_upgrades import OrgPendingUpgrades
         from ..models.org_capabilities import OrgCapabilities
         from ..models.org_members import OrgMembers
         from ..models.org_outbound_approvals import OrgOutboundApprovals
@@ -232,6 +272,29 @@ class Org:
         allow_guests = d.pop("allowGuests", UNSET)
 
         allow_public_links = d.pop("allowPublicLinks", UNSET)
+
+        _upgrade_policy = d.pop("upgradePolicy", UNSET)
+        upgrade_policy: Union[Unset, UpgradePolicy]
+        if isinstance(_upgrade_policy, Unset):
+            upgrade_policy = UNSET
+        else:
+            upgrade_policy = UpgradePolicy.from_dict(_upgrade_policy)
+
+        _app_upgrade_policies = d.pop("appUpgradePolicies", UNSET)
+        app_upgrade_policies: Union[Unset, OrgAppUpgradePolicies]
+        if isinstance(_app_upgrade_policies, Unset):
+            app_upgrade_policies = UNSET
+        else:
+            app_upgrade_policies = OrgAppUpgradePolicies.from_dict(
+                _app_upgrade_policies
+            )
+
+        _pending_upgrades = d.pop("pendingUpgrades", UNSET)
+        pending_upgrades: Union[Unset, OrgPendingUpgrades]
+        if isinstance(_pending_upgrades, Unset):
+            pending_upgrades = UNSET
+        else:
+            pending_upgrades = OrgPendingUpgrades.from_dict(_pending_upgrades)
 
         _mode = d.pop("mode", UNSET)
         mode: Union[Unset, OrgMode]
@@ -280,6 +343,9 @@ class Org:
             personal=personal,
             allow_guests=allow_guests,
             allow_public_links=allow_public_links,
+            upgrade_policy=upgrade_policy,
+            app_upgrade_policies=app_upgrade_policies,
+            pending_upgrades=pending_upgrades,
             mode=mode,
             release_approvers=release_approvers,
             publishes=publishes,

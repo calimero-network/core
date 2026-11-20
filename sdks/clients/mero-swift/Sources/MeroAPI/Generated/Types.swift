@@ -556,7 +556,7 @@ public protocol APIProtocol: Sendable {
     func appTransfer(_ input: Operations.AppTransfer.Input) async throws -> Operations.AppTransfer.Output
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -572,6 +572,33 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /apps/{app}/upgrade`.
     /// - Remark: Generated from `#/paths//apps/{app}/upgrade/post(app_upgrade)`.
     func appUpgrade(_ input: Operations.AppUpgrade.Input) async throws -> Operations.AppUpgrade.Output
+    /// Approve a red update first, for a second approver to apply
+    ///
+    /// Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/upgrade-approvals`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-approvals/post(app_approve_upgrade)`.
+    func appApproveUpgrade(_ input: Operations.AppApproveUpgrade.Input) async throws -> Operations.AppApproveUpgrade.Output
+    /// The update policy an app follows
+    ///
+    /// For whoever may read the app. Its own policy where an owner or admin set one, else its organization's, else the defaults: nothing updates on its own, one approval applies an update.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-policy/get(app_policy)`.
+    func appPolicy(_ input: Operations.AppPolicy.Input) async throws -> Operations.AppPolicy.Output
+    /// Set an app's own update policy
+    ///
+    /// An owner or admin of the app's organization, with a step-up over `org:<org> / __set_upgrade_policy / { app, policy }`. `policy: null` (or left out) drops it: the app follows its organization's again. `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. A move to another organization drops it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-policy/post(app_policy_set)`.
+    func appPolicySet(_ input: Operations.AppPolicySet.Input) async throws -> Operations.AppPolicySet.Output
     /// Upgrade an app and the apps it created, in one consent
     ///
     /// An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.
@@ -1400,6 +1427,15 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `DELETE /orgs/{org}/teams/{team}/members/{account}`.
     /// - Remark: Generated from `#/paths//orgs/{org}/teams/{team}/members/{account}/delete(team_remove_member)`.
     func teamRemoveMember(_ input: Operations.TeamRemoveMember.Input) async throws -> Operations.TeamRemoveMember.Output
+    /// Updates waiting across an organization's apps
+    ///
+    /// For its owner and admins (`403` to other members, `404` to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as `GET /apps/{app}/update` answers it with the app's `name`; `policy` is the organization's; `next` is the `after` of the next page, `null` at the end.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// - Remark: HTTP `GET /orgs/{org}/updates`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/updates/get(org_updates)`.
+    func orgUpdates(_ input: Operations.OrgUpdates.Input) async throws -> Operations.OrgUpdates.Output
     /// Start an upgrade run
     ///
     /// Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; the organization's owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
@@ -1409,6 +1445,24 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /orgs/{org}/upgrade`.
     /// - Remark: Generated from `#/paths//orgs/{org}/upgrade/post(org_upgrade)`.
     func orgUpgrade(_ input: Operations.OrgUpgrade.Input) async throws -> Operations.OrgUpgrade.Output
+    /// The organization's update policy
+    ///
+    /// For its members: the policy each of its apps without one of its own follows (`source: default` until an owner or admin sets one).
+    ///
+    /// **Who:** a passkey session (an API key is refused).
+    ///
+    /// - Remark: HTTP `GET /orgs/{org}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/upgrade-policy/get(org_policy)`.
+    func orgPolicy(_ input: Operations.OrgPolicy.Input) async throws -> Operations.OrgPolicy.Output
+    /// Set the organization's update policy
+    ///
+    /// The owner or an admin, with a step-up over `org:<org> / __set_upgrade_policy / { app: null, policy }`; `policy: null` (or left out) drops it (the defaults). `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/upgrade-policy/post(org_policy_set)`.
+    func orgPolicySet(_ input: Operations.OrgPolicySet.Input) async throws -> Operations.OrgPolicySet.Output
     /// An upgrade run's progress
     ///
     /// A member of the organization.
@@ -2697,7 +2751,7 @@ extension APIProtocol {
     }
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -2726,6 +2780,61 @@ extension APIProtocol {
         body: Operations.AppUpgrade.Input.Body
     ) async throws -> Operations.AppUpgrade.Output {
         try await appUpgrade(Operations.AppUpgrade.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Approve a red update first, for a second approver to apply
+    ///
+    /// Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/upgrade-approvals`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-approvals/post(app_approve_upgrade)`.
+    public func appApproveUpgrade(
+        path: Operations.AppApproveUpgrade.Input.Path,
+        headers: Operations.AppApproveUpgrade.Input.Headers = .init(),
+        body: Operations.AppApproveUpgrade.Input.Body
+    ) async throws -> Operations.AppApproveUpgrade.Output {
+        try await appApproveUpgrade(Operations.AppApproveUpgrade.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// The update policy an app follows
+    ///
+    /// For whoever may read the app. Its own policy where an owner or admin set one, else its organization's, else the defaults: nothing updates on its own, one approval applies an update.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-policy/get(app_policy)`.
+    public func appPolicy(
+        path: Operations.AppPolicy.Input.Path,
+        headers: Operations.AppPolicy.Input.Headers = .init()
+    ) async throws -> Operations.AppPolicy.Output {
+        try await appPolicy(Operations.AppPolicy.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Set an app's own update policy
+    ///
+    /// An owner or admin of the app's organization, with a step-up over `org:<org> / __set_upgrade_policy / { app, policy }`. `policy: null` (or left out) drops it: the app follows its organization's again. `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. A move to another organization drops it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-policy/post(app_policy_set)`.
+    public func appPolicySet(
+        path: Operations.AppPolicySet.Input.Path,
+        headers: Operations.AppPolicySet.Input.Headers = .init(),
+        body: Operations.AppPolicySet.Input.Body
+    ) async throws -> Operations.AppPolicySet.Output {
+        try await appPolicySet(Operations.AppPolicySet.Input(
             path: path,
             headers: headers,
             body: body
@@ -4343,6 +4452,25 @@ extension APIProtocol {
             body: body
         ))
     }
+    /// Updates waiting across an organization's apps
+    ///
+    /// For its owner and admins (`403` to other members, `404` to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as `GET /apps/{app}/update` answers it with the app's `name`; `policy` is the organization's; `next` is the `after` of the next page, `null` at the end.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// - Remark: HTTP `GET /orgs/{org}/updates`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/updates/get(org_updates)`.
+    public func orgUpdates(
+        path: Operations.OrgUpdates.Input.Path,
+        query: Operations.OrgUpdates.Input.Query = .init(),
+        headers: Operations.OrgUpdates.Input.Headers = .init()
+    ) async throws -> Operations.OrgUpdates.Output {
+        try await orgUpdates(Operations.OrgUpdates.Input(
+            path: path,
+            query: query,
+            headers: headers
+        ))
+    }
     /// Start an upgrade run
     ///
     /// Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; the organization's owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
@@ -4357,6 +4485,42 @@ extension APIProtocol {
         body: Operations.OrgUpgrade.Input.Body
     ) async throws -> Operations.OrgUpgrade.Output {
         try await orgUpgrade(Operations.OrgUpgrade.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// The organization's update policy
+    ///
+    /// For its members: the policy each of its apps without one of its own follows (`source: default` until an owner or admin sets one).
+    ///
+    /// **Who:** a passkey session (an API key is refused).
+    ///
+    /// - Remark: HTTP `GET /orgs/{org}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/upgrade-policy/get(org_policy)`.
+    public func orgPolicy(
+        path: Operations.OrgPolicy.Input.Path,
+        headers: Operations.OrgPolicy.Input.Headers = .init()
+    ) async throws -> Operations.OrgPolicy.Output {
+        try await orgPolicy(Operations.OrgPolicy.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Set the organization's update policy
+    ///
+    /// The owner or an admin, with a step-up over `org:<org> / __set_upgrade_policy / { app: null, policy }`; `policy: null` (or left out) drops it (the defaults). `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/upgrade-policy/post(org_policy_set)`.
+    public func orgPolicySet(
+        path: Operations.OrgPolicySet.Input.Path,
+        headers: Operations.OrgPolicySet.Input.Headers = .init(),
+        body: Operations.OrgPolicySet.Input.Body
+    ) async throws -> Operations.OrgPolicySet.Output {
+        try await orgPolicySet(Operations.OrgPolicySet.Input(
             path: path,
             headers: headers,
             body: body
@@ -5560,6 +5724,199 @@ public enum Components {
                 case maxConcurrentRunsPerOrg
                 case computeFuelPerOrg
                 case maxFuelPerDeveloperPerDay
+            }
+        }
+        /// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoSealed` (default off) and `holdHours` (24 to 168, default 24): a green update of an app that stays Sealed (no destination outside the cluster before or after, members counted) applying on its own after the hold; stored and validated now, carried out by a later release.
+        ///
+        /// - Remark: Generated from `#/components/schemas/UpgradePolicy`.
+        public struct UpgradePolicy: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/UpgradePolicy/autoSealed`.
+            public var autoSealed: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/UpgradePolicy/holdHours`.
+            public var holdHours: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/UpgradePolicy/secondApprover`.
+            public var secondApprover: Swift.Bool
+            /// Creates a new `UpgradePolicy`.
+            ///
+            /// - Parameters:
+            ///   - autoSealed:
+            ///   - holdHours:
+            ///   - secondApprover:
+            public init(
+                autoSealed: Swift.Bool,
+                holdHours: Swift.Int64,
+                secondApprover: Swift.Bool
+            ) {
+                self.autoSealed = autoSealed
+                self.holdHours = holdHours
+                self.secondApprover = secondApprover
+            }
+            public enum CodingKeys: String, CodingKey {
+                case autoSealed
+                case holdHours
+                case secondApprover
+            }
+        }
+        /// An update policy at one scope: the organization's (`app` absent) or an app's. `policy` is the one in force; `source` where it comes from (the app's own, its organization's, or the defaults); `own` the one set at this scope, `null` for none.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PolicyView`.
+        public struct PolicyView: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PolicyView/org`.
+            public var org: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PolicyView/app`.
+            public var app: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/PolicyView/policy`.
+            public var policy: Components.Schemas.UpgradePolicy
+            /// - Remark: Generated from `#/components/schemas/PolicyView/source`.
+            @frozen public enum SourcePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case app = "app"
+                case org = "org"
+                case _default = "default"
+            }
+            /// - Remark: Generated from `#/components/schemas/PolicyView/source`.
+            public var source: Components.Schemas.PolicyView.SourcePayload
+            /// - Remark: Generated from `#/components/schemas/PolicyView/own`.
+            public var own: Components.Schemas.UpgradePolicy?
+            /// Creates a new `PolicyView`.
+            ///
+            /// - Parameters:
+            ///   - org:
+            ///   - app:
+            ///   - policy:
+            ///   - source:
+            ///   - own:
+            public init(
+                org: Swift.String,
+                app: Swift.String? = nil,
+                policy: Components.Schemas.UpgradePolicy,
+                source: Components.Schemas.PolicyView.SourcePayload,
+                own: Components.Schemas.UpgradePolicy? = nil
+            ) {
+                self.org = org
+                self.app = app
+                self.policy = policy
+                self.source = source
+                self.own = own
+            }
+            public enum CodingKeys: String, CodingKey {
+                case org
+                case app
+                case policy
+                case source
+                case own
+            }
+        }
+        /// A first approval of a red update waiting for its second (`POST /apps/{app}/upgrade-approvals`): the app approved (`app`), its target, a unit's members' (`targets`, by app), who approved and when, when it lapses (`expiresAt`, a week on), and the class its approver was shown.
+        ///
+        /// - Remark: Generated from `#/components/schemas/PendingApproval`.
+        public struct PendingApproval: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/PendingApproval/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PendingApproval/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PendingApproval/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PendingApproval/targets`.
+            public struct TargetsPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/PendingApproval/targets/additionalProperties`.
+                public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/PendingApproval/targets/additionalProperties/package`.
+                    public var package: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/PendingApproval/targets/additionalProperties/version`.
+                    public var version: Swift.String
+                    /// Creates a new `AdditionalPropertiesPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - package:
+                    ///   - version:
+                    public init(
+                        package: Swift.String,
+                        version: Swift.String
+                    ) {
+                        self.package = package
+                        self.version = version
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case package
+                        case version
+                    }
+                }
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.PendingApproval.TargetsPayload.AdditionalPropertiesPayload]
+                /// Creates a new `TargetsPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.PendingApproval.TargetsPayload.AdditionalPropertiesPayload] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/PendingApproval/targets`.
+            public var targets: Components.Schemas.PendingApproval.TargetsPayload
+            /// - Remark: Generated from `#/components/schemas/PendingApproval/by`.
+            public var by: Swift.String
+            /// - Remark: Generated from `#/components/schemas/PendingApproval/at`.
+            public var at: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/PendingApproval/expiresAt`.
+            public var expiresAt: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/PendingApproval/class`.
+            @frozen public enum ClassPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case green = "green"
+                case red = "red"
+            }
+            /// - Remark: Generated from `#/components/schemas/PendingApproval/class`.
+            public var _class: Components.Schemas.PendingApproval.ClassPayload
+            /// - Remark: Generated from `#/components/schemas/PendingApproval/reasons`.
+            public var reasons: [Components.Schemas.UpdateReason]
+            /// Creates a new `PendingApproval`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - package:
+            ///   - version:
+            ///   - targets:
+            ///   - by:
+            ///   - at:
+            ///   - expiresAt:
+            ///   - _class:
+            ///   - reasons:
+            public init(
+                app: Swift.String,
+                package: Swift.String,
+                version: Swift.String,
+                targets: Components.Schemas.PendingApproval.TargetsPayload,
+                by: Swift.String,
+                at: Swift.Int64,
+                expiresAt: Swift.Int64,
+                _class: Components.Schemas.PendingApproval.ClassPayload,
+                reasons: [Components.Schemas.UpdateReason]
+            ) {
+                self.app = app
+                self.package = package
+                self.version = version
+                self.targets = targets
+                self.by = by
+                self.at = at
+                self.expiresAt = expiresAt
+                self._class = _class
+                self.reasons = reasons
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case package
+                case version
+                case targets
+                case by
+                case at
+                case expiresAt
+                case _class = "class"
+                case reasons
             }
         }
         /// An app of a unit, by its path from the instance: its app id (absent on a release's card, where no app exists), the release it runs or would run, that release's signer, and the destinations it alone may send data to.
@@ -7124,7 +7481,7 @@ public enum Components {
                 case compute
             }
         }
-        /// The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it.
+        /// The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second.
         ///
         /// - Remark: Generated from `#/components/schemas/Upgrade`.
         public struct Upgrade: Codable, Hashable, Sendable {
@@ -7150,6 +7507,17 @@ public enum Components {
             public var fromRelease: Components.Schemas.PackageRef?
             /// - Remark: Generated from `#/components/schemas/Upgrade/toRelease`.
             public var toRelease: Components.Schemas.PackageRef?
+            /// - Remark: Generated from `#/components/schemas/Upgrade/class`.
+            @frozen public enum ClassPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case green = "green"
+                case red = "red"
+            }
+            /// - Remark: Generated from `#/components/schemas/Upgrade/class`.
+            public var _class: Components.Schemas.Upgrade.ClassPayload?
+            /// - Remark: Generated from `#/components/schemas/Upgrade/reasons`.
+            public var reasons: [Components.Schemas.UpdateReason]?
+            /// - Remark: Generated from `#/components/schemas/Upgrade/approvedBy`.
+            public var approvedBy: Swift.String?
             /// Creates a new `Upgrade`.
             ///
             /// - Parameters:
@@ -7163,6 +7531,9 @@ public enum Components {
             ///   - apiKey:
             ///   - fromRelease:
             ///   - toRelease:
+            ///   - _class:
+            ///   - reasons:
+            ///   - approvedBy:
             public init(
                 from: Swift.String,
                 to: Swift.String,
@@ -7173,7 +7544,10 @@ public enum Components {
                 run: Swift.String? = nil,
                 apiKey: Swift.String? = nil,
                 fromRelease: Components.Schemas.PackageRef? = nil,
-                toRelease: Components.Schemas.PackageRef? = nil
+                toRelease: Components.Schemas.PackageRef? = nil,
+                _class: Components.Schemas.Upgrade.ClassPayload? = nil,
+                reasons: [Components.Schemas.UpdateReason]? = nil,
+                approvedBy: Swift.String? = nil
             ) {
                 self.from = from
                 self.to = to
@@ -7185,6 +7559,9 @@ public enum Components {
                 self.apiKey = apiKey
                 self.fromRelease = fromRelease
                 self.toRelease = toRelease
+                self._class = _class
+                self.reasons = reasons
+                self.approvedBy = approvedBy
             }
             public enum CodingKeys: String, CodingKey {
                 case from
@@ -7197,6 +7574,9 @@ public enum Components {
                 case apiKey
                 case fromRelease
                 case toRelease
+                case _class = "class"
+                case reasons
+                case approvedBy
             }
         }
         /// A package and the releases of it the caller may see, oldest first; `latest` is the newest of those.
@@ -7436,7 +7816,7 @@ public enum Components {
                 case upgrades
             }
         }
-        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).
+        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).
         ///
         /// - Remark: Generated from `#/components/schemas/Org`.
         public struct Org: Codable, Hashable, Sendable {
@@ -7640,6 +8020,164 @@ public enum Components {
             public var allowGuests: Swift.Bool?
             /// - Remark: Generated from `#/components/schemas/Org/allowPublicLinks`.
             public var allowPublicLinks: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/Org/upgradePolicy`.
+            public var upgradePolicy: Components.Schemas.UpgradePolicy?
+            /// - Remark: Generated from `#/components/schemas/Org/appUpgradePolicies`.
+            public struct AppUpgradePoliciesPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.UpgradePolicy]
+                /// Creates a new `AppUpgradePoliciesPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.UpgradePolicy] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/Org/appUpgradePolicies`.
+            public var appUpgradePolicies: Components.Schemas.Org.AppUpgradePoliciesPayload?
+            /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades`.
+            public struct PendingUpgradesPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties`.
+                public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/package`.
+                    public var package: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/version`.
+                    public var version: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/targets`.
+                    public struct TargetsPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/targets/additionalProperties`.
+                        public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/targets/additionalProperties/package`.
+                            public var package: Swift.String
+                            /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/targets/additionalProperties/version`.
+                            public var version: Swift.String
+                            /// Creates a new `AdditionalPropertiesPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - package:
+                            ///   - version:
+                            public init(
+                                package: Swift.String,
+                                version: Swift.String
+                            ) {
+                                self.package = package
+                                self.version = version
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case package
+                                case version
+                            }
+                        }
+                        /// A container of undocumented properties.
+                        public var additionalProperties: [String: Components.Schemas.Org.PendingUpgradesPayload.AdditionalPropertiesPayload.TargetsPayload.AdditionalPropertiesPayload]
+                        /// Creates a new `TargetsPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - additionalProperties: A container of undocumented properties.
+                        public init(additionalProperties: [String: Components.Schemas.Org.PendingUpgradesPayload.AdditionalPropertiesPayload.TargetsPayload.AdditionalPropertiesPayload] = .init()) {
+                            self.additionalProperties = additionalProperties
+                        }
+                        public init(from decoder: any Decoder) throws {
+                            additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                        }
+                        public func encode(to encoder: any Encoder) throws {
+                            try encoder.encodeAdditionalProperties(additionalProperties)
+                        }
+                    }
+                    /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/targets`.
+                    public var targets: Components.Schemas.Org.PendingUpgradesPayload.AdditionalPropertiesPayload.TargetsPayload?
+                    /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/by`.
+                    public var by: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/at`.
+                    public var at: Swift.Int64
+                    /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/class`.
+                    public struct ClassPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/class/class`.
+                        @frozen public enum ClassPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                            case green = "green"
+                            case red = "red"
+                        }
+                        /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/class/class`.
+                        public var _class: Components.Schemas.Org.PendingUpgradesPayload.AdditionalPropertiesPayload.ClassPayload.ClassPayload
+                        /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/class/reasons`.
+                        public var reasons: [Components.Schemas.UpdateReason]?
+                        /// Creates a new `ClassPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - _class:
+                        ///   - reasons:
+                        public init(
+                            _class: Components.Schemas.Org.PendingUpgradesPayload.AdditionalPropertiesPayload.ClassPayload.ClassPayload,
+                            reasons: [Components.Schemas.UpdateReason]? = nil
+                        ) {
+                            self._class = _class
+                            self.reasons = reasons
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case _class = "class"
+                            case reasons
+                        }
+                    }
+                    /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades/additionalProperties/class`.
+                    public var _class: Components.Schemas.Org.PendingUpgradesPayload.AdditionalPropertiesPayload.ClassPayload
+                    /// Creates a new `AdditionalPropertiesPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - package:
+                    ///   - version:
+                    ///   - targets:
+                    ///   - by:
+                    ///   - at:
+                    ///   - _class:
+                    public init(
+                        package: Swift.String,
+                        version: Swift.String,
+                        targets: Components.Schemas.Org.PendingUpgradesPayload.AdditionalPropertiesPayload.TargetsPayload? = nil,
+                        by: Swift.String,
+                        at: Swift.Int64,
+                        _class: Components.Schemas.Org.PendingUpgradesPayload.AdditionalPropertiesPayload.ClassPayload
+                    ) {
+                        self.package = package
+                        self.version = version
+                        self.targets = targets
+                        self.by = by
+                        self.at = at
+                        self._class = _class
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case package
+                        case version
+                        case targets
+                        case by
+                        case at
+                        case _class = "class"
+                    }
+                }
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.Org.PendingUpgradesPayload.AdditionalPropertiesPayload]
+                /// Creates a new `PendingUpgradesPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.Org.PendingUpgradesPayload.AdditionalPropertiesPayload] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/Org/pendingUpgrades`.
+            public var pendingUpgrades: Components.Schemas.Org.PendingUpgradesPayload?
             /// - Remark: Generated from `#/components/schemas/Org/mode`.
             @frozen public enum ModePayload: String, Codable, Hashable, Sendable, CaseIterable {
                 case legacy = "legacy"
@@ -7696,6 +8234,9 @@ public enum Components {
             ///   - personal:
             ///   - allowGuests:
             ///   - allowPublicLinks:
+            ///   - upgradePolicy:
+            ///   - appUpgradePolicies:
+            ///   - pendingUpgrades:
             ///   - mode:
             ///   - releaseApprovers:
             ///   - publishes:
@@ -7717,6 +8258,9 @@ public enum Components {
                 personal: Swift.Bool? = nil,
                 allowGuests: Swift.Bool? = nil,
                 allowPublicLinks: Swift.Bool? = nil,
+                upgradePolicy: Components.Schemas.UpgradePolicy? = nil,
+                appUpgradePolicies: Components.Schemas.Org.AppUpgradePoliciesPayload? = nil,
+                pendingUpgrades: Components.Schemas.Org.PendingUpgradesPayload? = nil,
                 mode: Components.Schemas.Org.ModePayload? = nil,
                 releaseApprovers: [Swift.String]? = nil,
                 publishes: [Swift.String]? = nil,
@@ -7738,6 +8282,9 @@ public enum Components {
                 self.personal = personal
                 self.allowGuests = allowGuests
                 self.allowPublicLinks = allowPublicLinks
+                self.upgradePolicy = upgradePolicy
+                self.appUpgradePolicies = appUpgradePolicies
+                self.pendingUpgrades = pendingUpgrades
                 self.mode = mode
                 self.releaseApprovers = releaseApprovers
                 self.publishes = publishes
@@ -7760,6 +8307,9 @@ public enum Components {
                 case personal
                 case allowGuests
                 case allowPublicLinks
+                case upgradePolicy
+                case appUpgradePolicies
+                case pendingUpgrades
                 case mode
                 case releaseApprovers
                 case publishes
@@ -8393,6 +8943,13 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/ReportUpgrade/actorKind`.
             public var actorKind: Components.Schemas.ReportUpgrade.ActorKindPayload
+            /// - Remark: Generated from `#/components/schemas/ReportUpgrade/class`.
+            @frozen public enum ClassPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case green = "green"
+                case red = "red"
+            }
+            /// - Remark: Generated from `#/components/schemas/ReportUpgrade/class`.
+            public var _class: Components.Schemas.ReportUpgrade.ClassPayload?
             /// - Remark: Generated from `#/components/schemas/ReportUpgrade/actor`.
             public var actor: Swift.String?
             /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
@@ -8403,6 +8960,10 @@ public enum Components {
             public var run: Swift.String?
             /// - Remark: Generated from `#/components/schemas/ReportUpgrade/apiKey`.
             public var apiKey: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/ReportUpgrade/reasons`.
+            public var reasons: [Components.Schemas.UpdateReason]?
+            /// - Remark: Generated from `#/components/schemas/ReportUpgrade/approvedBy`.
+            public var approvedBy: Swift.String?
             /// Creates a new `ReportUpgrade`.
             ///
             /// - Parameters:
@@ -8411,30 +8972,39 @@ public enum Components {
             ///   - at:
             ///   - ok:
             ///   - actorKind:
+            ///   - _class:
             ///   - actor:
             ///   - error: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
             ///   - run:
             ///   - apiKey:
+            ///   - reasons:
+            ///   - approvedBy:
             public init(
                 from: Components.Schemas.BundleRelease,
                 to: Components.Schemas.BundleRelease,
                 at: Swift.Int64,
                 ok: Swift.Bool,
                 actorKind: Components.Schemas.ReportUpgrade.ActorKindPayload,
+                _class: Components.Schemas.ReportUpgrade.ClassPayload? = nil,
                 actor: Swift.String? = nil,
                 error: OpenAPIRuntime.OpenAPIValueContainer? = nil,
                 run: Swift.String? = nil,
-                apiKey: Swift.String? = nil
+                apiKey: Swift.String? = nil,
+                reasons: [Components.Schemas.UpdateReason]? = nil,
+                approvedBy: Swift.String? = nil
             ) {
                 self.from = from
                 self.to = to
                 self.at = at
                 self.ok = ok
                 self.actorKind = actorKind
+                self._class = _class
                 self.actor = actor
                 self.error = error
                 self.run = run
                 self.apiKey = apiKey
+                self.reasons = reasons
+                self.approvedBy = approvedBy
             }
             public enum CodingKeys: String, CodingKey {
                 case from
@@ -8442,10 +9012,13 @@ public enum Components {
                 case at
                 case ok
                 case actorKind
+                case _class = "class"
                 case actor
                 case error
                 case run
                 case apiKey
+                case reasons
+                case approvedBy
             }
         }
         /// One app in a release report (`GET /auth/apps`, `GET /orgs/{org}/apps`, `GET /ops/apps`): its bundle and release (`package`, `null` where the reader may not see it), the publisher's key and bound organization, who holds its upgrades and release approvals, its last upgrade, the releases approved to hold it (`null`: unrestricted), each replica's release, and `lastWriteAt` (Unix seconds, `null` when unknown). `name`, `team`, `availableVersions` (newer releases, oldest first), `latestReachable` and `latestBlocked` (the newest release and why an upgrade would not take it) are for the app's people, never the operator.
@@ -22127,7 +22700,7 @@ public enum Operations {
     }
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -22278,6 +22851,10 @@ public enum Operations {
                             public var removedMethods: [Swift.String]?
                             /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/signerChanged`.
                             public var signerChanged: Swift.Bool?
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/approvalsNeeded`.
+                            public var approvalsNeeded: Swift.Int64
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/approvedBy`.
+                            public var approvedBy: Swift.String?
                             /// Creates a new `AvailablePayload`.
                             ///
                             /// - Parameters:
@@ -22293,6 +22870,8 @@ public enum Operations {
                             ///   - newMethods:
                             ///   - removedMethods:
                             ///   - signerChanged:
+                            ///   - approvalsNeeded:
+                            ///   - approvedBy:
                             public init(
                                 package: Swift.String,
                                 version: Swift.String,
@@ -22305,7 +22884,9 @@ public enum Operations {
                                 stateVersionChanged: Swift.Bool? = nil,
                                 newMethods: [Swift.String]? = nil,
                                 removedMethods: [Swift.String]? = nil,
-                                signerChanged: Swift.Bool? = nil
+                                signerChanged: Swift.Bool? = nil,
+                                approvalsNeeded: Swift.Int64,
+                                approvedBy: Swift.String? = nil
                             ) {
                                 self.package = package
                                 self.version = version
@@ -22319,6 +22900,8 @@ public enum Operations {
                                 self.newMethods = newMethods
                                 self.removedMethods = removedMethods
                                 self.signerChanged = signerChanged
+                                self.approvalsNeeded = approvalsNeeded
+                                self.approvedBy = approvedBy
                             }
                             public enum CodingKeys: String, CodingKey {
                                 case package
@@ -22333,6 +22916,8 @@ public enum Operations {
                                 case newMethods
                                 case removedMethods
                                 case signerChanged
+                                case approvalsNeeded
+                                case approvedBy
                             }
                         }
                         /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available`.
@@ -22347,6 +22932,51 @@ public enum Operations {
                         }
                         /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/approvers`.
                         public var approvers: Operations.AppUpdate.Output.Ok.Body.JsonPayload.ApproversPayload
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy`.
+                        public struct PolicyPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/autoSealed`.
+                            public var autoSealed: Swift.Bool
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/holdHours`.
+                            public var holdHours: Swift.Int64
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/secondApprover`.
+                            public var secondApprover: Swift.Bool
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/source`.
+                            @frozen public enum SourcePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                                case app = "app"
+                                case org = "org"
+                                case _default = "default"
+                            }
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy/source`.
+                            public var source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload.SourcePayload
+                            /// Creates a new `PolicyPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - autoSealed:
+                            ///   - holdHours:
+                            ///   - secondApprover:
+                            ///   - source:
+                            public init(
+                                autoSealed: Swift.Bool,
+                                holdHours: Swift.Int64,
+                                secondApprover: Swift.Bool,
+                                source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload.SourcePayload
+                            ) {
+                                self.autoSealed = autoSealed
+                                self.holdHours = holdHours
+                                self.secondApprover = secondApprover
+                                self.source = source
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case autoSealed
+                                case holdHours
+                                case secondApprover
+                                case source
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/policy`.
+                        public var policy: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload
+                        /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/pendingApprovals`.
+                        public var pendingApprovals: [Components.Schemas.PendingApproval]
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
@@ -22355,18 +22985,24 @@ public enum Operations {
                         ///   - available:
                         ///   - mayApprove:
                         ///   - approvers:
+                        ///   - policy:
+                        ///   - pendingApprovals:
                         public init(
                             app: Swift.String,
                             running: Operations.AppUpdate.Output.Ok.Body.JsonPayload.RunningPayload? = nil,
                             available: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload? = nil,
                             mayApprove: Swift.Bool,
-                            approvers: Operations.AppUpdate.Output.Ok.Body.JsonPayload.ApproversPayload
+                            approvers: Operations.AppUpdate.Output.Ok.Body.JsonPayload.ApproversPayload,
+                            policy: Operations.AppUpdate.Output.Ok.Body.JsonPayload.PolicyPayload,
+                            pendingApprovals: [Components.Schemas.PendingApproval]
                         ) {
                             self.app = app
                             self.running = running
                             self.available = available
                             self.mayApprove = mayApprove
                             self.approvers = approvers
+                            self.policy = policy
+                            self.pendingApprovals = pendingApprovals
                         }
                         public enum CodingKeys: String, CodingKey {
                             case app
@@ -22374,6 +23010,8 @@ public enum Operations {
                             case available
                             case mayApprove
                             case approvers
+                            case policy
+                            case pendingApprovals
                         }
                     }
                     /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/application\/json`.
@@ -22637,6 +23275,559 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.AppUpgrade.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Approve a red update first, for a second approver to apply
+    ///
+    /// Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/upgrade-approvals`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-approvals/post(app_approve_upgrade)`.
+    public enum AppApproveUpgrade {
+        public static let id: Swift.String = "app_approve_upgrade"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppApproveUpgrade.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppApproveUpgrade.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppApproveUpgrade.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppApproveUpgrade.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/requestBody/json/version`.
+                    public var version: Swift.String
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/requestBody/json/unit`.
+                    public var unit: Swift.Bool?
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - version:
+                    ///   - unit:
+                    ///   - confirm:
+                    public init(
+                        version: Swift.String,
+                        unit: Swift.Bool? = nil,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.version = version
+                        self.unit = unit
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case version
+                        case unit
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.version = try container.decode(
+                            Swift.String.self,
+                            forKey: .version
+                        )
+                        self.unit = try container.decodeIfPresent(
+                            Swift.Bool.self,
+                            forKey: .unit
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "version",
+                            "unit",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/requestBody/content/application\/json`.
+                case json(Operations.AppApproveUpgrade.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppApproveUpgrade.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppApproveUpgrade.Input.Path,
+                headers: Operations.AppApproveUpgrade.Input.Headers = .init(),
+                body: Operations.AppApproveUpgrade.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/responses/200/content/json/app`.
+                        public var app: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/responses/200/content/json/approval`.
+                        public var approval: Components.Schemas.PendingApproval
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - app:
+                        ///   - approval:
+                        public init(
+                            app: Swift.String,
+                            approval: Components.Schemas.PendingApproval
+                        ) {
+                            self.app = app
+                            self.approval = approval
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case app
+                            case approval
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-approvals/POST/responses/200/content/application\/json`.
+                    case json(Operations.AppApproveUpgrade.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppApproveUpgrade.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppApproveUpgrade.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppApproveUpgrade.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/upgrade-approvals/post(app_approve_upgrade)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppApproveUpgrade.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppApproveUpgrade.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// The update policy an app follows
+    ///
+    /// For whoever may read the app. Its own policy where an owner or admin set one, else its organization's, else the defaults: nothing updates on its own, one approval applies an update.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-policy/get(app_policy)`.
+    public enum AppPolicy {
+        public static let id: Swift.String = "app_policy"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/GET/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppPolicy.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppPolicy.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppPolicy.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppPolicy.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.AppPolicy.Input.Path,
+                headers: Operations.AppPolicy.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/GET/responses/200/content/application\/json`.
+                    case json(Components.Schemas.PolicyView)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Components.Schemas.PolicyView {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppPolicy.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppPolicy.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/upgrade-policy/get(app_policy)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppPolicy.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppPolicy.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Set an app's own update policy
+    ///
+    /// An owner or admin of the app's organization, with a step-up over `org:<org> / __set_upgrade_policy / { app, policy }`. `policy: null` (or left out) drops it: the app follows its organization's again. `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. A move to another organization drops it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-policy/post(app_policy_set)`.
+    public enum AppPolicySet {
+        public static let id: Swift.String = "app_policy_set"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppPolicySet.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppPolicySet.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppPolicySet.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppPolicySet.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy`.
+                    public struct PolicyPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/autoSealed`.
+                        public var autoSealed: Swift.Bool?
+                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/holdHours`.
+                        public var holdHours: Swift.Int64?
+                        /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy/secondApprover`.
+                        public var secondApprover: Swift.Bool?
+                        /// Creates a new `PolicyPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - autoSealed:
+                        ///   - holdHours:
+                        ///   - secondApprover:
+                        public init(
+                            autoSealed: Swift.Bool? = nil,
+                            holdHours: Swift.Int64? = nil,
+                            secondApprover: Swift.Bool? = nil
+                        ) {
+                            self.autoSealed = autoSealed
+                            self.holdHours = holdHours
+                            self.secondApprover = secondApprover
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case autoSealed
+                            case holdHours
+                            case secondApprover
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/policy`.
+                    public var policy: Operations.AppPolicySet.Input.Body.JsonPayload.PolicyPayload?
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - policy:
+                    ///   - confirm:
+                    public init(
+                        policy: Operations.AppPolicySet.Input.Body.JsonPayload.PolicyPayload? = nil,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.policy = policy
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case policy
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.policy = try container.decodeIfPresent(
+                            Operations.AppPolicySet.Input.Body.JsonPayload.PolicyPayload.self,
+                            forKey: .policy
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "policy",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/requestBody/content/application\/json`.
+                case json(Operations.AppPolicySet.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppPolicySet.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppPolicySet.Input.Path,
+                headers: Operations.AppPolicySet.Input.Headers = .init(),
+                body: Operations.AppPolicySet.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-policy/POST/responses/200/content/application\/json`.
+                    case json(Components.Schemas.PolicyView)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Components.Schemas.PolicyView {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppPolicySet.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppPolicySet.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/upgrade-policy/post(app_policy_set)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppPolicySet.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppPolicySet.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):
@@ -39792,6 +40983,189 @@ public enum Operations {
             }
         }
     }
+    /// Updates waiting across an organization's apps
+    ///
+    /// For its owner and admins (`403` to other members, `404` to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as `GET /apps/{app}/update` answers it with the app's `name`; `policy` is the organization's; `next` is the `after` of the next page, `null` at the end.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// - Remark: HTTP `GET /orgs/{org}/updates`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/updates/get(org_updates)`.
+    public enum OrgUpdates {
+        public static let id: Swift.String = "org_updates"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/path/org`.
+                public var org: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - org:
+                public init(org: Swift.String) {
+                    self.org = org
+                }
+            }
+            public var path: Operations.OrgUpdates.Input.Path
+            /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/query`.
+            public struct Query: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/query/after`.
+                public var after: Swift.String?
+                /// Creates a new `Query`.
+                ///
+                /// - Parameters:
+                ///   - after:
+                public init(after: Swift.String? = nil) {
+                    self.after = after
+                }
+            }
+            public var query: Operations.OrgUpdates.Input.Query
+            /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgUpdates.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgUpdates.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.OrgUpdates.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - query:
+            ///   - headers:
+            public init(
+                path: Operations.OrgUpdates.Input.Path,
+                query: Operations.OrgUpdates.Input.Query = .init(),
+                headers: Operations.OrgUpdates.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.query = query
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/json/org`.
+                        public var org: Swift.String
+                        /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/json/policy`.
+                        public var policy: Components.Schemas.UpgradePolicy
+                        /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/json/updates`.
+                        public var updates: [OpenAPIRuntime.OpenAPIValueContainer]
+                        /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/json/next`.
+                        public var next: Swift.String?
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - org:
+                        ///   - policy:
+                        ///   - updates:
+                        ///   - next:
+                        public init(
+                            org: Swift.String,
+                            policy: Components.Schemas.UpgradePolicy,
+                            updates: [OpenAPIRuntime.OpenAPIValueContainer],
+                            next: Swift.String? = nil
+                        ) {
+                            self.org = org
+                            self.policy = policy
+                            self.updates = updates
+                            self.next = next
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case org
+                            case policy
+                            case updates
+                            case next
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/orgs/{org}/updates/GET/responses/200/content/application\/json`.
+                    case json(Operations.OrgUpdates.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.OrgUpdates.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.OrgUpdates.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.OrgUpdates.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//orgs/{org}/updates/get(org_updates)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.OrgUpdates.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.OrgUpdates.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
     /// Start an upgrade run
     ///
     /// Upgrade every app of the organization (or of `team`, with `cascade` its subtree) that runs `package` to `version`, with one passkey assertion over the whole run; the organization's owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds `MANAGE_APPLICATION` there). Each app is upgraded as `POST /apps/{app}/upgrade` would; `GET /orgs/{org}/upgrades/{run}` follows it.
@@ -39943,6 +41317,346 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.OrgUpgrade.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// The organization's update policy
+    ///
+    /// For its members: the policy each of its apps without one of its own follows (`source: default` until an owner or admin sets one).
+    ///
+    /// **Who:** a passkey session (an API key is refused).
+    ///
+    /// - Remark: HTTP `GET /orgs/{org}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/upgrade-policy/get(org_policy)`.
+    public enum OrgPolicy {
+        public static let id: Swift.String = "org_policy"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/GET/path/org`.
+                public var org: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - org:
+                public init(org: Swift.String) {
+                    self.org = org
+                }
+            }
+            public var path: Operations.OrgPolicy.Input.Path
+            /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgPolicy.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgPolicy.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.OrgPolicy.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.OrgPolicy.Input.Path,
+                headers: Operations.OrgPolicy.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/GET/responses/200/content/application\/json`.
+                    case json(Components.Schemas.PolicyView)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Components.Schemas.PolicyView {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.OrgPolicy.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.OrgPolicy.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//orgs/{org}/upgrade-policy/get(org_policy)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.OrgPolicy.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.OrgPolicy.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Set the organization's update policy
+    ///
+    /// The owner or an admin, with a step-up over `org:<org> / __set_upgrade_policy / { app: null, policy }`; `policy: null` (or left out) drops it (the defaults). `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/upgrade-policy`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/upgrade-policy/post(org_policy_set)`.
+    public enum OrgPolicySet {
+        public static let id: Swift.String = "org_policy_set"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/path/org`.
+                public var org: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - org:
+                public init(org: Swift.String) {
+                    self.org = org
+                }
+            }
+            public var path: Operations.OrgPolicySet.Input.Path
+            /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgPolicySet.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgPolicySet.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.OrgPolicySet.Input.Headers
+            /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy`.
+                    public struct PolicyPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/autoSealed`.
+                        public var autoSealed: Swift.Bool?
+                        /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/holdHours`.
+                        public var holdHours: Swift.Int64?
+                        /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy/secondApprover`.
+                        public var secondApprover: Swift.Bool?
+                        /// Creates a new `PolicyPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - autoSealed:
+                        ///   - holdHours:
+                        ///   - secondApprover:
+                        public init(
+                            autoSealed: Swift.Bool? = nil,
+                            holdHours: Swift.Int64? = nil,
+                            secondApprover: Swift.Bool? = nil
+                        ) {
+                            self.autoSealed = autoSealed
+                            self.holdHours = holdHours
+                            self.secondApprover = secondApprover
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case autoSealed
+                            case holdHours
+                            case secondApprover
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/policy`.
+                    public var policy: Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload?
+                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - policy:
+                    ///   - confirm:
+                    public init(
+                        policy: Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload? = nil,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.policy = policy
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case policy
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.policy = try container.decodeIfPresent(
+                            Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload.self,
+                            forKey: .policy
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "policy",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/requestBody/content/application\/json`.
+                case json(Operations.OrgPolicySet.Input.Body.JsonPayload)
+            }
+            public var body: Operations.OrgPolicySet.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.OrgPolicySet.Input.Path,
+                headers: Operations.OrgPolicySet.Input.Headers = .init(),
+                body: Operations.OrgPolicySet.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/orgs/{org}/upgrade-policy/POST/responses/200/content/application\/json`.
+                    case json(Components.Schemas.PolicyView)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Components.Schemas.PolicyView {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.OrgPolicySet.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.OrgPolicySet.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//orgs/{org}/upgrade-policy/post(org_policy_set)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.OrgPolicySet.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.OrgPolicySet.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):

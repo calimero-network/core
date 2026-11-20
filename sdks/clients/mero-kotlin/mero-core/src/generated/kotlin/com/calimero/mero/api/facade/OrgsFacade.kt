@@ -376,6 +376,42 @@ class OrgsFacade internal constructor(
         api(passkey, null, emptySet()).organizations.orgOutboundApproval(org = org, orgOutboundApprovalRequest = OrgOutboundApprovalRequest(`package` = `package`, prefixes = prefixes, replace = replace))
 
     /**
+     * The organization's update policy
+     *
+     * For its members: the policy each of its apps without one of its own follows (`source: default` until an owner or admin sets one).
+     *
+     * **Who:** a passkey session (an API key is refused).
+     *
+     * `GET /orgs/{org}/upgrade-policy` (`org_policy`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun policy(
+        org: kotlin.String,
+    ): PolicyView =
+        api(null, null, emptySet()).organizations.orgPolicy(org = org)
+
+    /**
+     * Set the organization's update policy
+     *
+     * The owner or an admin, with a step-up over `org:<org> / __set_upgrade_policy / { app: null, policy }`; `policy: null` (or left out) drops it (the defaults). `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /orgs/{org}/upgrade-policy` (`org_policy_set`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun policySet(
+        org: kotlin.String,
+        policy: com.calimero.mero.Explicit<OrgPolicySetRequestPolicy>? = null,
+        passkey: PasskeyProvider? = null,
+    ): PolicyView =
+        api(passkey, null, setOfNotNull("policy".takeIf { policy != null && policy.value == null })).organizations.orgPolicySet(org = org, orgPolicySetRequest = OrgPolicySetRequest(policy = policy?.value))
+
+    /**
      * Bind a package signing key
      *
      * The key's signature over the binding proves the organization holds it; then its `MANAGE_APPLICATION` holders upgrade the apps of packages that name `publisher`. Answers the key's binding generation now.
@@ -519,6 +555,23 @@ class OrgsFacade internal constructor(
         passkey: PasskeyProvider? = null,
     ): OrgSettings200Response =
         api(passkey, null, emptySet()).organizations.orgSettings(org = org, orgSettingsRequest = OrgSettingsRequest(allowGuests = allowGuests, allowPublicLinks = allowPublicLinks))
+
+    /**
+     * Updates waiting across an organization's apps
+     *
+     * For its owner and admins (`403` to other members, `404` to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as `GET /apps/{app}/update` answers it with the app's `name`; `policy` is the organization's; `next` is the `after` of the next page, `null` at the end.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend).
+     *
+     * `GET /orgs/{org}/updates` (`org_updates`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun updates(
+        org: kotlin.String,
+        after: kotlin.String? = null,
+    ): OrgUpdates200Response =
+        api(null, null, emptySet()).organizations.orgUpdates(org = org, after = after)
 
     /**
      * Start an upgrade run

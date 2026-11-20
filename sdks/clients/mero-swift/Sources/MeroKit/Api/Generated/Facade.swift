@@ -40,6 +40,19 @@ extension CalimeroClient {
             }
         }
 
+        /// Approve a red update first, for a second approver to apply: `POST /apps/{app}/upgrade-approvals` (`app_approve_upgrade`).
+        ///
+        /// Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func approveUpgrade(app: Swift.String, version: Swift.String, unit: Swift.Bool? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.AppApproveUpgrade.Output.Ok.Body.JsonPayload {
+            let input = Operations.AppApproveUpgrade.Input(path: .init(app: app), body: .json(.init(version: version, unit: unit)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.appApproveUpgrade(input).ok.body.json
+            }
+        }
+
         /// Every replica's receipt-key attestation: `GET /apps/{app}/attestation` (`app_attestation`).
         ///
         /// Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`), and `cluster`, the cluster id each quote binds (with the replica's `node`): the documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any other query parameter is ignored.
@@ -261,6 +274,34 @@ extension CalimeroClient {
             }
         }
 
+        /// The update policy an app follows: `GET /apps/{app}/upgrade-policy` (`app_policy`).
+        ///
+        /// For whoever may read the app. Its own policy where an owner or admin set one, else its organization's, else the defaults: nothing updates on its own, one approval applies an update.
+        ///
+        /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+        @discardableResult
+        public func policy(app: Swift.String) async throws -> Components.Schemas.PolicyView {
+            let input = Operations.AppPolicy.Input(path: .init(app: app))
+            return try await client.perform { api in
+                try await api.appPolicy(input).ok.body.json
+            }
+        }
+
+        /// Set an app's own update policy: `POST /apps/{app}/upgrade-policy` (`app_policy_set`).
+        ///
+        /// An owner or admin of the app's organization, with a step-up over `org:<org> / __set_upgrade_policy / { app, policy }`. `policy: null` (or left out) drops it: the app follows its organization's again. `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. A move to another organization drops it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func policySet(app: Swift.String, policy: Operations.AppPolicySet.Input.Body.JsonPayload.PolicyPayload?? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Components.Schemas.PolicyView {
+            let input = Operations.AppPolicySet.Input(path: .init(app: app), body: .json(.init(policy: policy ?? nil)))
+            var nulls: Set<String> = []
+            if case .some(.none) = policy { nulls.insert("policy") }
+            return try await client.perform(passkey: passkey, nulls: nulls) { api in
+                try await api.appPolicySet(input).ok.body.json
+            }
+        }
+
         /// One compute run: `GET /apps/{app}/runs/{run}` (`app_run`).
         ///
         /// Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.
@@ -392,7 +433,7 @@ extension CalimeroClient {
 
         /// Whether an update is available for an app: `GET /apps/{app}/update` (`app_update`).
         ///
-        /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+        /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
         ///
         /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
         @discardableResult
@@ -1887,6 +1928,34 @@ extension CalimeroClient {
             }
         }
 
+        /// The organization's update policy: `GET /orgs/{org}/upgrade-policy` (`org_policy`).
+        ///
+        /// For its members: the policy each of its apps without one of its own follows (`source: default` until an owner or admin sets one).
+        ///
+        /// **Who:** a passkey session (an API key is refused).
+        @discardableResult
+        public func policy(org: Swift.String) async throws -> Components.Schemas.PolicyView {
+            let input = Operations.OrgPolicy.Input(path: .init(org: org))
+            return try await client.perform { api in
+                try await api.orgPolicy(input).ok.body.json
+            }
+        }
+
+        /// Set the organization's update policy: `POST /orgs/{org}/upgrade-policy` (`org_policy_set`).
+        ///
+        /// The owner or an admin, with a step-up over `org:<org> / __set_upgrade_policy / { app: null, policy }`; `policy: null` (or left out) drops it (the defaults). `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func policySet(org: Swift.String, policy: Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload?? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Components.Schemas.PolicyView {
+            let input = Operations.OrgPolicySet.Input(path: .init(org: org), body: .json(.init(policy: policy ?? nil)))
+            var nulls: Set<String> = []
+            if case .some(.none) = policy { nulls.insert("policy") }
+            return try await client.perform(passkey: passkey, nulls: nulls) { api in
+                try await api.orgPolicySet(input).ok.body.json
+            }
+        }
+
         /// Bind a package signing key: `POST /orgs/{org}/publishers` (`org_publisher`).
         ///
         /// The key's signature over the binding proves the organization holds it; then its `MANAGE_APPLICATION` holders upgrade the apps of packages that name `publisher`. Answers the key's binding generation now.
@@ -1975,6 +2044,19 @@ extension CalimeroClient {
             let input = Operations.OrgSettings.Input(path: .init(org: org), body: .json(.init(allowGuests: allowGuests, allowPublicLinks: allowPublicLinks)))
             return try await client.perform(passkey: passkey) { api in
                 try await api.orgSettings(input).ok.body.json
+            }
+        }
+
+        /// Updates waiting across an organization's apps: `GET /orgs/{org}/updates` (`org_updates`).
+        ///
+        /// For its owner and admins (`403` to other members, `404` to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as `GET /apps/{app}/update` answers it with the app's `name`; `policy` is the organization's; `next` is the `after` of the next page, `null` at the end.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend).
+        @discardableResult
+        public func updates(org: Swift.String, after: Swift.String? = nil) async throws -> Operations.OrgUpdates.Output.Ok.Body.JsonPayload {
+            let input = Operations.OrgUpdates.Input(path: .init(org: org), query: .init(after: after))
+            return try await client.perform { api in
+                try await api.orgUpdates(input).ok.body.json
             }
         }
 

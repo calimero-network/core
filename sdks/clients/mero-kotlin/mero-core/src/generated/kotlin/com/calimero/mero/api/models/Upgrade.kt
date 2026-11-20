@@ -30,7 +30,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it.
+ * The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second.
  *
  * @param from 
  * @param to 
@@ -42,6 +42,9 @@ import kotlinx.serialization.Contextual
  * @param apiKey 
  * @param fromRelease 
  * @param toRelease 
+ * @param propertyClass 
+ * @param reasons 
+ * @param approvedBy 
  */
 @Serializable
 
@@ -76,10 +79,29 @@ data class Upgrade (
     val fromRelease: PackageRef? = null,
 
     @SerialName(value = "toRelease")
-    val toRelease: PackageRef? = null
+    val toRelease: PackageRef? = null,
+
+    @SerialName(value = "class")
+    val propertyClass: Upgrade.PropertyClass? = null,
+
+    @SerialName(value = "reasons")
+    val reasons: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>? = null,
+
+    @SerialName(value = "approvedBy")
+    val approvedBy: kotlin.String? = null
 
 ) {
 
+    /**
+     * 
+     *
+     * Values: GREEN,RED
+     */
+    @Serializable
+    enum class PropertyClass(val value: kotlin.String) {
+        @SerialName(value = "green") GREEN("green"),
+        @SerialName(value = "red") RED("red");
+    }
 
 }
 

@@ -11,12 +11,14 @@ from typing import cast
 from typing import cast, Union
 
 if TYPE_CHECKING:
+    from ..models.pending_approval import PendingApproval
     from ..models.app_update_response_200_running_type_0 import (
         AppUpdateResponse200RunningType0,
     )
     from ..models.app_update_response_200_available_type_0 import (
         AppUpdateResponse200AvailableType0,
     )
+    from ..models.app_update_response_200_policy import AppUpdateResponse200Policy
 
 
 T = TypeVar("T", bound="AppUpdateResponse200")
@@ -31,6 +33,8 @@ class AppUpdateResponse200:
         available (Union['AppUpdateResponse200AvailableType0', None]):
         may_approve (bool):
         approvers (AppUpdateResponse200Approvers):
+        policy (AppUpdateResponse200Policy):
+        pending_approvals (list['PendingApproval']):
     """
 
     app: str
@@ -38,15 +42,19 @@ class AppUpdateResponse200:
     available: Union["AppUpdateResponse200AvailableType0", None]
     may_approve: bool
     approvers: AppUpdateResponse200Approvers
+    policy: "AppUpdateResponse200Policy"
+    pending_approvals: list["PendingApproval"]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.pending_approval import PendingApproval
         from ..models.app_update_response_200_running_type_0 import (
             AppUpdateResponse200RunningType0,
         )
         from ..models.app_update_response_200_available_type_0 import (
             AppUpdateResponse200AvailableType0,
         )
+        from ..models.app_update_response_200_policy import AppUpdateResponse200Policy
 
         app = self.app
 
@@ -66,6 +74,13 @@ class AppUpdateResponse200:
 
         approvers = self.approvers.value
 
+        policy = self.policy.to_dict()
+
+        pending_approvals = []
+        for pending_approvals_item_data in self.pending_approvals:
+            pending_approvals_item = pending_approvals_item_data.to_dict()
+            pending_approvals.append(pending_approvals_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -75,6 +90,8 @@ class AppUpdateResponse200:
                 "available": available,
                 "mayApprove": may_approve,
                 "approvers": approvers,
+                "policy": policy,
+                "pendingApprovals": pending_approvals,
             }
         )
 
@@ -82,12 +99,14 @@ class AppUpdateResponse200:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.pending_approval import PendingApproval
         from ..models.app_update_response_200_running_type_0 import (
             AppUpdateResponse200RunningType0,
         )
         from ..models.app_update_response_200_available_type_0 import (
             AppUpdateResponse200AvailableType0,
         )
+        from ..models.app_update_response_200_policy import AppUpdateResponse200Policy
 
         d = dict(src_dict)
         app = d.pop("app")
@@ -130,12 +149,25 @@ class AppUpdateResponse200:
 
         approvers = AppUpdateResponse200Approvers(d.pop("approvers"))
 
+        policy = AppUpdateResponse200Policy.from_dict(d.pop("policy"))
+
+        pending_approvals = []
+        _pending_approvals = d.pop("pendingApprovals")
+        for pending_approvals_item_data in _pending_approvals:
+            pending_approvals_item = PendingApproval.from_dict(
+                pending_approvals_item_data
+            )
+
+            pending_approvals.append(pending_approvals_item)
+
         app_update_response_200 = cls(
             app=app,
             running=running,
             available=available,
             may_approve=may_approve,
             approvers=approvers,
+            policy=policy,
+            pending_approvals=pending_approvals,
         )
 
         app_update_response_200.additional_properties = d

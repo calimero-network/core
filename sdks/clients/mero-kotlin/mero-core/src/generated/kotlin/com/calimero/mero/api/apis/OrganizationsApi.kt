@@ -50,6 +50,7 @@ import com.calimero.mero.api.models.OrgCreateRequest
 import com.calimero.mero.api.models.OrgDelete200Response
 import com.calimero.mero.api.models.OrgMembers200Response
 import com.calimero.mero.api.models.OrgOutboundApprovalRequest
+import com.calimero.mero.api.models.OrgPolicySetRequest
 import com.calimero.mero.api.models.OrgPublisher200Response
 import com.calimero.mero.api.models.OrgPublisherRequest
 import com.calimero.mero.api.models.OrgReleaseApprovalRequest
@@ -59,10 +60,12 @@ import com.calimero.mero.api.models.OrgSetBackupKeyRequest
 import com.calimero.mero.api.models.OrgSetMemberRequest
 import com.calimero.mero.api.models.OrgSettings200Response
 import com.calimero.mero.api.models.OrgSettingsRequest
+import com.calimero.mero.api.models.OrgUpdates200Response
 import com.calimero.mero.api.models.OrgUpgradeRequest
 import com.calimero.mero.api.models.OrgUpgradeRetryRequest
 import com.calimero.mero.api.models.OrgUsage200Response
 import com.calimero.mero.api.models.OutboundApproved
+import com.calimero.mero.api.models.PolicyView
 import com.calimero.mero.api.models.PublisherUpgradeRequest
 import com.calimero.mero.api.models.RecoveryFinish200Response
 import com.calimero.mero.api.models.RecoverySetRequest
@@ -1588,6 +1591,156 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     }
 
     /**
+     * GET /orgs/{org}/upgrade-policy
+     * The organization&#39;s update policy
+     * For its members: the policy each of its apps without one of its own follows (&#x60;source: default&#x60; until an owner or admin sets one).  **Who:** a passkey session (an API key is refused).
+     * @param org 
+     * @return PolicyView
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun orgPolicy(org: kotlin.String) : PolicyView = withContext(Dispatchers.IO) {
+        val localVarResponse = orgPolicyWithHttpInfo(org = org)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PolicyView
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /orgs/{org}/upgrade-policy
+     * The organization&#39;s update policy
+     * For its members: the policy each of its apps without one of its own follows (&#x60;source: default&#x60; until an owner or admin sets one).  **Who:** a passkey session (an API key is refused).
+     * @param org 
+     * @return ApiResponse<PolicyView?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun orgPolicyWithHttpInfo(org: kotlin.String) : ApiResponse<PolicyView?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgPolicyRequestConfig(org = org)
+
+        return@withContext request<Unit, PolicyView>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation orgPolicy
+     *
+     * @param org 
+     * @return RequestConfig
+     */
+    fun orgPolicyRequestConfig(org: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/orgs/{org}/upgrade-policy".replace("{"+"org"+"}", encodeURIComponent(org.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /orgs/{org}/upgrade-policy
+     * Set the organization&#39;s update policy
+     * The owner or an admin, with a step-up over &#x60;org:&lt;org&gt; / __set_upgrade_policy / { app: null, policy }&#x60;; &#x60;policy: null&#x60; (or left out) drops it (the defaults). &#x60;holdHours&#x60; outside 24 to 168 is &#x60;400 BAD_UPGRADE_POLICY&#x60; before the step-up. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param org 
+     * @param orgPolicySetRequest 
+     * @return PolicyView
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun orgPolicySet(org: kotlin.String, orgPolicySetRequest: OrgPolicySetRequest) : PolicyView = withContext(Dispatchers.IO) {
+        val localVarResponse = orgPolicySetWithHttpInfo(org = org, orgPolicySetRequest = orgPolicySetRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PolicyView
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /orgs/{org}/upgrade-policy
+     * Set the organization&#39;s update policy
+     * The owner or an admin, with a step-up over &#x60;org:&lt;org&gt; / __set_upgrade_policy / { app: null, policy }&#x60;; &#x60;policy: null&#x60; (or left out) drops it (the defaults). &#x60;holdHours&#x60; outside 24 to 168 is &#x60;400 BAD_UPGRADE_POLICY&#x60; before the step-up. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param org 
+     * @param orgPolicySetRequest 
+     * @return ApiResponse<PolicyView?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun orgPolicySetWithHttpInfo(org: kotlin.String, orgPolicySetRequest: OrgPolicySetRequest) : ApiResponse<PolicyView?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgPolicySetRequestConfig(org = org, orgPolicySetRequest = orgPolicySetRequest)
+
+        return@withContext request<OrgPolicySetRequest, PolicyView>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation orgPolicySet
+     *
+     * @param org 
+     * @param orgPolicySetRequest 
+     * @return RequestConfig
+     */
+    fun orgPolicySetRequestConfig(org: kotlin.String, orgPolicySetRequest: OrgPolicySetRequest) : RequestConfig<OrgPolicySetRequest> {
+        val localVariableBody = orgPolicySetRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/orgs/{org}/upgrade-policy".replace("{"+"org"+"}", encodeURIComponent(org.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
      * POST /orgs/{org}/publishers
      * Bind a package signing key
      * The key&#39;s signature over the binding proves the organization holds it; then its &#x60;MANAGE_APPLICATION&#x60; holders upgrade the apps of packages that name &#x60;publisher&#x60;. Answers the key&#39;s binding generation now.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
@@ -2122,6 +2275,87 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
         return RequestConfig(
             method = RequestMethod.POST,
             path = "/orgs/{org}/settings".replace("{"+"org"+"}", encodeURIComponent(org.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /orgs/{org}/updates
+     * Updates waiting across an organization&#39;s apps
+     * For its owner and admins (&#x60;403&#x60; to other members, &#x60;404&#x60; to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as &#x60;GET /apps/{app}/update&#x60; answers it with the app&#39;s &#x60;name&#x60;; &#x60;policy&#x60; is the organization&#39;s; &#x60;next&#x60; is the &#x60;after&#x60; of the next page, &#x60;null&#x60; at the end.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
+     * @param org 
+     * @param after  (optional)
+     * @return OrgUpdates200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun orgUpdates(org: kotlin.String, after: kotlin.String? = null) : OrgUpdates200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = orgUpdatesWithHttpInfo(org = org, after = after)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgUpdates200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /orgs/{org}/updates
+     * Updates waiting across an organization&#39;s apps
+     * For its owner and admins (&#x60;403&#x60; to other members, &#x60;404&#x60; to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as &#x60;GET /apps/{app}/update&#x60; answers it with the app&#39;s &#x60;name&#x60;; &#x60;policy&#x60; is the organization&#39;s; &#x60;next&#x60; is the &#x60;after&#x60; of the next page, &#x60;null&#x60; at the end.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
+     * @param org 
+     * @param after  (optional)
+     * @return ApiResponse<OrgUpdates200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun orgUpdatesWithHttpInfo(org: kotlin.String, after: kotlin.String?) : ApiResponse<OrgUpdates200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgUpdatesRequestConfig(org = org, after = after)
+
+        return@withContext request<Unit, OrgUpdates200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation orgUpdates
+     *
+     * @param org 
+     * @param after  (optional)
+     * @return RequestConfig
+     */
+    fun orgUpdatesRequestConfig(org: kotlin.String, after: kotlin.String?) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf<kotlin.String, kotlin.collections.List<kotlin.String>>()
+            .apply {
+                if (after != null) {
+                    put("after", listOf(after.toString()))
+                }
+            }
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/orgs/{org}/updates".replace("{"+"org"+"}", encodeURIComponent(org.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

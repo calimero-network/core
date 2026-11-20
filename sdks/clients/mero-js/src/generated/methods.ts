@@ -33,6 +33,15 @@ export function createRoutes(api: RouteClient) {
       access: (args: operations['app_access']['parameters']['path'] & operations['app_access']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_access']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/apps/{app}/access","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_access']['responses'][200]['content']['application/json']>,
       /**
+       * Approve a red update first, for a second approver to apply.
+       *
+       * `POST /apps/{app}/upgrade-approvals` (`app_approve_upgrade`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      approveUpgrade: (args: operations['app_approve_upgrade']['parameters']['path'] & operations['app_approve_upgrade']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_approve_upgrade']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/upgrade-approvals","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_approve_upgrade']['responses'][200]['content']['application/json']>,
+      /**
        * Every replica's receipt-key attestation.
        *
        * `GET /apps/{app}/attestation` (`app_attestation`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
@@ -337,6 +346,23 @@ export function createRoutes(api: RouteClient) {
        */
       pipelinesValidate: (args: operations['pipelines_validate']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['pipelines_validate']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/pipelines/validate","pathParams":[],"query":[],"body":"fields","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['pipelines_validate']['responses'][200]['content']['application/json']>,
+      /**
+       * The update policy an app follows.
+       *
+       * `GET /apps/{app}/upgrade-policy` (`app_policy`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      policy: (args: operations['app_policy']['parameters']['path'], options?: MethodOptions): Promise<operations['app_policy']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/upgrade-policy","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_policy']['responses'][200]['content']['application/json']>,
+      /**
+       * Set an app's own update policy.
+       *
+       * `POST /apps/{app}/upgrade-policy` (`app_policy_set`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      policySet: (args: operations['app_policy_set']['parameters']['path'] & operations['app_policy_set']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_policy_set']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/upgrade-policy","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_policy_set']['responses'][200]['content']['application/json']>,
       /**
        * Who is present.
        *
@@ -1520,6 +1546,23 @@ export function createRoutes(api: RouteClient) {
       outboundApproval: (args: operations['org_outbound_approval']['parameters']['path'] & operations['org_outbound_approval']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['org_outbound_approval']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/orgs/{org}/outbound","pathParams":["org"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_outbound_approval']['responses'][200]['content']['application/json']>,
       /**
+       * The organization's update policy.
+       *
+       * `GET /orgs/{org}/upgrade-policy` (`org_policy`). **Who:** a passkey session (an API key is refused).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      policy: (args: operations['org_policy']['parameters']['path'], options?: MethodOptions): Promise<operations['org_policy']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/orgs/{org}/upgrade-policy","pathParams":["org"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_policy']['responses'][200]['content']['application/json']>,
+      /**
+       * Set the organization's update policy.
+       *
+       * `POST /orgs/{org}/upgrade-policy` (`org_policy_set`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      policySet: (args: operations['org_policy_set']['parameters']['path'] & operations['org_policy_set']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['org_policy_set']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/orgs/{org}/upgrade-policy","pathParams":["org"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_policy_set']['responses'][200]['content']['application/json']>,
+      /**
        * Bind a package signing key.
        *
        * `POST /orgs/{org}/publishers` (`org_publisher`). **Who:** an account holder (a passkey session not bound to an app's frontend).
@@ -1677,6 +1720,14 @@ export function createRoutes(api: RouteClient) {
        */
       teamUpdate: (args: operations['team_update']['parameters']['path'] & operations['team_update']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['team_update']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/orgs/{org}/teams/{team}","pathParams":["org","team"],"query":[],"body":"fields","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['team_update']['responses'][200]['content']['application/json']>,
+      /**
+       * Updates waiting across an organization's apps.
+       *
+       * `GET /orgs/{org}/updates` (`org_updates`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      updates: (args: operations['org_updates']['parameters']['path'] & NonNullable<operations['org_updates']['parameters']['query']>, options?: MethodOptions): Promise<operations['org_updates']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/orgs/{org}/updates","pathParams":["org"],"query":["after"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_updates']['responses'][200]['content']['application/json']>,
       /**
        * Start an upgrade run.
        *

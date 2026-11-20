@@ -30,6 +30,8 @@ import okhttp3.HttpUrl
 import com.calimero.mero.api.models.App
 import com.calimero.mero.api.models.AppAbi200Response
 import com.calimero.mero.api.models.AppAccessRequest
+import com.calimero.mero.api.models.AppApproveUpgrade200Response
+import com.calimero.mero.api.models.AppApproveUpgradeRequest
 import com.calimero.mero.api.models.AppAttestation200Response
 import com.calimero.mero.api.models.AppCreate200Response
 import com.calimero.mero.api.models.AppCreateRequest
@@ -50,6 +52,7 @@ import com.calimero.mero.api.models.AppMethod200Response
 import com.calimero.mero.api.models.AppMethodRequest
 import com.calimero.mero.api.models.AppMove200Response
 import com.calimero.mero.api.models.AppMoveRequest
+import com.calimero.mero.api.models.AppPolicySetRequest
 import com.calimero.mero.api.models.AppRunLogs200Response
 import com.calimero.mero.api.models.AppRuns200Response
 import com.calimero.mero.api.models.AppSecretClear200Response
@@ -88,6 +91,7 @@ import com.calimero.mero.api.models.PipelinesStart200Response
 import com.calimero.mero.api.models.PipelinesStartRequest
 import com.calimero.mero.api.models.PipelinesValidate200Response
 import com.calimero.mero.api.models.PipelinesValidateRequest
+import com.calimero.mero.api.models.PolicyView
 import com.calimero.mero.api.models.PresenceGet200Response
 import com.calimero.mero.api.models.PresencePublishRequest
 import com.calimero.mero.api.models.PublicLinkCreate200Response
@@ -274,6 +278,83 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.POST,
             path = "/apps/{app}/access".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /apps/{app}/upgrade-approvals
+     * Approve a red update first, for a second approver to apply
+     * Where the app&#39;s policy asks for a second approver (&#x60;409 ONE_APPROVAL&#x60; otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over &#x60;&lt;app&gt; / __approve_upgrade / { package, version, targets, class }&#x60; (the class the classifier gives now, over the unit with &#x60;unit&#x60;). Another owner or admin then applies it with &#x60;POST /apps/{app}/upgrade&#x60; (or &#x60;/upgrade-unit&#x60; for a unit&#39;s approval), which until then answers &#x60;409 SECOND_APPROVAL_REQUIRED&#x60;. One waits per app, for a week at most; a newer one replaces it, and another approver&#39;s of the same update is &#x60;409 APPROVAL_PENDING&#x60; (apply it instead). &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appApproveUpgradeRequest 
+     * @return AppApproveUpgrade200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appApproveUpgrade(app: kotlin.String, appApproveUpgradeRequest: AppApproveUpgradeRequest) : AppApproveUpgrade200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appApproveUpgradeWithHttpInfo(app = app, appApproveUpgradeRequest = appApproveUpgradeRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppApproveUpgrade200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /apps/{app}/upgrade-approvals
+     * Approve a red update first, for a second approver to apply
+     * Where the app&#39;s policy asks for a second approver (&#x60;409 ONE_APPROVAL&#x60; otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over &#x60;&lt;app&gt; / __approve_upgrade / { package, version, targets, class }&#x60; (the class the classifier gives now, over the unit with &#x60;unit&#x60;). Another owner or admin then applies it with &#x60;POST /apps/{app}/upgrade&#x60; (or &#x60;/upgrade-unit&#x60; for a unit&#39;s approval), which until then answers &#x60;409 SECOND_APPROVAL_REQUIRED&#x60;. One waits per app, for a week at most; a newer one replaces it, and another approver&#39;s of the same update is &#x60;409 APPROVAL_PENDING&#x60; (apply it instead). &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appApproveUpgradeRequest 
+     * @return ApiResponse<AppApproveUpgrade200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appApproveUpgradeWithHttpInfo(app: kotlin.String, appApproveUpgradeRequest: AppApproveUpgradeRequest) : ApiResponse<AppApproveUpgrade200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appApproveUpgradeRequestConfig(app = app, appApproveUpgradeRequest = appApproveUpgradeRequest)
+
+        return@withContext request<AppApproveUpgradeRequest, AppApproveUpgrade200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appApproveUpgrade
+     *
+     * @param app 
+     * @param appApproveUpgradeRequest 
+     * @return RequestConfig
+     */
+    fun appApproveUpgradeRequestConfig(app: kotlin.String, appApproveUpgradeRequest: AppApproveUpgradeRequest) : RequestConfig<AppApproveUpgradeRequest> {
+        val localVariableBody = appApproveUpgradeRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/apps/{app}/upgrade-approvals".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,
@@ -1581,6 +1662,156 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     }
 
     /**
+     * GET /apps/{app}/upgrade-policy
+     * The update policy an app follows
+     * For whoever may read the app. Its own policy where an owner or admin set one, else its organization&#39;s, else the defaults: nothing updates on its own, one approval applies an update.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @return PolicyView
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appPolicy(app: kotlin.String) : PolicyView = withContext(Dispatchers.IO) {
+        val localVarResponse = appPolicyWithHttpInfo(app = app)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PolicyView
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/upgrade-policy
+     * The update policy an app follows
+     * For whoever may read the app. Its own policy where an owner or admin set one, else its organization&#39;s, else the defaults: nothing updates on its own, one approval applies an update.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @return ApiResponse<PolicyView?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appPolicyWithHttpInfo(app: kotlin.String) : ApiResponse<PolicyView?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appPolicyRequestConfig(app = app)
+
+        return@withContext request<Unit, PolicyView>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appPolicy
+     *
+     * @param app 
+     * @return RequestConfig
+     */
+    fun appPolicyRequestConfig(app: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/upgrade-policy".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /apps/{app}/upgrade-policy
+     * Set an app&#39;s own update policy
+     * An owner or admin of the app&#39;s organization, with a step-up over &#x60;org:&lt;org&gt; / __set_upgrade_policy / { app, policy }&#x60;. &#x60;policy: null&#x60; (or left out) drops it: the app follows its organization&#39;s again. &#x60;holdHours&#x60; outside 24 to 168 is &#x60;400 BAD_UPGRADE_POLICY&#x60; before the step-up. A move to another organization drops it. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appPolicySetRequest 
+     * @return PolicyView
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appPolicySet(app: kotlin.String, appPolicySetRequest: AppPolicySetRequest) : PolicyView = withContext(Dispatchers.IO) {
+        val localVarResponse = appPolicySetWithHttpInfo(app = app, appPolicySetRequest = appPolicySetRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PolicyView
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /apps/{app}/upgrade-policy
+     * Set an app&#39;s own update policy
+     * An owner or admin of the app&#39;s organization, with a step-up over &#x60;org:&lt;org&gt; / __set_upgrade_policy / { app, policy }&#x60;. &#x60;policy: null&#x60; (or left out) drops it: the app follows its organization&#39;s again. &#x60;holdHours&#x60; outside 24 to 168 is &#x60;400 BAD_UPGRADE_POLICY&#x60; before the step-up. A move to another organization drops it. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appPolicySetRequest 
+     * @return ApiResponse<PolicyView?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appPolicySetWithHttpInfo(app: kotlin.String, appPolicySetRequest: AppPolicySetRequest) : ApiResponse<PolicyView?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appPolicySetRequestConfig(app = app, appPolicySetRequest = appPolicySetRequest)
+
+        return@withContext request<AppPolicySetRequest, PolicyView>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appPolicySet
+     *
+     * @param app 
+     * @param appPolicySetRequest 
+     * @return RequestConfig
+     */
+    fun appPolicySetRequestConfig(app: kotlin.String, appPolicySetRequest: AppPolicySetRequest) : RequestConfig<AppPolicySetRequest> {
+        val localVariableBody = appPolicySetRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/apps/{app}/upgrade-policy".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
      * GET /apps/{app}/runs/{run}
      * One compute run
      * Its record without arguments or keys: method, state, &#x60;cancelRequested&#x60;, &#x60;startTsMs&#x60;, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app&#39;s files), usage, and &#x60;progress&#x60; as the leader last polled it.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
@@ -2359,7 +2590,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/update
      * Whether an update is available for an app
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60; before and after with the destinations &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;sealedBefore&#x60; and &#x60;sealedAfter&#x60; against the cluster&#39;s sealed endpoints; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60; before and after with the destinations &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;sealedBefore&#x60; and &#x60;sealedAfter&#x60; against the cluster&#39;s sealed endpoints; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s). &#x60;policy&#x60;: the update policy the app follows and its &#x60;source&#x60;. &#x60;available.approvalsNeeded&#x60;: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; &#x60;available.approvedBy&#x60;: who approved it first, while that approval waits. &#x60;pendingApprovals&#x60;: the first approvals waiting for their second that cover this app (its own, or its unit&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return AppUpdate200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -2391,7 +2622,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/update
      * Whether an update is available for an app
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60; before and after with the destinations &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;sealedBefore&#x60; and &#x60;sealedAfter&#x60; against the cluster&#39;s sealed endpoints; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60; before and after with the destinations &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;sealedBefore&#x60; and &#x60;sealedAfter&#x60; against the cluster&#39;s sealed endpoints; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s). &#x60;policy&#x60;: the update policy the app follows and its &#x60;source&#x60;. &#x60;available.approvalsNeeded&#x60;: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; &#x60;available.approvedBy&#x60;: who approved it first, while that approval waits. &#x60;pendingApprovals&#x60;: the first approvals waiting for their second that cover this app (its own, or its unit&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<AppUpdate200Response?>
      * @throws IllegalStateException If the request is not correctly configured
