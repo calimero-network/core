@@ -348,7 +348,8 @@ extension AppGrant {
             case .anyone: return .anyone(.init(kind: .anyone))
             case .team(let team): return .team(.init(kind: .team, team: team))
             case .account(let account, let scope):
-                return .account(.init(kind: .account, account: account, scope: try scope.map(OpenAPIValueContainer.init)))
+                let scope = try scope.map(OpenAPIValueContainer.init)
+                return .account(.init(kind: .account, account: account, scope: scope))
             }
         }
     }
