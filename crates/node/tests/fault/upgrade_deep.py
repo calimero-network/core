@@ -225,6 +225,15 @@ NOT_COVERED = [
      "index, taken again from the rows when it is missing), and a peer on a release before answers "
      "`/internal/digests` with `404` and is not compared; "
      "`a_replica_whose_state_differs_from_its_leaders_is_reported` (`cluster.rs`) covers it on one build"),
+    ("Apps", "The consent page's install sheet (`install`), update sheets with their class, policy and "
+     "approval step (\"Approve (1 of 2)\", \"Approve and update (2 of 2)\"), an update policy changed on the page "
+     "(`updatePolicy`), the node's updates page (`updates`, `/updates/{id}`, `POST /consent/{id}/open`) and "
+     "`GET /apps/{app}/update`'s `summary` and `unit`",
+     "pages and reads that store nothing of their own: a consent request lives in one node's memory for minutes, "
+     "and what the pages approve is logged by the routes they run (`POST /apps`, `SetUpgradePolicy`, "
+     "`ApproveUpgrade`, `UpgradeApp`), whose stored shapes are the `upgrade-policies` case's and those above. "
+     "`an_install_sheet_shows_what_gets_created_and_where_data_can_go` and "
+     "`an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build"),
 ]
 
 

@@ -52,7 +52,7 @@ fn check_policy(policy: Option<&UpgradePolicy>) -> Result<(), ApiError> {
 }
 
 /// `404` to anyone outside `org`, `403` to a member who is not its owner or an admin.
-fn approver_of(node: &Node, org: &str, account: &str) -> Result<(), ApiError> {
+pub(crate) fn approver_of(node: &Node, org: &str, account: &str) -> Result<(), ApiError> {
     let (member, approves) = node.sys(|s| {
         (
             s.orgs.get(org).and_then(|o| o.role(account)).is_some(),
@@ -93,18 +93,34 @@ async fn org_policy_set(
     Json(body): Json<UpgradePolicyBody>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
-    let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
-    approver_of(&node, &org, &actor)?;
-    check_policy(body.policy.as_ref())?;
+    set_upgrade_policy(&node, &p, &org, None, body.policy, body.confirm).await
+}
+
+/// Set or drop the update policy of `org` (`app: None`) or of its app `app`, as
+/// `POST /orgs/{org}/upgrade-policy` and `POST /apps/{app}/upgrade-policy` (and the consent
+/// page's `updatePolicy`) do: `p`'s account an owner or admin of `org`, the policy within
+/// bounds and the feature active, all before the passkey over
+/// `org:<org> / __set_upgrade_policy / { app, policy }`.
+pub(crate) async fn set_upgrade_policy(
+    node: &Node,
+    p: &Principal,
+    org: &str,
+    app: Option<&str>,
+    policy: Option<UpgradePolicy>,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
+    let actor = p.account()?;
+    approver_of(node, org, &actor)?;
+    check_policy(policy.as_ref())?;
     node.require_features(&[Feature::UpgradePolicies]).await?;
-    let args = crate::system::upgrade_policy_args(None, body.policy.as_ref());
-    let consent = org_consent(&node, &p, &org, "__set_upgrade_policy", &args, body.confirm).await?;
+    let args = crate::system::upgrade_policy_args(app, policy.as_ref());
+    let consent = org_consent(node, p, org, "__set_upgrade_policy", &args, confirm).await?;
     Ok(Json(
         node.sys_write(&SystemCmd::SetUpgradePolicy {
-            org,
-            app: None,
-            policy: body.policy,
+            org: org.to_owned(),
+            app: app.map(str::to_owned),
+            policy,
             actor,
             consent,
         })
@@ -135,30 +151,15 @@ async fn app_policy_set(
 ) -> ApiResult {
     let (app, _p) = super::upgrades::readable_app(&node, &headers, &app_id).await?;
     let p = holder(&node, &headers).await?;
-    let actor = p.account()?;
-    approver_of(&node, &app.org, &actor)?;
-    check_policy(body.policy.as_ref())?;
-    node.require_features(&[Feature::UpgradePolicies]).await?;
-    let args = crate::system::upgrade_policy_args(Some(&app.app_id), body.policy.as_ref());
-    let consent = org_consent(
+    set_upgrade_policy(
         &node,
         &p,
         &app.org,
-        "__set_upgrade_policy",
-        &args,
+        Some(&app.app_id),
+        body.policy,
         body.confirm,
     )
-    .await?;
-    Ok(Json(
-        node.sys_write(&SystemCmd::SetUpgradePolicy {
-            org: app.org,
-            app: Some(app.app_id),
-            policy: body.policy,
-            actor,
-            consent,
-        })
-        .await?,
-    ))
+    .await
 }
 
 /// `POST /apps/{app}/upgrade-approvals`: the first of the two approvals a red update
@@ -173,20 +174,34 @@ async fn app_approve_upgrade(
 ) -> ApiResult {
     let (app, _p) = super::upgrades::readable_app(&node, &headers, &app_id).await?;
     let p = holder(&node, &headers).await?;
+    approve_upgrade(&node, &p, &app, &body.version, body.unit, body.confirm).await
+}
+
+/// The first approval of `app`'s red update to `version` of the package it runs (with
+/// `unit`, of the unit's move), as `POST /apps/{app}/upgrade-approvals` (and the consent
+/// page's "Approve (1 of 2)") logs it, by `p`'s account.
+pub(crate) async fn approve_upgrade(
+    node: &Node,
+    p: &Principal,
+    app: &crate::types::AppRecord,
+    version: &str,
+    unit: bool,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
     let actor = p.account()?;
-    approver_of(&node, &app.org, &actor)?;
+    approver_of(node, &app.org, &actor)?;
     node.require_features(&[Feature::UpgradeClasses, Feature::UpgradePolicies])
         .await?;
-    if !node.sys(|s| s.upgrade_policy_of(&app).0.second_approver) {
+    if !node.sys(|s| s.upgrade_policy_of(app).0.second_approver) {
         return Err(crate::node::rejected(crate::system::ONE_APPROVAL));
     }
     let running = node
-        .release_of_app(&app)
+        .release_of_app(app)
         .ok_or_else(|| ApiError::conflict("this app runs no package release: nothing to approve"))?
         .at;
     let target = PackageRef {
         package: running.package.clone(),
-        version: body.version.clone(),
+        version: version.to_owned(),
         service: running.service.clone(),
         compute: false,
     };
@@ -201,17 +216,17 @@ async fn app_approve_upgrade(
             &format!("{} {} is not installed", target.package, target.version),
         ));
     }
-    if node.sys(|s| s.within_deployment(&app, Some(&target), None).is_err()) {
+    if node.sys(|s| s.within_deployment(app, Some(&target), None).is_err()) {
         return Err(crate::node::outside_deployment());
     }
-    let targets = if body.unit {
-        super::upgrades::unit_plan(&node, &actor, &app.app_id, &target.version)
+    let targets = if unit {
+        super::upgrades::unit_plan(node, &actor, &app.app_id, &target.version)
             .await?
             .targets
     } else {
         BTreeMap::new()
     };
-    let class = crate::egress::update(&node, &app, &target.version, body.unit)
+    let class = crate::egress::update(node, app, &target.version, unit)
         .await?
         .and_then(super::upgrades::upgrade_class)
         .ok_or_else(|| ApiError::conflict("this update could not be classified"))?;
@@ -220,7 +235,7 @@ async fn app_approve_upgrade(
     }
     let now = now_secs();
     let pending = node.sys(|s| {
-        s.approval_for(&app, &target.package, &target.version, &actor, now)
+        s.approval_for(app, &target.package, &target.version, &actor, now)
             .is_some_and(|p| p.targets == targets)
     });
     if pending {
@@ -228,15 +243,7 @@ async fn app_approve_upgrade(
     }
     let args =
         crate::system::approve_upgrade_args(&target.package, &target.version, &targets, &class);
-    let consent = consent(
-        &node,
-        &p,
-        &app.app_id,
-        "__approve_upgrade",
-        &args,
-        body.confirm,
-    )
-    .await?;
+    let consent = consent(node, p, &app.app_id, "__approve_upgrade", &args, confirm).await?;
     let approval = node
         .sys_write(&SystemCmd::ApproveUpgrade {
             app_id: app.app_id.clone(),

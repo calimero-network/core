@@ -1549,7 +1549,7 @@ async fn app_update(
 
 /// `GET /apps/{app}/update`'s answer for `app`, read by `account` (a session bound to
 /// package `bound` sees all its releases); `GET /orgs/{org}/updates` lists the same.
-pub(super) async fn update_view(
+pub(crate) async fn update_view(
     node: &Node,
     app: &crate::types::AppRecord,
     account: Option<&str>,
@@ -1607,10 +1607,12 @@ pub(super) async fn update_view(
         let version = a["version"].as_str().unwrap_or_default().to_owned();
         match crate::egress::update(node, &app, &version, !app.links.is_empty()).await {
             Ok(Some(c)) => {
+                let summary = crate::consent_page::update_summary(&c);
                 if let (Some(o), Ok(Value::Object(c))) =
                     (a.as_object_mut(), serde_json::to_value(c))
                 {
                     o.extend(c);
+                    let _prev = o.insert("summary".into(), json!(summary));
                 }
             }
             Ok(None) => {}
@@ -1653,6 +1655,7 @@ pub(super) async fn update_view(
         "app": app.app_id,
         "running": running.map(|r| json!({ "package": r.package, "version": r.version })),
         "available": available,
+        "unit": !app.links.is_empty(),
         "mayApprove": may_approve,
         "approvers": approvers,
         "policy": { "autoApply": policy.auto_apply, "holdHours": policy.hold_hours,

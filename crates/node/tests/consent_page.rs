@@ -3617,3 +3617,396 @@ async fn a_red_update_waits_for_a_second_approver() {
     let update = get(&alice, &format!("apps/{notes}/update")).await.unwrap();
     assert_eq!(update["pendingApprovals"], json!([]), "spent: {update}");
 }
+
+/// C10, screen 1: an app's frontend asks to create an instance of its release, and the node's
+/// install sheet shows what gets created (the app and the apps its release creates, with their
+/// versions), where data can go over the whole unit, and that updates wait for an approval.
+/// The person's passkey on the page creates it as `POST /apps` does, and the app reads the new
+/// instance from `/result`. A frontend may not ask for another package's instance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_install_sheet_shows_what_gets_created_and_where_data_can_go() {
+    const AI: &str = "https://inference.near.ai/v1/";
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[37; 32]);
+    let (kv, ai) = ("com.test.unit-kv", "com.test.unit-ai");
+    for (package, version, d) in [
+        (kv, "0.1.0", Declares::default()),
+        (
+            ai,
+            "1.0.0",
+            Declares {
+                outbound: &[AI],
+                ..Declares::default()
+            },
+        ),
+        (
+            PACKAGE,
+            "1.0.0",
+            Declares {
+                uses: Some(json!({
+                    "store": { "package": kv, "range": "^0.1", "version": "0.1.0" },
+                    "ai": { "package": ai, "range": "^1", "version": "1.0.0" },
+                })),
+                ..Declares::default()
+            },
+        ),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let org = home_org(&alice).await;
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let back = format!("{app_origin}/1.0.0/");
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+
+    // Another package's instance: not this frontend's to ask for.
+    let other = refused(
+        &in_app,
+        &back,
+        "install",
+        json!({ "package": kv, "version": "0.1.0", "name": "store" }),
+    )
+    .await;
+    assert_eq!(other, 403);
+
+    let made = ask(
+        &in_app,
+        &back,
+        "install",
+        json!({ "package": PACKAGE, "version": "1.0.0", "name": "notes", "org": org }),
+    )
+    .await
+    .unwrap();
+    let id = made["requestId"].as_str().unwrap().to_owned();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["kind"], "install", "{model}");
+    assert_eq!(model["title"], "Start using Notes", "{model}");
+    let install = &model["install"];
+    let creates: Vec<(&str, &str)> = install["creates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["package"].as_str().unwrap(),
+                c["version"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        creates,
+        vec![(PACKAGE, "1.0.0"), (ai, "1.0.0"), (kv, "0.1.0")],
+        "{model}"
+    );
+    assert_eq!(
+        install["destinations"],
+        json!(["inference.near.ai"]),
+        "{model}"
+    );
+    assert_eq!(
+        install["where"], "This app can send data to: inference.near.ai.",
+        "{model}"
+    );
+    assert_eq!(
+        install["updates"][0], "You approve each update. Nothing changes until you do.",
+        "{model}"
+    );
+    assert_eq!(install["policy"]["source"], "default", "{model}");
+    let text = model.to_string().to_lowercase();
+    assert!(!text.contains("sealed"), "{model}");
+
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["__method"], "__create_instance", "{args}");
+    assert_eq!(args["package"], PACKAGE, "{args}");
+    assert_eq!(args["version"], "1.0.0", "{args}");
+    let result = in_app.get(&format!("consent/{id}/result")).await.unwrap();
+    assert_eq!(result["status"], "approved", "{result}");
+    assert_eq!(result["kind"], "install", "{result}");
+    let notes = result["outcome"]["appId"].as_str().unwrap().to_owned();
+    assert!(result["outcome"]["links"]["store"].is_string(), "{result}");
+    let made = get_until(&alice, &format!("apps/{notes}"), |a| {
+        a["release"]["version"] == "1.0.0"
+    })
+    .await;
+    assert_eq!(made["org"], json!(org), "{made}");
+    let egress = get(&alice, &format!("apps/{notes}/egress")).await.unwrap();
+    assert_eq!(egress["destinations"], json!([AI]), "{egress}");
+}
+
+/// C10, screens 2, 3 and 5: an update's sheet says its class in plain words. A green one
+/// (nothing changes where data goes) is "Update with passkey" / "Not now"; a red one adding a
+/// destination names it and leads with keeping the current version. Once the organization's
+/// policy (set on the page) asks for a second approver, the owner's red sheet is "Approve (1 of
+/// 2)" and logs the first approval; an admin unlocks the node's updates page with a passkey,
+/// sees the update waiting with its class and the policy, opens its sheet from there, and
+/// "Approve and update (2 of 2)" applies it. The updates page lists nothing before it is
+/// unlocked, and stays open while the sheets it opens come and go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_update_shows_its_class_and_takes_two_approvers_on_the_pages() {
+    const TELEMETRY: &str = "https://telemetry.example/";
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, bob_key) = signed_up(&c, 1, "bob").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    for (version, outbound) in [
+        ("1.0.0", &[][..]),
+        ("1.0.1", &[][..]),
+        ("2.0.0", &[TELEMETRY][..]),
+    ] {
+        let d = Declares {
+            outbound,
+            ..Declares::default()
+        };
+        let (mpk, _) = release(version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let org = home_org(&alice).await;
+    let token = alice
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "admin" })), Some(&mut alice_pk))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = bob.orgs().invite_redeem(&token).await.unwrap();
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0", "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let alice_id = account_of(&alice).await;
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let back = format!("{app_origin}/1.0.0/");
+    let in_app = c.client(0);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_pk, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    // One authenticator per person on the node's page, so its counter moves on.
+    let node_origin = origin(&c.urls[0]);
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &node_origin);
+
+    // The banner's line: `GET /apps/{app}/update` says it in the page's words.
+    let update = get(&in_app, &format!("apps/{notes}/update")).await.unwrap();
+    assert_eq!(
+        update["available"]["summary"],
+        "This update can send data to a new place: telemetry.example",
+        "{update}"
+    );
+
+    // Green: nothing changes where data goes.
+    let made = ask(
+        &in_app,
+        &back,
+        "upgrade",
+        json!({ "app": notes, "toVersion": "1.0.1" }),
+    )
+    .await
+    .unwrap();
+    let page = Page::new(made["url"].as_str().unwrap());
+    let u = page.model().await["update"].clone();
+    assert_eq!(u["class"], "green", "{u}");
+    assert_eq!(u["summary"], "Nothing changes where your data goes", "{u}");
+    assert_eq!(
+        u["destinations"]["words"], "Unchanged: your data stays in Calimero",
+        "{u}"
+    );
+    assert_eq!(u["approveLabel"], "Update with passkey", "{u}");
+    assert_eq!(u["keepLabel"], "Not now", "{u}");
+    assert_eq!(u["keepByDefault"], false, "{u}");
+    assert_eq!(u["approval"]["step"], "only", "{u}");
+    let (code, _) = page.post("decline", json!({})).await;
+    assert_eq!(code, 200);
+
+    // Red: a new destination, named, and keeping the current version leads.
+    let made = ask(
+        &in_app,
+        &back,
+        "upgrade",
+        json!({ "app": notes, "toVersion": "2.0.0" }),
+    )
+    .await
+    .unwrap();
+    let page = Page::new(made["url"].as_str().unwrap());
+    let u = page.model().await["update"].clone();
+    assert_eq!(u["class"], "red", "{u}");
+    assert_eq!(
+        u["reasons"][0], "This update can send data to a new place: telemetry.example.",
+        "{u}"
+    );
+    assert_eq!(
+        u["destinations"]["added"],
+        json!(["telemetry.example"]),
+        "{u}"
+    );
+    assert_eq!(u["keepByDefault"], true, "{u}");
+    assert_eq!(u["keepLabel"], "Keep 1.0.0", "{u}");
+    assert_eq!(u["approveLabel"], "Approve with passkey", "{u}");
+    assert_eq!(
+        u["policy"]["words"][0], "You approve each update. Nothing changes until you do.",
+        "{u}"
+    );
+    let (code, _) = page.post("decline", json!({})).await;
+    assert_eq!(code, 200);
+
+    // The organization's policy, changed on the page: a second approver for red updates.
+    let made = ask(
+        &in_app,
+        &back,
+        "updatePolicy",
+        json!({ "org": org, "policy": { "secondApprover": true } }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["kind"], "updatePolicy", "{model}");
+    assert!(
+        model["policy"]["afterWords"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("two owners or admins")),
+        "{model}"
+    );
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["__method"], "__set_upgrade_policy", "{args}");
+    let _set = get_until(&alice, &format!("apps/{notes}/update"), |u| {
+        u["policy"]["secondApprover"] == true
+    })
+    .await;
+
+    // The owner's red sheet is now the first of two approvals.
+    let made = ask(
+        &in_app,
+        &back,
+        "upgrade",
+        json!({ "app": notes, "toVersion": "2.0.0" }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let u = page.model().await["update"].clone();
+    assert_eq!(u["approval"]["step"], "first", "{u}");
+    assert_eq!(u["approveLabel"], "Approve (1 of 2)", "{u}");
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["__method"], "__approve_upgrade", "{args}");
+    let _first = get_until(&alice, &format!("apps/{notes}/update"), |u| {
+        u["available"]["approvedBy"] == json!(alice_id)
+    })
+    .await;
+    // Not the same person twice.
+    let again = refused(
+        &in_app,
+        &back,
+        "upgrade",
+        json!({ "app": notes, "toVersion": "2.0.0" }),
+    )
+    .await;
+    assert_eq!(again, 409);
+
+    // The admin's updates page: locked until their passkey, then the update waits there.
+    let bob_in_app = c.client(0);
+    let mut bob_app_key = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = bob_in_app.sign_in(&mut bob_app_key).await.unwrap();
+    let made = ask(&bob_in_app, &back, "updates", json!({})).await.unwrap();
+    let hub_url = made["url"].as_str().unwrap().to_owned();
+    assert!(hub_url.contains("/updates/"), "{made}");
+    let served = reqwest::get(&hub_url).await.unwrap();
+    assert_eq!(served.status(), 200);
+    let hub = Page::new(&hub_url.replace("/updates/", "/consent/"));
+    let locked = hub.model().await;
+    assert_eq!(locked["kind"], "updates", "{locked}");
+    assert_eq!(locked["locked"], true, "{locked}");
+    assert!(locked.get("updates").is_none(), "{locked}");
+    let (code, early) = hub
+        .post(
+            "open",
+            json!({ "kind": "upgrade", "subject": { "app": notes, "toVersion": "2.0.0" } }),
+        )
+        .await;
+    assert_eq!(code, 409, "{early}");
+    let mut bob_page = SoftAuthenticator::with_key(&bob_app_key, "localhost", &node_origin);
+    let ((code, done), args) = hub.approve(&c, &mut bob_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["__method"], "__view_updates", "{args}");
+    let open = hub.model().await;
+    assert_eq!(open["locked"], false, "{open}");
+    let row = &open["updates"]["pending"][0];
+    assert_eq!(row["app"], json!(notes), "{open}");
+    assert_eq!(row["class"], "red", "{open}");
+    assert_eq!(
+        (&row["from"], &row["to"]),
+        (&json!("1.0.0"), &json!("2.0.0"))
+    );
+    assert_eq!(row["approvedBy"], json!(alice_id), "{open}");
+    assert_eq!(
+        row["summary"], "This update can send data to a new place: telemetry.example",
+        "{open}"
+    );
+    assert_eq!(
+        open["updates"]["policies"][0]["policy"]["secondApprover"], true,
+        "{open}"
+    );
+
+    // From the updates page, the update's sheet: the second approval applies it.
+    let (code, child) = hub
+        .post(
+            "open",
+            json!({ "kind": "upgrade", "subject": { "app": notes, "toVersion": "2.0.0" } }),
+        )
+        .await;
+    assert_eq!(code, 200, "{child}");
+    let url = child["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    let u = &model["update"];
+    assert_eq!(u["approval"]["step"], "second", "{u}");
+    assert_eq!(u["approveLabel"], "Approve and update (2 of 2)", "{u}");
+    assert_eq!(
+        model["requestedBy"]["returnOrigin"],
+        json!(origin(&hub_url)),
+        "{model}"
+    );
+    let ((code, done), _args) = page.approve(&c, &mut bob_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert!(
+        done["redirect"].as_str().unwrap().contains("/updates/"),
+        "{done}"
+    );
+    let moved = get_until(&alice, &format!("apps/{notes}"), |a| {
+        a["release"]["version"] == "2.0.0"
+    })
+    .await;
+    assert_eq!(
+        moved["lastUpgrade"]["approvedBy"],
+        json!(alice_id),
+        "{moved}"
+    );
+    // The updates page outlived the sheet it opened, and has nothing left to show.
+    let after = hub.model().await;
+    assert_eq!(after["updates"]["pending"], json!([]), "{after}");
+}
