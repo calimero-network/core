@@ -395,6 +395,11 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
+          # PyPI matches the publisher on this called workflow (job_workflow_ref)
+          # but checks an attestation's signer against the caller, release.yml,
+          # so a release's attestations are always refused (400). Off until PyPI
+          # supports reusable workflows.
+          attestations: false
 
       - name: Dry run
         if: inputs.dry-run
