@@ -80,6 +80,27 @@ pub enum ContextCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
+    /// The update policy the instance follows (its own, its organization's or the
+    /// defaults); with a flag, set its own (an owner or admin of its organization).
+    UpgradePolicy {
+        #[arg(value_name = "INSTANCE")]
+        context: String,
+        #[command(flatten)]
+        policy: crate::namespace::PolicyArgs,
+    },
+    /// The first of two approvals of a red update, where the instance's policy asks for a
+    /// second approver; another owner or admin then applies it with `instance update`.
+    ApproveUpdate {
+        #[arg(value_name = "INSTANCE")]
+        context: String,
+        #[arg(long)]
+        version: String,
+        /// Approve the upgrade of the instance and the apps it created (`upgrade-unit`).
+        #[arg(long)]
+        unit: bool,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
     /// Hand the instance to another account (its owner approves with a passkey).
     Transfer {
         #[arg(value_name = "INSTANCE")]
@@ -296,6 +317,33 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             };
             let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
             let out = apps.upgrade(&app, body, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
+        }
+        ContextCmd::UpgradePolicy { context, policy } => {
+            let app = env.app(&context).await?;
+            let view = to_json(&apps.policy(&app).await?)?;
+            match policy.change(&view)? {
+                None => view,
+                Some(change) => {
+                    let mut pk = policy.passkey()?;
+                    let out = apps.policy_set(&app, Some(change), pk.get()).await;
+                    pk.save()?;
+                    to_json(&out?)?
+                }
+            }
+        }
+        ContextCmd::ApproveUpdate {
+            context,
+            version,
+            unit,
+            dev_passkey,
+        } => {
+            let app = env.app(&context).await?;
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = apps
+                .approve_upgrade(&app, &version, Some(unit), pk.get())
+                .await;
             pk.save()?;
             to_json(&out?)?
         }

@@ -1933,6 +1933,17 @@ async fn upgrade_request(
         ));
     }
     crate::api::refuse_stalled(node, &app, &bundle, Some(&to_release), now_secs())?;
+    // A red update whose policy asks for a second approver, without another owner's or
+    // admin's first approval: refused before a page exists, as the route refuses it.
+    if !member_of_unit {
+        let class = crate::api::move_class(node, &app_id, Some(&to_release)).await;
+        let now = now_secs();
+        if let Err(why) =
+            node.sys(|s| s.update_gate(&app, Some(&to_release), class.as_ref(), account, now))
+        {
+            return Err(crate::node::rejected(why));
+        }
+    }
     node.require_runtime(
         &app.replicas,
         Some(&to_release),

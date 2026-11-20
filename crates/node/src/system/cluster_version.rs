@@ -185,10 +185,20 @@ pub enum Feature {
     /// it, so its replicas would keep no list and call a unit unsealed that the others call
     /// sealed.
     SealedEndpoints,
+    /// `UpgradeApp` with `class`: what the update classifier said of the move, judged at
+    /// apply against the log (`SystemState::check_class`) and recorded on the app's
+    /// `lastUpgrade`. An earlier release ignores the field and would apply a move logged as
+    /// green that the log shows red, where a later one refuses it.
+    UpgradeClasses,
+    /// Update policies and second approvers: `SetUpgradePolicy` and `ApproveUpgrade`
+    /// (`types::UpgradePolicy`, `types::PendingApproval`). An earlier release cannot decode
+    /// them, so it would keep no policy and apply a red update with one approval where a
+    /// later one waits for the second.
+    UpgradePolicies,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 42] = [
+pub const FEATURES: [Feature; 44] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -231,6 +241,8 @@ pub const FEATURES: [Feature; 42] = [
     Feature::KeepTeamApps,
     Feature::PublicLinks,
     Feature::SealedEndpoints,
+    Feature::UpgradeClasses,
+    Feature::UpgradePolicies,
 ];
 
 impl Feature {
@@ -280,6 +292,8 @@ impl Feature {
             Self::KeepTeamApps => "keepTeamApps",
             Self::PublicLinks => "publicLinks",
             Self::SealedEndpoints => "sealedEndpoints",
+            Self::UpgradeClasses => "upgradeClasses",
+            Self::UpgradePolicies => "upgradePolicies",
         }
     }
 
@@ -326,7 +340,7 @@ impl Feature {
             | Self::AccessGrants
             | Self::KeepTeamApps
             | Self::PublicLinks => "1.0.0-rc.33",
-            Self::SealedEndpoints => "1.0.0-rc.34",
+            Self::SealedEndpoints | Self::UpgradeClasses | Self::UpgradePolicies => "1.0.0-rc.34",
         }
     }
 }
@@ -569,8 +583,9 @@ impl SystemCmd {
             Self::UpgradeApp {
                 in_deployment,
                 owner_approves,
+                class,
                 ..
-            } if *in_deployment || *owner_approves => {
+            } if *in_deployment || *owner_approves || class.is_some() => {
                 let mut f = Vec::new();
                 if *in_deployment {
                     f.push(Feature::UpgradeInDeployment);
@@ -578,7 +593,13 @@ impl SystemCmd {
                 if *owner_approves {
                     f.push(Feature::OwnerApprovedUpgrades);
                 }
+                if class.is_some() {
+                    f.push(Feature::UpgradeClasses);
+                }
                 f
+            }
+            Self::SetUpgradePolicy { .. } | Self::ApproveUpgrade { .. } => {
+                vec![Feature::UpgradePolicies]
             }
             Self::CreateApiKey {
                 owner_approves: true,
@@ -1100,6 +1121,11 @@ mod tests {
                 endpoints: vec!["https://inference.near.ai/".into()],
                 proof: Value::Null,
             },
+            Feature::UpgradeClasses => entry(json!({ "op": "upgradeApp",
+                "app_id": "app", "bundle": "b", "actor": "a",
+                "class": { "class": "green" } })),
+            Feature::UpgradePolicies => entry(json!({ "op": "setUpgradePolicy",
+                "org": "org", "policy": { "secondApprover": true }, "actor": "alice" })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1554,8 +1580,16 @@ mod tests {
                 Feature::PublicLinks
             ]
         );
-        // rc.34's (the operator's sealed endpoints) for every node on rc.34.
-        assert_eq!(rc34, [Feature::SealedEndpoints]);
+        // rc.34's (the operator's sealed endpoints, update classes and policies) for every
+        // node on rc.34.
+        assert_eq!(
+            rc34,
+            [
+                Feature::SealedEndpoints,
+                Feature::UpgradeClasses,
+                Feature::UpgradePolicies
+            ]
+        );
         for &feature in rc32.iter().chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(

@@ -158,6 +158,23 @@ pub enum NamespaceCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
+    /// The organization's update policy (the one its instances without their own
+    /// follow); with a flag, set it (its owner or an admin, with a passkey).
+    UpgradePolicy {
+        #[arg(value_name = "ORG")]
+        namespace: String,
+        #[command(flatten)]
+        policy: PolicyArgs,
+    },
+    /// The organization's instances with an update available or a first approval
+    /// waiting (its owner and admins).
+    Updates {
+        #[arg(value_name = "ORG")]
+        namespace: String,
+        /// The page after this instance id.
+        #[arg(long)]
+        after: Option<String>,
+    },
     /// Approve a mero-tee release to hold the organization's instances
     /// (where the owner holds release approvals).
     ApproveRelease {
@@ -167,6 +184,63 @@ pub enum NamespaceCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
+}
+
+/// An update policy's changes (`org upgrade-policy`, `instance upgrade-policy`): none
+/// reads it; any sets it, starting from the one set at that scope (else the one in force).
+#[derive(Debug, clap::Args)]
+pub struct PolicyArgs {
+    /// A red update needs two distinct owners or admins.
+    #[arg(long)]
+    second_approver: Option<bool>,
+    /// Green (Sealed) updates apply on their own after the hold (stored now; applied
+    /// by a later release).
+    #[arg(long)]
+    auto_sealed: Option<bool>,
+    /// How long a green update waits before applying on its own: 24 to 168 hours.
+    #[arg(long)]
+    hold_hours: Option<u32>,
+    /// Drop the policy set at this scope.
+    #[arg(long, conflicts_with_all = ["second_approver", "auto_sealed", "hold_hours"])]
+    clear: bool,
+    #[arg(long)]
+    dev_passkey: Option<PathBuf>,
+}
+
+impl PolicyArgs {
+    /// The policy to send from `view` (`GET .../upgrade-policy`), `None` for a read;
+    /// `Some(None)` drops it.
+    pub fn change<T: serde::de::DeserializeOwned>(
+        &self,
+        view: &Value,
+    ) -> eyre::Result<Option<Option<T>>> {
+        if self.clear {
+            return Ok(Some(None));
+        }
+        if self.second_approver.is_none() && self.auto_sealed.is_none() && self.hold_hours.is_none()
+        {
+            return Ok(None);
+        }
+        let mut policy = if view["own"].is_null() {
+            view["policy"].clone()
+        } else {
+            view["own"].clone()
+        };
+        if let Some(on) = self.second_approver {
+            policy["secondApprover"] = json!(on);
+        }
+        if let Some(on) = self.auto_sealed {
+            policy["autoSealed"] = json!(on);
+        }
+        if let Some(hours) = self.hold_hours {
+            policy["holdHours"] = json!(hours);
+        }
+        Ok(Some(Some(serde_json::from_value(policy)?)))
+    }
+
+    pub fn passkey(&self) -> eyre::Result<DevPasskey> {
+        DevPasskey::load(self.dev_passkey.as_deref())
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -377,6 +451,21 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             version,
             dev_passkey,
         } => approve_release(env, Some(&namespace), &version, dev_passkey).await?,
+        NamespaceCmd::UpgradePolicy { namespace, policy } => {
+            let view = to_json(&orgs.policy(&namespace).await?)?;
+            match policy.change(&view)? {
+                None => view,
+                Some(change) => {
+                    let mut pk = policy.passkey()?;
+                    let out = orgs.policy_set(&namespace, Some(change), pk.get()).await;
+                    pk.save()?;
+                    to_json(&out?)?
+                }
+            }
+        }
+        NamespaceCmd::Updates { namespace, after } => {
+            to_json(&orgs.updates(&namespace, after.as_deref()).await?)?
+        }
     })
 }
 

@@ -405,6 +405,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             owner_in_team,
             in_deployment,
             owner_approves,
+            class,
         } => {
             if !s.bundles.contains_key(&bundle) {
                 return Err("unknown bundle");
@@ -488,11 +489,23 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 let a = s.apps.get(&app_id).ok_or("no such app")?;
                 s.run_may_move(r, a)?;
             }
+            // The class it carries is judged against the log (a red update is never
+            // logged as green), and where the app's policy asks for a second approver, a
+            // red or unclassified update needs another owner's or admin's first approval
+            // (`SystemState::update_gate`). An entry without a class from before the
+            // policies replays as it applied: no policy existed yet.
+            let approved_by = match s.apps.get(&app_id) {
+                Some(a) if !by_operator => {
+                    s.update_gate(a, release.as_ref(), class.as_ref(), &actor, at)?
+                }
+                _ => None,
+            };
             let by = if by_operator {
                 OPERATOR.to_owned()
             } else {
                 actor
             };
+            let org = s.apps.get(&app_id).map(|a| a.org.clone());
             if let Some(a) = s.apps.get_mut(&app_id) {
                 a.last_upgrade = Some(crate::types::UpgradeRecord {
                     from: a.bundle.clone(),
@@ -507,10 +520,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                         .map(str::to_owned),
                     from_release: a.release.clone(),
                     to_release: release.clone(),
+                    class: class.as_ref().map(|c| c.class),
+                    reasons: class.map(|c| c.reasons).unwrap_or_default(),
+                    approved_by,
                 });
                 a.bundle = bundle;
                 a.compute_bundle = compute_bundle;
                 a.release = release;
+            }
+            if let Some(org) = org {
+                s.drop_spent_approvals(&org, at);
             }
             s.note_run(run.as_deref(), &app_id, None);
             Ok(Value::Null)
@@ -536,6 +555,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 error: error.clone(),
                 run: run.clone(),
                 api_key: None,
+                class: None,
+                reasons: Vec::new(),
+                approved_by: None,
             });
             s.note_run(run.as_deref(), &app_id, Some(error));
             Ok(Value::Null)

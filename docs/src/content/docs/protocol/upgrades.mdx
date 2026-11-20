@@ -251,6 +251,75 @@ New and removed methods are reported (`newMethods`, `removedMethods`) but do not
 make an update red. Nothing applies an update by its class yet: every update
 still waits for an owner's or admin's approval.
 
+### The class at apply
+
+From cluster version 1.0.0-rc.34 (`Feature::UpgradeClasses`) every `UpgradeApp`
+carries the class the proposing node computed for that app's move (the app and
+the members it has, as they run when it moves; a unit's run classifies each app
+as it comes). Apply cannot read a release's ABI (it is in the `.mpk`), but the
+log holds each release's pinned signer, its `outbound` prefixes, its secrets'
+hosts. Apply classifies the move again from
+those (`SystemState::check_class`) and refuses, `409 UPGRADE_CLASS_MISMATCH`, a
+class that leaves out a reason the log shows (a new signer, a destination no
+release before reached), or that the classifier could never answer (red without
+a reason, green with one). So no node can log a red update as green. What the
+log cannot show (a state version, a method called as the person) is the
+proposer's to say. The class and its reasons are kept on the app's last upgrade
+(`lastUpgrade.class`, `reasons`). An entry without a class (an earlier
+release's, a raw bundle's, or a release the classifier could not read) is taken
+as red by every rule below; one logged before the feature replays as it applied.
+
+## Update policies
+
+How an app's updates apply is its organization's owner's and admins' to decide,
+with a passkey (`Feature::UpgradePolicies`, 1.0.0-rc.34): `SetUpgradePolicy
+{ org, app?, policy }`, consent `org:<org> / __set_upgrade_policy / { app,
+policy }`, through `POST /orgs/{org}/upgrade-policy` (every app of the
+organization that has none of its own) or `POST /apps/{app}/upgrade-policy` (one
+app); `policy: null` drops it. An app follows its own policy, else its
+organization's, else the defaults (`GET` on either route answers the one in
+force and its `source`). Moving an app to another organization drops its own.
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `secondApprover` | off | A red (or unclassified) update needs two distinct owners or admins |
+| `autoSealed` | off | A green update of an app that stays Sealed (no egress before or after, members counted) applies on its own after the hold (stored only, see below) |
+| `holdHours` | 24 | How long a green update waits before applying on its own: 24 to 168 (`400 BAD_UPGRADE_POLICY`) |
+
+Nothing updates on its own by default, and nothing does in this release:
+`autoSealed` and `holdHours` are stored and validated now, so the release that
+adds the hold timer, restore points and waves (C9 in the design) only adds their
+execution.
+
+### A second approver
+
+Where the policy asks for one, a red update waits for two owners or admins. The
+first approves with `POST /apps/{app}/upgrade-approvals { version, unit? }`, its
+own consent (`<app> / __approve_upgrade / { package, version, targets, class }`,
+`ApproveUpgrade`), logged as a pending approval on the organization
+(`Org::pending_upgrades`, one per app; with `unit` the members the unit's
+upgrade moves, by app). Another owner or admin then upgrades as usual
+(`/upgrade`, `/upgrade-unit`, the consent page, an organization's or a
+publisher's run); `UpgradeApp` applies only with a live first approval of that
+move by someone else (`SystemState::update_gate`), and records its approver
+(`lastUpgrade.approvedBy`). Without one the API answers `409
+SECOND_APPROVAL_REQUIRED` before any passkey, and apply refuses the same. A
+first approval lapses after a week (`MAX_APPROVAL_AGE_SECS`, judged at the
+upgrade's own time), once its approver is no longer an owner or admin, and once
+every app it covers runs its target. A green update needs one approval whatever
+the policy (`409 ONE_APPROVAL` for a first approval of it), and so does every
+update without the policy. The operator's upgrades (where it holds app upgrades)
+are not judged by policies. A raw bundle carries no class, so under a second
+approver it never applies.
+
+`GET /apps/{app}/update` adds the policy in force (`policy`), the first
+approvals waiting that cover the app (`pendingApprovals`), and on `available`
+how many approvals it needs (`approvalsNeeded`) and who approved first
+(`approvedBy`). `GET /orgs/{org}/updates` lists, for the organization's owner
+and admins, its apps with an update available or a first approval waiting, each
+as `GET /apps/{app}/update` answers it, 50 apps a page (`?after=`): what the
+node's updates page shows.
+
 ## Running it
 
 The upgrade is an entry in the app's own log, so it is ordered against the

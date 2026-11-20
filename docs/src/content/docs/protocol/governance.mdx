@@ -346,6 +346,18 @@ would move an app from an `owner` release to a `publisher` one is refused. An
 owner who accepted a package as theirs to upgrade never has that taken from
 them by a later release.
 
+The same owners and admins set how updates apply: an **update policy** for the
+organization or one app (`POST /orgs/{org}/upgrade-policy`, `POST
+/apps/{app}/upgrade-policy`, with a passkey). Every update is classified green
+or red (where its data may go, its signer, its state), and the class is judged
+again where it applies, so no node can pass a red update off as green. With
+`secondApprover`, a red update needs two distinct owners or admins: the first
+logs a pending approval with their own passkey (`POST
+/apps/{app}/upgrade-approvals`), the second applies it. Nothing updates on its
+own: `autoSealed` and `holdHours` are stored for a later release that applies
+a green update of an app that stays Sealed (no destination outside the cluster)
+after the hold ([Update policies](/protocol/upgrades/#update-policies)).
+
 ## Outbound approvals
 
 An app's signed manifest declares the URL prefixes it may call. A declared

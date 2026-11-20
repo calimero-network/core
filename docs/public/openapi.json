@@ -8650,7 +8650,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Whether an update is available for an app",
-        "description": "For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
+        "description": "For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress` before and after with the destinations `added` and `removed`; `sealedBefore` and `sealedAfter` against the cluster's sealed endpoints; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
         "security": [
           {
             "session": []
@@ -8791,12 +8791,21 @@
                         },
                         "signerChanged": {
                           "type": "boolean"
+                        },
+                        "approvalsNeeded": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "approvedBy": {
+                          "type": "string"
                         }
                       },
                       "required": [
                         "package",
                         "version",
-                        "source"
+                        "source",
+                        "approvalsNeeded"
                       ]
                     },
                     "mayApprove": {
@@ -8809,6 +8818,42 @@
                         "operator",
                         "managers"
                       ]
+                    },
+                    "policy": {
+                      "type": "object",
+                      "properties": {
+                        "autoSealed": {
+                          "type": "boolean"
+                        },
+                        "holdHours": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "secondApprover": {
+                          "type": "boolean"
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "app",
+                            "org",
+                            "default"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "autoSealed",
+                        "holdHours",
+                        "secondApprover",
+                        "source"
+                      ]
+                    },
+                    "pendingApprovals": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PendingApproval"
+                      }
                     }
                   },
                   "required": [
@@ -8816,7 +8861,9 @@
                     "running",
                     "available",
                     "mayApprove",
-                    "approvers"
+                    "approvers",
+                    "policy",
+                    "pendingApprovals"
                   ]
                 }
               }
@@ -9076,6 +9123,453 @@
                 "$ref": "#/components/schemas/Applied"
               }
             }
+          }
+        }
+      }
+    },
+    "/apps/{app}/upgrade-approvals": {
+      "post": {
+        "operationId": "app_approve_upgrade",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Approve a red update first, for a second approver to apply",
+        "description": "Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "type": "string"
+                  },
+                  "unit": {
+                    "type": "boolean"
+                  },
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "required": [
+                  "version"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "app": {
+                      "type": "string"
+                    },
+                    "approval": {
+                      "$ref": "#/components/schemas/PendingApproval"
+                    }
+                  },
+                  "required": [
+                    "app",
+                    "approval"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`APPROVAL_PENDING`; `CONFLICT`: the state does not allow it now; `FEATURE_NOT_ACTIVE`; `NOT_INSTALLED`; `ONE_APPROVAL`; `OUTSIDE_DEPLOYMENT`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "APPROVAL_PENDING",
+              "CONFLICT",
+              "FEATURE_NOT_ACTIVE",
+              "NOT_INSTALLED",
+              "ONE_APPROVAL",
+              "OUTSIDE_DEPLOYMENT"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/upgrade-policy": {
+      "get": {
+        "operationId": "app_policy",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "The update policy an app follows",
+        "description": "For whoever may read the app. Its own policy where an owner or admin set one, else its organization's, else the defaults: nothing updates on its own, one approval applies an update.\n\n**Who:** whoever the app's grants admit (`anyone`: any signed-in account).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          },
+          {}
+        ],
+        "x-calimero-who": "whoever the app's grants admit (`anyone`: any signed-in account)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      },
+      "post": {
+        "operationId": "app_policy_set",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Set an app's own update policy",
+        "description": "An owner or admin of the app's organization, with a step-up over `org:<org> / __set_upgrade_policy / { app, policy }`. `policy: null` (or left out) drops it: the app follows its organization's again. `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. A move to another organization drops it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "policy": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "autoSealed": {
+                        "type": "boolean"
+                      },
+                      "holdHours": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      },
+                      "secondApprover": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_UPGRADE_POLICY`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_UPGRADE_POLICY",
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
           }
         }
       }
@@ -27290,6 +27784,132 @@
         }
       }
     },
+    "/orgs/{org}/updates": {
+      "get": {
+        "operationId": "org_updates",
+        "tags": [
+          "Organizations"
+        ],
+        "x-calimero-group": "orgs",
+        "summary": "Updates waiting across an organization's apps",
+        "description": "For its owner and admins (`403` to other members, `404` to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as `GET /apps/{app}/update` answers it with the app's `name`; `policy` is the organization's; `next` is the `after` of the next page, `null` at the end.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend).",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "org": {
+                      "type": "string"
+                    },
+                    "policy": {
+                      "$ref": "#/components/schemas/UpgradePolicy"
+                    },
+                    "updates": {
+                      "type": "array",
+                      "items": {
+                        "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                      }
+                    },
+                    "next": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "org",
+                    "policy",
+                    "updates",
+                    "next"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
     "/orgs/{org}/upgrade": {
       "post": {
         "operationId": "org_upgrade",
@@ -27405,6 +28025,276 @@
             "x-calimero-codes": [
               "FORBIDDEN"
             ]
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/orgs/{org}/upgrade-policy": {
+      "get": {
+        "operationId": "org_policy",
+        "tags": [
+          "Organizations"
+        ],
+        "x-calimero-group": "orgs",
+        "summary": "The organization's update policy",
+        "description": "For its members: the policy each of its apps without one of its own follows (`source: default` until an owner or admin sets one).\n\n**Who:** a passkey session (an API key is refused).",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "a passkey session (an API key is refused)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      },
+      "post": {
+        "operationId": "org_policy_set",
+        "tags": [
+          "Organizations"
+        ],
+        "x-calimero-group": "orgs",
+        "summary": "Set the organization's update policy",
+        "description": "The owner or an admin, with a step-up over `org:<org> / __set_upgrade_policy / { app: null, policy }`; `policy: null` (or left out) drops it (the defaults). `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "policy": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "autoSealed": {
+                        "type": "boolean"
+                      },
+                      "holdHours": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      },
+                      "secondApprover": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_UPGRADE_POLICY`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_UPGRADE_POLICY",
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
           },
           "412": {
             "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
@@ -31466,6 +32356,137 @@
         ],
         "description": "`GET /ops/quotas`: the cluster's limits and, under `orgs`, each payer's overrides by payer id."
       },
+      "UpgradePolicy": {
+        "type": "object",
+        "properties": {
+          "autoSealed": {
+            "type": "boolean"
+          },
+          "holdHours": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "secondApprover": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "autoSealed",
+          "holdHours",
+          "secondApprover"
+        ],
+        "description": "How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoSealed` (default off) and `holdHours` (24 to 168, default 24): a green update of an app that stays Sealed (no destination outside the cluster before or after, members counted) applying on its own after the hold; stored and validated now, carried out by a later release."
+      },
+      "PolicyView": {
+        "type": "object",
+        "properties": {
+          "org": {
+            "type": "string"
+          },
+          "app": {
+            "type": "string"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/UpgradePolicy"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "app",
+              "org",
+              "default"
+            ]
+          },
+          "own": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UpgradePolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "org",
+          "policy",
+          "source",
+          "own"
+        ],
+        "description": "An update policy at one scope: the organization's (`app` absent) or an app's. `policy` is the one in force; `source` where it comes from (the app's own, its organization's, or the defaults); `own` the one set at this scope, `null` for none."
+      },
+      "PendingApproval": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "targets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "package",
+                "version"
+              ]
+            }
+          },
+          "by": {
+            "type": "string"
+          },
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "expiresAt": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "class": {
+            "type": "string",
+            "enum": [
+              "green",
+              "red"
+            ]
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpdateReason"
+            }
+          }
+        },
+        "required": [
+          "app",
+          "package",
+          "version",
+          "targets",
+          "by",
+          "at",
+          "expiresAt",
+          "class",
+          "reasons"
+        ],
+        "description": "A first approval of a red update waiting for its second (`POST /apps/{app}/upgrade-approvals`): the app approved (`app`), its target, a unit's members' (`targets`, by app), who approved and when, when it lapses (`expiresAt`, a week on), and the class its approver was shown."
+      },
       "UnitMember": {
         "type": "object",
         "properties": {
@@ -32586,6 +33607,22 @@
           },
           "toRelease": {
             "$ref": "#/components/schemas/PackageRef"
+          },
+          "class": {
+            "type": "string",
+            "enum": [
+              "green",
+              "red"
+            ]
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpdateReason"
+            }
+          },
+          "approvedBy": {
+            "type": "string"
           }
         },
         "required": [
@@ -32595,7 +33632,7 @@
           "by",
           "ok"
         ],
-        "description": "The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it."
+        "description": "The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second."
       },
       "Package": {
         "type": "object",
@@ -32877,6 +33914,83 @@
           "allowPublicLinks": {
             "type": "boolean"
           },
+          "upgradePolicy": {
+            "$ref": "#/components/schemas/UpgradePolicy"
+          },
+          "appUpgradePolicies": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/UpgradePolicy"
+            }
+          },
+          "pendingUpgrades": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "targets": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "package": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "package",
+                      "version"
+                    ]
+                  }
+                },
+                "by": {
+                  "type": "string"
+                },
+                "at": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "class": {
+                  "type": "object",
+                  "properties": {
+                    "class": {
+                      "type": "string",
+                      "enum": [
+                        "green",
+                        "red"
+                      ]
+                    },
+                    "reasons": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/UpdateReason"
+                      }
+                    }
+                  },
+                  "required": [
+                    "class"
+                  ]
+                }
+              },
+              "required": [
+                "package",
+                "version",
+                "by",
+                "at",
+                "class"
+              ]
+            }
+          },
           "mode": {
             "type": "string",
             "enum": [
@@ -32929,7 +34043,7 @@
           "memberMetadata",
           "upgradeRuns"
         ],
-        "description": "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33)."
+        "description": "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none)."
       },
       "Team": {
         "type": "object",
@@ -33394,6 +34508,13 @@
               "operator"
             ]
           },
+          "class": {
+            "type": "string",
+            "enum": [
+              "green",
+              "red"
+            ]
+          },
           "actor": {
             "type": "string"
           },
@@ -33404,6 +34525,15 @@
             "type": "string"
           },
           "apiKey": {
+            "type": "string"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UpdateReason"
+            }
+          },
+          "approvedBy": {
             "type": "string"
           }
         },

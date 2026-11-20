@@ -814,6 +814,141 @@ pub struct QuotaSettings {
     pub extra: Map<String, Value>,
 }
 
+/// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoSealed` (default off) and `holdHours` (24 to 168, default 24): a green update of an app that stays Sealed (no destination outside the cluster before or after, members counted) applying on its own after the hold; stored and validated now, carried out by a later release.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpgradePolicy {
+    #[serde(rename = "autoSealed")]
+    pub auto_sealed: bool,
+    #[serde(rename = "holdHours")]
+    pub hold_hours: u64,
+    #[serde(rename = "secondApprover")]
+    pub second_approver: bool,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PolicyViewSource {
+    /// `app`.
+    App,
+    /// `org`.
+    Org,
+    /// `default`.
+    Default,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl PolicyViewSource {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::App => "app",
+            Self::Org => "org",
+            Self::Default => "default",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for PolicyViewSource {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PolicyViewSource {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "app" => Self::App,
+            "org" => Self::Org,
+            "default" => Self::Default,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// An update policy at one scope: the organization's (`app` absent) or an app's. `policy` is the one in force; `source` where it comes from (the app's own, its organization's, or the defaults); `own` the one set at this scope, `null` for none.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PolicyView {
+    pub org: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    pub policy: UpgradePolicy,
+    pub source: PolicyViewSource,
+    pub own: Option<UpgradePolicy>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PendingApprovalTargetsValue {
+    pub package: String,
+    pub version: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PendingApprovalClass {
+    /// `green`.
+    Green,
+    /// `red`.
+    Red,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl PendingApprovalClass {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Green => "green",
+            Self::Red => "red",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for PendingApprovalClass {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PendingApprovalClass {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "green" => Self::Green,
+            "red" => Self::Red,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// A first approval of a red update waiting for its second (`POST /apps/{app}/upgrade-approvals`): the app approved (`app`), its target, a unit's members' (`targets`, by app), who approved and when, when it lapses (`expiresAt`, a week on), and the class its approver was shown.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PendingApproval {
+    pub app: String,
+    pub package: String,
+    pub version: String,
+    pub targets: BTreeMap<String, PendingApprovalTargetsValue>,
+    pub by: String,
+    pub at: u64,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: u64,
+    pub class: PendingApprovalClass,
+    pub reasons: Vec<UpdateReason>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// An app of a unit, by its path from the instance: its app id (absent on a release's card, where no app exists), the release it runs or would run, that release's signer, and the destinations it alone may send data to.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UnitMember {
@@ -1559,7 +1694,45 @@ pub struct PackageRef {
     pub extra: Map<String, Value>,
 }
 
-/// The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum UpgradeClass {
+    /// `green`.
+    Green,
+    /// `red`.
+    Red,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl UpgradeClass {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Green => "green",
+            Self::Red => "red",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for UpgradeClass {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for UpgradeClass {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "green" => Self::Green,
+            "red" => Self::Red,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Upgrade {
     pub from: String,
@@ -1585,6 +1758,13 @@ pub struct Upgrade {
     #[serde(rename = "toRelease")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_release: Option<PackageRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<UpgradeClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasons: Option<Vec<UpdateReason>>,
+    #[serde(rename = "approvedBy")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<String>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -1719,6 +1899,77 @@ pub struct OrgRecovery {
     pub extra: Map<String, Value>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgPendingUpgradesValueTargetsValue {
+    pub package: String,
+    pub version: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum OrgPendingUpgradesValueClassClass {
+    /// `green`.
+    Green,
+    /// `red`.
+    Red,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl OrgPendingUpgradesValueClassClass {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Green => "green",
+            Self::Red => "red",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for OrgPendingUpgradesValueClassClass {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for OrgPendingUpgradesValueClassClass {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "green" => Self::Green,
+            "red" => Self::Red,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OrgPendingUpgradesValueClass {
+    pub class: OrgPendingUpgradesValueClassClass,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasons: Option<Vec<UpdateReason>>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OrgPendingUpgradesValue {
+    pub package: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<BTreeMap<String, OrgPendingUpgradesValueTargetsValue>>,
+    pub by: String,
+    pub at: u64,
+    pub class: OrgPendingUpgradesValueClass,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum OrgMode {
     /// `legacy`.
@@ -1770,7 +2021,7 @@ pub struct OrgNewWorkStopped {
     pub extra: Map<String, Value>,
 }
 
-/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).
+/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Org {
     #[serde(rename = "orgId")]
@@ -1804,6 +2055,15 @@ pub struct Org {
     #[serde(rename = "allowPublicLinks")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_public_links: Option<bool>,
+    #[serde(rename = "upgradePolicy")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade_policy: Option<UpgradePolicy>,
+    #[serde(rename = "appUpgradePolicies")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_upgrade_policies: Option<BTreeMap<String, UpgradePolicy>>,
+    #[serde(rename = "pendingUpgrades")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_upgrades: Option<BTreeMap<String, OrgPendingUpgradesValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<OrgMode>,
     #[serde(rename = "releaseApprovers")]
@@ -2039,6 +2299,44 @@ impl<'de> Deserialize<'de> for ReportUpgradeActorKind {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ReportUpgradeClass {
+    /// `green`.
+    Green,
+    /// `red`.
+    Red,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl ReportUpgradeClass {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Green => "green",
+            Self::Red => "red",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for ReportUpgradeClass {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ReportUpgradeClass {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "green" => Self::Green,
+            "red" => Self::Red,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
 /// An app's last upgrade as a report shows it. `actor`, `error`, `run` and `apiKey` are shown to the app's people, never to the operator.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReportUpgrade {
@@ -2048,6 +2346,8 @@ pub struct ReportUpgrade {
     pub ok: bool,
     #[serde(rename = "actorKind")]
     pub actor_kind: ReportUpgradeActorKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<ReportUpgradeClass>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
@@ -2062,6 +2362,11 @@ pub struct ReportUpgrade {
     #[serde(rename = "apiKey")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasons: Option<Vec<UpdateReason>>,
+    #[serde(rename = "approvedBy")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<String>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3348,6 +3653,11 @@ pub struct AppUpdateResponseAvailable {
     #[serde(rename = "signerChanged")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer_changed: Option<bool>,
+    #[serde(rename = "approvalsNeeded")]
+    pub approvals_needed: u64,
+    #[serde(rename = "approvedBy")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<String>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3395,6 +3705,62 @@ impl<'de> Deserialize<'de> for AppUpdateResponseApprovers {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppUpdateResponsePolicySource {
+    /// `app`.
+    App,
+    /// `org`.
+    Org,
+    /// `default`.
+    Default,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppUpdateResponsePolicySource {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::App => "app",
+            Self::Org => "org",
+            Self::Default => "default",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppUpdateResponsePolicySource {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppUpdateResponsePolicySource {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "app" => Self::App,
+            "org" => Self::Org,
+            "default" => Self::Default,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppUpdateResponsePolicy {
+    #[serde(rename = "autoSealed")]
+    pub auto_sealed: bool,
+    #[serde(rename = "holdHours")]
+    pub hold_hours: u64,
+    #[serde(rename = "secondApprover")]
+    pub second_approver: bool,
+    pub source: AppUpdateResponsePolicySource,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateResponse {
     pub app: String,
@@ -3403,6 +3769,9 @@ pub struct AppUpdateResponse {
     #[serde(rename = "mayApprove")]
     pub may_approve: bool,
     pub approvers: AppUpdateResponseApprovers,
+    pub policy: AppUpdateResponsePolicy,
+    #[serde(rename = "pendingApprovals")]
+    pub pending_approvals: Vec<PendingApproval>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3432,6 +3801,28 @@ pub struct AppUpgradeResponse {
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppApproveUpgradeResponse {
+    pub app: String,
+    pub approval: PendingApproval,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppPolicySetRequestPolicy {
+    #[serde(rename = "autoSealed")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_sealed: Option<bool>,
+    #[serde(rename = "holdHours")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_hours: Option<u64>,
+    #[serde(rename = "secondApprover")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub second_approver: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -6120,6 +6511,17 @@ pub struct TeamSetMemberRequest {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgUpdatesResponse {
+    pub org: String,
+    pub policy: UpgradePolicy,
+    pub updates: Vec<Value>,
+    pub next: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OrgUpgradeRequest {
     pub package: String,
     pub version: String,
@@ -6132,6 +6534,19 @@ pub struct OrgUpgradeRequest {
     #[serde(rename = "operatorProof")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_proof: Option<OperatorProof>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgPolicySetRequestPolicy {
+    #[serde(rename = "autoSealed")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_sealed: Option<bool>,
+    #[serde(rename = "holdHours")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_hours: Option<u64>,
+    #[serde(rename = "secondApprover")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub second_approver: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

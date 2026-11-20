@@ -111,6 +111,15 @@ NOT_COVERED = [
      "the list they are judged against is the `sealed-endpoints` case's. "
      "`a_units_egress_and_sealed_are_judged_over_its_members` (`consent_page.rs`) covers them on one build and "
      "`calimero_bundle::update::tests` every rule of the classifier"),
+    ("Apps", "An update's class judged at apply (`UpgradeApp::class`, `lastUpgrade.class`) and a red update's "
+     "first approval waiting for a second approver (`ApproveUpgrade`, `Org::pending_upgrades`)",
+     "needs a release that adds a destination over one an instance runs, which the old release's meroctl packs "
+     "(it writes `outbound`) but which no case seeds as an update yet, and both shapes are written only once every "
+     "node runs this release (`Feature::UpgradeClasses`, `Feature::UpgradePolicies`); an entry without a class "
+     "reads and replays as before. The policy they are judged by is the `upgrade-policies` case's. "
+     "`system::tests` (`an_updates_class_is_judged_against_the_log_and_recorded`, "
+     "`a_red_update_needs_a_second_approver_where_the_policy_asks`) and `a_red_update_waits_for_a_second_approver` "
+     "(`consent_page.rs`) cover them on one build"),
     ("Packages", "A release that declares its secrets (`secrets` in the signed manifest, `PackageVersion::secrets`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `secrets`, and a release that "
      "declares them installs only once every node runs this release (`Feature::DeclaredSecrets`); "

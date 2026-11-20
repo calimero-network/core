@@ -4125,6 +4125,7 @@ async fn the_leader_checks_upgrade_authority_again() {
                     owner_in_team: true,
                     in_deployment: false,
                     owner_approves: false,
+                    class: None,
                 })
                 .await
                 .unwrap_err();

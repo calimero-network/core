@@ -1317,11 +1317,50 @@ is its command line.
   changes, a member with egress joins or leaves, or a release newly calls another app as
   the person, else green, with `reasons`, the egress diff, `sealedBefore`/`sealedAfter`,
   `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
-  unit's moves its direct members as `unit_plan` does. Nothing applies an update by its
-  class yet (C8). Regressions: `a_units_egress_and_sealed_are_judged_over_its_members`
+  unit's moves its direct members as `unit_plan` does. Nothing applies an update on its
+  own by its class yet (C9); its class is judged at apply (below). Regressions: `a_units_egress_and_sealed_are_judged_over_its_members`
   (`tests/consent_page.rs`), `system::tests::the_sealed_endpoints_are_the_operators_signed_and_bounded_list`,
   `state_from_before_sealed_endpoints_reads_with_none_and_writes_as_before`,
   `calimero_bundle::update::tests`.
+- **Update classes and policies** (C8; `system/updates.rs`, `api/update_policies.rs`;
+  docs: protocol upgrades "The class at apply", "Update policies"): every `UpgradeApp`
+  the API writes carries `class` (`types::UpgradeClass`: `egress::update` of that app's
+  move, members where they are, `api::upgrades::move_class`; `None` for a raw bundle,
+  another package, an unreadable release, or below `Feature::UpgradeClasses`, rc.34).
+  Apply re-derives what the log holds (each package's pinned signer, a release's
+  `outbound` and secret hosts; `SystemState::check_class`, the unit
+  through `links` as deep as `MAX_UNIT_DEPTH`) and refuses `UPGRADE_CLASS_MISMATCH` a
+  class that leaves out a reason it derives, red without reasons, green with them, or
+  more than `MAX_CLASS_REASONS`; `UpgradeRecord::class`/`reasons`/`approved_by` keep it
+  (`lastUpgrade`). Policies (`Feature::UpgradePolicies`, rc.34): `SetUpgradePolicy { org,
+  app?, policy? }` by an owner or admin (`approves_upgrades`), consent `org:<org> /
+  __set_upgrade_policy / system::upgrade_policy_args`, kept on `Org::upgrade_policy` and
+  `Org::app_upgrade_policies` (a move drops the app's, `move_app`); `types::UpgradePolicy
+  { autoSealed, holdHours, secondApprover }`, `holdHours` in `MIN_HOLD_HOURS..=MAX_HOLD_HOURS`
+  (`BAD_UPGRADE_POLICY`); `SystemState::upgrade_policy_of` (app, org, default). Only
+  `secondApprover` acts now: `ApproveUpgrade` (consent `<app> / __approve_upgrade /
+  system::approve_upgrade_args`, `POST /apps/{app}/upgrade-approvals { version, unit? }`)
+  logs a `types::PendingApproval` in `Org::pending_upgrades` (one per app; `targets` for a
+  unit; `ONE_APPROVAL` without the policy or for a green class, `APPROVAL_PENDING` for
+  another's live one of the same move); `SystemState::update_gate` (apply of every
+  non-operator `UpgradeApp`, and `run_upgrade`/`upgrade_app`/`upgrade_unit` before the
+  passkey) lets a red or unclassified move through only with another approver's live
+  approval covering it (`approval_for`, `approval_live`: within `MAX_APPROVAL_AGE_SECS`
+  of the upgrade's `at`, approver still an owner or admin, not every covered app at its
+  target), else `SECOND_APPROVAL_REQUIRED`; `drop_spent_approvals` after each upgrade.
+  The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
+  `autoSealed` (a green update of an app that stays Sealed, no egress before or after)
+  and `holdHours` are stored and validated only: the hold, auto-apply,
+  restore points and waves are C9. Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
+  /apps/{app}/upgrade-policy` (`policy_json`), `GET /apps/{app}/update` adds `policy`,
+  `pendingApprovals`, `available.approvalsNeeded`/`approvedBy`
+  (`api::upgrades::update_view`), `GET /orgs/{org}/updates?after=` (owners and admins,
+  `MAX_UPDATES_PAGE` apps a page, those with an update or an approval waiting). `meroctl
+  org upgrade-policy|updates`, `meroctl instance upgrade-policy|approve-update`.
+  Regressions: `system::tests` (`an_updates_class_is_judged_against_the_log_and_recorded`,
+  `an_update_policy_is_an_owners_or_admins_and_bounded`,
+  `a_red_update_needs_a_second_approver_where_the_policy_asks`),
+  `a_red_update_waits_for_a_second_approver` (`tests/consent_page.rs`).
 - **Upgrades are code-only**: a component upgrade swaps the bundle
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
   consent page shows the state version each side's `calimero:abi` declares and flags a

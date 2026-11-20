@@ -307,6 +307,10 @@ fn last_upgrade_json(
         "ok": u.ok,
         "actorKind": actor_kind(s, app, &u.by),
     });
+    // The class it applied as, judged where it applied (`UpgradeApp::class`).
+    if let Some(class) = &u.class {
+        v["class"] = json!(class);
+    }
     // The account, an app's own error text and the run are its members'
     // to read, not the operator's.
     if let Reader::Account(_) = reader {
@@ -320,6 +324,13 @@ fn last_upgrade_json(
         // The upgrade key that made it, in place of a passkey.
         if let Some(key) = &u.api_key {
             v["apiKey"] = json!(key);
+        }
+        if !u.reasons.is_empty() {
+            v["reasons"] = json!(u.reasons);
+        }
+        // The first of two approvers of a red update.
+        if let Some(by) = &u.approved_by {
+            v["approvedBy"] = json!(by);
         }
     }
     v

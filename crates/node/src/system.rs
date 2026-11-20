@@ -33,6 +33,7 @@ mod packages;
 mod recovery;
 mod routing;
 mod sign_up;
+mod updates;
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +176,32 @@ pub const BAD_POOLS: &str = "BAD_POOLS: at most 32 pools, each named with 1 to 6
 pub const MAX_SEALED_ENDPOINTS: usize = 64;
 /// The apply error for a sealed-endpoint list past [`MAX_SEALED_ENDPOINTS`], with a
 /// repeated entry, or with an entry that is not an `outbound` prefix.
+/// The apply error for an update policy whose hold is outside
+/// `MIN_HOLD_HOURS..=MAX_HOLD_HOURS` ([`crate::types::UpgradePolicy`]).
+pub const BAD_UPGRADE_POLICY: &str = "BAD_UPGRADE_POLICY: holdHours is 24 (a day) to 168 (a week)";
+/// The apply error for a red or unclassified update whose policy asks for a second
+/// approver, without another owner's or admin's live first approval of it
+/// ([`SystemState::update_gate`]).
+pub const SECOND_APPROVAL_REQUIRED: &str = "SECOND_APPROVAL_REQUIRED: this update is red and the app's policy asks for a second approver: another owner or admin approves it first (POST /apps/{app}/upgrade-approvals)";
+/// The apply error for an update's class that leaves out a reason the log shows, or is
+/// not one the classifier answers (red without a reason, green with one, too many).
+pub const UPGRADE_CLASS_MISMATCH: &str =
+    "UPGRADE_CLASS_MISMATCH: the update's class does not match the releases the log holds";
+/// The apply error for a first approval where one approval applies the update: no second
+/// approver in the app's policy, or a green update.
+pub const ONE_APPROVAL: &str =
+    "ONE_APPROVAL: this update needs one approval: upgrade the app (POST /apps/{app}/upgrade)";
+/// The apply error for a first approval of an update another owner or admin approved
+/// first: that one waits for its second, which is an upgrade.
+pub const APPROVAL_PENDING: &str = "APPROVAL_PENDING: another owner or admin approved this update already: apply it (POST /apps/{app}/upgrade)";
+/// The apply errors a code prefixes (`CODE: why`), with the status the API answers.
+pub const UPDATE_REFUSALS: [(&str, u16); 5] = [
+    (BAD_UPGRADE_POLICY, 400),
+    (SECOND_APPROVAL_REQUIRED, 409),
+    (UPGRADE_CLASS_MISMATCH, 409),
+    (ONE_APPROVAL, 409),
+    (APPROVAL_PENDING, 409),
+];
 pub const BAD_SEALED_ENDPOINTS: &str = "BAD_SEALED_ENDPOINTS: at most 64 distinct https:// prefixes, each a host and an optional path, no query, fragment or credentials, at most 2048 bytes";
 /// The apply error for a price table whose version is not the current one plus one.
 pub const PRICE_VERSION: &str = "PRICE_VERSION: the version must be the current one plus one";
@@ -4133,6 +4160,12 @@ impl SystemState {
             a.org = to_org.to_owned();
             a.access = access.clone();
         }
+        // Its update policy and a first approval of its update were the source's owner's
+        // and admins' decisions: the target's decide there.
+        if let Some(o) = self.orgs.get_mut(&from) {
+            let _policy = o.app_upgrade_policies.remove(app_id);
+            let _approval = o.pending_upgrades.remove(app_id);
+        }
         self.set_app_file_bytes(app_id, held);
         if let Some(slots) = self.compute.get_mut(app_id) {
             for slot in slots.values_mut() {
@@ -4636,6 +4669,7 @@ pub fn authorize(s: &SystemState, cmd: &SystemCmd) -> Result<Option<String>, &'s
         Area::Deployments => deployments::authorize(&proofs, cmd),
         Area::SignUp => sign_up::authorize(&proofs, cmd),
         Area::Orgs => orgs::authorize(&proofs, cmd),
+        Area::Updates => updates::authorize(&proofs, cmd),
     }
 }
 
@@ -4750,6 +4784,8 @@ pub(crate) enum Area {
     SignUp,
     /// Organizations, members, teams and invites ([`orgs`]).
     Orgs,
+    /// Update policies and first approvals of red updates ([`updates`]).
+    Updates,
 }
 
 impl SystemCmd {
@@ -4763,6 +4799,8 @@ impl SystemCmd {
             Self::UninstallPackage { .. } => Area::Packages,
             Self::CreateApp { .. } => Area::Apps,
             Self::UpgradeApp { .. } => Area::Apps,
+            Self::SetUpgradePolicy { .. } => Area::Updates,
+            Self::ApproveUpgrade { .. } => Area::Updates,
             Self::TransferApp { .. } => Area::Apps,
             Self::MoveApp { .. } => Area::Apps,
             Self::SetDelegation { .. } => Area::Apps,
@@ -5221,6 +5259,30 @@ pub fn move_app_args(to_org: &str, bring_members: bool) -> Value {
     json!({ "toOrg": to_org, "bringMembers": bring_members })
 }
 
+/// What a person consents to when setting an update policy
+/// (`org:<org> / __set_upgrade_policy`): the app it is for (`null`: the organization's)
+/// and the policy (`null`: dropped).
+#[must_use]
+pub fn upgrade_policy_args(
+    app: Option<&str>,
+    policy: Option<&crate::types::UpgradePolicy>,
+) -> Value {
+    json!({ "app": app, "policy": policy })
+}
+
+/// What a person consents to with the first approval of a red update
+/// (`<app> / __approve_upgrade`): the release, each unit member's target, and the class
+/// they were shown.
+#[must_use]
+pub fn approve_upgrade_args(
+    package: &str,
+    version: &str,
+    targets: &BTreeMap<AppId, crate::types::RunTarget>,
+    class: &crate::types::UpgradeClass,
+) -> Value {
+    json!({ "package": package, "version": version, "targets": targets, "class": class })
+}
+
 /// What a delegation's consent states (`<source> / __delegate`): the app it reaches and the
 /// methods called there as the person.
 #[must_use]
@@ -5356,6 +5418,55 @@ pub enum SystemCmd {
         /// cluster version brings the rule ([`SystemState::cluster_brings`]).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         owner_approves: bool,
+        /// What the classifier said of this app's move (`calimero_bundle::update`, the app
+        /// and the members it has, as they run when it moves), computed where it was
+        /// proposed. Apply re-derives what the log holds (each release's signer, its
+        /// `outbound` and secret hosts) and refuses a class
+        /// that leaves out a reason the log shows ([`SystemState::check_class`]), so a red
+        /// update is never logged as green; it is recorded on the app's `last_upgrade`.
+        /// The API sets it once every node reads it
+        /// ([`cluster_version::Feature::UpgradeClasses`]); absent in an entry an earlier
+        /// release logged, for a raw upload, and where the release could not be read,
+        /// which every rule then takes as red.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        class: Option<crate::types::UpgradeClass>,
+    },
+    /// Set the update policy of an organization (`app` absent) or of one of its apps, or
+    /// drop it (`policy` absent: an app then follows its organization's, an organization
+    /// the defaults): an owner or admin of the organization
+    /// ([`SystemState::approves_upgrades`]), with passkey consent over
+    /// `org:<org> / __set_upgrade_policy / ` [`upgrade_policy_args`]. `hold_hours` outside
+    /// `MIN_HOLD_HOURS..=MAX_HOLD_HOURS` is refused ([`BAD_UPGRADE_POLICY`]).
+    SetUpgradePolicy {
+        org: OrgId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app: Option<AppId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy: Option<crate::types::UpgradePolicy>,
+        actor: AccountId,
+        /// The actor's passkey consent over it ([`crate::proof`]).
+        #[serde(default)]
+        consent: Value,
+    },
+    /// The first approval of a red update of `app_id` where its policy asks for a second
+    /// approver: an owner or admin of its organization, with passkey consent over
+    /// `<app> / __approve_upgrade / ` [`approve_upgrade_args`]. Logged as
+    /// [`crate::types::PendingApproval`]; another owner or admin then applies the update
+    /// (`UpgradeApp`, [`SystemState::update_gate`]).
+    ApproveUpgrade {
+        app_id: AppId,
+        package: String,
+        version: String,
+        /// A unit's upgrade: each member it moves to its own release.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        targets: BTreeMap<AppId, crate::types::RunTarget>,
+        /// The class the approver was shown, judged against the log as `UpgradeApp`'s is.
+        class: crate::types::UpgradeClass,
+        actor: AccountId,
+        /// When (Unix seconds), from the proposing node's clock.
+        at: u64,
+        #[serde(default)]
+        consent: Value,
     },
     TransferApp {
         app_id: AppId,
@@ -6873,6 +6984,7 @@ impl SystemMachine {
             Area::Deployments => deployments::apply(self, cmd),
             Area::SignUp => sign_up::apply(self, cmd),
             Area::Orgs => orgs::apply(self, cmd),
+            Area::Updates => updates::apply(self, cmd),
         }
     }
 }
