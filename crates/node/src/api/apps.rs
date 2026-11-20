@@ -378,6 +378,11 @@ pub(super) struct CreateAppBody {
     /// organization; empty: the owner alone.
     #[serde(default)]
     grants: Option<Vec<crate::types::Grant>>,
+    /// The single access mode clients before 1.0.0-rc.33 sent. Refused, never ignored:
+    /// read as no grants it would admit the whole organization to an instance the client
+    /// meant to keep to a few (`ACCESS_REMOVED`).
+    #[serde(default)]
+    access: Option<serde::de::IgnoredAny>,
     /// Arguments for the app's `init`, as JSON.
     #[serde(default)]
     init_args: Value,
@@ -401,6 +406,12 @@ async fn app_create(
     headers: HeaderMap,
     Json(body): Json<CreateAppBody>,
 ) -> ApiResult {
+    if body.access.is_some() {
+        return Err(ApiError::bad_request(
+            "ACCESS_REMOVED",
+            "`access` was replaced by `grants`: name who reaches the instance as a list of grants",
+        ));
+    }
     if let Some(grants) = &body.grants {
         grants_fit(grants)?;
     }
@@ -582,6 +593,7 @@ async fn create_instance(
                         org: Some(org.clone()),
                         new_org: None,
                         grants: body.grants.clone(),
+                        access: None,
                         init_args: Value::Null,
                         metadata: json!({ "unit": { "of": body.name, "as": name } }),
                         deployment: body.deployment.clone(),

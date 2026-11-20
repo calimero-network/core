@@ -1016,7 +1016,7 @@ is its command line.
   rest (`without_teams`); with `keep_apps` (`Feature::KeepTeamApps`, rc.33; API `keepApps`,
   stated in the consent, `delete_team_args`) it keeps them too, without the team's grants (a
   list left empty: the owner alone), answered as `keptApps`; absent, they are deleted. The
-  API takes `grants` on `POST /apps` (absent: `[org]`) and `POST /apps/{app}/access`, and
+  API takes `grants` on `POST /apps` (absent: `[org]`; a request still naming the old `access` is refused `400 ACCESS_REMOVED`, never read as no grants: regression `guests::an_old_clients_access_field_is_refused_not_read_as_no_grants`) and `POST /apps/{app}/access`, and
   answers them on `GET /apps/{app}` and a move. A hard cutover (#5194, rc.33, `hard-cutover:` in
   `.github/upgrade-from`): no earlier access shape is read, so clusters are recreated.
   Regressions: `system::tests::an_instances_access_is_a_list_of_grants`,

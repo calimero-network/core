@@ -554,17 +554,22 @@ async fn an_old_clients_access_field_is_refused_not_read_as_no_grants() {
         .await
         .map(wire)
         .unwrap()["orgId"]);
+    // Sent raw, as an older client sends it: the typed request has no `access` to send.
     let refused_create = alice
-        .apps()
-        .create(typed(json!({
-            "name": "private", "package": ALLOWS, "org": acme,
-            "access": { "kind": "accounts", "accounts": [bob_id] },
-        })))
+        .transport()
+        .json(
+            calimero_client::Request::new(reqwest::Method::POST, "apps").json(json!({
+                "name": "private", "package": ALLOWS, "org": acme,
+                "access": { "kind": "accounts", "accounts": [bob_id] },
+            })),
+        )
         .await
-        .map(|r| r.app_id)
         .unwrap_err();
-    refused(&refused_create, "400");
-    assert!(refused_create.to_string().contains("ACCESS_REMOVED"), "{refused_create}");
+    assert_eq!(
+        refused_create.code(),
+        Some("ACCESS_REMOVED"),
+        "{refused_create}"
+    );
     let apps = alice.apps().list(None, None).await.map(wire).unwrap();
     assert_eq!(apps["apps"].as_array().map(Vec::len), Some(0), "{apps}");
 }
