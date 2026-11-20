@@ -76,12 +76,12 @@
   "author": "Calimero Ltd",
   "repository": {
     "type": "git",
-    "url": "https://github.com/calimero-network/mero-js",
-    "directory": "mero-js"
+    "url": "git+https://github.com/calimero-network/core.git",
+    "directory": "sdks/clients/mero-js"
   },
-  "homepage": "https://github.com/calimero-network/mero-js/blob/master/README.md",
+  "homepage": "https://github.com/calimero-network/core/tree/master/sdks/clients/mero-js",
   "bugs": {
-    "url": "https://github.com/calimero-network/mero-js/issues"
+    "url": "https://github.com/calimero-network/core/issues"
   },
   "engines": {
     "node": ">=18.0.0"
