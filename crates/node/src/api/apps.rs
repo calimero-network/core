@@ -141,8 +141,9 @@ pub(crate) async fn offered_bundle(
     })
 }
 
-/// The organization an instance that names none goes to: `owner`'s personal
-/// organization ([`crate::types::Org::personal`]), made now if they have none.
+/// The organization an instance that names none goes to before organizations are
+/// ordinary (below the cluster version that brings `Feature::OrdinaryOrgs`): `owner`'s
+/// personal organization ([`crate::types::Org::personal`]), made now if they have none.
 async fn personal_org(node: &Node, owner: &str) -> Result<String, ApiError> {
     let find = || node.sys(|s| s.personal_org_of(owner).cloned());
     if let Some(org) = find() {
@@ -180,6 +181,177 @@ async fn personal_org(node: &Node, owner: &str) -> Result<String, ApiError> {
     }
 }
 
+/// `400 ORG_REQUIRED`: the creator is in several organizations and named none.
+pub(crate) const ORG_REQUIRED: &str = "ORG_REQUIRED";
+/// `409 NO_ORGANIZATION`: an `org` instance, and its creator is in no organization.
+pub(crate) const NO_ORGANIZATION: &str = "NO_ORGANIZATION";
+/// `400 STANDALONE_INSTANCE`: a `standalone` instance names an existing organization.
+pub(crate) const STANDALONE_INSTANCE: &str = "STANDALONE_INSTANCE";
+/// `400 ORG_INSTANCE`: an `org` instance asks for a new organization.
+pub(crate) const ORG_INSTANCE: &str = "ORG_INSTANCE";
+
+/// The instance mode of `release` (`instanceOrg` in its signed manifest): the one its
+/// record keeps, else (a release recorded before the node kept it) its `.mpk`'s. A raw
+/// bundle, or a release no longer installed, is `either`.
+pub(crate) async fn instance_org_of(
+    node: &Node,
+    release: Option<&PackageRef>,
+) -> Result<calimero_bundle::InstanceOrg, ApiError> {
+    let Some(r) = release else {
+        return Ok(calimero_bundle::InstanceOrg::Either);
+    };
+    let Some(v) = node.sys(|s| {
+        s.packages
+            .get(&r.package)
+            .and_then(|p| p.versions.get(&r.version))
+            .cloned()
+    }) else {
+        return Ok(calimero_bundle::InstanceOrg::Either);
+    };
+    if let Some(mode) = v.instance_org {
+        return Ok(mode);
+    }
+    crate::consent_page::declared_instance_org(node, &r.package, &v).await
+}
+
+/// The name an organization made with an instance gets: the one the request gives, else
+/// the instance's own name made to fit ([`crate::system::org_name_fits`]: one line of 1 to
+/// 64 characters), else the package's id, else `Instance`.
+fn standalone_org_name(
+    asked: Option<&NewOrgBody>,
+    instance: &str,
+    release: Option<&PackageRef>,
+) -> String {
+    if let Some(n) = asked {
+        return n.name.clone();
+    }
+    let fit = |name: &str| -> Option<String> {
+        let one_line: String = name
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let cut: String = one_line
+            .trim()
+            .chars()
+            .take(crate::system::MAX_ORG_NAME_CHARS)
+            .collect();
+        let cut = cut.trim().to_owned();
+        (!cut.is_empty()).then_some(cut)
+    };
+    fit(instance)
+        .or_else(|| release.and_then(|r| fit(&r.package)))
+        .unwrap_or_else(|| "Instance".to_owned())
+}
+
+/// The organization a new instance (not a unit's member, which joins its instance's)
+/// goes into, judged by its release's instance mode once organizations are ordinary
+/// (`Feature::OrdinaryOrgs`):
+/// - `standalone`: a new organization, made now (its creator the owner); naming one is
+///   `400 STANDALONE_INSTANCE`.
+/// - `org`: the one named, else the creator's only one (`member` or above); several is `400
+///   ORG_REQUIRED`, none `409 NO_ORGANIZATION`; asking for a new one is `400 ORG_INSTANCE`.
+/// - `either`: the one named, a new one when asked for (`newOrg`), else the creator's only
+///   one, else (none) a new one; several is `400 ORG_REQUIRED`.
+///
+/// Below that version, as before: the one named, else the owner's personal organization.
+async fn instance_org(
+    node: &Node,
+    owner: &str,
+    body: &CreateAppBody,
+    release: Option<&PackageRef>,
+) -> Result<String, ApiError> {
+    use crate::system::cluster_version::Feature;
+    use calimero_bundle::InstanceOrg;
+    if body.org.is_some() && body.new_org.is_some() {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "name an organization (`org`) or ask for a new one (`newOrg`), not both",
+        ));
+    }
+    if node
+        .require_features(&[Feature::OrdinaryOrgs])
+        .await
+        .is_err()
+    {
+        if body.new_org.is_some() {
+            node.require_features(&[Feature::OrdinaryOrgs]).await?;
+        }
+        return match &body.org {
+            Some(org) => Ok(org.clone()),
+            None => personal_org(node, owner).await,
+        };
+    }
+    let mode = instance_org_of(node, release).await?;
+    let label = release.map_or_else(|| "this bundle".to_owned(), |r| r.package.clone());
+    if let Some(org) = &body.org {
+        if mode == InstanceOrg::Standalone {
+            return Err(ApiError::bad_request(
+                STANDALONE_INSTANCE,
+                &format!("an instance of {label} comes with an organization of its own: name none"),
+            ));
+        }
+        return Ok(org.clone());
+    }
+    match (mode, &body.new_org) {
+        (InstanceOrg::Org, Some(_)) => {
+            return Err(ApiError::bad_request(
+                ORG_INSTANCE,
+                &format!(
+                    "an instance of {label} goes into an organization you are in; it makes none"
+                ),
+            ))
+        }
+        (InstanceOrg::Standalone, _) | (InstanceOrg::Either, Some(_)) => {}
+        (InstanceOrg::Org | InstanceOrg::Either, None) => {
+            let _caught_up = node.sys_fresh().await;
+            let mine: Vec<String> = node.sys(|s| s.orgs_of(owner).into_iter().cloned().collect());
+            match mine.as_slice() {
+                [one] => return Ok(one.clone()),
+                [] if mode == InstanceOrg::Org => {
+                    return Err(ApiError::new(
+                        409,
+                        NO_ORGANIZATION,
+                        &format!("an instance of {label} goes into an organization you are in, and you are in none: create one or accept an invite first"),
+                    ))
+                }
+                [] => {}
+                _ => {
+                    return Err(ApiError::bad_request(
+                        ORG_REQUIRED,
+                        "you are in several organizations: name the one the instance goes into (`org`)",
+                    ))
+                }
+            }
+        }
+    }
+    // A new organization, its creator the owner, approving this node's release as the
+    // personal one did.
+    let org_id = typed_id::<16>();
+    let _made = node
+        .sys_write(&SystemCmd::CreateOrg {
+            org_id: org_id.clone(),
+            name: standalone_org_name(body.new_org.as_ref(), &body.name, release),
+            actor: owner.to_owned(),
+            release: Some(node.own_release()),
+            recovery_key: None,
+            at: recovery_now(node),
+            name_fits: true,
+            personal: false,
+            app_team: None,
+            capabilities: None,
+        })
+        .await?;
+    Ok(org_id)
+}
+
+/// `newOrg` in `POST /apps`: the organization made with the instance.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct NewOrgBody {
+    /// Its name ([`crate::system::org_name_fits`]).
+    name: String,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CreateAppBody {
@@ -196,6 +368,11 @@ pub(super) struct CreateAppBody {
     service: Option<String>,
     #[serde(default)]
     org: Option<String>,
+    /// A new organization for the instance, made with it (its creator the owner), for a
+    /// release whose instances may go into a new one (`instanceOrg`: `standalone` or
+    /// `either`). Not with `org`.
+    #[serde(default)]
+    new_org: Option<NewOrgBody>,
     #[serde(default)]
     access: Option<Access>,
     /// Arguments for the app's `init`, as JSON.
@@ -284,7 +461,7 @@ async fn create_instance(
         _ => {
             bundle_named(
                 node,
-                body.bundle,
+                body.bundle.clone(),
                 body.package.as_deref(),
                 body.version.as_deref(),
                 body.service.as_deref(),
@@ -309,11 +486,11 @@ async fn create_instance(
         return Err(crate::node::args_too_large());
     }
     let confirm_methods: Vec<String> = Vec::new();
-    // Every instance is in an organization: one that names none goes to its
-    // owner's personal organization, made the first time.
-    let org = match body.org {
-        Some(org) => org,
-        None => personal_org(node, &owner).await?,
+    // Every instance is in an organization: a unit's member joins its instance's, any
+    // other goes where its release's instance mode says (`instance_org`).
+    let org = match (&body.org, depth) {
+        (Some(org), 1..) => org.clone(),
+        _ => instance_org(node, &owner, &body, release.as_ref()).await?,
     };
     // Past a release deadline the app's approver has not met, no new app;
     // `CreateApp` asks again at the same time.
@@ -397,6 +574,7 @@ async fn create_instance(
                         version: Some(version),
                         service: None,
                         org: Some(org.clone()),
+                        new_org: None,
                         access: body.access.clone(),
                         init_args: Value::Null,
                         metadata: json!({ "unit": { "of": body.name, "as": name } }),
@@ -799,6 +977,23 @@ async fn app_transfer(
     if !node.sys(|s| s.manages_app(&app, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_TRANSFER));
     }
+    // Before organizations are ordinary, an app in a personal organization handed to
+    // someone outside it goes to theirs. After, an organization's app goes only to a
+    // member of it: refused before the passkey is asked for (`TransferApp` refuses it too).
+    let ordinary = node
+        .require_features(&[crate::system::cluster_version::Feature::OrdinaryOrgs])
+        .await
+        .is_ok();
+    if ordinary
+        && !node.sys(|s| {
+            s.orgs
+                .get(&app.org)
+                .and_then(|o| o.role(&body.to))
+                .is_some_and(|r| r >= crate::types::OrgRole::Member)
+        })
+    {
+        return Err(crate::node::rejected(crate::system::NEW_OWNER_NOT_A_MEMBER));
+    }
     let consent = consent(
         &node,
         &p,
@@ -808,13 +1003,13 @@ async fn app_transfer(
         body.confirm,
     )
     .await?;
-    // An app in a personal organization handed to someone outside it goes to
-    // theirs: make it first if they have none.
-    let leaves_personal = node.sys(|s| {
-        s.orgs.get(&app.org).is_some_and(|o| {
-            o.personal && o.role(&body.to).is_none() && s.accounts.contains_key(&body.to)
-        })
-    });
+    // Make the new owner's personal organization first if they have none.
+    let leaves_personal = !ordinary
+        && node.sys(|s| {
+            s.orgs.get(&app.org).is_some_and(|o| {
+                o.personal && o.role(&body.to).is_none() && s.accounts.contains_key(&body.to)
+            })
+        });
     if leaves_personal {
         let _theirs = personal_org(&node, &body.to).await?;
     }

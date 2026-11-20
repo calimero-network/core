@@ -144,6 +144,14 @@ pub enum Feature {
     /// release its deployment offers. An earlier release ignores the field and would move
     /// it where a later one refuses.
     UpgradeInDeployment,
+    /// Ordinary organizations: a sign-up makes no organization, a personal one is no
+    /// longer made (`CreateOrg { personal }` is refused) nor treated apart (it counts
+    /// against `maxOrgsPerAccount`, and an app there is transferred only to a member), and
+    /// `InstallPackage` records the release's instance mode (`PackageVersion::instance_org`,
+    /// the manifest's `instanceOrg`). Apply reads the logged version for the rules
+    /// (`SystemState::ordinary_orgs`), so an entry before it replays as it applied; an
+    /// earlier release drops the recorded mode, so it is recorded only from this version.
+    OrdinaryOrgs,
     /// `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey` with `owner_approves`: only an
     /// owner or admin of the app's organization approves its upgrades
     /// (`SystemState::approves_upgrades`). An earlier release ignores the field and would
@@ -152,7 +160,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 36] = [
+pub const FEATURES: [Feature; 37] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -188,6 +196,7 @@ pub const FEATURES: [Feature; 36] = [
     Feature::WholeUnits,
     Feature::DeploymentUsedSecrets,
     Feature::UpgradeInDeployment,
+    Feature::OrdinaryOrgs,
     Feature::OwnerApprovedUpgrades,
 ];
 
@@ -231,6 +240,7 @@ impl Feature {
             Self::WholeUnits => "wholeUnits",
             Self::DeploymentUsedSecrets => "deploymentUsedSecrets",
             Self::UpgradeInDeployment => "upgradeInDeployment",
+            Self::OrdinaryOrgs => "ordinaryOrgs",
             Self::OwnerApprovedUpgrades => "ownerApprovedUpgrades",
         }
     }
@@ -272,6 +282,7 @@ impl Feature {
             | Self::WholeUnits
             | Self::DeploymentUsedSecrets
             | Self::UpgradeInDeployment
+            | Self::OrdinaryOrgs
             | Self::OwnerApprovedUpgrades => "1.0.0-rc.32",
         }
     }
@@ -608,6 +619,9 @@ impl SystemCmd {
                 }
                 if !release.uses.is_empty() {
                     f.push(Feature::DeploymentUsedSecrets);
+                }
+                if release.instance_org.is_some() {
+                    f.push(Feature::OrdinaryOrgs);
                 }
                 f
             }
@@ -1006,6 +1020,7 @@ mod tests {
             })),
             Feature::UpgradeInDeployment => entry(json!({ "op": "upgradeApp",
                 "app_id": "app", "bundle": "b", "actor": "a", "in_deployment": true })),
+            Feature::OrdinaryOrgs => install(json!({ "instanceOrg": "standalone" })),
             Feature::OwnerApprovedUpgrades => entry(json!({ "op": "upgradeApp",
                 "app_id": "app", "bundle": "b", "actor": "a", "owner_approves": true })),
             Feature::Pipelines => install(json!({
@@ -1428,8 +1443,8 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.32's (a deployment's secrets, whole units, secrets of used releases, an
-        // upgrade kept on its deployment's offer, upgrades only an organization's owner and
-        // admins approve) wait for every node on rc.32.
+        // upgrade kept on its deployment's offer, a release's instance mode, upgrades only an
+        // organization's owner and admins approve) wait for every node on rc.32.
         assert_eq!(
             rc32,
             [
@@ -1437,6 +1452,7 @@ mod tests {
                 Feature::WholeUnits,
                 Feature::DeploymentUsedSecrets,
                 Feature::UpgradeInDeployment,
+                Feature::OrdinaryOrgs,
                 Feature::OwnerApprovedUpgrades
             ]
         );

@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 mod harness;
 
 use calimero_client::Request;
-use harness::{fixture, kv_wasm, signed_up, typed, wire, Cluster, ORIGIN};
+use harness::{fixture, home_org, kv_wasm, signed_up, typed, wire, Cluster, ORIGIN};
 use reqwest::Method;
 
 const PACKAGE: &str = "com.test.notes";
@@ -96,6 +96,7 @@ fn release_of(
         upgrades: d
             .publisher_upgrades
             .then_some(calimero_bundle::UpgradeAuthority::Publisher),
+        instance_org: None,
         services: None,
         pipelines: Vec::new(),
         signature: None,
@@ -286,7 +287,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
     let _s = in_app.sign_in(&mut in_app_passkey).await.unwrap();
 
     // It may not approve anything itself: the routes refuse it, ceremony or not.
-    let mine = alice.personal_org().await.unwrap();
+    let mine = home_org(&alice).await;
     for (path, body) in [
         (format!("apps/{app}/upgrade"), json!({ "version": "2.0.0" })),
         (
@@ -775,6 +776,8 @@ async fn a_bundle_swapped_under_the_same_version_is_refused() {
 async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds() {
     let c = Cluster::start(3).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    // The account's own scope is its only organization.
+    let _home = home_org(&alice).await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
     let (v1, _) = release(
         "1.0.0",
@@ -839,7 +842,7 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
         args,
         json!({ "version": "2.0.0", "policyDigest": digest, "__method": "__approve_release" })
     );
-    let mine = alice.personal_org().await.unwrap();
+    let mine = home_org(&alice).await;
     let me = get_until(&alice, &format!("orgs/{mine}"), |o| {
         o["approvedReleases"]
             .as_array()
@@ -969,7 +972,7 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
         })
     };
     // A request with no organization (`account`) is her personal one's.
-    let mine = alice.personal_org().await.unwrap();
+    let mine = home_org(&alice).await;
     let approved = || async {
         alice.orgs().get(&mine).await.map(wire).unwrap()["approvedReleases"]
             .as_array()

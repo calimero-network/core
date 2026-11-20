@@ -306,7 +306,7 @@ mero-kms of a release they hold a copy for can unwrap. The recovery disk
 (`--recovery-dir`, a second disk mdma attaches as `recovery`) holds backups
 that open with the key of whoever upgrades each app instead: the operator where
 it holds app upgrades (`--app-upgrades operator`), else the app's
-organization (a person's own apps are in their personal organization). No
+organization (a person's own apps are in an organization like any other). No
 node ever holds that key's private half.
 
 <OpsRecoveryFlow />
@@ -571,9 +571,9 @@ app's data moves only to nodes on a release approved for it.
 
    Where owners hold them (the default), each organization's owner approves it
    with a passkey (`POST /orgs/{org}/releases`; `meroctl org
-   approve-release` on development clusters). A person's own apps are in their
-   personal organization, which they approve for (`meroctl account
-   approve-release`). Until then, nodes on the new release get none of that
+   approve-release` on development clusters). A person's own apps are in an
+   organization of their own, which they approve for (`meroctl account
+   approve-release` when it is their only one). Until then, nodes on the new release get none of that
    owner's data.
 
 2. **Raise the peers' floor** only after every node runs the new release:

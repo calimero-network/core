@@ -22,11 +22,12 @@ cargo test -p calimero-bundle
 
 | Item | Kind | Purpose |
 | --- | --- | --- |
-| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `upgrades`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi`/`compute`/`pipelines` (single-service) or `services` (multi-service), `frontend`, `links`, `frontend_aliases`, `outbound`, `uses`, `signature` |
+| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `upgrades`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi`/`compute`/`pipelines` (single-service) or `services` (multi-service), `frontend`, `links`, `frontend_aliases`, `outbound`, `uses`, `instance_org`, `signature` |
 | `BundleManifest::artifacts()` | fn | Every artifact the manifest declares, paired with its field name; a `..`-free destructure, so a new `BundleManifest` field is a compile error here until classified |
 | `BundleManifest::wasm_artifacts()` | fn | Iterates wasm artifacts, each with its compute component, uniformly across single- and multi-service bundles |
 | `BundleManifest::service_names()` / `is_multi_service()` | fn | Shape queries over `services` |
 | `BundleManifest::to_metadata_json()` | fn | Flattens `package`/`app_version`/`metadata.*`/`links.*`/`frontendAliases`/`outbound` to JSON, keeping only web URLs (`is_web_url`) and, under `outbound`, only `is_outbound_url` ones. The context-era node stored it; nothing in the workspace calls it now |
+| `InstanceOrg` | enum | The manifest's `instanceOrg`: `standalone` (an organization made with each instance), `org` (one its creator is in) or `either` (default, omitted); the node keeps it on `PackageVersion::instance_org` and places an instance by it. An older node ignores the field |
 | `UpgradeAuthority` | enum | The manifest's `upgrades`: `owner` (default, omitted) or `publisher`; a later version may only move toward `owner` (the node keeps it on `PackageVersion::upgrades`) |
 | `VerifiedBundle` (`archive.rs`) | struct | An `.mpk` whose manifest signature verified (`open(data, runtime_version)`, which also refuses a `minRuntimeVersion` above it); every artifact accessor (`wasm`, `contents` → `VerifiedContents`/`VerifiedWasm`) checks the digest first, so unverified bytes have no representation. `manifest_hash`, `signer_id` |
 | `extract_bundle_manifest`, `is_bundle_blob`, `validate_artifact_path`, `MAX_ARCHIVE_BYTES` (`archive.rs`) | fn/const | Reading the archive: bounded, no path traversal; `fuzz_api` for `fuzz/fuzz_targets/bundle_open.rs` |

@@ -173,9 +173,11 @@ Genesis also carries the configured `--peers` as the first nodes, and records
 the operator's verify key (`--operator-key`) when one is configured; every
 later node is registered by the operator's signed `POST /ops/nodes`.
 
-A sign-up (`CreateAccount`) makes the account's personal organization in the
-same entry (`personal_org`, named `Personal`, approving the release of the node
-it signed up through), so no account is ever without one.
+A sign-up (`CreateAccount`) makes no organization once the logged cluster
+version brings `Feature::OrdinaryOrgs` (1.0.0-rc.32; apply drops a seed an
+entry carries then). Below it, a sign-up made the account's personal
+organization in the same entry (`personal_org`, named `Personal`, approving the
+release of the node it signed up through), and those entries replay so.
 
 A cluster founded again from its backups (`--restore-from`) writes no
 genesis: its founder forms the system group alone and seeds it with the
@@ -304,7 +306,7 @@ same command for the same reason:
 | `maxAppsPerAccount` | 100 | `CreateApp` |
 | `maxBundleBytesPerAccount` | 1 GiB | `PutBundle`, `InstallPackage` (operator installs count against no account) |
 | `maxApiKeysPerAccount` | 50 | `CreateApiKey` |
-| `maxOrgsPerAccount` | 20 (organizations owned; the personal one does not count) | `CreateOrg` |
+| `maxOrgsPerAccount` | 20 (organizations owned; below cluster version 1.0.0-rc.32 the personal one does not count) | `CreateOrg` |
 | `maxAccounts` | 100 000 | `CreateAccount` (where sign-up is `open`, this bounds the cluster) |
 | `maxFileBytesPerOrg` | 50 000 000 000 | `ChargeFileBytes` (plaintext bytes of the files of an organization's apps; a personal organization is one like any other) |
 | `maxConcurrentRunsPerOrg` | 4 | `AcquireRun`, `ReleaseRun` (compute runs of an organization's apps granted to job nodes at once; the rest wait, the payer served longest ago first) |

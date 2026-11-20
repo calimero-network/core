@@ -575,17 +575,21 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             let org = s.apps.get(&app_id).ok_or("no such app")?.org.clone();
             // An org's app stays with a member of the org (as `CreateApp`),
-            // except that one in a personal organization handed to someone
-            // outside it goes to theirs, as a personal app went with its new
-            // owner.
+            // except that, before organizations are ordinary
+            // (`SystemState::ordinary_orgs`), one in a personal organization handed
+            // to someone outside it goes to theirs, as a personal app went with its
+            // new owner.
             let mut to_org = None;
             let o = s.orgs.get(&org);
             let role = o.and_then(|o| o.role(&to));
             if !role.is_some_and(|r| r >= OrgRole::Member) {
-                match (o.is_some_and(|o| o.personal), s.personal_org_of(&to)) {
+                match (
+                    o.is_some_and(|o| s.acts_personal(o)),
+                    s.personal_org_of(&to),
+                ) {
                     (true, Some(theirs)) => to_org = Some(theirs.clone()),
                     (true, None) => return Err(NO_PERSONAL_ORG),
-                    _ => return Err("the new owner is not a member of the app's organization"),
+                    _ => return Err(super::NEW_OWNER_NOT_A_MEMBER),
                 }
             }
             let app = s.apps.get(&app_id).ok_or("no such app")?;

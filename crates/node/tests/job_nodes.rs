@@ -13,7 +13,7 @@ use axum::routing::get;
 use calimero_client::types::OpsRegisterNodeRequestRole;
 use calimero_client::Client;
 use calimero_node::cluster_key::Request;
-use common::{signed_up, typed, wire, Cluster};
+use common::{home_org, signed_up, typed, wire, Cluster};
 use reqwest::Method;
 use serde_json::{json, Value};
 
@@ -800,7 +800,7 @@ async fn a_job_node_on_a_retired_release_is_not_attested() {
     let c = Cluster::start_with(3, |cfg| cfg.tee_release = Some("1.0.0".into())).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let app = create(&alice, "kv").await;
-    let mine = alice.personal_org().await.unwrap();
+    let mine = home_org(&alice).await;
     let _ok = alice
         .orgs()
         .release_approval(&mine, "2.0.0", None, Some(&mut pk))

@@ -23,7 +23,7 @@ tests they read a thread-local stand-in (`env::mock`). Source:
 | `env::linked(name)` | The app linked under `name`, a reference of the release the app runs (`uses`): the member created with the instance, or the app its owner attached since. `None` when nothing is linked there, and in a compute run. |
 | `env::app_id()` | This app instance's id. |
 | `env::app_owner()` | The account that owns the app. |
-| `env::org()` | The app's organization. Every app is in one (an app created without naming one is in its owner's personal organization), so on a node this is always `Some`. |
+| `env::org()` | The app's organization. Every app is in one (an app created without naming one is in its owner's only organization, or one made with it), so on a node this is always `Some`. |
 | `env::org_role(account)` | `Option<OrgRole>`: `Guest`, `Member`, `Admin` or `Owner`, ordered. |
 | `env::in_team(account, team)` | Whether `account` is in `team`. |
 

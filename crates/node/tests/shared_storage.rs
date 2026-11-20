@@ -40,12 +40,32 @@ async fn map_get(cl: &Client, app: &str, key: &str) -> Value {
 async fn a_non_writers_map_write_is_refused_and_a_writers_lands() {
     let c = Cluster::start(3).await;
     // Alice creates the app, so `init` makes her the map's only writer.
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
+    // Bob is a member of Alice's organization: an `accounts` list reaches its members.
+    let org = alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut a))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob.orgs().invite_redeem(&token).await.unwrap();
     let bundle = alice
         .packages()
         .bundle_put(team_space_wasm())
@@ -54,7 +74,9 @@ async fn a_non_writers_map_write_is_refused_and_a_writers_lands() {
         .unwrap();
     let created = alice
         .apps()
-        .create(typed(json!({ "name": "team-space", "bundle": bundle })))
+        .create(typed(
+            json!({ "name": "team-space", "bundle": bundle, "org": org }),
+        ))
         .await
         .map(wire)
         .unwrap();

@@ -48,8 +48,8 @@ pub fn ping(&mut self, target: String) -> app::Result<()> {
 `env::xcall(app, method, &args)` queues the message in this run's outbox. The
 node delivers it after the entry commits, only if the run succeeds, at least
 once and in order per sending app. The target must be in the same
-organization: since 1.0.0-rc.20 every app is in one, and an app in someone's
-personal organization reaches only the other apps there. A run may queue at
+organization: since 1.0.0-rc.20 every app is in one, and an app in an
+organization of its own reaches only the other apps there. A run may queue at
 most 100.
 
 <SeqDiagram id="d-build-xcall-send" title="A message, from send to delivery"

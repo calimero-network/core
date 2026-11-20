@@ -1696,7 +1696,7 @@ pub struct OrgNewWorkStopped {
     pub extra: Map<String, Value>,
 }
 
-/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is its owner's personal organization (where instances created without naming an organization go).
+/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Org {
     #[serde(rename = "orgId")]
@@ -1879,7 +1879,7 @@ pub struct OutboundApproval {
     pub extra: Map<String, Value>,
 }
 
-/// The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.
+/// The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization, below cluster version 1.0.0-rc.32 only). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum AppScope {
@@ -2364,6 +2364,11 @@ pub struct QuotaChanges {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppCreateRequestNewOrg {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppCreateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -2377,6 +2382,9 @@ pub struct AppCreateRequest {
     pub service: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org: Option<String>,
+    #[serde(rename = "newOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_org: Option<AppCreateRequestNewOrg>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<Access>,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).

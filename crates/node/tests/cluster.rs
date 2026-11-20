@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 #[path = "harness/cluster.rs"]
 mod harness;
 
-use harness::{free_port, kv_wasm, node_config, signed_up, typed, wire, Cluster, ORIGIN};
+use harness::{free_port, home_org, kv_wasm, node_config, signed_up, typed, wire, Cluster, ORIGIN};
 use reqwest::Method;
 
 const EVENTUALLY_DEADLINE: Duration = Duration::from_secs(60); // sized for a loaded CI runner
@@ -896,10 +896,12 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
         .upgrade(&alices, typed(json!({ "bundle": next })), Some(&mut bob_pk))
         .await
         .unwrap();
-    // Never a personal app.
+    // Never an app of alice's own organization.
     let personal = alice
         .apps()
-        .create(typed(json!({ "name": "p", "bundle": &bundle })))
+        .create(typed(
+            json!({ "name": "p", "bundle": &bundle, "newOrg": { "name": "Mine" } }),
+        ))
         .await
         .map(|a| a.app_id)
         .unwrap();
@@ -973,6 +975,7 @@ fn mpk_full(
         }),
         frontend_aliases: Vec::new(),
         upgrades,
+        instance_org: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         secrets: None,
         uses: None,
@@ -1534,7 +1537,7 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     let kv = kv_wasm();
     // Alice's organization (Acme, with Amy) and Bob, outside it, in his own.
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
-    let (amy, _m) = signed_up(&c, 1, "amy").await;
+    let (amy, mut m) = signed_up(&c, 1, "amy").await;
     let (bob, _b) = signed_up(&c, 2, "bob").await;
     let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
@@ -1578,7 +1581,7 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     assert!(e.to_string().starts_with("404"), "{e}");
     // Approving its outbound hosts answers as for a missing package, before
     // any passkey ceremony.
-    let bobs = bob.personal_org().await.unwrap();
+    let bobs = home_org(&bob).await;
     for package in ["com.acme.secret", "com.never.installed"] {
         let e = bob
             .orgs()
@@ -1646,13 +1649,29 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
         .await
         .map(wire)
         .unwrap();
+    // Amy's in an organization of her own (Alice installed it, Amy is not an
+    // installer), listing Bob, a guest-role member there.
     let shared = amy
-        .apps().create(typed(json!({ "name": "shared", "package": "com.acme.secret", "access": { "kind": "accounts", "accounts": [bob_id] } })))
+        .apps().create(typed(json!({ "name": "shared", "package": "com.acme.secret", "newOrg": { "name": "Amy's" }, "access": { "kind": "accounts", "accounts": [bob_id] } })))
         .await.map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
+    let amys = amy.apps().get(&shared).await.map(wire).unwrap()["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = amy
+        .orgs()
+        .invite_create(&amys, typed(json!({ "role": "guest" })), Some(&mut m))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob.orgs().invite_redeem(&token).await.unwrap();
     // Once Bob reaches an app running it, he sees that release.
     assert_eq!(listed(&bob).await, only_secret, "Bob reaches {shared}");
     let _ = amy.apps().delete(&shared).await.unwrap();
@@ -1838,9 +1857,8 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     })
     .await;
     let (alice, mut key) = signed_up(&c, 0, "alice").await;
-    // Her personal organization, made at sign-up, approves the release she
-    // signed up through.
-    let mine = alice.personal_org().await.unwrap();
+    // Her organization approves the release of the node she made it through.
+    let mine = home_org(&alice).await;
     assert_eq!(
         alice.orgs().get(&mine).await.map(wire).unwrap()["approvedReleases"],
         json!(["1.0.0"])
@@ -1914,12 +1932,7 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     // The owner approves 2.0.0: now the app may move there, and node 3 serves it.
     let _ok = alice
         .orgs()
-        .release_approval(
-            &alice.personal_org().await.unwrap(),
-            "2.0.0",
-            None,
-            Some(&mut key),
-        )
+        .release_approval(&home_org(&alice).await, "2.0.0", None, Some(&mut key))
         .await
         .map(wire)
         .unwrap();
@@ -2541,12 +2554,7 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         );
         let owner_release = alice
             .orgs()
-            .release_approval(
-                &alice.personal_org().await.unwrap(),
-                "9.0.0",
-                None,
-                Some(&mut pk),
-            )
+            .release_approval(&home_org(&alice).await, "9.0.0", None, Some(&mut pk))
             .await
             .map(wire);
         assert_eq!(
@@ -2566,7 +2574,7 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         let owner_outbound = alice
             .orgs()
             .outbound_approval(
-                &alice.personal_org().await.unwrap(),
+                &home_org(&alice).await,
                 "com.test.gov",
                 Some(typed(json!("manifest"))),
                 Some(false),
@@ -4797,6 +4805,26 @@ async fn an_owner_transfers_an_app_with_their_passkey() {
         .unwrap()
         .to_owned();
     let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    // An organization's app goes only to a member: Bob joins the app's organization
+    // (made with it) first.
+    let org = alice.apps().get(&app).await.map(wire).unwrap()["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .orgs()
+        .invite_create(
+            &org,
+            typed(json!({ "role": "member" })),
+            Some(&mut alice_pk),
+        )
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob.orgs().invite_redeem(&token).await.unwrap();
     let e = alice
         .apps()
         .transfer(&app, &bob_id, None)
@@ -4812,7 +4840,14 @@ async fn an_owner_transfers_an_app_with_their_passkey() {
         .unwrap();
     let a = bob.apps().get(&app).await.map(wire).unwrap();
     assert_eq!(a["owner"], json!(bob_id), "{a}");
-    assert!(alice.apps().delete(&app).await.is_err());
+    // Alice stays the organization's owner, whose admins keep deleting its apps; the
+    // app's new owner decides as its owner now.
+    let _ok = bob
+        .apps()
+        .metadata(&app, json!({ "by": "bob" }))
+        .await
+        .unwrap();
+    let _gone = bob.apps().delete(&app).await.unwrap();
 }
 
 /// `--ops-token-sha256`: the node holds only the token's hash, and the token
@@ -4919,7 +4954,7 @@ fn sample(text: &str, metric: &str, labels: &str) -> Option<f64> {
 /// entry, so the cluster's sum is the number of runs. Series are labelled
 /// with the app's id, its payer (the organization, or `account:{owner}` for an
 /// app from before outside any; one made without naming an organization is in its
-/// owner's personal organization) and its developer, the payer for an app made from a release
+/// own organization) and its developer, the payer for an app made from a release
 /// directly (`tests/deployments.rs` has an instance of a deployment). State
 /// bytes are a gauge every replica reports alike.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4943,7 +4978,13 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
         .unwrap()
         .to_owned();
     let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({ "org": org })).await;
-    let (personal, _) = deploy(&alice, "mine", kv_wasm(), json!({})).await;
+    let (personal, _) = deploy(
+        &alice,
+        "mine",
+        kv_wasm(),
+        json!({ "newOrg": { "name": "Mine" } }),
+    )
+    .await;
     for i in 0..3 {
         let _ = alice
             .apps()
@@ -5042,7 +5083,7 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
         texts.push(text);
     }
     let in_org = format!("app=\"{app}\",org=\"{org}\",developer=\"{org}\"");
-    // Made without naming an organization: in Alice's personal one, which pays.
+    // Made in an organization of its own, which pays.
     let home = org_of(&alice, &personal).await;
     assert_ne!(home, org);
     let mine = format!("app=\"{personal}\",org=\"{home}\",developer=\"{home}\"");
@@ -5266,7 +5307,7 @@ async fn calls_without_a_key_each_run_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn access_changed_through_one_node_holds_at_once_through_another() {
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
@@ -5284,6 +5325,22 @@ async fn access_changed_through_one_node_holds_at_once_through_another() {
         .await
         .map(|a| a.app_id)
         .unwrap();
+    // Bob is in the app's organization (made with it): an `accounts` list reaches its
+    // members.
+    let org = alice.apps().get(&app).await.map(wire).unwrap()["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut a))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = bob.orgs().invite_redeem(&token).await.unwrap();
     for round in 0..20 {
         let _ok = alice
             .apps()
@@ -5700,12 +5757,7 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     // Bob approves 2.0.0 in time; then the deadline passes.
     let _ok = bob
         .orgs()
-        .release_approval(
-            &bob.personal_org().await.unwrap(),
-            "2.0.0",
-            None,
-            Some(&mut bob_pk),
-        )
+        .release_approval(&home_org(&bob).await, "2.0.0", None, Some(&mut bob_pk))
         .await
         .map(wire)
         .unwrap();
@@ -5771,12 +5823,7 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     // Approving lifts it for Alice at once.
     let _ok = alice
         .orgs()
-        .release_approval(
-            &alice.personal_org().await.unwrap(),
-            "2.0.0",
-            None,
-            Some(&mut alice_pk),
-        )
+        .release_approval(&home_org(&alice).await, "2.0.0", None, Some(&mut alice_pk))
         .await
         .map(wire)
         .unwrap();
@@ -5988,7 +6035,7 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
 
 /// The report that holds `app` for its owner: its organization's
 /// (`orgs/{org}/apps`; an instance made without naming one is in its owner's
-/// personal organization), else the account's own (`auth/apps`).
+/// only organization, or one made with it), else the account's own (`auth/apps`).
 async fn own_report(cl: &Client, app: &str) -> String {
     format!("orgs/{}/apps", org_of(cl, app).await)
 }
@@ -6207,13 +6254,15 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
         "{orgs}"
     );
 
-    // An account's own app: its approvals, the releases it has not approved,
-    // and the newer release it could upgrade to.
+    // An account's own app (in an organization of its own, made with it): its
+    // approvals, the releases it has not approved, and the newer release it could
+    // upgrade to.
     let mine = alice
         .apps()
-        .create(typed(
-            json!({ "name": "mine", "package": "com.test.track", "version": "1.0.0" }),
-        ))
+        .create(typed(json!({
+            "name": "mine", "package": "com.test.track", "version": "1.0.0",
+            "newOrg": { "name": "Mine" },
+        })))
         .await
         .map(wire)
         .unwrap()["appId"]
@@ -6227,14 +6276,30 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
         .map(wire)
         .unwrap();
     assert_eq!(own["scope"], json!({ "kind": "account" }), "{own}");
-    assert_eq!(own["approvedReleases"], json!(["1.0.0"]), "{own}");
+    // In two organizations, the account has no one set of its own: each app's is in
+    // its entry.
+    assert_eq!(own["approvedReleases"], Value::Null, "{own}");
+    let entry = own["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["app"] == json!(mine))
+        .cloned()
+        .unwrap();
+    assert_eq!(entry["approvedReleases"], json!(["1.0.0"]), "{entry}");
+    let m = alice
+        .orgs()
+        .apps(&org_of(&alice, &mine).await, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert!(
-        own["clusterReleases"]
+        m["clusterReleases"]
             .as_array()
             .unwrap()
             .iter()
             .any(|r| r["release"] == json!("2.0.0") && r["approved"] == json!(false)),
-        "{own}"
+        "{m}"
     );
     let a = reported_app(&alice, &own_report(&alice, &mine).await, &mine).await;
     assert_eq!(a["package"]["version"], json!("1.0.0"), "{a}");
@@ -6313,11 +6378,7 @@ async fn an_operator_upgrade_is_reported_as_the_operators() {
 
     let a = reported_app(&ops, "ops/apps", &app).await;
     let home = org_of(&alice, &app).await;
-    assert_eq!(
-        a["scope"],
-        json!({ "kind": "org", "org": home, "personal": true }),
-        "{a}"
-    );
+    assert_eq!(a["scope"], json!({ "kind": "org", "org": home }), "{a}");
     assert_eq!(a["upgradesHeldBy"], json!("operator"), "{a}");
     assert_eq!(
         a["package"],

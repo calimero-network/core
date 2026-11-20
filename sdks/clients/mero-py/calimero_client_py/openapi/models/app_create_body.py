@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from ..models.access_type_4 import AccessType4
     from ..models.access_type_2 import AccessType2
     from ..models.access_type_0 import AccessType0
+    from ..models.app_create_body_new_org import AppCreateBodyNewOrg
 
 
 T = TypeVar("T", bound="AppCreateBody")
@@ -32,6 +33,7 @@ class AppCreateBody:
         version (Union[Unset, str]):
         service (Union[Unset, str]):
         org (Union[Unset, str]):
+        new_org (Union[Unset, AppCreateBodyNewOrg]):
         access (Union['AccessType0', 'AccessType1', 'AccessType2', 'AccessType3', 'AccessType4', Unset]): Who may reach
             an app at all.
         init_args (Union[Unset, Any]): Free-form JSON: its shape is not this API's (see the description around it for
@@ -47,6 +49,7 @@ class AppCreateBody:
     version: Union[Unset, str] = UNSET
     service: Union[Unset, str] = UNSET
     org: Union[Unset, str] = UNSET
+    new_org: Union[Unset, "AppCreateBodyNewOrg"] = UNSET
     access: Union[
         "AccessType0", "AccessType1", "AccessType2", "AccessType3", "AccessType4", Unset
     ] = UNSET
@@ -61,6 +64,7 @@ class AppCreateBody:
         from ..models.access_type_4 import AccessType4
         from ..models.access_type_2 import AccessType2
         from ..models.access_type_0 import AccessType0
+        from ..models.app_create_body_new_org import AppCreateBodyNewOrg
 
         name = self.name
 
@@ -73,6 +77,10 @@ class AppCreateBody:
         service = self.service
 
         org = self.org
+
+        new_org: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.new_org, Unset):
+            new_org = self.new_org.to_dict()
 
         access: Union[Unset, dict[str, Any]]
         if isinstance(self.access, Unset):
@@ -109,6 +117,8 @@ class AppCreateBody:
             field_dict["service"] = service
         if org is not UNSET:
             field_dict["org"] = org
+        if new_org is not UNSET:
+            field_dict["newOrg"] = new_org
         if access is not UNSET:
             field_dict["access"] = access
         if init_args is not UNSET:
@@ -127,6 +137,7 @@ class AppCreateBody:
         from ..models.access_type_4 import AccessType4
         from ..models.access_type_2 import AccessType2
         from ..models.access_type_0 import AccessType0
+        from ..models.app_create_body_new_org import AppCreateBodyNewOrg
 
         d = dict(src_dict)
         name = d.pop("name", UNSET)
@@ -140,6 +151,13 @@ class AppCreateBody:
         service = d.pop("service", UNSET)
 
         org = d.pop("org", UNSET)
+
+        _new_org = d.pop("newOrg", UNSET)
+        new_org: Union[Unset, AppCreateBodyNewOrg]
+        if isinstance(_new_org, Unset):
+            new_org = UNSET
+        else:
+            new_org = AppCreateBodyNewOrg.from_dict(_new_org)
 
         def _parse_access(
             data: object,
@@ -206,6 +224,7 @@ class AppCreateBody:
             version=version,
             service=service,
             org=org,
+            new_org=new_org,
             access=access,
             init_args=init_args,
             metadata=metadata,

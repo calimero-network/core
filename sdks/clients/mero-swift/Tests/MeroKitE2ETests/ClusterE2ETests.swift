@@ -317,7 +317,17 @@ final class ClusterE2ETests: XCTestCase {
         let (bob, _) = try await person(1, "bob-access")
         let bobMe = try await me(bob)
         let bobId = try XCTUnwrap(bobMe["accountId"]?.stringValue)
-        let app = try await kvApp(alice, "shared")
+        // Owner-only, in an organization made with it: an `accounts` list reaches only the
+        // organization's members, and an app goes only to one, so bob joins it; joining
+        // alone still leaves him out.
+        let hash = try await alice.packages.bundlePut(body: try bundle()).hash
+        let app = try await alice.apps.create(
+            name: "shared", bundle: hash, access: .owner(.init(kind: .owner))
+        ).appId
+        let made = try JSONValue(encoding: try await alice.apps.get(app: app))
+        let shared = try XCTUnwrap(made["org"]?.stringValue, "\(made)")
+        let token = try await alice.orgs.inviteCreate(org: shared, role: .member, passkey: passkey).token
+        _ = try await bob.orgs.inviteRedeem(token: token)
         _ = try await alice.auth.aliasSet(alias: "notes", app: app)
         let alias = try JSONValue(encoding: try await alice.auth.aliasGet(alias: "notes"))
         XCTAssertEqual(alias["appId"]?.stringValue, app)

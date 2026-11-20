@@ -105,9 +105,15 @@ def sync_detailed(
     """Create an app instance
 
      From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an
-    uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization.
-    Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given
-    (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
+    uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a
+    raw bundle: `either`): `standalone` makes a new organization with the instance (its name
+    `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into
+    `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION`
+    with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks,
+    else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
+    version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
+    is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both
+    free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
     component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
@@ -142,9 +148,15 @@ def sync(
     """Create an app instance
 
      From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an
-    uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization.
-    Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given
-    (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
+    uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a
+    raw bundle: `either`): `standalone` makes a new organization with the instance (its name
+    `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into
+    `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION`
+    with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks,
+    else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
+    version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
+    is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both
+    free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
     component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
@@ -174,9 +186,15 @@ async def asyncio_detailed(
     """Create an app instance
 
      From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an
-    uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization.
-    Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given
-    (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
+    uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a
+    raw bundle: `either`): `standalone` makes a new organization with the instance (its name
+    `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into
+    `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION`
+    with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks,
+    else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
+    version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
+    is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both
+    free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
     component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
@@ -209,9 +227,15 @@ async def asyncio(
     """Create an app instance
 
      From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an
-    uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization.
-    Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given
-    (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
+    uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a
+    raw bundle: `either`): `standalone` makes a new organization with the instance (its name
+    `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into
+    `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION`
+    with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks,
+    else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster
+    version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg`
+    is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both
+    free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute
     component.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).

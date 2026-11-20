@@ -227,6 +227,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             // Judged before anything changes: a refusal leaves no trace.
             let admission = s.admits(invite.as_ref())?;
+            // Once organizations are ordinary a sign-up makes none, whatever the entry
+            // carries (one proposed below that version, applied after it).
+            let personal_org = personal_org.filter(|_| !s.ordinary_orgs());
             if s.accounts.len() >= s.quotas.max_accounts as usize {
                 return Err("quota exceeded: accounts");
             }

@@ -21,7 +21,7 @@ export interface paths {
         put?: never;
         /**
          * Create an app instance
-         * @description From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization. Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+         * @description From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
          *
          *     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
          */
@@ -1011,7 +1011,7 @@ export interface paths {
         put?: never;
         /**
          * Hand an app to another account
-         * @description The owner (for an organization's app, while a member and in the app's team), or an organization admin; an organization's app only to a member. Answers `null`.
+         * @description The owner (for an organization's app, while a member and in the app's team), or an organization admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for; below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal one). Answers `null`.
          *
          *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -1323,7 +1323,7 @@ export interface paths {
         };
         /**
          * The account's own apps
-         * @description The apps the account owns, in any organization (a package-bound session: its package's), with its personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
+         * @description The apps the account owns, in any organization (a package-bound session: its package's), with its only organization's `approvedReleases` (below cluster version 1.0.0-rc.32 its personal organization's): each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -1415,7 +1415,7 @@ export interface paths {
         };
         /**
          * The caller's account
-         * @description The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: the one made at sign-up, where its instances go unless they name another; its approvals are that organization's), recovery state, and how the caller came (`via`).
+         * @description The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -2003,7 +2003,7 @@ export interface paths {
         };
         /**
          * The organizations a deployment serves
-         * @description For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or in a personal organization, are only counted (`outsideOrgs`). Never who the members are.
+         * @description For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (`outsideOrgs`). Never who the members are.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -2973,7 +2973,7 @@ export interface paths {
         put?: never;
         /**
          * Create an organization
-         * @description `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.
+         * @description `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account's are those it creates here (or with a `standalone` instance) or is invited to; before, every account also had a personal organization from sign-up (`personal` in `/auth/me`).
          *
          *     **Who:** a passkey session (an API key is refused).
          */
@@ -4694,7 +4694,7 @@ export interface components {
                 proofKey: string;
             };
         };
-        /** @description An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is its owner's personal organization (where instances created without naming an organization go). */
+        /** @description An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other). */
         Org: {
             orgId: string;
             name: string;
@@ -4835,7 +4835,7 @@ export interface components {
             prefixes: string[];
             reviewed: string[];
         };
-        /** @description The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are. */
+        /** @description The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization, below cluster version 1.0.0-rc.32 only). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are. */
         AppScope: {
             /** @enum {string} */
             kind: "org";
@@ -5066,6 +5066,9 @@ export interface operations {
                     version?: string;
                     service?: string;
                     org?: string;
+                    newOrg?: {
+                        name: string;
+                    };
                     access?: components["schemas"]["Access"];
                     /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
                     initArgs?: unknown;
@@ -5092,7 +5095,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description `AMBIGUOUS_COMPUTE`; `BAD_REQUEST`: the request is malformed; `NOT_OFFERED`; `NO_SUCH_SERVICE`; `VERSION_REQUIRED` */
+            /** @description `AMBIGUOUS_COMPUTE`; `BAD_REQUEST`: the request is malformed; `NOT_OFFERED`; `NO_SUCH_SERVICE`; `ORG_INSTANCE`; `ORG_REQUIRED`; `STANDALONE_INSTANCE`; `VERSION_REQUIRED` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -5119,7 +5122,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `RELEASE_DEADLINE`; `RUNTIME_TOO_OLD`. `details` of `RELEASE_DEADLINE`: a `ReleaseDeadline`, `RUNTIME_TOO_OLD`: a `RuntimeTooOld`. */
+            /** @description `FEATURE_NOT_ACTIVE`; `NO_ORGANIZATION`; `RELEASE_DEADLINE`; `RUNTIME_TOO_OLD`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`, `RELEASE_DEADLINE`: a `ReleaseDeadline`, `RUNTIME_TOO_OLD`: a `RuntimeTooOld`. */
             409: {
                 headers: {
                     [name: string]: unknown;

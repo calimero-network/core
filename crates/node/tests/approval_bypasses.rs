@@ -338,16 +338,16 @@ fn consent(pk: &mut SoftAuthenticator, subject: &str, method: &str, args: &Value
     .unwrap()
 }
 
-/// Every node's view of alice's approvals (her personal organization's) and
+/// Every node's view of alice's approvals (her app's organization's, made with it) and
 /// her app's owner.
-async fn settled(c: &Cluster, account: &str, app: &str) -> Vec<(Value, String)> {
+async fn settled(c: &Cluster, app: &str) -> Vec<(Value, String)> {
     tokio::time::sleep(Duration::from_millis(500)).await;
     c.nodes
         .iter()
         .flatten()
         .map(|r| {
             r.node.sys(|s| {
-                let mine = s.personal_org_of(account).unwrap();
+                let mine = &s.apps[app].org;
                 (
                     json!(s.orgs[mine].approved_releases),
                     s.apps[app].owner.clone(),
@@ -371,15 +371,14 @@ async fn forged_decisions_are_refused_where_they_apply_on_every_node() {
         .as_str()
         .unwrap()
         .to_owned();
-    let before = settled(&c, &alice, &app).await;
+    let before = settled(&c, &app).await;
     assert_eq!(before[0], (json!(["1.0.0"]), alice.clone()));
 
     let mine = c.nodes[0]
         .as_ref()
         .unwrap()
         .node
-        .sys(|s| s.personal_org_of(&alice).cloned())
-        .unwrap();
+        .sys(|s| s.apps[&app].org.clone());
     let approve = |consent: Value| {
         json!({
             "op": "setReleaseApproval", "scope": { "kind": "org", "org": mine },
@@ -448,18 +447,14 @@ async fn forged_decisions_are_refused_where_they_apply_on_every_node() {
     )
     .await;
     assert_eq!(status, 400, "{v}");
-    assert_eq!(
-        settled(&c, &alice, &app).await,
-        before,
-        "nothing applied anywhere"
-    );
+    assert_eq!(settled(&c, &app).await, before, "nothing applied anywhere");
 
     // Alice's own consent over exactly this decision applies, once.
     let real = approve(consent(&mut alice_pk, &subject, "__approve_release", &args));
     let _ok = append(&c, &real).await.unwrap();
     let e = append(&c, &real).await.unwrap_err();
     assert!(e.contains("used already"), "{e}");
-    let after = settled(&c, &alice, &app).await;
+    let after = settled(&c, &app).await;
     assert!(
         after.iter().all(|(r, _)| *r == json!(["1.0.0", "2.0.0"])),
         "{after:?}"

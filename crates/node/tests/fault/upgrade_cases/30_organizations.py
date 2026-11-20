@@ -275,12 +275,15 @@ class PersonalOrg(DeepCase):
     name = "personal-org"
     area = "Organizations"
     since = "1.0.0-rc.20"
-    seeds = "instances created without naming an organization, which go to the personal organization made at sign-up"
-    verifies = ("both instances in the one personal organization, marked personal, with their data; another "
-                "instance made without one joins the same organization")
+    seeds = ("instances created without naming an organization, which go to the personal organization made at "
+             "sign-up; one of them shared with a listed account outside it (`accounts` access)")
+    verifies = ("both instances in the one personal organization, marked personal, with their data; the listed "
+                "account still reaches the shared one without being a member (organizations made ordinary in "
+                "1.0.0-rc.32 keep that); another instance made without one joins the same organization, now its "
+                "owner's only one")
 
     def populate(self, w):
-        yan, zed = people(w, "yan", "zed")
+        yan, zed, xia = people(w, "yan", "zed", "xia")
         del zed  # an outsider
         first = yan.deploy(kv_wasm(w), "yan-1")
         second = yan.deploy(kv_wasm(w), "yan-2")
@@ -288,10 +291,11 @@ class PersonalOrg(DeepCase):
         check(org, f"no personal organization after an instance named none: {yan.get('auth/me')}")
         for app in (first, second):
             yan.call(app, "set", {"key": "k", "value": app})
+        yan.raw("post", f"apps/{second}/access", {"access": {"kind": "accounts", "accounts": [xia.id]}})
         return {"org": org, "apps": [first, second]}
 
     def check(self, w, s):
-        yan, zed = people(w, "yan", "zed")
+        yan, zed, xia = people(w, "yan", "zed", "xia")
         eq(personal_org(yan), s["org"], "the personal organization")
         eq(yan.get(f"orgs/{s['org']}").get("personal"), True, "the organization is personal")
         for app in s["apps"]:
@@ -299,12 +303,52 @@ class PersonalOrg(DeepCase):
             eq(yan.result(app, "get", {"key": "k"}), app, "the instance's data")
         refused(("FORBIDDEN", "NOT_FOUND"), lambda: zed.view(s["apps"][0], "get", {"key": "k"}),
                 "an outsider reads the instance")
+        eq(xia.result(s["apps"][1], "get", {"key": "k"}), s["apps"][1],
+           "a listed account reaches the shared instance without being a member")
 
     def exercise(self, w, s):
         yan = person(w, "yan")
         app = yan.deploy(kv_wasm(w), f"yan-{len(s['apps']) + 1}")
         yan.call(app, "set", {"key": "k", "value": app})
         s["apps"].append(app)
+        self.check(w, s)
+
+
+@case
+class OrdinaryOrgs(DeepCase):
+    name = "ordinary-orgs"
+    area = "Organizations"
+    since = "1.0.0-rc.32"
+    seeds = ("an account signed up once organizations are ordinary (no organization from sign-up), an instance it "
+             "made naming none (in a new organization of its own), and its data")
+    verifies = ("the account is in that one organization, its owner, not personal; the instance there with its "
+                "data; another instance naming none joins it; a transfer to someone outside it is refused")
+
+    def populate(self, w):
+        orla, odin = people(w, "orla", "odin")
+        del odin  # an outsider
+        check(not [o for o in orla.get("auth/me").get("orgs", [])], "a sign-up made an organization")
+        app = orla.deploy(kv_wasm(w), "orla-1")
+        orla.call(app, "set", {"key": "k", "value": app})
+        org = orla.get(f"apps/{app}").get("org")
+        return {"org": org, "apps": [app]}
+
+    def check(self, w, s):
+        orla = person(w, "orla")
+        mine = [o for o in orla.get("auth/me").get("orgs", [])]
+        eq([(o["orgId"], o["role"], o.get("personal")) for o in mine], [(s["org"], "owner", False)],
+           "the account's organizations")
+        for app in s["apps"]:
+            eq(orla.get(f"apps/{app}").get("org"), s["org"], "the instance's organization")
+            eq(orla.result(app, "get", {"key": "k"}), app, "the instance's data")
+
+    def exercise(self, w, s):
+        orla, odin = people(w, "orla", "odin")
+        app = orla.deploy(kv_wasm(w), f"orla-{len(s['apps']) + 1}")
+        orla.call(app, "set", {"key": "k", "value": app})
+        s["apps"].append(app)
+        refused(("REJECTED",), lambda: orla.raw("post", f"apps/{app}/transfer", {"to": odin.id}),
+                "a transfer outside the organization")
         self.check(w, s)
 
 

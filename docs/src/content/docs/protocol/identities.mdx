@@ -21,19 +21,22 @@ An account id is 32 random bytes in base64url, made when someone signs up. The
 account record holds a display name, its passkeys (at most 10) and their
 labels and the account's aliases for apps. An account approves nothing for
 itself: every app is in an organization, and its approvals (mero-tee releases
-and outbound prefixes) are that organization's. The account's own apps are in
-its **personal organization**, made in the same log entry as the account
-(`CreateAccount { personalOrg }`; see
-[Personal organizations](/protocol/organizations/#personal-organizations) and
-[Deployment governance](/protocol/governance/)). Who may sign up is the
+and outbound prefixes) are that organization's. A sign-up makes no
+organization: the account's own apps are in one it creates, one made with an
+instance, or one it is invited to (see
+[Where an instance goes](/protocol/organizations/#where-an-instance-goes) and
+[Deployment governance](/protocol/governance/); below cluster version
+1.0.0-rc.32 a sign-up made a
+[personal organization](/protocol/organizations/#personal-organizations) in the
+same entry, `CreateAccount { personalOrg }`). Who may sign up is the
 cluster's [sign-up policy](/protocol/governance/#sign-up): `open` (the
 default; the operator's `maxAccounts` quota bounds how many accounts a cluster
 takes), `invite` or `closed`. `CreateAccount` carries the invite a person signs
 up with, as the token key's signature over the new account and the time, and
 `apply` judges it against the policy.
 
-The release of the node an account signed up through is approved for its
-personal organization from the start, so its apps can run where it began.
+The release of the node an organization was made through is approved for it
+from the start, so its apps can run where it began.
 
 ## Passkeys
 
@@ -120,7 +123,7 @@ A node verifies a token issued elsewhere without asking the issuer: it checks
 the signature against the issuer's signing key as it attested it at the
 address the cluster registered for that node, checks the expiry, and that the
 issuer's attested release may vouch for the account: a release one of the
-account's organizations approved, its personal organization included (where
+account's organizations approved (where
 the operator holds release approvals, one it approved;
 `SystemState::release_may_serve_account`). Each app access then also
 requires the issuer's release to be approved for that app's data. So a node on

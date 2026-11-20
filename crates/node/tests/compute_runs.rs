@@ -282,17 +282,11 @@ impl Rig {
         }
     }
 
-    /// The file bytes the payer of alice's apps is charged for: her personal
-    /// organization, where an app made without naming one goes.
+    /// The file bytes the payer of the app is charged for: its organization, made with
+    /// it since alice was in none when she created it.
     async fn charged(&self) -> u64 {
-        let me = self.alice.auth().me().await.map(wire).unwrap();
-        let payer = me["orgs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|o| o["personal"] == json!(true))
-            .map(|o| o["orgId"].as_str().unwrap().to_owned())
-            .expect("a personal organization from sign-up");
+        let app = self.alice.apps().get(&self.app).await.map(wire).unwrap();
+        let payer = app["org"].as_str().expect("the app's organization");
         let usage = self.alice.auth().usage().await.map(wire).unwrap();
         usage["fileBytes"][payer].as_u64().unwrap_or(0)
     }

@@ -932,7 +932,7 @@ fn components() -> Vec<Component> {
         .of::<crate::types::ApiKeyRecord>(),
         component(
             "Org",
-            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is its owner's personal organization (where instances created without naming an organization go).",
+            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other).",
             r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
         )
         .of::<OrgAnswer>(),
@@ -972,7 +972,7 @@ fn components() -> Vec<Component> {
         .of::<crate::types::OutboundApproval>(),
         component(
             "AppScope",
-            "The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.",
+            "The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization, below cluster version 1.0.0-rc.32 only). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.",
             r#"{ kind: "org", org: string, personal?: bool } | { kind: "account" }"#,
         ),
         component(
@@ -1200,7 +1200,7 @@ fn operations() -> Vec<Op> {
             .query::<super::ActivityQuery>("{ after?: uint }")
             .ok(r#"{ activity: { at: uint, passkey: string, kind: "signIn" | "approval", app?: string | null, origin?: string | null, method?: string, subject?: string }[] }"#),
         get("/auth/me", "me", SignedIn, "The caller's account")
-            .about("The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: the one made at sign-up, where its instances go unless they name another; its approvals are that organization's), recovery state, and how the caller came (`via`).")
+            .about("The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).")
             .ok(r#"{ accountId: string, name: string, passkeys: { id: string, signCount: uint, label: string | null, addedAt?: uint | null, lastSignInAt?: uint | null }[], orgs: { orgId: string, name: string, role: #OrgRole, personal?: bool }[], via: "session" | "apiKey", passkeyId: string | null, app?: string | null, origin?: string | null, recoveryCode?: bool, recoveryPending?: { accountId: string, credentialId: string, startedAt: uint, readyAt: uint } | null }"#)
             .errors(&[(404, "NOT_FOUND")]),
         post("/auth/account-proof", "account_proof::prove", Session, "Prove the account to another party")
@@ -1209,7 +1209,7 @@ fn operations() -> Vec<Op> {
             .ok("#AccountProof")
             .errors(&[(400, "BAD_AUDIENCE"), (400, "BAD_NONCE")]),
         get("/auth/apps", "account_apps", SignedIn, "The account's own apps")
-            .about("The apps the account owns, in any organization (a package-bound session: its package's), with its personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.")
+            .about("The apps the account owns, in any organization (a package-bound session: its package's), with its only organization's `approvedReleases` (below cluster version 1.0.0-rc.32 its personal organization's): each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.")
             .query::<super::PageQuery>(PAGE)
             .ok("{ scope: #AppScope, governance: #Governance, approvedReleases: string[] | null, clusterReleases: #ClusterRelease[], apps: #ReportApp[], next: string | null }"),
         get("/auth/usage", "usage", SignedIn, "The account's usage against its quotas")
@@ -1279,10 +1279,10 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         // ---------------------------------------------------------------- apps
         post("/apps", "app_create", Installer, "Create an app instance")
-            .about("From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization. Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.")
-            .json::<super::CreateAppBody>("{ name?: string, bundle?: string, package?: string, version?: string, service?: string, org?: string, access?: #Access, initArgs?: any, metadata?: any, deployment?: string }")
+            .about("From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.")
+            .json::<super::CreateAppBody>("{ name?: string, bundle?: string, package?: string, version?: string, service?: string, org?: string, newOrg?: { name: string }, access?: #Access, initArgs?: any, metadata?: any, deployment?: string }")
             .ok("{ appId: string, contextId: string, group: uint, replicas: uint[], compute: bool }")
-            .errors(&[(400, "BAD_REQUEST"), (400, "NOT_OFFERED"), (400, "VERSION_REQUIRED"), (400, "NO_SUCH_SERVICE"), (400, "AMBIGUOUS_COMPUTE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "INIT_FAILED"), (429, "QUOTA_EXCEEDED"), (503, "UNAVAILABLE")]),
+            .errors(&[(400, "BAD_REQUEST"), (400, "NOT_OFFERED"), (400, "VERSION_REQUIRED"), (400, "NO_SUCH_SERVICE"), (400, "AMBIGUOUS_COMPUTE"), (400, "ORG_REQUIRED"), (400, "STANDALONE_INSTANCE"), (400, "ORG_INSTANCE"), (409, "NO_ORGANIZATION"), (409, "FEATURE_NOT_ACTIVE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "INIT_FAILED"), (429, "QUOTA_EXCEEDED"), (503, "UNAVAILABLE")]),
         get("/apps", "app_list", SignedIn, "Apps the caller reaches")
             .about("Anyone may list public apps.")
             .query::<super::AppListQuery>("{ package?: string, bundle?: string }")
@@ -1403,7 +1403,7 @@ fn operations() -> Vec<Op> {
             .json::<super::AccessBody>("{ access: #Access }")
             .ok("{}"),
         post("/apps/{app}/transfer", "app_transfer", AccountHolder, "Hand an app to another account")
-            .about("The owner (for an organization's app, while a member and in the app's team), or an organization admin; an organization's app only to a member. Answers `null`.")
+            .about("The owner (for an organization's app, while a member and in the app's team), or an organization admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for; below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal one). Answers `null`.")
             .json::<super::TransferBody>("{ to: string, confirm?: #Confirm }")
             .ok("null")
             .step_up(),
@@ -1561,7 +1561,7 @@ fn operations() -> Vec<Op> {
             .errors(&[(403, "FORBIDDEN"), (503, "UNAVAILABLE")]),
         // ---------------------------------------------------------------- organizations
         post("/orgs", "org_create", Session, "Create an organization")
-            .about("`recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.")
+            .about("`recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account's are those it creates here (or with a `standalone` instance) or is invited to; before, every account also had a personal organization from sign-up (`personal` in `/auth/me`).")
             .json::<super::OrgBody>("{ name: string, recoveryKey?: string, capabilities?: uint }")
             .ok("{ orgId: string }")
             .errors(&[(400, "BAD_REQUEST"), (400, "UNKNOWN_CAPABILITIES"), (409, "FEATURE_NOT_ACTIVE"), (429, "QUOTA_EXCEEDED")]),
@@ -2030,7 +2030,7 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
         get("/deployments/{id}/orgs", "deployment_orgs", SignedIn, "The organizations a deployment serves")
-            .about("For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or in a personal organization, are only counted (`outsideOrgs`). Never who the members are.")
+            .about("For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (`outsideOrgs`). Never who the members are.")
             .ok("{ deployment: string, orgs: { orgId: string, name: string | null, memberCount: uint, activeMembers30d: uint, instances: uint, apps: { app: string, version: string }[], firstCreatedAt: string }[], outsideOrgs: uint }"),
         get("/deployments/{id}/secrets", "deployment_secrets", SignedIn, "A deployment's secrets")
             .about("For its managers, on fresh state: every secret a release the deployment offers declares, or a release one of those references (`uses`, for the apps it creates), and every one it holds a value of. Each row names the deployment's apps whose release declares it or references one that does (`apps`, empty when none does any more: the value is kept, unused, until cleared), the releases that declare it (`declaredBy`) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.")

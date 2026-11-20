@@ -60,7 +60,7 @@ const client = await CalimeroClient.connect({
 
 await client.signUp(browserPasskey(), 'alice'); // or signIn(browserPasskey())
 await client.packages.install({ package: 'com.example.kv', version: '1.0.0' }); // signed .mpk from the registry
-// No `org`: the instance goes in your personal organization, which sign-up made.
+// No `org`: your only organization, or (none yet) a new one made with the instance.
 const { appId: app } = await client.apps.create({ name: 'kv', package: 'com.example.kv', version: '1.0.0' });
 
 await client.apps.call({ app, method: 'set', args: { key: 'a', value: '1' } });
@@ -303,8 +303,8 @@ callable (`(await client.packages.list()).packages`).
 | `upgradeOrg(org, target, passkey)` | `client.orgs.upgrade({ org, ...target }, { confirm: passkeyConfirm(passkey) })` |
 | `upgradeRun(org, run)` | `client.orgs.upgradeStatus({ org, run })` |
 | `retryUpgradeRun(org, run, passkey)` | `client.orgs.upgradeRetry({ org, run }, { confirm: passkeyConfirm(passkey) })` |
-| `approveRelease(org, version, passkey, approved)` | `client.orgs.releaseApproval({ org, version, approved }, { confirm: passkeyConfirm(passkey) })` (an account's own apps are in its personal organization: approve there; core 1.0.0-rc.20 removed the account-level approval) |
-| `approveOutbound(org, pkg, passkey, options)` | `client.orgs.outboundApproval({ org, package: pkg, ...options }, { confirm: passkeyConfirm(passkey) })` (the personal organization's for the account's own apps, as above) |
+| `approveRelease(org, version, passkey, approved)` | `client.orgs.releaseApproval({ org, version, approved }, { confirm: passkeyConfirm(passkey) })` (an account's own apps are in an organization like any other: approve there; core 1.0.0-rc.20 removed the account-level approval) |
+| `approveOutbound(org, pkg, passkey, options)` | `client.orgs.outboundApproval({ org, package: pkg, ...options }, { confirm: passkeyConfirm(passkey) })` (the app's organization's for the account's own apps, as above) |
 | `appsReport(org, page)` | `client.orgs.apps({ org, ...page })`; `client.auth.accountApps({ ...page })` lists the apps the account owns in any organization |
 | `releaseRules()` | `client.public.releasesPublic()` |
 | `requestConsent(request)` | `client.consent.pageCreate({ body: request })` |

@@ -993,28 +993,45 @@ is its command line.
   `an_owner_attaches_an_app_and_the_instance_reads_it_with_linked`,
   `an_upgrade_warns_when_an_attached_app_falls_outside_its_range`,
   `system::tests::an_app_is_attached_with_its_managers_consent_and_detached_with_it`.
-- **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
+- **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; only to a member of the app's org, refused before the passkey once organizations are ordinary). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas (`payer_quotas`: its override, else the cluster's, with `MoveApp { org_quotas }`, which the API always sets; `Feature::MoveOrgQuotas`, rc.24; an entry without it replays judging the cluster's limits). `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`) and a target that approves none of the releases holding the app (`MOVE_RELEASES_DISJOINT`); clients see each as `400 REJECTED` with the reason as the message. `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs` (`a_move_is_judged_by_the_targets_own_quota`), `tests/move_app.rs`.
 - **Every app is in an organization** (`AppRecord::org`, required; hard
   cutover in 1.0.0-rc.20: a record or entry without one is not read, so
-  clusters are recreated). **Personal organizations** (`Org::personal`,
-  `SystemState::personal_org_of`; docs: protocol organizations "Personal
-  organizations"): a sign-up makes the account's in the same entry
-  (`CreateAccount { personal_org: PersonalOrgSeed }`, `orgs::new_org`, named
-  `PERSONAL_ORG_NAME`, approving the sign-up node's release), and `POST /apps`
-  with no `org` creates the instance there (`api::apps::personal_org`, which
-  makes one with `CreateOrg { personal: true }` for an account that lacks it).
-  `CreateOrg { personal }` refuses a second one (`409 PERSONAL_ORG_EXISTS`) and
-  skips `maxOrgsPerAccount`. `may_reach` lets an `Accounts` instance there reach
-  its listed accounts without membership. `TransferApp` of an app there to a
-  non-member moves it to the new owner's personal organization
-  (`NO_PERSONAL_ORG` without one; `app_transfer` makes it first).
-  `deployment_orgs` counts it in `outsideOrgs`, unnamed. There are no account
-  approvals (`ReleaseScope` is `Org` or `Cluster`); a consent request with no
-  scope is the personal organization's; `release_may_serve_account` reads the
-  account's organizations. Regressions:
-  `system::tests::an_account_has_one_personal_organization_outside_its_quota`,
-  `move_app::an_instance_naming_no_organization_goes_to_its_owners_personal_one`.
+  clusters are recreated). **Ordinary organizations** (`Feature::OrdinaryOrgs`,
+  rc.32; `SystemState::ordinary_orgs`, over `cluster_brings`; docs: protocol
+  organizations "Where an instance goes"): from that logged version a sign-up
+  makes no organization (`register/finish` sends no `CreateAccount { personal_org }`
+  and apply drops one an entry carries), and `POST /apps` places an instance by its
+  release's signed `instanceOrg` (`calimero_bundle::InstanceOrg`: `standalone` |
+  `org` | `either`, absent = `either`; kept on `PackageVersion::instance_org`, recorded
+  by `InstallPackage` only once the feature is active and filled in by a reinstall,
+  else read from the `.mpk`, `api::apps::instance_org_of`): `api::apps::instance_org`
+  answers the org named, the creator's only one (`SystemState::orgs_of`, `member` or
+  above), or a new ordinary one it writes first (`CreateOrg`, named `newOrg.name`, else
+  the instance's name made to fit, `standalone_org_name`); refusals `400 ORG_REQUIRED`,
+  `409 NO_ORGANIZATION`, `400 STANDALONE_INSTANCE`, `400 ORG_INSTANCE`. A unit's members
+  join their instance's org; a deployment's instance follows its release's mode. The
+  mode is judged by the API only (apply sees an ordinary `CreateOrg` and `CreateApp`).
+  **Personal organizations** (`Org::personal`, made below that version):
+  a sign-up made the account's in the same entry (`CreateAccount { personal_org:
+  PersonalOrgSeed }`, `orgs::new_org`, named `PERSONAL_ORG_NAME`), and `POST /apps`
+  with no `org` created the instance there (`api::apps::personal_org`). Below the
+  version every rule applies as logged; from it, `SystemState::acts_personal` is
+  false for all of them: `CreateOrg { personal }` is refused (`NO_PERSONAL_ORGS`,
+  `409 PERSONAL_ORGS_ENDED`), every owned org counts against `maxOrgsPerAccount`,
+  `TransferApp` hands an app only to a member (`NEW_OWNER_NOT_A_MEMBER`, `400
+  REJECTED`, checked by `app_transfer` before the passkey), `personal_org_of` answers
+  none, `deployment_orgs` names it, the consent page's `scope: account` is the
+  account's only org, and `/auth/apps` reads that org's approvals. `may_reach` still
+  lets an `Accounts` instance in an org flagged `personal` reach its listed accounts
+  without membership. There are no account approvals (`ReleaseScope` is `Org` or
+  `Cluster`); `release_may_serve_account` reads the account's organizations.
+  Regressions: `system::tests::an_account_has_one_personal_organization_outside_its_quota`,
+  `system::tests::once_organizations_are_ordinary_a_personal_one_is_like_any_other`,
+  `system::tests::a_releases_instance_mode_is_kept_and_filled_in_on_a_record_from_before`,
+  `instance_orgs::an_instance_goes_where_its_release_says`,
+  `instance_orgs::an_app_is_transferred_only_to_a_member_of_its_organization`, the
+  `personal-org` and `ordinary-orgs` upgrade cases.
 - **An org app's owner, while a member** (`SystemState::owner_acts`): an organization's app gives its owner the owner's powers (access, metadata, transfer, delete, upgrade, upgrade keys, files, blob deletes, usage) only while they are a member (`member` or above) of its organization; its admins keep transfer and delete (`manages_app`). Judged at apply; `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` carry `owner_in_org`, which the API always sets; absent in an entry an earlier release logged, which replays judging ownership alone. Regressions: `an_owner_removed_from_the_organization_no_longer_manages_its_app`, `a_member_owner_and_a_personal_owner_still_manage_their_apps`, `system::tests` (`an_org_apps_owner_manages_it_only_while_a_member`, `an_org_admin_transfers_or_deletes_an_app_whose_owner_left`, `app_commands_logged_before_the_membership_rule_replay_as_they_did`).
 - **An app on a team, its owner while in the team** (`SystemState::owner_acts`, `may_reach`): an app with `team` access is reached and managed by its owner only while they are in that team (`Org::in_team`), so an owner kicked from, leaving, or closed out of an app's team (or a private channel) loses the channels they created there; admins transfer them. The six owner commands above and `ScopeApps` (which finds who reaches an instance) carry `owner_in_team`, which the API always sets; absent, an entry replays judging the owner without the team (`OwnerRule`). Regressions: `an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it`, `system::tests::an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it`.
 - **A stopped group** (`calimero-log` restarts it): a group whose Raft core stopped

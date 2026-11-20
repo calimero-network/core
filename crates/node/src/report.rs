@@ -326,9 +326,10 @@ fn last_upgrade_json(
 }
 
 /// The scope whose approvals cover `app`: its organization (`personal` when it
-/// is its owner's personal organization, left out otherwise).
+/// is its owner's personal organization and organizations are not ordinary yet, left
+/// out otherwise).
 fn scope_json(s: &SystemState, app: &AppRecord) -> Value {
-    if s.orgs.get(&app.org).is_some_and(|o| o.personal) {
+    if s.orgs.get(&app.org).is_some_and(|o| s.acts_personal(o)) {
         json!({ "kind": "org", "org": app.org, "personal": true })
     } else {
         json!({ "kind": "org", "org": app.org })

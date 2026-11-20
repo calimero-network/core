@@ -111,6 +111,17 @@ pub enum Upgrades {
     Publisher,
 }
 
+/// Where the package's instances go (`instanceOrg` in the manifest).
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum InstanceOrg {
+    /// Each instance gets an organization of its own, made with it.
+    Standalone,
+    /// Each instance goes into an organization its creator is in.
+    Org,
+    /// The organization named, the creator's only one, else a new one (the default).
+    Either,
+}
+
 #[derive(Debug, Args)]
 pub struct PackArgs {
     /// The app's crate: reads `[package.metadata.calimero]` (`package`,
@@ -156,6 +167,10 @@ pub struct PackArgs {
     /// Who upgrades the package's instances (absent: the owner).
     #[arg(long, value_enum)]
     pub upgrades: Option<Upgrades>,
+    /// Which organization an instance is created in (absent: `either`; DIR's
+    /// `instance-org` otherwise).
+    #[arg(long, value_enum)]
+    pub instance_org: Option<InstanceOrg>,
     /// The package id, e.g. `com.example.kv-store` (default: DIR's metadata).
     #[arg(long)]
     pub package: Option<String>,
@@ -577,7 +592,7 @@ fn uses_of(
 /// (and `cargo mero` before it) read: `metadata` (`name`, `description`,
 /// `author`, `icon`, `tags`, `license`, `category`, `guide`), `handlers.slug`
 /// (default: the package), `links` (`frontend`, `github`, `docs`),
-/// `frontendAliases`, `outbound` and `upgrades`, and `buildInfo` (the
+/// `frontendAliases`, `outbound`, `upgrades` and `instanceOrg` (`instance-org`), and `buildInfo` (the
 /// `calimero-sdk` git source and tag). A flag wins over the table.
 fn manifest_extras(
     a: &PackArgs,
@@ -1039,6 +1054,22 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
             bail!("upgrades = {u:?}: owner or publisher");
         }
         let _ = manifest.insert("upgrades".into(), json!(u));
+    }
+    let instance_org = match a.instance_org {
+        Some(InstanceOrg::Standalone) => Some("standalone".to_owned()),
+        Some(InstanceOrg::Org) => Some("org".to_owned()),
+        Some(InstanceOrg::Either) => Some("either".to_owned()),
+        None => meta
+            .table
+            .get("instance-org")
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned),
+    };
+    if let Some(m) = instance_org {
+        if !["standalone", "org", "either"].contains(&m.as_str()) {
+            bail!("instance-org = {m:?}: standalone, org or either");
+        }
+        let _ = manifest.insert("instanceOrg".into(), json!(m));
     }
 
     let key = signing_key(a.key.as_deref())?;

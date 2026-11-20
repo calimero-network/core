@@ -1,6 +1,6 @@
 ---
 title: Organizations, teams & access
-description: Who reaches an app — personal and shared organizations, access rules, roles, nested open and restricted teams, capabilities, invites, recovery and backup keys — and how each rule is checked.
+description: Who reaches an app — organizations and where an instance goes, access rules, roles, nested open and restricted teams, capabilities, invites, recovery and backup keys — and how each rule is checked.
 sidebar:
   order: 14
 ---
@@ -9,8 +9,9 @@ import SeqDiagram from '../../../components/SeqDiagram.astro';
 import OrgStructure from '../../../components/diagrams/OrgStructure.astro';
 import OrgRecoveryTimeline from '../../../components/diagrams/OrgRecoveryTimeline.astro';
 
-Every app instance is in exactly one **organization**, and every account has
-one of its own, its **personal organization**, from sign-up. An organization
+Every app instance is in exactly one **organization**: one its creator is in,
+or one made with it, as its package's manifest says ([Where an instance
+goes](#where-an-instance-goes)). An organization
 holds members with roles, nested **teams** (an **app team** per package it
 uses, with restricted child teams below for private channels) and the app
 instances, each with an access rule that names who reaches it.
@@ -108,35 +109,54 @@ one. A name is checked where the command applies: a `CreateOrg` an earlier
 release logged (without `name_fits`) replays taking any name, and an
 organization keeps the name it has until renamed.
 
-### Personal organizations
+### Where an instance goes
 
-Every app is in an organization, and every account has one of its own from
-sign-up: its **personal organization**, made in the same entry as the account
-(`CreateAccount { personalOrg }`, named `Personal`), approving the release the
-account signed up through. An instance created without naming an
-organization (`POST /apps` with no `org`, from a console, a script or an app's
-own page) goes there, so a person who only wants to use an app never sets one
-up. It is an organization like any other: its owner may rename it, invite
-people and make teams. What sets it apart (`Org::personal`, `personal: true`
-in `GET /orgs/{org}`, in the `orgs` of `/auth/me` and in report scopes):
+Every app is in an organization. An organization is an organization: a person's
+own is just one with a single member, its owner. From cluster version
+1.0.0-rc.32 (`Feature::OrdinaryOrgs`) a sign-up makes none; an account's
+organizations are those it creates (`POST /orgs`, or with an instance below) or
+is invited to.
 
-- An account owns exactly one (the log refuses a second, `PERSONAL_ORG_EXISTS`), and it does not
-  count against `maxOrgsPerAccount`.
-- Its release and outbound approvals are the only ones the account's own apps
-  have (an account holds none itself): approved with
-  `POST /orgs/{org}/releases` and `/orgs/{org}/outbound` like any
-  organization's, and on the [consent page](/protocol/consent-page/) a
-  request's `"scope": "account"` names it.
-- Its apps' usage and quotas are billed to it like any organization's: there
-  is no account payer.
-- An instance there shared with listed accounts (`accounts` access) reaches
-  them without making them members; anywhere else an organization's app
-  reaches only its members (or anyone, `public`).
-- An instance there handed to someone outside it (`POST /apps/{app}/transfer`)
-  goes to the new owner's personal organization (`team` access becoming
-  `org`).
-- A deployment's report (`GET /deployments/{id}/orgs`) counts its instances in
-  `outsideOrgs` and never names it.
+A package's developer says in its signed manifest which organization an instance
+goes into (`instanceOrg`, kept on the release's record, `PackageVersion::instance_org`;
+`meroctl app pack --instance-org` or `instance-org` in
+`[package.metadata.calimero]`):
+
+| `instanceOrg` | `POST /apps` naming `org` | naming none | `newOrg: { name }` |
+| --- | --- | --- | --- |
+| `standalone` | `400 STANDALONE_INSTANCE` | a new organization, made with the instance | a new one, so named |
+| `org` | that organization | the creator's only one; `400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none (create one, or accept an invite) | `400 ORG_INSTANCE` |
+| `either` (default, and a raw bundle) | that organization | the creator's only one; with none a new one; `400 ORG_REQUIRED` with several | a new one, so named |
+
+The creator's organizations are those they are a `member` or more of. A new
+organization is an ordinary one owned by the creator, approving the release of
+the node it was made through and counted against `maxOrgsPerAccount`; it is
+named `newOrg.name`, else the instance's name made to fit (one line, at most 64
+characters), else the package's id. It is written before the instance (two
+entries): a failure after it leaves the organization in place, as a unit's
+member made before a failure stays. The people of a standalone instance are
+invited into its organization. An instance from a deployment follows its
+release's mode the same way; a unit's members always join their instance's
+organization. A release recorded before the node kept the mode is read from its
+`.mpk`; installing it again records it.
+
+#### Personal organizations
+
+Before 1.0.0-rc.32 (below that cluster version) a
+sign-up made the account's **personal organization** in the same entry
+(`CreateAccount { personalOrg }`, named `Personal`) and an instance naming no
+organization went there. Such an organization keeps its `personal: true` flag
+(in `GET /orgs/{org}`, the `orgs` of `/auth/me`), and entries logged before the
+version replay as they applied. From the version on it is an organization like
+any other: no new one is made (`CreateOrg { personal }` is refused, `409
+PERSONAL_ORGS_ENDED`, and a sign-up's seed is dropped), it counts against
+`maxOrgsPerAccount` (an account above the limit keeps its organizations; only
+creating one more is refused), an app there is transferred only to a member
+(as everywhere: `400 REJECTED`), a deployment's report names it, and a consent
+request with no scope (`"scope": "account"`) stands for the account's only
+organization. One thing stays: an instance there with `accounts` access still
+reaches its listed accounts without making them members, so nothing that worked
+stops.
 
 Apps outside any organization were removed in a hard cutover (1.0.0-rc.20):
 data holding one is not read.
@@ -528,7 +548,7 @@ proof. Recovery moves the organization's **ownership** to another account, the
 one the person signs up with a new passkey, after a delay during which the
 current owner can cancel. It acts on the organization only: one
 organization's seed reaches nothing outside it (not the owner's other
-organizations, not their personal one), and an account that owns several sets
+organizations), and an account that owns several sets
 a key on each. To get the account itself back, see
 [Account recovery](/protocol/identities/#account-recovery).
 
@@ -599,8 +619,8 @@ and signed by the node's attested receipt key
 ([Recovery files](/protocol/storage/#recovery-files)). The **backup holder**
 is whoever upgrades the app (`SystemState::backup_holder`): the operator where
 it holds app upgrades, else the app's organization, also for a package that
-declares `upgrades: publisher`. An account's own apps are its personal
-organization's. No node ever holds a private half.
+declares `upgrades: publisher`. An account's own apps are in an organization
+like any other app. No node ever holds a private half.
 
 | Holder | Read | Set |
 | --- | --- | --- |

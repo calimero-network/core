@@ -31,7 +31,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, operator_sign, signed_up, typed, wire, Cluster};
+use harness::{home_org, kv_wasm, operator_sign, signed_up, typed, wire, Cluster};
 
 fn operator_upgrades(config: &mut calimero_node::Config) {
     config.governance.app_upgrades = Authority::Operator;
@@ -328,7 +328,7 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
         .as_str()
         .unwrap()
         .to_owned();
-    let mine = alice.personal_org().await.unwrap();
+    let mine = home_org(&alice).await;
     let holder = BackupHolder::Org(mine.clone());
     // A sealed file of the app: its segments go to the disk beside the app's
     // file, and its data key comes back wrapped under the new cluster's key.

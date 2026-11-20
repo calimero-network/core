@@ -407,6 +407,14 @@ pub struct PackageVersion {
     /// from the `.mpk` where it decides something (`Node::min_runtime_of`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_runtime_version: Option<String>,
+    /// Which organization an instance of it is created in, from its signed manifest
+    /// (`instanceOrg`, [`calimero_bundle::InstanceOrg`]). Recorded only once every node
+    /// keeps it (`Feature::OrdinaryOrgs`), and filled in by an install of the same release
+    /// after that; absent in a release recorded before, whose mode the API then reads from
+    /// its `.mpk` (`api::apps::instance_org_of`). Left out when absent, so such a record
+    /// reads and writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_org: Option<calimero_bundle::InstanceOrg>,
 }
 
 impl PackageVersion {
@@ -985,6 +993,13 @@ pub const NO_PERSONAL_ORG: &str = "the new owner has no personal organization to
 /// A refusal: an account owns at most one personal organization
 /// ([`crate::types::Org::personal`]).
 pub const PERSONAL_ORG_EXISTS: &str = "the account has a personal organization already";
+/// A refusal: from the cluster version that makes organizations ordinary
+/// ([`SystemState::ordinary_orgs`]) no personal organization is made; an account's own
+/// organization is an ordinary one it creates.
+pub const NO_PERSONAL_ORGS: &str =
+    "personal organizations are no longer made: create an ordinary organization";
+/// A refusal: an organization's app is handed only to a member of it.
+pub const NEW_OWNER_NOT_A_MEMBER: &str = "the new owner is not a member of the app's organization";
 /// The name a personal organization is made with when the request names
 /// none: never the account's name, which the deployment report would show.
 pub const PERSONAL_ORG_NAME: &str = "Personal";
@@ -1730,9 +1745,14 @@ impl SystemState {
     }
 
     /// The personal organization `account` owns
-    /// ([`crate::types::Org::personal`]), if any.
+    /// ([`crate::types::Org::personal`]), if any, and only while personal organizations
+    /// are kept apart: from [`Self::ordinary_orgs`] on, none is (such an organization is an
+    /// ordinary one with its owner as member).
     #[must_use]
     pub fn personal_org_of(&self, account: &str) -> Option<&OrgId> {
+        if self.ordinary_orgs() {
+            return None;
+        }
         self.orgs
             .iter()
             .find(|(_, o)| o.personal && o.role(account) == Some(OrgRole::Owner))
@@ -2617,6 +2637,34 @@ impl SystemState {
         self.cluster_version
             .as_deref()
             .is_some_and(|v| compare_versions(v, feature.since()) != std::cmp::Ordering::Less)
+    }
+
+    /// Whether organizations are ordinary at this log position: the logged cluster version
+    /// brings [`cluster_version::Feature::OrdinaryOrgs`]. From then on a sign-up makes no
+    /// organization, no personal one is made, and one made before is treated as any other
+    /// (it counts against `maxOrgsPerAccount`, its apps go only to its members), except that
+    /// its `accounts` instances still reach their listed accounts ([`Self::may_reach`]).
+    /// Before it, every entry applies as it was logged.
+    #[must_use]
+    pub fn ordinary_orgs(&self) -> bool {
+        self.cluster_brings(cluster_version::Feature::OrdinaryOrgs)
+    }
+
+    /// Whether `org` is kept apart as a personal organization: flagged so, and only
+    /// before [`Self::ordinary_orgs`].
+    #[must_use]
+    pub fn acts_personal(&self, org: &crate::types::Org) -> bool {
+        org.personal && !self.ordinary_orgs()
+    }
+
+    /// The organizations `account` may create an app in (`member` or above), by id.
+    #[must_use]
+    pub fn orgs_of(&self, account: &str) -> Vec<&OrgId> {
+        self.orgs
+            .iter()
+            .filter(|(_, o)| o.role(account).is_some_and(|r| r >= OrgRole::Member))
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Whether `actor` may change `d`: [`Self::acts_for`] its owner.

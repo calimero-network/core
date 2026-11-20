@@ -55,6 +55,7 @@ from .app_attestation_response_200_replicas_item_type_1 import (
 )
 from .app_components import AppComponents
 from .app_create_body import AppCreateBody
+from .app_create_body_new_org import AppCreateBodyNewOrg
 from .app_create_response_200 import AppCreateResponse200
 from .app_delegate_body import AppDelegateBody
 from .app_delegate_response_200 import AppDelegateResponse200
@@ -716,6 +717,7 @@ __all__ = (
     "AppAttestationResponse200ReplicasItemType1",
     "AppComponents",
     "AppCreateBody",
+    "AppCreateBodyNewOrg",
     "AppCreateResponse200",
     "AppDelegateBody",
     "AppDelegateResponse200",

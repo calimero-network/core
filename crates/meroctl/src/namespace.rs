@@ -391,7 +391,7 @@ pub fn prefixes(named: &[String]) -> OutboundSelection {
 }
 
 /// The owner approves outbound prefixes (an org's, or the account's own: its
-/// personal organization's).
+/// only organization's).
 pub async fn outbound(
     env: &Env,
     namespace: Option<&str>,
@@ -402,10 +402,10 @@ pub async fn outbound(
 ) -> eyre::Result<Value> {
     let selection = Some(prefixes(named));
     let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
-    // The account's own apps are its personal organization's.
+    // The account's own apps are its only organization's.
     let ns = match namespace {
         Some(ns) => ns.to_owned(),
-        None => env.client.personal_org().await?,
+        None => env.client.sole_org().await?,
     };
     let out = env
         .client
@@ -417,7 +417,7 @@ pub async fn outbound(
 }
 
 /// The owner approves a mero-tee release (an org's apps, or the account's own:
-/// its personal organization's).
+/// its only organization's).
 pub async fn approve_release(
     env: &Env,
     namespace: Option<&str>,
@@ -425,10 +425,10 @@ pub async fn approve_release(
     dev_passkey: Option<PathBuf>,
 ) -> eyre::Result<Value> {
     let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
-    // The account's own apps are its personal organization's.
+    // The account's own apps are its only organization's.
     let ns = match namespace {
         Some(ns) => ns.to_owned(),
-        None => env.client.personal_org().await?,
+        None => env.client.sole_org().await?,
     };
     let out = env
         .client

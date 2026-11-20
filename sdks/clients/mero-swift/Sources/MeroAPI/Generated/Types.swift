@@ -26,7 +26,7 @@ public protocol APIProtocol: Sendable {
     func appList(_ input: Operations.AppList.Input) async throws -> Operations.AppList.Output
     /// Create an app instance
     ///
-    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization. Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
     ///
     /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
     ///
@@ -484,7 +484,7 @@ public protocol APIProtocol: Sendable {
     func appStorage(_ input: Operations.AppStorage.Input) async throws -> Operations.AppStorage.Output
     /// Hand an app to another account
     ///
-    /// The owner (for an organization's app, while a member and in the app's team), or an organization admin; an organization's app only to a member. Answers `null`.
+    /// The owner (for an organization's app, while a member and in the app's team), or an organization admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for; below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal one). Answers `null`.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -625,7 +625,7 @@ public protocol APIProtocol: Sendable {
     func apikeyRevoke(_ input: Operations.ApikeyRevoke.Input) async throws -> Operations.ApikeyRevoke.Output
     /// The account's own apps
     ///
-    /// The apps the account owns, in any organization (a package-bound session: its package's), with its personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
+    /// The apps the account owns, in any organization (a package-bound session: its package's), with its only organization's `approvedReleases` (below cluster version 1.0.0-rc.32 its personal organization's): each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -668,7 +668,7 @@ public protocol APIProtocol: Sendable {
     func logoutAll(_ input: Operations.LogoutAll.Input) async throws -> Operations.LogoutAll.Output
     /// The caller's account
     ///
-    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: the one made at sign-up, where its instances go unless they name another; its approvals are that organization's), recovery state, and how the caller came (`via`).
+    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -933,7 +933,7 @@ public protocol APIProtocol: Sendable {
     func deploymentWithdraw(_ input: Operations.DeploymentWithdraw.Input) async throws -> Operations.DeploymentWithdraw.Output
     /// The organizations a deployment serves
     ///
-    /// For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or in a personal organization, are only counted (`outsideOrgs`). Never who the members are.
+    /// For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (`outsideOrgs`). Never who the members are.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -1019,7 +1019,7 @@ public protocol APIProtocol: Sendable {
     func opsReleaseDeadlineLift(_ input: Operations.OpsReleaseDeadlineLift.Input) async throws -> Operations.OpsReleaseDeadlineLift.Output
     /// Create an organization
     ///
-    /// `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.
+    /// `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account's are those it creates here (or with a `standalone` instance) or is invited to; before, every account also had a personal organization from sign-up (`personal` in `/auth/me`).
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -1555,7 +1555,7 @@ extension APIProtocol {
     }
     /// Create an app instance
     ///
-    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization. Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
     ///
     /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
     ///
@@ -2481,7 +2481,7 @@ extension APIProtocol {
     }
     /// Hand an app to another account
     ///
-    /// The owner (for an organization's app, while a member and in the app's team), or an organization admin; an organization's app only to a member. Answers `null`.
+    /// The owner (for an organization's app, while a member and in the app's team), or an organization admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for; below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal one). Answers `null`.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -2756,7 +2756,7 @@ extension APIProtocol {
     }
     /// The account's own apps
     ///
-    /// The apps the account owns, in any organization (a package-bound session: its package's), with its personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
+    /// The apps the account owns, in any organization (a package-bound session: its package's), with its only organization's `approvedReleases` (below cluster version 1.0.0-rc.32 its personal organization's): each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -2821,7 +2821,7 @@ extension APIProtocol {
     }
     /// The caller's account
     ///
-    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: the one made at sign-up, where its instances go unless they name another; its approvals are that organization's), recovery state, and how the caller came (`via`).
+    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -3310,7 +3310,7 @@ extension APIProtocol {
     }
     /// The organizations a deployment serves
     ///
-    /// For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or in a personal organization, are only counted (`outsideOrgs`). Never who the members are.
+    /// For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (`outsideOrgs`). Never who the members are.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -3478,7 +3478,7 @@ extension APIProtocol {
     }
     /// Create an organization
     ///
-    /// `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.
+    /// `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account's are those it creates here (or with a `standalone` instance) or is invited to; before, every account also had a personal organization from sign-up (`personal` in `/auth/me`).
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///
@@ -6876,7 +6876,7 @@ public enum Components {
                 case upgrades
             }
         }
-        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is its owner's personal organization (where instances created without naming an organization go).
+        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.32 (from that version it is an organization like any other).
         ///
         /// - Remark: Generated from `#/components/schemas/Org`.
         public struct Org: Codable, Hashable, Sendable {
@@ -7700,7 +7700,7 @@ public enum Components {
                 case reviewed
             }
         }
-        /// The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.
+        /// The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization, below cluster version 1.0.0-rc.32 only). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.
         ///
         /// - Remark: Generated from `#/components/schemas/AppScope`.
         @frozen public enum AppScope: Codable, Hashable, Sendable {
@@ -10391,7 +10391,7 @@ public enum Operations {
     }
     /// Create an app instance
     ///
-    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization. Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+    /// From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`. Every app is in an organization, chosen by the release's signed `instanceOrg` (a raw bundle: `either`): `standalone` makes a new organization with the instance (its name `newOrg.name`, else the instance's), and naming `org` is `400 STANDALONE_INSTANCE`; `org` goes into `org`, else the caller's only organization (`400 ORG_REQUIRED` with several, `409 NO_ORGANIZATION` with none; `newOrg` is `400 ORG_INSTANCE`); `either` goes into `org`, a new one when `newOrg` asks, else the caller's only one, else (none) a new one, `400 ORG_REQUIRED` with several. Below cluster version 1.0.0-rc.32 an instance naming none goes to the caller's personal organization, and `newOrg` is `409 FEATURE_NOT_ACTIVE`. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
     ///
     /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
     ///
@@ -10428,6 +10428,23 @@ public enum Operations {
                     public var service: Swift.String?
                     /// - Remark: Generated from `#/paths/apps/POST/requestBody/json/org`.
                     public var org: Swift.String?
+                    /// - Remark: Generated from `#/paths/apps/POST/requestBody/json/newOrg`.
+                    public struct NewOrgPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/POST/requestBody/json/newOrg/name`.
+                        public var name: Swift.String
+                        /// Creates a new `NewOrgPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - name:
+                        public init(name: Swift.String) {
+                            self.name = name
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case name
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/POST/requestBody/json/newOrg`.
+                    public var newOrg: Operations.AppCreate.Input.Body.JsonPayload.NewOrgPayload?
                     /// - Remark: Generated from `#/paths/apps/POST/requestBody/json/access`.
                     public var access: Components.Schemas.Access?
                     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
@@ -10449,6 +10466,7 @@ public enum Operations {
                     ///   - version:
                     ///   - service:
                     ///   - org:
+                    ///   - newOrg:
                     ///   - access:
                     ///   - initArgs: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                     ///   - metadata: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
@@ -10460,6 +10478,7 @@ public enum Operations {
                         version: Swift.String? = nil,
                         service: Swift.String? = nil,
                         org: Swift.String? = nil,
+                        newOrg: Operations.AppCreate.Input.Body.JsonPayload.NewOrgPayload? = nil,
                         access: Components.Schemas.Access? = nil,
                         initArgs: OpenAPIRuntime.OpenAPIValueContainer? = nil,
                         metadata: OpenAPIRuntime.OpenAPIValueContainer? = nil,
@@ -10471,6 +10490,7 @@ public enum Operations {
                         self.version = version
                         self.service = service
                         self.org = org
+                        self.newOrg = newOrg
                         self.access = access
                         self.initArgs = initArgs
                         self.metadata = metadata
@@ -10483,6 +10503,7 @@ public enum Operations {
                         case version
                         case service
                         case org
+                        case newOrg
                         case access
                         case initArgs
                         case metadata
@@ -20045,7 +20066,7 @@ public enum Operations {
     }
     /// Hand an app to another account
     ///
-    /// The owner (for an organization's app, while a member and in the app's team), or an organization admin; an organization's app only to a member. Answers `null`.
+    /// The owner (for an organization's app, while a member and in the app's team), or an organization admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for; below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal one). Answers `null`.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -22905,7 +22926,7 @@ public enum Operations {
     }
     /// The account's own apps
     ///
-    /// The apps the account owns, in any organization (a package-bound session: its package's), with its personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
+    /// The apps the account owns, in any organization (a package-bound session: its package's), with its only organization's `approvedReleases` (below cluster version 1.0.0-rc.32 its personal organization's): each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -23609,7 +23630,7 @@ public enum Operations {
     }
     /// The caller's account
     ///
-    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: the one made at sign-up, where its instances go unless they name another; its approvals are that organization's), recovery state, and how the caller came (`via`).
+    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -29120,7 +29141,7 @@ public enum Operations {
     }
     /// The organizations a deployment serves
     ///
-    /// For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or in a personal organization, are only counted (`outsideOrgs`). Never who the members are.
+    /// For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (`outsideOrgs`). Never who the members are.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -31001,7 +31022,7 @@ public enum Operations {
     }
     /// Create an organization
     ///
-    /// `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.
+    /// `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account's are those it creates here (or with a `standalone` instance) or is invited to; before, every account also had a personal organization from sign-up (`personal` in `/auth/me`).
     ///
     /// **Who:** a passkey session (an API key is refused).
     ///

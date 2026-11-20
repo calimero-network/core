@@ -75,10 +75,11 @@ a checkout of [core](https://github.com/calimero-network/core); the
    ```
 
    `login` signs up when the file does not exist yet, and signs in with it
-   after. The sign-up also makes your personal organization.
+   after. The sign-up makes an account and no organization.
 
 6. **Create an instance and call it.** On a development cluster `--path`
-   uploads a raw component; the instance goes in your personal organization:
+   uploads a raw component; naming no organization, the instance goes in your only
+   one, or (you are in none yet) in a new one made with it:
 
    ```sh
    meroctl instance create --name my-kv --path kv_store.wasm --alias my-kv
