@@ -147,12 +147,28 @@ async fn pass(c: &Cluster) -> usize {
         {
             return leader.node.auto_update_once().await;
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "no system leader"
-        );
+        assert!(tokio::time::Instant::now() < deadline, "no system leader");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// At most this many passes for something the leader's passes should bring about.
+const PASSES: usize = 20;
+
+/// Run the leader's passes until `done` holds, at most [`PASSES`] of them.
+async fn passes_until<F, Fut>(c: &Cluster, done: F, what: &str)
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..PASSES {
+        if done().await {
+            return;
+        }
+        let _ = pass(c).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(done().await, "{what}");
 }
 
 async fn read(c: &calimero_client::Client, app: &str, key: &str) -> Value {
@@ -240,7 +256,13 @@ async fn a_green_update_applies_after_its_hold_and_is_undone_within_a_week() {
 
     // Past it, it applies on its own, as the policy's, after a restore point.
     shift_update_clock(DAY + 600);
-    let moved = get_until(&alice, &format!("apps/{app}"), 60, |a| {
+    passes_until(
+        &c,
+        || async { running(&alice, &app).await == "1.1.0" },
+        "it never applied",
+    )
+    .await;
+    let moved = get_until(&alice, &format!("apps/{app}"), 15, |a| {
         a["release"]["version"] == "1.1.0"
     })
     .await;
@@ -428,14 +450,12 @@ async fn a_deployments_offer_rolls_out_in_waves_its_managers_pause_and_resume() 
 
     // A day on: the hold passed and wave 1 (10%, at least one) is open: one instance.
     shift_update_clock(DAY + 600);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    while updated(&dev, &d).await != 1 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the first wave never moved"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    passes_until(
+        &c,
+        || async { updated(&dev, &d).await == 1 },
+        "the first wave never moved",
+    )
+    .await;
     // Paused by a manager: nobody new, however long it waits.
     let paused = dev
         .transport()
@@ -469,14 +489,12 @@ async fn a_deployments_offer_rolls_out_in_waves_its_managers_pause_and_resume() 
     assert!(resumed["apps"][0]["paused"].is_null(), "{resumed}");
     assert_eq!(resumed["apps"][0]["waveHours"], 1, "{resumed}");
     shift_update_clock(31 * DAY);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    while updated(&dev, &d).await != 3 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the rollout never reached everyone"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    passes_until(
+        &c,
+        || async { updated(&dev, &d).await == 3 },
+        "the rollout never reached everyone",
+    )
+    .await;
     for app in &apps {
         assert_eq!(running(&carol, app).await, "1.1.0");
     }
