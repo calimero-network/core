@@ -7,6 +7,7 @@ sidebar:
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 import SeqDiagram from '../../../../components/SeqDiagram.astro';
+import SecretLookup from '../../../../components/diagrams/SecretLookup.astro';
 
 **Task:** call a service outside the cluster (a captcha check, a payment
 API, a model, any HTTPS API) and write what it answers into state.
@@ -89,6 +90,12 @@ release declares and only to its declared hosts, and the deployment's only for
 a release of a package the deployment offers; an instance's
 `GET /apps/{app}/secrets` then says `source: deployment`, nothing more of it.
 See [Deployments](/protocol/governance/#deployments).
+
+<SecretLookup />
+
+Read it left to right: the first value found wins, each source only for a name
+your release declares, and whichever wins goes out only to that secret's
+declared hosts and never comes back in a response.
 
 The app never holds a secret. A request names one as `{{secret:NAME}}` in a
 header value or the body; the node fills it in from **its operator's**

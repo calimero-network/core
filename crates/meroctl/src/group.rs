@@ -56,7 +56,7 @@ pub enum GroupCmd {
         group: String,
         /// Keep those instances, without the team's grants: their other grants
         /// stay (named members, guests, anyone, links); with none left, only
-        /// their owner reaches them (cluster version 1.0.0-rc.32).
+        /// their owner reaches them (cluster version 1.0.0-rc.33).
         #[arg(long)]
         keep_apps: bool,
         /// Approve with this passkey file (development clusters).

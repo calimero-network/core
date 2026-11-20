@@ -110,7 +110,7 @@ def sync_detailed(
     no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay
     (`keptApps`), each without those teams' grants and with its other grants (named members, guests,
     `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it);
-    `keepApps` needs cluster version 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
+    `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
     the organization admits only loses the deleted teams' grants either way. With such instances, the
     passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list
     `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its
@@ -159,7 +159,7 @@ def sync(
     no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay
     (`keptApps`), each without those teams' grants and with its other grants (named members, guests,
     `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it);
-    `keepApps` needs cluster version 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
+    `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
     the organization admits only loses the deleted teams' grants either way. With such instances, the
     passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list
     `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its
@@ -203,7 +203,7 @@ async def asyncio_detailed(
     no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay
     (`keptApps`), each without those teams' grants and with its other grants (named members, guests,
     `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it);
-    `keepApps` needs cluster version 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
+    `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
     the organization admits only loses the deleted teams' grants either way. With such instances, the
     passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list
     `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its
@@ -250,7 +250,7 @@ async def asyncio(
     no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay
     (`keptApps`), each without those teams' grants and with its other grants (named members, guests,
     `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it);
-    `keepApps` needs cluster version 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
+    `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or
     the organization admits only loses the deleted teams' grants either way. With such instances, the
     passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list
     `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its

@@ -2583,11 +2583,11 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
 
     // Before the version, a listed outsider reaches nothing, as before.
     assert!(!reaches(&m, "open", "carol"));
-    let rc32 = "1.0.0-rc.32";
+    let rc33 = "1.0.0-rc.33";
     let _ok = m
         .run_unproven(SystemCmd::SetClusterVersion {
-            version: rc32.into(),
-            nodes: (1..=4).map(|id| (id, rc32.to_owned())).collect(),
+            version: rc33.into(),
+            nodes: (1..=4).map(|id| (id, rc33.to_owned())).collect(),
         })
         .unwrap();
     assert!(m.state.guests_on());
@@ -2802,11 +2802,11 @@ fn an_instances_access_is_a_list_of_grants() {
             release: serde_json::from_value(release).unwrap(),
         })
         .unwrap();
-    let rc32 = "1.0.0-rc.32";
+    let rc33 = "1.0.0-rc.33";
     let _ok = m
         .run_unproven(SystemCmd::SetClusterVersion {
-            version: rc32.into(),
-            nodes: (1..=4).map(|id| (id, rc32.to_owned())).collect(),
+            version: rc33.into(),
+            nodes: (1..=4).map(|id| (id, rc33.to_owned())).collect(),
         })
         .unwrap();
     {
@@ -3028,11 +3028,11 @@ fn a_team_deleted_keeping_its_instances_leaves_them_their_other_grants() {
             release: serde_json::from_value(release).unwrap(),
         })
         .unwrap();
-    let rc32 = "1.0.0-rc.32";
+    let rc33 = "1.0.0-rc.33";
     let _ok = m
         .run_unproven(SystemCmd::SetClusterVersion {
-            version: rc32.into(),
-            nodes: (1..=4).map(|id| (id, rc32.to_owned())).collect(),
+            version: rc33.into(),
+            nodes: (1..=4).map(|id| (id, rc33.to_owned())).collect(),
         })
         .unwrap();
     {

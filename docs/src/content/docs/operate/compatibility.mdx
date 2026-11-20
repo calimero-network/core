@@ -26,7 +26,7 @@ which version it is, and how a change that cannot keep it is declared.
 
 | Surface | Version now | Where it is declared | Who reads it |
 | --- | --- | --- | --- |
-| Node release (`merod`, `meroctl`, the SDK) | `1.0.0-rc.31` | `[workspace.metadata.workspaces] version` in `Cargo.toml` | mdma (`release_compat`), the attestation (`--min-release`), a bundle's `minRuntimeVersion` |
+| Node release (`merod`, `meroctl`, the SDK) | `1.0.0-rc.32` | `[workspace.metadata.workspaces] version` in `Cargo.toml` | mdma (`release_compat`), the attestation (`--min-release`), a bundle's `minRuntimeVersion` |
 | App world (WIT) | `calimero:app@0.5.5` | `crates/app-wit/wit/calimero-app.wit` | The engine: a component importing `calimero:app/*@0.5.z` with `z` up to the world's links; anything else is refused at install |
 | App ABI | `abiVersion` 1 | the SDK's `ABI_VERSION` (`crates/sdk-macros`), the host's `SUPPORTED_ABI_VERSIONS` (`crates/app-host`) | The host, when it loads a component's ABI |
 | App package (`.mpk`) | manifest `version` `1.0`, `minRuntimeVersion` | the bundle's `manifest.json` (`crates/bundle`) | The node at install: it refuses a package whose `minRuntimeVersion` is above its release |
@@ -77,7 +77,7 @@ is a bug, and the CI checks below fail it.
 
 `crates/node/api-deprecations.toml` deprecates nothing now.
 
-**1.0.0-rc.32: an instance's access is its grants (#5194).** An instance's
+**1.0.0-rc.33: an instance's access is its grants (#5194).** An instance's
 access is a list of grants and nothing else ([App
 access](/protocol/organizations/#app-access)): the earlier single access mode
 is gone, and with it the field `access` on
@@ -85,8 +85,8 @@ is gone, and with it the field `access` on
 (its `[[cutover]]` entry); requests and answers carry `grants`. No reader of the
 earlier shape is kept: an instance record or a `setAccess` entry an earlier
 release wrote is not read, so a cluster on an earlier release is recreated on
-1.0.0-rc.32, not rolled (`.github/upgrade-from` says `hard-cutover: 5194`, and
-mdma's `CUTOVERS` starts an epoch at 1.0.0-rc.32). Clients move to `grants`;
+1.0.0-rc.33, not rolled (`.github/upgrade-from` says `hard-cutover: 5194`, and
+mdma's `CUTOVERS` starts an epoch at 1.0.0-rc.33). Clients move to `grants`;
 nothing admits a caller without an account any more (`anyone` is any signed-in
 account).
 

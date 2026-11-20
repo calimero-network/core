@@ -995,7 +995,7 @@ is its command line.
   `instance_orgs::an_instance_goes_where_its_release_says`,
   `instance_orgs::an_app_is_transferred_only_to_a_member_of_its_organization`, the
   `personal-org` and `ordinary-orgs` upgrade cases.
-- **Access grants** (`Feature::AccessGrants`, rc.32; `types::Access`, a list of `types::Grant`,
+- **Access grants** (`Feature::AccessGrants`, rc.33; `types::Access`, a list of `types::Grant`,
   serialized as the record's `grants`; `SystemState::grants_reach`, `check_grants`,
   `manages_access`, `manages_grants`; docs: protocol organizations "App access"): an
   instance's access is a list of grants and nothing else, `org`, `team { team }` (at most
@@ -1013,16 +1013,16 @@ is its command line.
   `onto_team`), `named_only` (`MoveApp`'s `accounts_in_app_team`), `teams_to_org`
   (`MoveApp`, `TransferApp`), `anyone` (listing, `member_apps`). `DeleteTeam` takes the
   instances whose every team grant goes (`team_apps`) and strips the team's grants from the
-  rest (`without_teams`); with `keep_apps` (`Feature::KeepTeamApps`, rc.32; API `keepApps`,
+  rest (`without_teams`); with `keep_apps` (`Feature::KeepTeamApps`, rc.33; API `keepApps`,
   stated in the consent, `delete_team_args`) it keeps them too, without the team's grants (a
   list left empty: the owner alone), answered as `keptApps`; absent, they are deleted. The
   API takes `grants` on `POST /apps` (absent: `[org]`) and `POST /apps/{app}/access`, and
-  answers them on `GET /apps/{app}` and a move. A hard cutover (#5194, `hard-cutover:` in
+  answers them on `GET /apps/{app}` and a move. A hard cutover (#5194, rc.33, `hard-cutover:` in
   `.github/upgrade-from`): no earlier access shape is read, so clusters are recreated.
   Regressions: `system::tests::an_instances_access_is_a_list_of_grants`,
   `guests::a_team_and_two_partners_reach_one_instance_by_their_grants`,
   `access_gate::anyone_means_any_signed_in_account`.
-- **Guests** (`Feature::Guests`, rc.32; `SystemState::guest_reaches`, `guests_on`,
+- **Guests** (`Feature::Guests`, rc.33; `SystemState::guest_reaches`, `guests_on`,
   `guests_allowed`, `guest_holder`, `is_guest`, `manages_grants`; docs: protocol organizations
   "Guests"): an account an instance names (an `account` grant) that is
   not a member of its organization reaches it (and its unit's members: `guest_holder` walks

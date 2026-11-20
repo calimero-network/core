@@ -77,7 +77,7 @@ class History(DeepCase):
 class AccessKinds(DeepCase):
     name = "app-access-kinds"
     area = "Apps"
-    since = "1.0.0-rc.32"
+    since = "1.0.0-rc.33"
     seeds = "an organization's app with each kind of grant alone: none (the owner), the organization, a named account, anyone, a team"
     verifies = ("who reads and writes each (the owner, a member, the named account, an outsider, no credential), "
                 "allowed and refused as before (`anyone` admits the outsider, never a caller without an account); "
@@ -137,7 +137,7 @@ class AccessKinds(DeepCase):
 class AccessGrants(DeepCase):
     name = "app-access-grants"
     area = "Apps"
-    since = "1.0.0-rc.32"
+    since = "1.0.0-rc.33"
     seeds = ("an organization's instance whose access is a list of grants: a team, a member outside it named with "
              "an app-defined scope, and an outsider named (a guest, whom the release does not allow); grants "
              "wait for the cluster version that brings them, so they are set after the roll")
@@ -195,7 +195,7 @@ class AccessGrants(DeepCase):
 class TeamDeletedKeepingApps(DeepCase):
     name = "team-deleted-keeping-apps"
     area = "Teams"
-    since = "1.0.0-rc.32"
+    since = "1.0.0-rc.33"
     seeds = ("an organization's two instances only a team admits, one also naming a member outside the team; the "
              "team deleted with `keepApps`, which waits for the cluster version that brings it, so it is done "
              "after the roll")

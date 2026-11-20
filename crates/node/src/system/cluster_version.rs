@@ -298,10 +298,8 @@ impl Feature {
             | Self::WholeUnits
             | Self::DeploymentUsedSecrets
             | Self::UpgradeInDeployment
-            | Self::OrdinaryOrgs
-            | Self::Guests
-            | Self::AccessGrants
-            | Self::KeepTeamApps => "1.0.0-rc.32",
+            | Self::OrdinaryOrgs => "1.0.0-rc.32",
+            Self::Guests | Self::AccessGrants | Self::KeepTeamApps => "1.0.0-rc.33",
         }
     }
 }
@@ -805,6 +803,7 @@ mod tests {
     const RC29: &str = "1.0.0-rc.29";
     const RC31: &str = "1.0.0-rc.31";
     const RC32: &str = "1.0.0-rc.32";
+    const RC33: &str = "1.0.0-rc.33";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1322,7 +1321,7 @@ mod tests {
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
             .iter()
-            .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC31, RC32].contains(&f.since()));
+            .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33].contains(&f.since()));
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -1393,12 +1392,20 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC24);
         let (rc29, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC29);
-        let (rc30, rc32): (Vec<Feature>, Vec<Feature>) =
+        let (rc30, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC31);
+        let (rc32, rc33): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC32);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in rc24.iter().chain(&rc29).chain(&rc30).chain(&rc32) {
+        for &feature in rc24
+            .iter()
+            .chain(&rc29)
+            .chain(&rc30)
+            .chain(&rc32)
+            .chain(&rc33)
+        {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1416,7 +1423,7 @@ mod tests {
         for &feature in &rc24 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in rc29.iter().chain(&rc30).chain(&rc32) {
+        for &feature in rc29.iter().chain(&rc30).chain(&rc32).chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1435,7 +1442,7 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.31's wait for every node on rc.31.
-        for &feature in rc30.iter().chain(&rc32) {
+        for &feature in rc30.iter().chain(&rc32).chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1454,8 +1461,9 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.32's (a deployment's secrets, whole units, secrets of used releases, an
-        // upgrade kept on its deployment's offer, a release's instance mode, guests, access
-        // grants, a team deleted keeping its instances) wait for every node on rc.32.
+        // upgrade kept on its deployment's offer, a release's instance mode) wait for every
+        // node on rc.32, rc.33's (guests, access grants, a team deleted keeping its
+        // instances) for every node on rc.33.
         assert_eq!(
             rc32,
             [
@@ -1464,12 +1472,17 @@ mod tests {
                 Feature::DeploymentUsedSecrets,
                 Feature::UpgradeInDeployment,
                 Feature::OrdinaryOrgs,
+            ]
+        );
+        assert_eq!(
+            rc33,
+            [
                 Feature::Guests,
                 Feature::AccessGrants,
                 Feature::KeepTeamApps
             ]
         );
-        for &feature in &rc32 {
+        for &feature in rc32.iter().chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1499,6 +1512,24 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc32 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        for &feature in &rc33 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC32))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC33;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC33.into(),
+            nodes: (1..=3).map(|id| (id, RC33.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc33 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

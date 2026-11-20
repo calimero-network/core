@@ -1,0 +1,95 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-deployment-model">
+<svg viewBox="0 0 760 468" role="img" aria-label="A developer, an account or an organization, owns a deployment: its name and own frontend host, its offers (each app name pinned to one installed package release) and its secret values. A customer creates an instance from an offer in the customer's own organization; the instance is the customer's, owned and governed there, and the apps its release creates with it carry the same deployment. Usage is labelled org, the customer who pays quotas, and developer, the deployment's owner, who is billed. The deployment's secret values fill only names the running release declares, only for code of a package the deployment offers or uses, and only to the secret's declared hosts." xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="dm-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="468" rx="10" fill="#0f0f16"/>
+  <text x="380" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">the developer offers releases; each customer owns its instances</text>
+
+  <!-- developer -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="20" y="44" width="230" height="56" rx="6" fill="#161b22" stroke="#f0883e"/>
+    <text x="135" y="66" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">developer: account or org</text>
+    <text x="135" y="84" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">managers: the account, or org-wide</text>
+    <text x="135" y="95" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">MANAGE_APPLICATION holders</text>
+    <line x1="135" y1="100" x2="135" y2="124" stroke="#444c56" stroke-width="1.2" marker-end="url(#dm-arrow)"/>
+    <text x="142" y="116" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">owns</text>
+  </g>
+
+  <!-- deployment -->
+  <g class="seq-step" style="--step-i:1">
+    <rect x="20" y="126" width="230" height="250" rx="6" fill="#13160f" stroke="#a5ff11" stroke-width="1.4"/>
+    <text x="135" y="146" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">deployment "Chat"</text>
+    <text x="135" y="161" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">own host &#123;dlabel&#125;.&#123;apps-domain&#125;</text>
+
+    <rect x="34" y="172" width="202" height="76" rx="5" fill="#161b22" stroke="#444c56"/>
+    <text x="135" y="188" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">offers: app → package@version</text>
+    <rect x="44" y="196" width="182" height="20" rx="4" fill="#10151c" stroke="#58a6ff"/>
+    <text x="135" y="210" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">chat → chat@1.2.0</text>
+    <rect x="44" y="222" width="182" height="20" rx="4" fill="#10151c" stroke="#58a6ff"/>
+    <text x="135" y="236" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">wiki → wiki@0.4.0</text>
+  </g>
+
+  <!-- deployment secrets -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="34" y="258" width="202" height="62" rx="5" fill="#231708" stroke="#e3b341"/>
+    <text x="135" y="275" text-anchor="middle" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">secret values (sealed)</text>
+    <text x="135" y="291" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">NEAR_AI_API_KEY = ••••</text>
+    <text x="135" y="306" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">names its releases declare or use</text>
+    <text x="135" y="340" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">usage: developer = this owner</text>
+    <text x="135" y="356" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">(org id, or account:&#123;id&#125;)</text>
+  </g>
+
+  <!-- customer org with instance and unit members -->
+  <g class="seq-step" style="--step-i:3">
+    <rect x="300" y="44" width="440" height="214" rx="6" fill="#10210f" stroke="#3fb950" stroke-opacity=".6"/>
+    <text x="520" y="64" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">customer org "Globex"</text>
+    <text x="520" y="79" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">owns its instances: owner, grants, data, quotas</text>
+
+    <rect x="314" y="94" width="196" height="62" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="412" y="113" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">instance "Support"</text>
+    <text x="412" y="129" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">runs chat@1.2.0</text>
+    <text x="412" y="145" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">owner: dana · deployment: Chat</text>
+
+    <rect x="528" y="90" width="198" height="120" rx="5" fill="#1a1430" stroke="#a371f7" stroke-dasharray="4 3"/>
+    <text x="627" y="106" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="9">created with it (uses: create)</text>
+    <rect x="540" y="114" width="174" height="24" rx="4" fill="#10151c" stroke="#58a6ff"/>
+    <text x="627" y="130" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">Support.kv (store)</text>
+    <rect x="540" y="144" width="174" height="24" rx="4" fill="#10151c" stroke="#58a6ff"/>
+    <text x="627" y="160" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">Support.ai (inference)</text>
+    <text x="627" y="186" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">same org, owner, deployment;</text>
+    <text x="627" y="199" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">deleted with the instance</text>
+    <line x1="510" y1="125" x2="536" y2="125" stroke="#a371f7" stroke-width="1.2" marker-end="url(#dm-arrow)"/>
+
+    <text x="412" y="184" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">usage labels, every app of it:</text>
+    <text x="412" y="200" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">org = Globex (pays, quotas)</text>
+    <text x="412" y="215" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">developer = Chat's owner (billed)</text>
+    <text x="520" y="244" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">the developer has no path into its data</text>
+  </g>
+
+  <!-- second customer -->
+  <g class="seq-step" style="--step-i:4">
+    <rect x="300" y="274" width="440" height="66" rx="6" fill="#10210f" stroke="#3fb950" stroke-opacity=".6"/>
+    <text x="520" y="292" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">customer org "Initech"</text>
+    <rect x="314" y="302" width="196" height="28" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="412" y="320" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">"Notes" runs wiki@0.4.0</text>
+    <text x="625" y="320" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">never sees Globex</text>
+  </g>
+
+  <!-- create from the offer -->
+  <g class="seq-step" style="--step-i:5">
+    <path d="M236,206 C270,206 270,125 312,125" fill="none" stroke="#58a6ff" stroke-width="1.3" marker-end="url(#dm-arrow)"/>
+    <path d="M236,232 C276,232 270,316 312,316" fill="none" stroke="#58a6ff" stroke-width="1.3" marker-end="url(#dm-arrow)"/>
+    <text x="20" y="400" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="8.5">──▸ a customer creates an instance from an offer: POST /apps &#123; deployment, package &#125;</text>
+  </g>
+
+  <!-- secrets reach -->
+  <g class="seq-step" style="--step-i:6">
+    <path d="M236,290 C290,290 286,226 300,226 L560,226 C600,226 610,214 614,212" fill="none" stroke="#e3b341" stroke-width="1.2" stroke-dasharray="5 3" marker-end="url(#dm-arrow)"/>
+    <text x="20" y="418" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="8.5">- - ▸ secret values: only names the running release declares, only for code of a package</text>
+    <text x="20" y="432" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="8.5">      the deployment offers or uses, only to the secret's declared hosts</text>
+    <text x="20" y="452" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">An instance moves only to the release its deployment offers (409 OUTSIDE_DEPLOYMENT).</text>
+  </g>
+</svg>
+</Figure>

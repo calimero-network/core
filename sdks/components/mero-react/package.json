@@ -1,6 +1,6 @@
 {
   "name": "@calimero-network/mero-react",
-  "version": "1.0.0-rc.31",
+  "version": "1.0.0-rc.32",
   "description": "React bindings for the Calimero 1.0 client (mero-js CalimeroClient)",
   "type": "module",
   "main": "dist/index.cjs",
@@ -75,7 +75,8 @@
   "author": "Calimero Ltd",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/calimero-network/mero-react.git"
+    "url": "git+https://github.com/calimero-network/core.git",
+    "directory": "sdks/components/mero-react"
   },
   "publishConfig": {
     "access": "public",
