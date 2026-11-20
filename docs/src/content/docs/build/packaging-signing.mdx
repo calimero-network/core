@@ -7,6 +7,7 @@ sidebar:
 
 import { Aside, Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
 import BuildAppPipeline from '../../../components/diagrams/BuildAppPipeline.astro';
+import UnitModel from '../../../components/diagrams/UnitModel.astro';
 
 Once your app compiles, it still has to become something a node can install.
 That deliverable is an **`.mpk` bundle**: a single archive carrying your
@@ -168,6 +169,11 @@ detail.
      (`DELETE /apps/{app}` answers them in `members`), and a member is not
      deleted alone while its instance stands (`409 UNIT_MEMBER`). Both wait
      for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
+
+     <UnitModel />
+
+     The two modes side by side: a `create` member is part of its instance's
+     unit, an `attach` link points at an app that stays its owner's own.
 
      The owner attaches an app they already run to an `attach` reference with
      `PUT /apps/{app}/links/{name} { app }` (whoever manages both apps, in one
