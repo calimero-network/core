@@ -118,3 +118,19 @@ pub(crate) fn backup_file_write(dir: &std::path::Path) {
     }
     let _left = slowed(-1);
 }
+
+/// How far update decisions' times run ahead of the clock ([`shift_update_clock`]).
+static UPDATE_CLOCK_SHIFT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Make every update decision logged from now on in this process (an upgrade's `at`, an
+/// undo's, a rollout's, the automatic pass's: `crate::types::update_now`) carry a time
+/// `secs` ahead of the clock, so a test sees a hold, a wave or the undo window pass.
+/// `0` puts it back.
+pub fn shift_update_clock(secs: u64) {
+    UPDATE_CLOCK_SHIFT.store(secs, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The shift [`shift_update_clock`] set.
+pub(crate) fn update_clock_shift() -> u64 {
+    UPDATE_CLOCK_SHIFT.load(std::sync::atomic::Ordering::SeqCst)
+}

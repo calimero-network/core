@@ -346,6 +346,7 @@ pub(crate) async fn upgrade_app(
             consent,
             run: None,
             owner_approves,
+            auto: false,
         },
     )
     .await
@@ -365,6 +366,9 @@ struct Upgrader {
     /// Judged by the rule only an organization's owner and admins approve
     /// ([`owner_approves`]): carried on its entries.
     owner_approves: bool,
+    /// An update applying on its own under the app's policy (`UpgradeApp::auto`), the
+    /// system leader's (`node::auto_updates`): judged by the policy, not by who may.
+    auto: bool,
 }
 
 impl Upgrader {
@@ -411,7 +415,7 @@ async fn run_upgrade(
     // Judged once, before the migration runs; `UpgradeApp` carries this time
     // so `apply` judges the deadline at the same moment and never refuses
     // the record of an upgrade the app's group already ran.
-    let begun = now_secs();
+    let begun = crate::types::update_now();
     let has_compute = compute_bundle.is_some();
     let class = move_class(node, &app_id, release.as_ref()).await;
     // Who may, and where to: judged here, for every path (one app, an
@@ -419,7 +423,11 @@ async fn run_upgrade(
     // app's group; `UpgradeApp` judges both again.
     let refusal = node.sys(|s| {
         let a = s.apps.get(&app_id)?;
-        if !who.by_operator && !s.may_upgrade(a, &who.actor, who.owner_approves) {
+        if who.auto {
+            if let Err(why) = s.auto_update_allows(a, release.as_ref(), class.as_ref(), begun) {
+                return Some(crate::node::rejected(why));
+            }
+        } else if !who.by_operator && !s.may_upgrade(a, &who.actor, who.owner_approves) {
             return upgrade_refusal(s, a, &who.actor, who.owner_approves);
         }
         let to = s.governing(release.as_ref(), &bundle, begun);
@@ -474,6 +482,19 @@ async fn run_upgrade(
     if compute_only && migrate.is_some() {
         return Err(ApiError::no_app_component());
     }
+    // The restore point an undo goes back to, taken just before anything runs.
+    let restore_point = match take_restore_point(node, &app_id, &bundle, compute_only).await {
+        Ok(taken) => taken,
+        Err(e) if who.auto => {
+            let error = json!({ "code": e.code, "message": e.message });
+            note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
+            return Err(e);
+        }
+        Err(e) => {
+            warn!(app = %app_id, error = %e.message, "no restore point was taken; this upgrade cannot be undone");
+            None
+        }
+    };
     let ran = if compute_only {
         Ok(crate::app::Applied {
             index: 0,
@@ -541,6 +562,8 @@ async fn run_upgrade(
             in_deployment,
             owner_approves: who.owner_approves,
             class,
+            auto: who.auto,
+            restore_point,
         })
         .await?;
     Ok(Json(json!({
@@ -549,6 +572,75 @@ async fn run_upgrade(
         "error": applied.error,
         "compute": has_compute,
     })))
+}
+
+/// Apply `to` to `app` on its own under the app's update policy, as the system leader's
+/// pass does (`node::auto_updates`): the release's part for the service the app runs,
+/// judged like any upgrade (runtime, authority, deployment, release deadlines) and by
+/// `SystemState::auto_update_allows` in place of who may, with a restore point first;
+/// `UpgradeApp { auto }` is judged again at apply. A refusal before anything ran on the
+/// group is noted on the app only once it ran (`run_upgrade`).
+pub(crate) async fn auto_upgrade(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    to: &PackageRef,
+) -> ApiResult {
+    let service = to.service.clone().unwrap_or_default();
+    let target = node
+        .sys(|s| {
+            let v = s.packages.get(&to.package)?.versions.get(&to.version)?;
+            Some(Target {
+                bundle: v.app_parts().get(&service).cloned()?,
+                compute_bundle: v.compute.get(&service).cloned(),
+                release: Some(to.clone()),
+            })
+        })
+        .ok_or_else(|| crate::node::rejected(crate::system::AUTO_UPDATE_REFUSED))?;
+    run_upgrade(
+        node,
+        app.app_id.clone(),
+        target,
+        None,
+        Upgrader {
+            caller: Caller::System,
+            actor: crate::system::AUTO_UPDATE.to_owned(),
+            by_operator: false,
+            consent: Value::Null,
+            run: None,
+            owner_approves: true,
+            auto: true,
+        },
+    )
+    .await
+}
+
+/// Whether upgrades take restore points ([`Feature::RestorePoints`]): once every node
+/// reads `UpgradeApp::restore_point`.
+pub(crate) async fn restore_points_rule(node: &Node) -> bool {
+    node.require_features(&[Feature::RestorePoints])
+        .await
+        .is_ok()
+}
+
+/// The restore point an upgrade of `app_id` to `bundle` takes before it runs, once every
+/// node reads it ([`restore_points_rule`]): none needed (`file: None`) where nothing runs
+/// on the app's group (a compute-only app, the bundle it runs already), else the group's
+/// snapshot on a replica (`Node::take_restore_point`). `Ok(None)` below the feature.
+async fn take_restore_point(
+    node: &Node,
+    app_id: &str,
+    bundle: &str,
+    compute_only: bool,
+) -> Result<Option<crate::types::TakenRestorePoint>, ApiError> {
+    if !restore_points_rule(node).await {
+        return Ok(None);
+    }
+    let app = node.app(app_id).await?;
+    if compute_only || app.bundle == bundle {
+        return Ok(Some(crate::types::TakenRestorePoint::default()));
+    }
+    let file = node.take_restore_point(&app).await?;
+    Ok(Some(crate::types::TakenRestorePoint { file: Some(file) }))
 }
 
 /// Whether an `UpgradeApp` of `app_id` carries `in_deployment`: for an instance
@@ -814,6 +906,10 @@ async fn start_run_with(
                             in_deployment: in_deployment_rule(&node, &app.app_id).await,
                             owner_approves: who.owner_approves,
                             class,
+                            auto: false,
+                            restore_point: restore_points_rule(&node)
+                                .await
+                                .then(crate::types::TakenRestorePoint::default),
                         })
                         .await;
                     if let Err(e) = written {
@@ -903,6 +999,7 @@ async fn org_upgrade(
         consent,
         run: None,
         owner_approves,
+        auto: false,
     };
     start_run(node, org, body, apps, who, false).await
 }
@@ -987,6 +1084,7 @@ async fn publisher_upgrade(
         consent,
         run: None,
         owner_approves,
+        auto: false,
     };
     let run = OrgUpgradeBody {
         package,
@@ -1037,6 +1135,7 @@ async fn ops_org_upgrade(
         consent,
         run: None,
         owner_approves: false,
+        auto: false,
     };
     start_run(node, org, body, apps, who, false).await
 }
@@ -1102,6 +1201,7 @@ async fn org_upgrade_retry(
             consent,
             run: None,
             owner_approves: false,
+            auto: false,
         };
         return start_run(node, org, retry, failed, who, false).await;
     }
@@ -1128,6 +1228,7 @@ async fn org_upgrade_retry(
         consent,
         run: None,
         owner_approves,
+        auto: false,
     };
     start_run(node, org, retry, failed, who, false).await
 }
@@ -1249,6 +1350,7 @@ async fn ops_upgrade(
             consent,
             run: None,
             owner_approves: false,
+            auto: false,
         },
     )
     .await
@@ -1442,6 +1544,7 @@ pub(crate) async fn upgrade_unit(
         consent,
         run: None,
         owner_approves: plan.owner_approves,
+        auto: false,
     };
     let run = OrgUpgradeBody {
         package: plan.target.package,

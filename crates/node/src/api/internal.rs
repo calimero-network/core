@@ -597,6 +597,45 @@ async fn internal_xcalls(
     Ok(Json(g.read_local(|m, _| m.xcalls_report())))
 }
 
+/// `internal/restore-point`: a peer asks this replica of `app` to take a restore point
+/// before an upgrade (`take`), whether it holds one and what the app wrote since
+/// (`check`), or to seed the app's undo into `group` from it (`seed`;
+/// `crate::node::restore_points`). App data, so only for a release approved to hold the
+/// app.
+async fn internal_restore_point(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Json(body): Json<RestorePointBody>,
+) -> ApiResult {
+    let caller = peer(&node, &headers, key).await?;
+    caller_may_hold_app(&node, &caller, &body.app).await?;
+    match (body.op.as_str(), body.file, body.group) {
+        ("take", None, None) => Ok(Json(json!(node.take_restore_point_here(&body.app).await?))),
+        ("check", Some(file), None) => Ok(Json(node.restore_point_here(&body.app, &file)?)),
+        ("seed", None, Some(group)) => {
+            node.seed_undo_here(&body.app, group)?;
+            Ok(Json(json!({ "seeding": true })))
+        }
+        _ => Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "op is take, check with file, or seed with group",
+        )),
+    }
+}
+
+/// `internal/restore-point`'s body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestorePointBody {
+    app: String,
+    op: String,
+    #[serde(default)]
+    file: Option<crate::types::RestorePointFile>,
+    #[serde(default)]
+    group: Option<u64>,
+}
+
 /// `internal/last-write`'s and `internal/xcalls`' body: the app.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -922,6 +961,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/internal/usage", post(internal_usage))
         .route("/internal/usage/today", post(internal_usage_today))
         .route("/internal/last-write", post(internal_last_write))
+        .route("/internal/restore-point", post(internal_restore_point))
         .route("/internal/xcalls", post(internal_xcalls))
         .route("/internal/presence", post(internal_presence))
         .route("/internal/view", post(internal_view))

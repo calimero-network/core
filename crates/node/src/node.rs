@@ -24,6 +24,7 @@ use crate::system::{normalize_addr, output, SystemCmd, SystemMachine, SystemStat
 use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord, NodeRole};
 use crate::usage::{Meter, Usage};
 
+mod auto_updates;
 pub(crate) mod blob_guards;
 mod cluster_version;
 mod component;
@@ -32,6 +33,11 @@ pub(crate) mod disk;
 mod job;
 pub(crate) mod recovery_disk;
 pub(crate) mod restore;
+mod restore_points;
+pub use auto_updates::{AUTO_UPDATE_EVERY, MAX_AUTO_UPDATES_PER_PASS};
+pub use restore_points::{
+    MAX_RESTORE_POINTS_PER_APP, RESTORE_POINTS_DIR, RESTORE_POINT_SWEEP_EVERY,
+};
 mod runtime;
 mod segments;
 
@@ -635,6 +641,10 @@ pub struct Node {
     /// The system leader's bookkeeping for the cluster version
     /// ([`Node::raise_cluster_version`]).
     cluster_version: Mutex<cluster_version::Raising>,
+    /// When the system leader's next pass of updates that apply on their own is due
+    /// ([`Node::auto_update`]), and whether one runs.
+    auto_update_due: Mutex<Option<tokio::time::Instant>>,
+    auto_updating: std::sync::atomic::AtomicBool,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here (spec section 7).
@@ -1113,6 +1123,8 @@ impl Node {
             moving: Mutex::default(),
             promoting: std::sync::atomic::AtomicBool::new(false),
             cluster_version: Mutex::default(),
+            auto_update_due: Mutex::default(),
+            auto_updating: std::sync::atomic::AtomicBool::new(false),
             peer_releases: Mutex::new(HashMap::new()),
             peer_runtimes: Mutex::default(),
             callers: Mutex::new(HashMap::new()),
@@ -2394,6 +2406,7 @@ impl Node {
             }
             self.admit_registered_nodes();
             self.promote_learners();
+            self.auto_update();
         }
         // An app waiting for its backup (a cluster founded again) is hosted nowhere.
         // Through the replica index: this node's apps, not every app.

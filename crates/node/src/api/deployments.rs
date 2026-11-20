@@ -822,6 +822,102 @@ async fn deployment_orgs(
     })))
 }
 
+/// `GET /deployments/{id}/rollout`: how each offered release reaches the deployment's
+/// instances that apply updates on their own (`SystemState::rollout_json`): its wave,
+/// when the next opens, whether it is paused (by a manager or on failures), and how
+/// many instances run it, failed to move to it or undid it. For its managers.
+async fn deployment_rollout(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let p = signed_in(&node, &headers).await?;
+    p.unbound()?;
+    let _d = managed_deployment(&node, &p, &id).await?;
+    let now = crate::types::update_now();
+    Ok(Json(node.sys(|s| s.rollout_json(&id, now))))
+}
+
+/// A pause or resume of a rollout: optionally a new pause between waves, and the
+/// manager's passkey.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct RolloutBody {
+    #[serde(default)]
+    wave_hours: Option<u32>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Pause or resume `app`'s rollout as `p`, with a passkey over `deployment:{id} /
+/// __set_rollout / { app, paused, waveHours }` (`SetRollout`).
+async fn set_rollout(
+    node: &Node,
+    headers: &HeaderMap,
+    id: String,
+    app: String,
+    paused: bool,
+    body: RolloutBody,
+) -> ApiResult {
+    let p = holder(node, headers).await?;
+    let account = p.account()?;
+    let d = managed_deployment(node, &p, &id).await?;
+    if !d.apps.contains_key(&app) {
+        return Err(ApiError::not_found("the deployment offers no such app"));
+    }
+    if body.wave_hours.is_some_and(|h| {
+        !(crate::system::rollouts::MIN_WAVE_HOURS..=crate::system::rollouts::MAX_WAVE_HOURS)
+            .contains(&h)
+    }) {
+        return Err(crate::node::rejected(crate::system::BAD_ROLLOUT));
+    }
+    node.require_features(&[Feature::Rollouts]).await?;
+    let args = crate::system::rollout_args(&app, paused, body.wave_hours);
+    let consent = consent(
+        node,
+        &p,
+        &format!("deployment:{id}"),
+        "__set_rollout",
+        &args,
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetRollout {
+            deployment: id,
+            app,
+            paused,
+            wave_hours: body.wave_hours,
+            actor: account,
+            at: crate::types::update_now(),
+            consent,
+        })
+        .await?,
+    ))
+}
+
+/// `POST /deployments/{id}/rollout/{app}/pause`: stop the rollout of `app`'s offered
+/// release from reaching more instances on their own; the waves open stay open.
+async fn rollout_pause(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((id, app)): Path<(String, String)>,
+    Json(body): Json<RolloutBody>,
+) -> ApiResult {
+    set_rollout(&node, &headers, id, app, true, body).await
+}
+
+/// `POST /deployments/{id}/rollout/{app}/resume`: go on from the wave open at the pause;
+/// the next opens a full `waveHours` after the resume.
+async fn rollout_resume(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((id, app)): Path<(String, String)>,
+    Json(body): Json<RolloutBody>,
+) -> ApiResult {
+    set_rollout(&node, &headers, id, app, false, body).await
+}
+
 /// This area's routes, merged into [`super::router`].
 pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
@@ -839,6 +935,9 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/deployments/{id}/apps", post(deployment_offer))
         .route("/deployments/{id}/apps/{app}", delete(deployment_withdraw))
         .route("/deployments/{id}/orgs", get(deployment_orgs))
+        .route("/deployments/{id}/rollout", get(deployment_rollout))
+        .route("/deployments/{id}/rollout/{app}/pause", post(rollout_pause))
+        .route("/deployments/{id}/rollout/{app}/resume", post(rollout_resume))
         .route("/deployments/{id}/secrets", get(deployment_secrets))
         .route(
             "/deployments/{id}/secrets/{name}",

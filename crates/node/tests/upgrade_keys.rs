@@ -469,6 +469,8 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
             in_deployment: false,
             owner_approves: false,
             class: None,
+            auto: false,
+            restore_point: None,
         })
         .unwrap()
     };
