@@ -122,6 +122,7 @@ export default defineConfig({
                 'build/guides/typed-clients',
                 'build/guides/calling-your-app',
                 'build/guides/frontends',
+                'build/guides/updates',
                 'build/packaging-signing',
                 'build/examples',
                 'build/testing',

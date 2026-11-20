@@ -10,6 +10,19 @@
 
 export { CalimeroClient, FILE_PART_BYTES, deployerKey, frontendManifest, pageDeployment, presenceState } from './calimero-client.js';
 export { ExportError } from './files.js';
+export { Updates, installConsent, updateBanner, updatePolicyConsent, updateSheetConsent, updatesPageConsent } from './updates.js';
+export type {
+  AvailableUpdate,
+  InstallSubject,
+  OpenUpdateOptions,
+  OpenedUpdatePage,
+  PolicyTarget,
+  PolicyView,
+  UpdateBannerState,
+  UpdatePolicy,
+  UpdateView,
+  UpdatesHost,
+} from './updates.js';
 export { newVisitorSeed, publicLinkKey, Visitor } from './visitor.js';
 export { jobKeyBinding, receiptMessage, reportMessage, verifyAppCluster, verifyJobReports, verifyPipelineReceipt, verifyReceiptKey } from './receipts.js';
 export type { AttestedCluster, CachedRun, FileRef, JobAttestationDoc, JobEvidence, JobOutput, PipelineReceipt, ReportFields, StepReceipt, StepRunProof, ReceiptAnswer, ReceiptKeyDoc } from './receipts.js';
