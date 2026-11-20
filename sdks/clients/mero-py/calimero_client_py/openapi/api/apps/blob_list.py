@@ -70,7 +70,8 @@ def sync_detailed(
 
      Plain blobs only.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -103,7 +104,8 @@ def sync(
 
      Plain blobs only.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -131,7 +133,8 @@ async def asyncio_detailed(
 
      Plain blobs only.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -162,7 +165,8 @@ async def asyncio(
 
      Plain blobs only.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):

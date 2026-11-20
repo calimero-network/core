@@ -87,7 +87,8 @@ def sync_detailed(
     /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it
     is a document of its own, which a client reads as OpenAPI.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -122,7 +123,8 @@ def sync(
     /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it
     is a document of its own, which a client reads as OpenAPI.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -152,7 +154,8 @@ async def asyncio_detailed(
     /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it
     is a document of its own, which a client reads as OpenAPI.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -185,7 +188,8 @@ async def asyncio(
     /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it
     is a document of its own, which a client reads as OpenAPI.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):

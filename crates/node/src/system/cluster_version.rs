@@ -167,10 +167,13 @@ pub enum Feature {
     /// the instance invites need it too. Access logged before it keeps its mode and is judged
     /// as it was.
     AccessGrants,
+    /// `DeleteTeam` keeping the instances only the team admitted (`keep_apps`): they lose its
+    /// grants and keep the rest. An earlier release ignores the field and deletes them.
+    KeepTeamApps,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 38] = [
+pub const FEATURES: [Feature; 39] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -209,6 +212,7 @@ pub const FEATURES: [Feature; 38] = [
     Feature::OrdinaryOrgs,
     Feature::Guests,
     Feature::AccessGrants,
+    Feature::KeepTeamApps,
 ];
 
 impl Feature {
@@ -254,6 +258,7 @@ impl Feature {
             Self::OrdinaryOrgs => "ordinaryOrgs",
             Self::Guests => "guests",
             Self::AccessGrants => "accessGrants",
+            Self::KeepTeamApps => "keepTeamApps",
         }
     }
 
@@ -296,7 +301,8 @@ impl Feature {
             | Self::UpgradeInDeployment
             | Self::OrdinaryOrgs
             | Self::Guests
-            | Self::AccessGrants => "1.0.0-rc.32",
+            | Self::AccessGrants
+            | Self::KeepTeamApps => "1.0.0-rc.32",
         }
     }
 }
@@ -553,6 +559,9 @@ impl SystemCmd {
                 access: crate::types::Access::Grants { .. },
                 ..
             } => vec![Feature::AccessGrants],
+            Self::DeleteTeam {
+                keep_apps: true, ..
+            } => vec![Feature::KeepTeamApps],
             Self::SetDelegation { .. } => vec![Feature::Delegation],
             Self::LinkApp { .. } => vec![Feature::AttachApp],
             Self::SetDeploymentSecret { used: true, .. } => {
@@ -1034,6 +1043,8 @@ mod tests {
                 "access": { "kind": "grants", "grants": [{ "kind": "team", "team": "t" },
                     { "kind": "account", "account": "carol", "scope": { "channel": "p" } }] },
                 "actor": "alice" })),
+            Feature::KeepTeamApps => entry(json!({ "op": "deleteTeam", "org": "org",
+                "team": "t", "actor": "alice", "apps_need_consent": true, "keep_apps": true })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1455,7 +1466,7 @@ mod tests {
         }
         // rc.32's (a deployment's secrets, whole units, secrets of used releases, an
         // upgrade kept on its deployment's offer, a release's instance mode, guests, access
-        // grants) wait for every node on rc.32.
+        // grants, a team deleted keeping its instances) wait for every node on rc.32.
         assert_eq!(
             rc32,
             [
@@ -1465,7 +1476,8 @@ mod tests {
                 Feature::UpgradeInDeployment,
                 Feature::OrdinaryOrgs,
                 Feature::Guests,
-                Feature::AccessGrants
+                Feature::AccessGrants,
+                Feature::KeepTeamApps
             ]
         );
         for &feature in &rc32 {

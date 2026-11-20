@@ -381,7 +381,7 @@ pub struct SealedRefusal {
 
 pub use crate::attest::Receipt;
 
-/// Who may reach an app at all, as one mode (deprecated: see `grants`), or `grants`: the instance's grant list (see #Grant). Each mode is a grant list: `owner` none, `org` the organization, `team` that team, `accounts` those people, `public` `anyone`.
+/// Who may reach an app at all, as one mode (deprecated: see `grants`), or `grants`: the instance's grant list (see #Grant). Each mode is a grant list: `owner` none, `org` the organization, `team` that team, `accounts` those people, `public` `anyone` with `signedOut: true` (it admits callers without an account too, which no grant does). From cluster version 1.0.0-rc.32 the deprecated `public` sets an `anyone` grant (signed-in accounts only); an instance set `public` before keeps the mode and answers `public`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Access {
@@ -399,7 +399,7 @@ pub enum Access {
     Grants { grants: Vec<Grant> },
 }
 
-/// One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: anyone, signed in or not (what `public` access was; not a public link). At most 16 teams and 1000 accounts.
+/// One way into an instance. `org`: every member of its organization (not beside a team grant); `team`: members of that team; `account`: one person, a member of the organization (a named member) or not (a guest, admitted only while the instance's release says `guests: allowed` and its organization's `allowGuests` is on), with an optional `scope` the app defines and reads for its caller (opaque JSON, at most 256 bytes; the platform admits, the app scopes); `anyone`: any signed-in account, a member or not; never a caller without an account, who comes in only through a public link. `signedOut: true` is only ever answered, for an instance whose access is `public` as set before 1.0.0-rc.32, which admits callers without an account too; a request carrying it is `400 BAD_REQUEST`. At most 16 teams and 1000 accounts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Grant {
@@ -419,7 +419,11 @@ pub enum Grant {
         account: String,
     },
     #[serde(rename = "anyone")]
-    Anyone,
+    Anyone {
+        #[serde(rename = "signedOut")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signed_out: Option<bool>,
+    },
 }
 
 /// A member's role in an organization.
@@ -5930,6 +5934,9 @@ pub struct TeamCreateResponse {
 pub struct TeamDeleteResponse {
     pub teams: Vec<String>,
     pub apps: Vec<String>,
+    #[serde(rename = "keptApps")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_apps: Option<Vec<String>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

@@ -121,7 +121,8 @@ use {
     ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
     orgs::{
         AllAppsBody, MemberBody, MembersQuery, OrgBody, OrgSettingsBody, RenameOrgBody,
-        ScopeAppsBody, TeamBody, TeamIdsBody, TeamMemberBody, TeamRowsBody, TeamUpdateBody,
+        ScopeAppsBody, TeamBody, TeamDeleteBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,
+        TeamUpdateBody,
     },
     packages::{InstallBody, PublisherBody},
     recovery::{RecoveryBegin, RecoveryFinish, RecoveryKeyBody, RecoveryStart, RecoveryStartBody},

@@ -2662,11 +2662,35 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     assert!(m
         .run_unproven(create(&key, "open", "bob", Value::Null))
         .is_err());
+    // Any instance takes one, not only a list, whatever its switches say: whether guests are
+    // allowed is judged when someone redeems it.
+    let closed_token = "inv_closed";
+    let closed_key = crate::proof::invite_key(closed_token);
+    let mut closed = create(&closed_key, "closed", "alice", Value::Null);
+    if let SystemCmd::CreateAppInvite { invite, .. } = &mut closed {
+        invite.uses_left = 2;
+    }
+    let _ok = m.run_unproven(closed).unwrap();
+    let redeem_as = |key: &str, token: &str, who: &str| SystemCmd::RedeemAppInvite {
+        invite_key: key.into(),
+        account: who.into(),
+        now: 20,
+        signature: crate::proof::sign_invite_redeem(token, who, 20),
+    };
+    // Its release forbids guests: an outsider is refused, a member of its organization is
+    // named on it.
     assert_eq!(
-        m.run_unproven(create("k-closed", "closed", "alice", Value::Null)),
+        m.run(redeem_as(&closed_key, closed_token, "erin")),
         Err(GUESTS_NOT_ALLOWED.to_owned())
     );
-    // Any instance takes one, not only a list.
+    assert!(!reaches(&m, "closed", "erin"));
+    let out = m.run(redeem_as(&closed_key, closed_token, "bob")).unwrap();
+    assert_eq!(
+        out,
+        json!({ "app": "closed", "org": "org", "member": true })
+    );
+    assert!(reaches(&m, "closed", "bob"));
+    assert!(m.state.apps["closed"].access.names("bob"));
     let _ok = m
         .run_unproven(create("k-wide", "wide", "alice", Value::Null))
         .unwrap();
@@ -2706,6 +2730,29 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
         Err(APP_INVITE_GONE.to_owned())
     );
 
+    // The organization's switch turned off after an invite was made: an outsider's
+    // redemption is refused on the state it applies to, and the invite stays.
+    let off_token = "inv_off";
+    let off_key = crate::proof::invite_key(off_token);
+    let _ok = m
+        .run_unproven(create(&off_key, "open", "alice", Value::Null))
+        .unwrap();
+    let _ok = m.run_unproven(account("frank")).unwrap();
+    let _ok = m
+        .run_unproven(settings(false, "alice", Value::Null))
+        .unwrap();
+    assert_eq!(
+        m.run(redeem_as(&off_key, off_token, "frank")),
+        Err(GUESTS_NOT_ALLOWED.to_owned())
+    );
+    assert!(!reaches(&m, "open", "frank"));
+    assert!(m.state.app_invites.contains_key(&off_key));
+    let _ok = m
+        .run_unproven(settings(true, "alice", Value::Null))
+        .unwrap();
+    let _ok = m.run(redeem_as(&off_key, off_token, "frank")).unwrap();
+    assert!(reaches(&m, "open", "frank"));
+
     // Revoked by its creator; dropped with its instance.
     let _ok = m
         .run_unproven(create("k2", "open", "alice", Value::Null))
@@ -2724,6 +2771,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
         .unwrap();
     m.state.remove_app("open");
     m.state.remove_app("wide");
+    m.state.remove_app("closed");
     assert!(m.state.app_invites.is_empty());
 
     // A state without invites or the switch writes as it did.
@@ -2752,7 +2800,12 @@ fn access_logged_as_one_mode_reads_writes_and_replays_as_before() {
                 scope: None,
             }],
         ),
-        (json!({ "kind": "public" }), vec![Grant::Anyone]),
+        // `public` admits callers without an account too, which no grant does: its grant
+        // says so.
+        (
+            json!({ "kind": "public" }),
+            vec![Grant::Anyone { signed_out: true }],
+        ),
         (
             json!({ "kind": "team", "team": "t" }),
             vec![Grant::Team { team: "t".into() }],
@@ -2910,11 +2963,46 @@ fn an_instances_access_is_a_list_of_grants() {
     assert!(m.state.is_guest(xa, "carol") && !m.state.is_guest(xa, "dan"));
     assert_eq!(xa.access.scope_of("carol"), Some(&partners));
     assert_eq!(xa.access.the_team().map(String::as_str), Some("t"));
-    // Anyone, as `public` was: signed out too.
+    // Anyone: every signed-in account, a member or not, never a caller without one (they
+    // come in through public links), unlike the legacy `public` mode.
     let _ok = m
         .run_unproven(set("w", json!([{ "kind": "anyone" }])))
         .unwrap();
-    assert!(reaches(&m, "w", None));
+    assert!(!reaches(&m, "w", None), "signed out: refused");
+    assert!(reaches(&m, "w", Some("erin")), "a signed-in outsider");
+    assert!(reaches(&m, "w", Some("dan")), "a member");
+    assert_eq!(
+        serde_json::to_value(&m.state.apps["w"].access).unwrap(),
+        json!({ "kind": "grants", "grants": [{ "kind": "anyone" }] })
+    );
+    // A grant admitting signed-out callers is only ever answered, never set.
+    assert_eq!(
+        m.run_unproven(set("w", json!([{ "kind": "anyone", "signedOut": true }]))),
+        Err(super::NO_SIGNED_OUT_GRANT.to_owned())
+    );
+    // A legacy `public` instance takes no invite: a redemption would make it a grant list
+    // and shut out the callers without an account it admits.
+    let legacy = |m: &mut SystemMachine| {
+        m.state.apps.get_mut("w").unwrap().access = Access::Public;
+    };
+    legacy(&mut m);
+    assert_eq!(
+        m.run_unproven(SystemCmd::CreateAppInvite {
+            invite_key: "k-public".into(),
+            invite: AppInvite {
+                app: "w".into(),
+                expires_at: 1_000,
+                uses_left: 1,
+                created_by: String::new(),
+                created_at: 10,
+                scope: None,
+            },
+            actor: "alice".into(),
+            consent: Value::Null,
+        }),
+        Err(super::LEGACY_PUBLIC.to_owned())
+    );
+    assert!(reaches(&m, "w", None), "legacy public: signed out too");
 
     // Lists that cannot stand.
     let big = json!({ "note": "x".repeat(300) });
@@ -3030,6 +3118,7 @@ fn an_instances_access_is_a_list_of_grants() {
             actor: "alice".into(),
             consent: Value::Null,
             apps_need_consent: false,
+            keep_apps: false,
         })
         .unwrap();
     assert!(!m.state.apps.contains_key("w"));
@@ -3037,6 +3126,132 @@ fn an_instances_access_is_a_list_of_grants() {
         m.state.apps["z"].access.grants(),
         [Grant::Team { team: "t".into() }]
     );
+}
+
+/// Deleting a team with `keep_apps` keeps the instances only it admitted: each loses the team's
+/// grant and keeps the rest (a guest), or with nothing left is its owner's alone (an empty
+/// grant list, a `team` mode included); an instance another team admits loses only the grant,
+/// as without the flag. The flag is a feature of its own, stated in the deleter's consent; an
+/// entry without it deletes them, as before.
+#[test]
+fn a_team_deleted_keeping_its_instances_leaves_them_their_other_grants() {
+    use super::cluster_version::Feature;
+    use crate::types::{Access, Grant};
+    let (mut m, mut alice, _bob, _carol) = proven_cluster();
+    let _ok = m.run_unproven(account("erin")).unwrap();
+    let release = json!({
+        "version": "1.0.0", "mpk": "g-mpk", "mpkSize": 1, "source": "upload",
+        "services": { "": "b-g" }, "installedBy": "alice", "installedAt": 5, "guests": "allowed",
+    });
+    let _ok = m
+        .run_unproven(SystemCmd::InstallPackage {
+            package: "g".into(),
+            signer_id: "did:key:g".into(),
+            release: serde_json::from_value(release).unwrap(),
+        })
+        .unwrap();
+    let rc32 = "1.0.0-rc.32";
+    let _ok = m
+        .run_unproven(SystemCmd::SetClusterVersion {
+            version: rc32.into(),
+            nodes: (1..=4).map(|id| (id, rc32.to_owned())).collect(),
+        })
+        .unwrap();
+    {
+        let o = m.state.orgs.get_mut("org").unwrap();
+        for id in ["u", "v"] {
+            let mut team = o.teams["t"].clone();
+            team.team_id = id.into();
+            let _prev = o.teams.insert(id.into(), team);
+        }
+    }
+    let grants = |list: Value| -> Access {
+        serde_json::from_value(json!({ "kind": "grants", "grants": list })).unwrap()
+    };
+    let guest = json!({ "kind": "account", "account": "erin" });
+    for (id, access) in [
+        // Only u, and a guest.
+        (
+            "g",
+            grants(json!([{ "kind": "team", "team": "u" }, guest.clone()])),
+        ),
+        // Only u.
+        ("e", grants(json!([{ "kind": "team", "team": "u" }]))),
+        // u as one mode.
+        ("m", Access::Team { team: "u".into() }),
+        // u and t: keeps t either way.
+        (
+            "k",
+            grants(json!([{ "kind": "team", "team": "u" }, { "kind": "team", "team": "t" }])),
+        ),
+        // Only v: deleted with v (the flag absent).
+        ("d", grants(json!([{ "kind": "team", "team": "v" }]))),
+    ] {
+        let record = json!({
+            "appId": id, "name": id, "group": 2, "bundle": "b-g", "owner": "alice",
+            "org": "org", "replicas": [1], "createdAt": 0, "access": access,
+            "release": { "package": "g", "version": "1.0.0" },
+        });
+        let _prev = m
+            .state
+            .apps
+            .insert(id.into(), serde_json::from_value(record).unwrap());
+    }
+    let delete = |team: &str, keep_apps: bool, consent: Value| SystemCmd::DeleteTeam {
+        org: "org".into(),
+        team: team.into(),
+        actor: "alice".into(),
+        consent,
+        apps_need_consent: true,
+        keep_apps,
+    };
+    assert_eq!(
+        delete("u", true, Value::Null).features(),
+        [Feature::KeepTeamApps]
+    );
+    assert!(delete("u", false, Value::Null).features().is_empty());
+    assert_eq!(
+        serde_json::to_value(delete("u", false, Value::Null)).unwrap()["keep_apps"],
+        Value::Null,
+        "an entry without the flag is written as before"
+    );
+    assert_eq!(m.state.team_apps("org", "u"), ["e", "g", "m"]);
+    // The consent states the flag: one over a plain deletion keeps nothing.
+    let keep_args = super::delete_team_args("u", &["e".into(), "g".into(), "m".into()], true);
+    assert_eq!(keep_args["keepApps"], json!(true));
+    let plain = super::delete_team_args("u", &["e".into(), "g".into(), "m".into()], false);
+    assert!(m.run(delete("u", true, Value::Null)).is_err(), "no consent");
+    let wrong = consent(&mut alice, "org:org", "__delete_team", &plain);
+    assert!(
+        m.run(delete("u", true, wrong)).is_err(),
+        "a plain deletion's"
+    );
+    let real = consent(&mut alice, "org:org", "__delete_team", &keep_args);
+    let out = m.run(delete("u", true, real)).unwrap();
+    assert_eq!(out["keptApps"], json!(["e", "g", "m"]));
+    assert_eq!(out["apps"], json!([]));
+    let reaches =
+        |m: &SystemMachine, id: &str, who: &str| m.state.may_reach(&m.state.apps[id], Some(who));
+    assert!(!m.state.orgs["org"].teams.contains_key("u"));
+    assert_eq!(m.state.apps["g"].access, grants(json!([guest])));
+    assert!(reaches(&m, "g", "erin"), "the guest keeps their way in");
+    assert!(reaches(&m, "g", "alice"), "and the owner");
+    for id in ["e", "m"] {
+        assert_eq!(m.state.apps[id].access, grants(json!([])), "{id}");
+        assert!(reaches(&m, id, "alice"), "the owner alone: {id}");
+        assert!(!reaches(&m, id, "bob"), "{id}");
+    }
+    assert_eq!(
+        m.state.apps["k"].access.grants(),
+        [Grant::Team { team: "t".into() }]
+    );
+    // The default deletes them, as an entry an earlier release logged does.
+    let logged: SystemCmd = serde_json::from_value(json!({ "op": "deleteTeam", "org": "org",
+        "team": "v", "actor": "alice" }))
+    .unwrap();
+    let out = m.run_unproven(logged).unwrap();
+    assert_eq!(out["apps"], json!(["d"]));
+    assert!(!m.state.apps.contains_key("d"));
 }
 
 /// From the current-rules mark on, a `CreateOrg` without `name_fits` is
@@ -3391,6 +3606,7 @@ fn deleting_a_team_with_apps_needs_consent_over_them() {
         actor: "alice".into(),
         consent,
         apps_need_consent: true,
+        keep_apps: false,
     };
     assert_eq!(
         m.run(delete("t", serde_json::Value::Null)).unwrap_err(),
@@ -3538,6 +3754,7 @@ fn team_commands_logged_before_these_rules_replay_as_they_did() {
         actor: "alice".into(),
         consent: serde_json::Value::Null,
         apps_need_consent: true,
+        keep_apps: false,
     });
     assert_eq!(deletion["apps_need_consent"], json!(true), "{deletion}");
 }

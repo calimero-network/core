@@ -630,6 +630,14 @@ CASES = [
         {},
     ),
     (
+        lambda c: c.json.orgs.team_delete(org="o1", team="t1", keep_apps=True),
+        "DELETE",
+        "/orgs/o1/teams/t1",
+        {"keepApps": True},
+        {"teams": ["t1"], "apps": [], "keptApps": ["a1"]},
+        {"teams": ["t1"], "apps": [], "keptApps": ["a1"]},
+    ),
+    (
         lambda c: c.json.orgs.team_set_member(
             org="o1", team="t1", account="acc", confirm=PK, role="readOnly"
         ),

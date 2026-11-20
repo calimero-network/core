@@ -98,7 +98,7 @@ class OrgsFacade internal constructor(
     /**
      * Join with an invite
      *
-     * No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+     * No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the redemption applies.
      *
      * **Who:** a passkey session (an API key is refused).
      *
@@ -719,7 +719,7 @@ class OrgsFacade internal constructor(
     /**
      * Delete a team
      *
-     * With the teams and apps below it. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.
+     * With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay (`keptApps`), each without those teams' grants and with its other grants (named members, guests, `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it); `keepApps` needs cluster version 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`). An instance another team or the organization admits only loses the deleted teams' grants either way. With such instances, the passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.
      *
      * **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -732,9 +732,10 @@ class OrgsFacade internal constructor(
     suspend fun teamDelete(
         org: kotlin.String,
         team: kotlin.String,
+        keepApps: kotlin.Boolean? = null,
         passkey: PasskeyProvider? = null,
     ): TeamDelete200Response =
-        api(passkey, null, emptySet()).organizations.teamDelete(org = org, team = team)
+        api(passkey, null, emptySet()).organizations.teamDelete(org = org, team = team, teamDeleteRequest = TeamDeleteRequest(keepApps = keepApps))
 
     /**
      * One team

@@ -88,7 +88,8 @@ impl Caller {
 /// 1.0.0-rc.32). The other variants are the single modes every release before wrote; they are
 /// kept as they were logged, read and judged as before, and each is the grant list
 /// [`Self::grants`] answers for it: `owner` none, `org` the organization, `team` that team,
-/// `accounts` those people, `public` [`Grant::Anyone`].
+/// `accounts` those people, `public` [`Grant::Anyone`] marked `signed_out` (it admits callers
+/// with no account too, which an `anyone` grant does not).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Access {
@@ -99,7 +100,8 @@ pub enum Access {
     Org,
     /// The owner and these accounts.
     Accounts { accounts: Vec<AccountId> },
-    /// Anyone, signed in or not.
+    /// Anyone, signed in or not. Written only before 1.0.0-rc.32: from then on the deprecated
+    /// `access: public` writes an [`Grant::Anyone`] grant, which admits signed-in callers only.
     Public,
     /// Members of a team of the app's organization: its direct members, and,
     /// for an open team, everyone who reaches its parent.
@@ -116,7 +118,9 @@ pub enum Access {
 /// Member grants (the whole organization, or teams of it) admit its members; an account grant
 /// names one person, a member (a named member) or not (a guest, admitted only while the
 /// instance's release and organization allow guests,
-/// [`crate::system::SystemState::guests_allowed`]); [`Self::Anyone`] admits everyone.
+/// [`crate::system::SystemState::guests_allowed`]); [`Self::Anyone`] admits every signed-in
+/// account. Nobody without an account is admitted by a grant: anonymous visitors come in only
+/// through public links.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Grant {
@@ -134,9 +138,31 @@ pub enum Grant {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<serde_json::Value>,
     },
-    /// Anyone, signed in or not: the access `public` was. Not a public link, which admits
-    /// only the holders of its token and only to public methods.
-    Anyone,
+    /// Any signed-in account, a member of the organization or not. Never a caller without an
+    /// account: those come in only through a public link, which admits the holders of its
+    /// token and only to public methods.
+    Anyone {
+        /// Also callers without an account: only in an answer, for an instance whose access is
+        /// the legacy `public` mode (set before 1.0.0-rc.32, judged as it always was). Refused
+        /// in a grant list ([`crate::system::SystemState::check_grants`]).
+        #[serde(
+            default,
+            rename = "signedOut",
+            skip_serializing_if = "std::ops::Not::not"
+        )]
+        signed_out: bool,
+    },
+}
+
+impl Grant {
+    /// An `anyone` grant: every signed-in account.
+    pub const ANYONE: Self = Self::Anyone { signed_out: false };
+
+    /// Whether it is an `anyone` grant, of either kind.
+    #[must_use]
+    pub const fn is_anyone(&self) -> bool {
+        matches!(self, Self::Anyone { .. })
+    }
 }
 
 /// The largest scope a grant or an instance invite carries ([`Grant::Account`]), as compact
@@ -170,7 +196,7 @@ impl Access {
                     scope: None,
                 })
                 .collect(),
-            Self::Public => vec![Grant::Anyone],
+            Self::Public => vec![Grant::Anyone { signed_out: true }],
             Self::Team { team } => vec![Grant::Team { team: team.clone() }],
             Self::Grants { grants } => grants.clone(),
         }
@@ -211,14 +237,21 @@ impl Access {
         }
     }
 
-    /// Whether it admits anyone (`public`, or [`Grant::Anyone`]).
+    /// Whether it admits any signed-in account (`public`, or [`Grant::Anyone`]).
     #[must_use]
     pub fn anyone(&self) -> bool {
         match self {
             Self::Public => true,
-            Self::Grants { grants } => grants.contains(&Grant::Anyone),
+            Self::Grants { grants } => grants.iter().any(Grant::is_anyone),
             _ => false,
         }
+    }
+
+    /// Whether it admits callers with no account: only the legacy `public` mode, set before
+    /// 1.0.0-rc.32. No grant list does (visitors come through public links).
+    #[must_use]
+    pub fn admits_signed_out(&self) -> bool {
+        *self == Self::Public
     }
 
     /// Whether it names `account` (`accounts`, or a [`Grant::Account`]).
@@ -325,11 +358,15 @@ impl Access {
         }
     }
 
-    /// This access without the team grants in `gone` (teams deleted).
+    /// This access without the team grants in `gone` (teams deleted). `team` access on one of
+    /// them becomes the empty grant list (the owner alone); other single modes stay.
     #[must_use]
     pub fn without_teams(&self, gone: &[TeamId]) -> Self {
         let Self::Grants { grants } = self else {
-            return self.clone();
+            return match self {
+                Self::Team { team } if gone.contains(team) => Self::Grants { grants: Vec::new() },
+                other => other.clone(),
+            };
         };
         Self::Grants {
             grants: grants

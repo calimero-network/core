@@ -818,15 +818,35 @@ async fn team_update(
     Ok(Json(json!({})))
 }
 
-/// Delete a team with the teams below it and their apps. When there are
-/// apps, with the actor's passkey over them (412 first, its details listing
-/// the `apps` that go; the retry's JSON body carries `confirm`).
+/// `DELETE /orgs/{org}/teams/{team}`'s body: whether the instances only the team admits
+/// stay, and the passkey confirmation after the `412`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct TeamDeleteBody {
+    /// Keep the instances only the team (and the teams below it) admit, without its grants:
+    /// they keep their other grants (named members, guests, `anyone`, public links), or with
+    /// none left only their owner reaches them. Absent or `false`: they are deleted with the
+    /// team. Needs cluster version 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).
+    #[serde(default)]
+    keep_apps: bool,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Delete a team with the teams below it and their apps (or, with `keepApps`, keeping those
+/// apps without its grants). When there are apps, with the actor's passkey over them and what
+/// happens to them (412 first, its details listing the `apps` and `keepApps`; the retry's
+/// JSON body carries `confirm` and the same `keepApps`).
 async fn team_delete(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((org, team)): Path<(String, String)>,
-    body: Option<Json<ConfirmOnlyBody>>,
+    body: Option<Json<TeamDeleteBody>>,
 ) -> ApiResult {
+    let Json(body) = body.unwrap_or_default();
+    if body.keep_apps {
+        node.require_features(&[Feature::KeepTeamApps]).await?;
+    }
     let p = person(&node, &headers).await?;
     p.within_team(&node, &org, &team, OwnTeam::BelowHoldingOwnApps)?;
     let actor = p.account()?;
@@ -849,15 +869,19 @@ async fn team_delete(
         return Err(ApiError::forbidden("not allowed to delete this team"));
     }
     let apps = node.sys(|s| s.team_apps(&org, &team));
+    let keep_apps = body.keep_apps;
     let consent = if apps.is_empty() {
         Value::Null
     } else {
-        let args = json!({ "team": team, "apps": apps });
-        let confirm = body.and_then(|Json(b)| b.confirm);
-        org_consent(&node, &p, &org, "__delete_team", &args, confirm)
+        let args = crate::system::delete_team_args(&team, &apps, keep_apps);
+        org_consent(&node, &p, &org, "__delete_team", &args, body.confirm)
             .await
             .map_err(|e| match e.code.as_str() {
-                "CONFIRM_REQUIRED" => with_detail(e, "apps", json!(apps)),
+                "CONFIRM_REQUIRED" => with_detail(
+                    with_detail(e, "apps", json!(apps)),
+                    "keepApps",
+                    json!(keep_apps),
+                ),
                 _ => e,
             })?
     };
@@ -868,6 +892,7 @@ async fn team_delete(
             actor,
             consent,
             apps_need_consent: true,
+            keep_apps,
         })
         .await?;
     Ok(Json(v))

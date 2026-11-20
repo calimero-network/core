@@ -652,6 +652,7 @@ from .team import Team
 from .team_capabilities import TeamCapabilities
 from .team_create_body import TeamCreateBody
 from .team_create_response_200 import TeamCreateResponse200
+from .team_delete_body import TeamDeleteBody
 from .team_delete_response_200 import TeamDeleteResponse200
 from .team_join import TeamJoin
 from .team_members import TeamMembers
@@ -1255,6 +1256,7 @@ __all__ = (
     "TeamCapabilities",
     "TeamCreateBody",
     "TeamCreateResponse200",
+    "TeamDeleteBody",
     "TeamDeleteResponse200",
     "TeamJoin",
     "TeamMembers",

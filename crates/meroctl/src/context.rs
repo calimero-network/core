@@ -175,7 +175,7 @@ pub enum AccessKind {
 fn parse_grant(spec: &str) -> Result<Grant, String> {
     match spec {
         "org" => return Ok(Grant::Org),
-        "anyone" => return Ok(Grant::Anyone),
+        "anyone" => return Ok(Grant::Anyone { signed_out: None }),
         _ => {}
     }
     if let Some(team) = spec.strip_prefix("team:") {

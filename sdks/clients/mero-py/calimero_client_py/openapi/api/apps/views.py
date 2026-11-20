@@ -95,7 +95,8 @@ def sync_detailed(
     `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET
     /apps/{app}/abi`, or its OpenAPI document) types them.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -136,7 +137,8 @@ def sync(
     `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET
     /apps/{app}/abi`, or its OpenAPI document) types them.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -172,7 +174,8 @@ async def asyncio_detailed(
     `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET
     /apps/{app}/abi`, or its OpenAPI document) types them.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -211,7 +214,8 @@ async def asyncio(
     `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET
     /apps/{app}/abi`, or its OpenAPI document) types them.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):

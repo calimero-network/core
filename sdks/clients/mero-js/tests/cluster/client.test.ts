@@ -229,6 +229,15 @@ describe('Calimero 1.0 cluster', () => {
     await new Promise((r) => setTimeout(r, 300));
     await expect(alice.orgs.teamGet({ org, team: eng })).rejects.toMatchObject({ status: 404 });
     await expect(alice.apps.get({ app: teamApp })).rejects.toMatchObject({ status: 404 });
+    // `keepApps` keeps an instance only the team admitted: it loses the team's grant and keeps
+    // bob's name.
+    const keep = await (await alice.orgs.teamCreate({ org, name: 'keep', join: 'invite' })).teamId;
+    const kept = await (await alice.apps.create({
+      name: 'kept-kv', bundle, org, grants: [{ kind: 'team', team: keep }, { kind: 'account', account: bobId }],
+    })).appId;
+    const deleted = await alice.orgs.teamDelete({ org, team: keep, keepApps: true }, { confirm: passkeyConfirm(pk) });
+    expect(deleted.keptApps).toEqual([kept]);
+    expect((await alice.apps.get({ app: kept })).grants).toEqual([{ kind: 'account', account: bobId }]);
     const token = await (await alice.orgs.inviteCreate({ org, role: 'guest', teams: [], ttlSecs: 60, uses: 1 }, { confirm: passkeyConfirm(pk) })).token;
     expect(token).toBeTruthy();
     expect(await alice.orgs.get({ org })).toMatchObject({ orgId: org });

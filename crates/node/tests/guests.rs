@@ -263,8 +263,10 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
 
 /// An instance invite names its redeemer on the instance (a guest, not a member of its
 /// organization); one already named spends no use; a revoked invite admits nobody; an
-/// instance that takes no guests takes no invite; an organization-wide instance takes one,
-/// whose scope its guest's grant carries.
+/// instance that takes no guests still takes an invite, which names a member of its
+/// organization and refuses an outsider when redeemed, as does one redeemed while the
+/// organization's switch is off; an organization-wide instance takes one, whose scope its
+/// guest's grant carries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_instance_invite_makes_its_redeemer_a_guest() {
     use calimero_bundle::GuestPolicy;
@@ -345,13 +347,47 @@ async fn an_instance_invite_makes_its_redeemer_a_guest() {
     assert!(erin.orgs().invite_redeem(&token).await.is_err());
     refused(&reads(&erin, &open).await.unwrap_err(), "404");
 
-    // No guests, or no list: no invite, before any passkey is asked for.
-    let e = alice
+    // A release that forbids guests still takes an invite: whether guests may come in is
+    // judged when someone redeems it. A member of its organization is named on it; an
+    // outsider is refused.
+    let token = s(&alice
         .apps()
-        .invite_create(&closed, None, None, None, None)
+        .invite_create(&closed, None, Some(2), None, Some(&mut a))
         .await
-        .unwrap_err();
+        .map(wire)
+        .unwrap()["token"]);
+    let e = erin.orgs().invite_redeem(&token).await.unwrap_err();
+    refused(&e, "409");
     assert!(e.to_string().contains("GUESTS_NOT_ALLOWED"), "{e}");
+    refused(&reads(&erin, &closed).await.unwrap_err(), "404");
+    let (frank, _f) = signed_up(&c, 0, "frank").await;
+    let org_token = s(&alice
+        .orgs()
+        .invite_create(&acme, typed(json!({ "role": "member" })), Some(&mut a))
+        .await
+        .map(wire)
+        .unwrap()["token"]);
+    let _joined = frank.orgs().invite_redeem(&org_token).await.unwrap();
+    let joined = frank.orgs().invite_redeem(&token).await.map(wire).unwrap();
+    assert_eq!(joined["member"], json!(true), "{joined}");
+    assert_eq!(reads(&frank, &closed).await.unwrap(), json!("v"));
+
+    // The organization turns guests off after an invite was made: an outsider redeeming it
+    // is refused on the state it is judged on, and in once they are on again.
+    let token = s(&alice
+        .apps()
+        .invite_create(&open, None, None, None, Some(&mut a))
+        .await
+        .map(wire)
+        .unwrap()["token"]);
+    guests_switch(&alice, &mut a, &acme, false).await;
+    let e = erin.orgs().invite_redeem(&token).await.unwrap_err();
+    assert!(e.to_string().contains("GUESTS_NOT_ALLOWED"), "{e}");
+    refused(&reads(&erin, &open).await.unwrap_err(), "404");
+    guests_switch(&alice, &mut a, &acme, true).await;
+    let joined = erin.orgs().invite_redeem(&token).await.map(wire).unwrap();
+    assert_eq!(joined["member"], json!(false), "{joined}");
+    assert_eq!(reads(&erin, &open).await.unwrap(), json!("v"));
     let general = json!({ "channel": "general" });
     let token = s(&alice
         .apps()

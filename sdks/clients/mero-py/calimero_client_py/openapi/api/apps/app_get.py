@@ -71,11 +71,13 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
 ) -> Response[Union[AppGetResponse200, Error]]:
-    """One app
+    r"""One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
     route. `grants` is its access as grants whichever shape it was set in (absent from a node before
-    1.0.0-rc.32); a guest sees only their own grant (and `access` naming only them).
+    1.0.0-rc.32): an instance set `public` before 1.0.0-rc.32 keeps `access: { kind: \"public\" }` and
+    answers `[{ kind: \"anyone\", signedOut: true }]`, as it admits callers without an account too; a
+    guest sees only their own grant (and `access` naming only them).
 
     **Who:** signed in (a session or an API key).
 
@@ -106,11 +108,13 @@ def sync(
     *,
     client: AuthenticatedClient,
 ) -> Optional[Union[AppGetResponse200, Error]]:
-    """One app
+    r"""One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
     route. `grants` is its access as grants whichever shape it was set in (absent from a node before
-    1.0.0-rc.32); a guest sees only their own grant (and `access` naming only them).
+    1.0.0-rc.32): an instance set `public` before 1.0.0-rc.32 keeps `access: { kind: \"public\" }` and
+    answers `[{ kind: \"anyone\", signedOut: true }]`, as it admits callers without an account too; a
+    guest sees only their own grant (and `access` naming only them).
 
     **Who:** signed in (a session or an API key).
 
@@ -136,11 +140,13 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
 ) -> Response[Union[AppGetResponse200, Error]]:
-    """One app
+    r"""One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
     route. `grants` is its access as grants whichever shape it was set in (absent from a node before
-    1.0.0-rc.32); a guest sees only their own grant (and `access` naming only them).
+    1.0.0-rc.32): an instance set `public` before 1.0.0-rc.32 keeps `access: { kind: \"public\" }` and
+    answers `[{ kind: \"anyone\", signedOut: true }]`, as it admits callers without an account too; a
+    guest sees only their own grant (and `access` naming only them).
 
     **Who:** signed in (a session or an API key).
 
@@ -169,11 +175,13 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
 ) -> Optional[Union[AppGetResponse200, Error]]:
-    """One app
+    r"""One app
 
      `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}`
     route. `grants` is its access as grants whichever shape it was set in (absent from a node before
-    1.0.0-rc.32); a guest sees only their own grant (and `access` naming only them).
+    1.0.0-rc.32): an instance set `public` before 1.0.0-rc.32 keeps `access: { kind: \"public\" }` and
+    answers `[{ kind: \"anyone\", signedOut: true }]`, as it admits callers without an account too; a
+    guest sees only their own grant (and `access` naming only them).
 
     **Who:** signed in (a session or an API key).
 

@@ -244,9 +244,10 @@ def test_the_facade_binds_every_route():
 
 def test_team_delete_takes_an_optional_passkey():
     # A team holding apps is deleted with the deleter's passkey (core's `412
-    # CONFIRM_REQUIRED` naming them); an empty one without.
+    # CONFIRM_REQUIRED` naming them); an empty one without. `keep_apps` keeps
+    # the apps only the team admitted, without its grants.
     from calimero_client_py.facade import Orgs
 
     params = inspect.signature(Orgs.team_delete).parameters
-    assert list(params)[1:] == ["org", "team", "confirm"]
+    assert list(params)[1:] == ["org", "team", "keep_apps", "confirm"]
     assert params["confirm"].default is None

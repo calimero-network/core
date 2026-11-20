@@ -18,7 +18,7 @@ extension CalimeroClient {
         ///
         /// The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document, free-form here: its format is the ABI's, not this API's.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func abi(app: Swift.String) async throws -> Operations.AppAbi.Output.Ok.Body.JsonPayload {
             let input = Operations.AppAbi.Input(path: .init(app: app))
@@ -29,7 +29,7 @@ extension CalimeroClient {
 
         /// Set who may reach an app: `POST /apps/{app}/access` (`app_access`).
         ///
-        /// `grants` replace the instance's grant list (#Grant; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`); the deprecated `access` sets one mode. Exactly one of them, else `400 BAD_REQUEST`. Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
+        /// `grants` replace the instance's grant list (#Grant; cluster version 1.0.0-rc.32, else `409 FEATURE_NOT_ACTIVE`); the deprecated `access` sets one mode, except that from that cluster version `public` sets an `anyone` grant (signed-in accounts only). Exactly one of them, else `400 BAD_REQUEST`; a grant with `signedOut` is `400 BAD_REQUEST`. Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.
         ///
         /// **Who:** a passkey session (an API key is refused).
         @discardableResult
@@ -44,7 +44,7 @@ extension CalimeroClient {
         ///
         /// Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`), and `cluster`, the cluster id each quote binds (with the replica's `node`): the documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any other query parameter is ignored.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func attestation(app: Swift.String, nonce: Swift.String) async throws -> Operations.AppAttestation.Output.Ok.Body.JsonPayload {
             let input = Operations.AppAttestation.Input(path: .init(app: app), query: .init(nonce: nonce))
@@ -107,7 +107,7 @@ extension CalimeroClient {
 
         /// One app: `GET /apps/{app}` (`app_get`).
         ///
-        /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in (absent from a node before 1.0.0-rc.32); a guest sees only their own grant (and `access` naming only them).
+        /// `{app}` is an app id or its context id (`hex(SHA-256(app_id))`), here and on every `/apps/{app}` route. `grants` is its access as grants whichever shape it was set in (absent from a node before 1.0.0-rc.32): an instance set `public` before 1.0.0-rc.32 keeps `access: { kind: "public" }` and answers `[{ kind: "anyone", signedOut: true }]`, as it admits callers without an account too; a guest sees only their own grant (and `access` naming only them).
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
@@ -120,7 +120,7 @@ extension CalimeroClient {
 
         /// Invite someone to an instance: `POST /apps/{app}/invites` (`app_invite_create`).
         ///
-        /// A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access; only while it takes guests (its release's manifest and its organization's `allowGuests`, `409 GUESTS_NOT_ALLOWED`). At most 64 pending per instance. `412` first.
+        /// A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access, whatever its guest switches say: they are judged when someone redeems it. Not on an instance set `public` before 1.0.0-rc.32 (`409 LEGACY_PUBLIC`): the grant a redemption adds would end its access for callers without an account, so its grants are set first. At most 64 pending per instance. `412` first.
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
@@ -174,7 +174,7 @@ extension CalimeroClient {
         ///
         /// One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func links(app: Swift.String) async throws -> Operations.AppLinks.Output.Ok.Body.JsonPayload {
             let input = Operations.AppLinks.Input(path: .init(app: app))
@@ -213,7 +213,7 @@ extension CalimeroClient {
         ///
         /// The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
         public func method(app: Swift.String, method: Swift.String, args: OpenAPIRuntime.OpenAPIValueContainer? = nil, idempotencyKey: Swift.String? = nil, consistency: Operations.AppMethod.Input.Body.JsonPayload.ConsistencyPayload? = nil, minIndex: Swift.Int64? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.AppMethod.Output.Ok.Body.JsonPayload {
             let input = Operations.AppMethod.Input(path: .init(app: app, method: method), body: .json(.init(args: args, idempotencyKey: idempotencyKey, consistency: consistency, minIndex: minIndex)))
@@ -239,7 +239,7 @@ extension CalimeroClient {
         ///
         /// Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func openapi(app: Swift.String) async throws -> Operations.AppOpenapi.Output.Ok.Body.JsonPayload {
             let input = Operations.AppOpenapi.Input(path: .init(app: app))
@@ -252,7 +252,7 @@ extension CalimeroClient {
         ///
         /// Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func run(app: Swift.String, run: Swift.String) async throws -> Components.Schemas.Run {
             let input = Operations.AppRun.Input(path: .init(app: app, run: run))
@@ -278,7 +278,7 @@ extension CalimeroClient {
         ///
         /// Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func runs(app: Swift.String, limit: Swift.String? = nil, before: Swift.String? = nil) async throws -> Operations.AppRuns.Output.Ok.Body.JsonPayload {
             let input = Operations.AppRuns.Input(path: .init(app: app), query: .init(limit: limit, before: before))
@@ -330,7 +330,7 @@ extension CalimeroClient {
         ///
         /// Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func storage(app: Swift.String) async throws -> Operations.AppStorage.Output.Ok.Body.JsonPayload {
             let input = Operations.AppStorage.Input(path: .init(app: app))
@@ -433,7 +433,7 @@ extension CalimeroClient {
         ///
         /// The owner or an organization admin.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func blobDelete(app: Swift.String, id: Swift.String) async throws -> Operations.BlobDelete.Output.Ok.Body.JsonPayload {
             let input = Operations.BlobDelete.Input(path: .init(app: app, id: id))
@@ -446,7 +446,7 @@ extension CalimeroClient {
         ///
         /// `{id}` is base58 or hex; `grant` is a link the app made (`BlobRef::grant`).
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func blobDownload(app: Swift.String, id: Swift.String, grant: Swift.String? = nil) async throws -> Data {
             let input = Operations.BlobDownload.Input(path: .init(app: app, id: id), query: .init(grant: grant))
@@ -457,7 +457,7 @@ extension CalimeroClient {
 
         /// A blob's size: `GET /apps/{app}/blobs/{id}/info` (`blob_info`).
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func blobInfo(app: Swift.String, id: Swift.String) async throws -> Operations.BlobInfo.Output.Ok.Body.JsonPayload {
             let input = Operations.BlobInfo.Input(path: .init(app: app, id: id))
@@ -470,7 +470,7 @@ extension CalimeroClient {
         ///
         /// Plain blobs only.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func blobList(app: Swift.String) async throws -> Operations.BlobList.Output.Ok.Body.JsonPayload {
             let input = Operations.BlobList.Input(path: .init(app: app))
@@ -483,7 +483,7 @@ extension CalimeroClient {
         ///
         /// The grants made so far for a published blob; the owner or an organization admin.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func blobRevoke(app: Swift.String, id: Swift.String) async throws -> Operations.BlobRevoke.Output.Ok.Body.JsonPayload {
             let input = Operations.BlobRevoke.Input(path: .init(app: app, id: id))
@@ -496,7 +496,7 @@ extension CalimeroClient {
         ///
         /// A plain blob, stored with the request's `Content-Type`, which a component app's download answers with: any media type (printable ASCII, 127 bytes at most; another is `400 BAD_REQUEST`), `application/octet-stream` when the request names none. Send the blob's own type, not `*/*`, which would be stored as its type. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func blobUpload(app: Swift.String, body: Data, contentType: Swift.String? = nil, sealed: Swift.Bool? = nil) async throws -> Operations.BlobUpload.Output.Ok.Body.JsonPayload {
             let input = Operations.BlobUpload.Input(path: .init(app: app), query: .init(sealed: sealed), body: contentType == nil ? .binary(HTTPBody(body)) : .any(HTTPBody(body)))
@@ -509,7 +509,7 @@ extension CalimeroClient {
         ///
         /// Committed events from index `from`, then live ones, each to its audience.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func events(app: Swift.String, from: Swift.Int64? = nil) async throws -> HTTPBody {
             let input = Operations.Events.Input(path: .init(app: app), query: .init(from: from))
@@ -585,7 +585,7 @@ extension CalimeroClient {
         ///
         /// A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
         public func intents(app: Swift.String, method: Swift.String, args: OpenAPIRuntime.OpenAPIValueContainer? = nil, idempotencyKey: Swift.String? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.Intents.Output.Ok.Body.JsonPayload {
             let input = Operations.Intents.Input(path: .init(app: app), body: .json(.init(method: method, args: args, idempotencyKey: idempotencyKey)))
@@ -598,7 +598,7 @@ extension CalimeroClient {
         ///
         /// Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func pipelineEventsEvents(app: Swift.String, run: Swift.String) async throws -> HTTPBody {
             let input = Operations.PipelineEventsEvents.Input(path: .init(app: app, run: run))
@@ -650,7 +650,7 @@ extension CalimeroClient {
         ///
         /// Its record: `state`, `version`, `hash`, `computeBundle`, `inputs`, `params`, per-step `status`, `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap). Sizes, hashes and results only for callers who may list the app's files.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func pipelinesGet(app: Swift.String, run: Swift.String) async throws -> Operations.PipelinesGet.Output.Ok.Body.JsonPayload {
             let input = Operations.PipelinesGet.Input(path: .init(app: app, run: run))
@@ -663,7 +663,7 @@ extension CalimeroClient {
         ///
         /// The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func pipelinesList(app: Swift.String, limit: Swift.String? = nil) async throws -> Operations.PipelinesList.Output.Ok.Body.JsonPayload {
             let input = Operations.PipelinesList.Input(path: .init(app: app), query: .init(limit: limit))
@@ -715,7 +715,7 @@ extension CalimeroClient {
         ///
         /// One entry per present device (a session's passkey, or an API key): its account, device and state (hex).
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func presenceGet(app: Swift.String) async throws -> Operations.PresenceGet.Output.Ok.Body.JsonPayload {
             let input = Operations.PresenceGet.Input(path: .init(app: app))
@@ -728,7 +728,7 @@ extension CalimeroClient {
         ///
         /// The caller's presence state (hex), in sequence; not logged. A `null` (or absent) `state` retracts it.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func presencePublish(app: Swift.String, seq: Swift.Int64, state: Swift.String?? = nil) async throws -> OpenAPIRuntime.OpenAPIObjectContainer {
             let input = Operations.PresencePublish.Input(path: .init(app: app), body: .json(.init(seq: seq, state: state ?? nil)))
@@ -741,7 +741,7 @@ extension CalimeroClient {
 
         /// Presence as server-sent events: `GET /apps/{app}/presence/stream` (`presence_stream`).
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func presenceStream(app: Swift.String) async throws -> HTTPBody {
             let input = Operations.PresenceStream.Input(path: .init(app: app))
@@ -815,7 +815,7 @@ extension CalimeroClient {
         ///
         /// Read linearizably (`consistency: "strong"`, the default; any value but `"stale"` reads as it): the replica answering waits until it applied the index the app's leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (`"stale"`) on the replica answering, as it stands; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
         ///
-        /// **Who:** whoever the app's access admits (a public app: anyone).
+        /// **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
         @discardableResult
         public func views(app: Swift.String, method: Swift.String, args: OpenAPIRuntime.OpenAPIValueContainer? = nil, consistency: Operations.Views.Input.Body.JsonPayload.ConsistencyPayload? = nil, minIndex: Swift.Int64? = nil) async throws -> Operations.Views.Output.Ok.Body.JsonPayload {
             let input = Operations.Views.Input(path: .init(app: app), body: .json(.init(method: method, args: args, consistency: consistency, minIndex: minIndex)))
@@ -1631,7 +1631,7 @@ extension CalimeroClient {
 
         /// Join with an invite: `POST /invites/{token}/redeem` (`invite_redeem`).
         ///
-        /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite is refused a guest `409 GUESTS_NOT_ALLOWED` while its instance takes no guests.
+        /// No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the redemption applies.
         ///
         /// **Who:** a passkey session (an API key is refused).
         @discardableResult
@@ -2047,12 +2047,12 @@ extension CalimeroClient {
 
         /// Delete a team: `DELETE /orgs/{org}/teams/{team}` (`team_delete`).
         ///
-        /// With the teams and apps below it. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.
+        /// With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay (`keptApps`), each without those teams' grants and with its other grants (named members, guests, `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it); `keepApps` needs cluster version 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`). An instance another team or the organization admits only loses the deleted teams' grants either way. With such instances, the passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.
         ///
         /// **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
-        public func teamDelete(org: Swift.String, team: Swift.String, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.TeamDelete.Output.Ok.Body.JsonPayload {
-            let input = Operations.TeamDelete.Input(path: .init(org: org, team: team))
+        public func teamDelete(org: Swift.String, team: Swift.String, keepApps: Swift.Bool? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.TeamDelete.Output.Ok.Body.JsonPayload {
+            let input = Operations.TeamDelete.Input(path: .init(org: org, team: team), body: .json(.init(keepApps: keepApps)))
             return try await client.perform(passkey: passkey) { api in
                 try await api.teamDelete(input).ok.body.json
             }

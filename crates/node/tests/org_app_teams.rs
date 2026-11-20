@@ -1840,7 +1840,7 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
     forbidden(
         "delete the app team",
         site.orgs()
-            .team_delete(&org, &chat_team, Some(&mut site_key))
+            .team_delete(&org, &chat_team, None, Some(&mut site_key))
             .await
             .map(wire),
     );
@@ -1866,7 +1866,7 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
     forbidden(
         "delete another package's channel",
         site.orgs()
-            .team_delete(&org, &blocks_channel, Some(&mut site_key))
+            .team_delete(&org, &blocks_channel, None, Some(&mut site_key))
             .await
             .map(wire),
     );
@@ -1920,7 +1920,7 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
     // Deleting its channel takes the app private to it, with its passkey.
     let gone = site
         .orgs()
-        .team_delete(&org, &channel, Some(&mut site_key))
+        .team_delete(&org, &channel, None, Some(&mut site_key))
         .await
         .map(wire)
         .unwrap();

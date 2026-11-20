@@ -252,5 +252,6 @@ reconcile loop then stops the group and deletes its data from that node.
 
 An app is also deleted with its organization (`DELETE /orgs/{org}`, the owner
 with a passkey step-up) and with the team it is deployed to (`DeleteTeam` takes
-the team, the teams below it, and their apps).
+the team, the teams below it, and their apps, unless the deleter asks to keep
+them: `keepApps`, [Teams](/protocol/organizations/)).
 

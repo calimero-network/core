@@ -36,7 +36,7 @@ impl Client {
 impl Apps<'_> {
     /// An app's ABI.
     ///
-    /// `GET /apps/{app}/abi` (`app_abi`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/abi` (`app_abi`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn abi(self, app: &str) -> Result<AppAbiResponse> {
         let req = Request::new(Method::GET, format!("apps/{}/abi", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
@@ -83,7 +83,7 @@ impl Apps<'_> {
 
     /// Every replica's receipt-key attestation.
     ///
-    /// `GET /apps/{app}/attestation` (`app_attestation`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/attestation` (`app_attestation`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn attestation(self, app: &str, nonce: &str) -> Result<AppAttestationResponse> {
         let mut req = Request::new(
             Method::GET,
@@ -95,7 +95,7 @@ impl Apps<'_> {
 
     /// Forget a blob.
     ///
-    /// `DELETE /apps/{app}/blobs/{id}` (`blob_delete`). Who: whoever the app's access admits (a public app: anyone).
+    /// `DELETE /apps/{app}/blobs/{id}` (`blob_delete`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn blob_delete(self, app: &str, id: &str) -> Result<BlobDeleteResponse> {
         let req = Request::new(
             Method::DELETE,
@@ -106,7 +106,7 @@ impl Apps<'_> {
 
     /// Download a blob.
     ///
-    /// `GET /apps/{app}/blobs/{id}` (`blob_download`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/blobs/{id}` (`blob_download`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn blob_download(self, app: &str, id: &str, grant: Option<&str>) -> Result<Vec<u8>> {
         let mut req = Request::new(
             Method::GET,
@@ -120,7 +120,7 @@ impl Apps<'_> {
 
     /// A blob's size.
     ///
-    /// `GET /apps/{app}/blobs/{id}/info` (`blob_info`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/blobs/{id}/info` (`blob_info`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn blob_info(self, app: &str, id: &str) -> Result<BlobInfoResponse> {
         let req = Request::new(
             Method::GET,
@@ -135,7 +135,7 @@ impl Apps<'_> {
 
     /// List an app's blobs.
     ///
-    /// `GET /apps/{app}/blobs` (`blob_list`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/blobs` (`blob_list`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn blob_list(self, app: &str) -> Result<BlobListResponse> {
         let req = Request::new(Method::GET, format!("apps/{}/blobs", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
@@ -143,7 +143,7 @@ impl Apps<'_> {
 
     /// Invalidate a blob's grants.
     ///
-    /// `POST /apps/{app}/blobs/{id}/revoke` (`blob_revoke`). Who: whoever the app's access admits (a public app: anyone).
+    /// `POST /apps/{app}/blobs/{id}/revoke` (`blob_revoke`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn blob_revoke(self, app: &str, id: &str) -> Result<BlobRevokeResponse> {
         let req = Request::new(
             Method::POST,
@@ -158,7 +158,7 @@ impl Apps<'_> {
 
     /// Upload a blob.
     ///
-    /// `POST /apps/{app}/blobs` (`blob_upload`). Who: whoever the app's access admits (a public app: anyone).
+    /// `POST /apps/{app}/blobs` (`blob_upload`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn blob_upload(
         self,
         app: &str,
@@ -175,7 +175,7 @@ impl Apps<'_> {
 
     /// Call a method.
     ///
-    /// `POST /apps/{app}/intents` (`intents`). Who: whoever the app's access admits (a public app: anyone).
+    /// `POST /apps/{app}/intents` (`intents`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     ///
     /// Step-up: answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI; `passkey` answers it (user verification `required`), without one the refusal is returned.
     ///
@@ -415,7 +415,7 @@ impl Apps<'_> {
 
     /// List an app's links to the apps its release uses.
     ///
-    /// `GET /apps/{app}/links` (`app_links`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/links` (`app_links`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn links(self, app: &str) -> Result<AppLinksResponse> {
         let req = Request::new(Method::GET, format!("apps/{}/links", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
@@ -456,7 +456,7 @@ impl Apps<'_> {
 
     /// Call a method by its path.
     ///
-    /// `POST /apps/{app}/methods/{method}` (`app_method`). Who: whoever the app's access admits (a public app: anyone).
+    /// `POST /apps/{app}/methods/{method}` (`app_method`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     ///
     /// Step-up: answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI; `passkey` answers it (user verification `required`), without one the refusal is returned.
     ///
@@ -487,7 +487,7 @@ impl Apps<'_> {
 
     /// An app's OpenAPI document.
     ///
-    /// `GET /apps/{app}/openapi.json` (`app_openapi`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/openapi.json` (`app_openapi`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn openapi(self, app: &str) -> Result<Map<String, Value>> {
         let req = Request::new(
             Method::GET,
@@ -564,7 +564,7 @@ impl Apps<'_> {
 
     /// One pipeline run.
     ///
-    /// `GET /apps/{app}/pipeline-runs/{run}` (`pipelines_get`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/pipeline-runs/{run}` (`pipelines_get`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn pipelines_get(self, app: &str, run: &str) -> Result<Map<String, Value>> {
         let req = Request::new(
             Method::GET,
@@ -579,7 +579,7 @@ impl Apps<'_> {
 
     /// An app's pipeline runs.
     ///
-    /// `GET /apps/{app}/pipeline-runs` (`pipelines_list`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/pipeline-runs` (`pipelines_list`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn pipelines_list(
         self,
         app: &str,
@@ -669,7 +669,7 @@ impl Apps<'_> {
 
     /// Who is present.
     ///
-    /// `GET /apps/{app}/presence` (`presence_get`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/presence` (`presence_get`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn presence_get(self, app: &str) -> Result<PresenceGetResponse> {
         let req = Request::new(
             Method::GET,
@@ -680,7 +680,7 @@ impl Apps<'_> {
 
     /// Publish presence.
     ///
-    /// `POST /apps/{app}/presence` (`presence_publish`). Who: whoever the app's access admits (a public app: anyone).
+    /// `POST /apps/{app}/presence` (`presence_publish`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn presence_publish(
         self,
         app: &str,
@@ -701,7 +701,7 @@ impl Apps<'_> {
 
     /// One compute run.
     ///
-    /// `GET /apps/{app}/runs/{run}` (`app_run`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/runs/{run}` (`app_run`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn run(self, app: &str, run: &str) -> Result<Run> {
         let req = Request::new(
             Method::GET,
@@ -727,7 +727,7 @@ impl Apps<'_> {
 
     /// An app's compute runs.
     ///
-    /// `GET /apps/{app}/runs` (`app_runs`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/runs` (`app_runs`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn runs(
         self,
         app: &str,
@@ -805,7 +805,7 @@ impl Apps<'_> {
 
     /// What an app stores.
     ///
-    /// `GET /apps/{app}/storage` (`app_storage`). Who: whoever the app's access admits (a public app: anyone).
+    /// `GET /apps/{app}/storage` (`app_storage`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     pub async fn storage(self, app: &str) -> Result<AppStorageResponse> {
         let req = Request::new(Method::GET, format!("apps/{}/storage", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
@@ -1007,7 +1007,7 @@ impl Apps<'_> {
 
     /// Read with a view method.
     ///
-    /// `POST /apps/{app}/views` (`views`). Who: whoever the app's access admits (a public app: anyone).
+    /// `POST /apps/{app}/views` (`views`). Who: whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`: signed out too).
     ///
     /// Retried while the node answers `503` or cannot be reached (D70).
     pub async fn view(
@@ -3187,9 +3187,12 @@ impl Orgs<'_> {
         self,
         org: &str,
         team: &str,
+        keep_apps: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
     ) -> Result<TeamDeleteResponse> {
-        let body = Value::Object(Map::new());
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "keepApps", keep_apps)?;
+        let body = Value::Object(fields);
         let req = Request::new(
             Method::DELETE,
             format!(

@@ -42,7 +42,9 @@ class AppCreateBody:
         access (Union['AccessType0', 'AccessType1', 'AccessType2', 'AccessType3', 'AccessType4', 'AccessType5', Unset]):
             Who may reach an app at all, as one mode (deprecated: see `grants`), or `grants`: the instance's grant list (see
             #Grant). Each mode is a grant list: `owner` none, `org` the organization, `team` that team, `accounts` those
-            people, `public` `anyone`.
+            people, `public` `anyone` with `signedOut: true` (it admits callers without an account too, which no grant
+            does). From cluster version 1.0.0-rc.32 the deprecated `public` sets an `anyone` grant (signed-in accounts
+            only); an instance set `public` before keeps the mode and answers `public`.
         grants (Union[Unset, list[Union['GrantType0', 'GrantType1', 'GrantType2', 'GrantType3']]]):
         init_args (Union[Unset, Any]): Free-form JSON: its shape is not this API's (see the description around it for
             whose it is).

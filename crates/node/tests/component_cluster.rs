@@ -1374,7 +1374,7 @@ async fn teams_work_like_v1_subgroups() {
     // deleter's passkey, since it holds an app).
     let gone = alice
         .orgs()
-        .team_delete(&org, &board, Some(&mut a))
+        .team_delete(&org, &board, None, Some(&mut a))
         .await
         .map(wire)
         .unwrap();
@@ -1663,7 +1663,7 @@ async fn deleting_a_team_with_apps_takes_a_passkey_and_names_them() {
     let empty = team("Empty", None).await;
     let gone = alice
         .orgs()
-        .team_delete(&org, &empty, None)
+        .team_delete(&org, &empty, None, None)
         .await
         .map(wire)
         .unwrap();
@@ -1683,7 +1683,7 @@ async fn deleting_a_team_with_apps_takes_a_passkey_and_names_them() {
         .unwrap();
     let err = alice
         .orgs()
-        .team_delete(&org, &chat, None)
+        .team_delete(&org, &chat, None, None)
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("CONFIRM_REQUIRED"), "{err}");
@@ -1692,7 +1692,7 @@ async fn deleting_a_team_with_apps_takes_a_passkey_and_names_them() {
 
     let gone = alice
         .orgs()
-        .team_delete(&org, &chat, Some(&mut a))
+        .team_delete(&org, &chat, None, Some(&mut a))
         .await
         .map(wire)
         .unwrap();

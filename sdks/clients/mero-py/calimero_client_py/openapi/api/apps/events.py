@@ -90,7 +90,8 @@ def sync_detailed(
 
      Committed events from index `from`, then live ones, each to its audience.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -126,7 +127,8 @@ def sync(
 
      Committed events from index `from`, then live ones, each to its audience.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -157,7 +159,8 @@ async def asyncio_detailed(
 
      Committed events from index `from`, then live ones, each to its audience.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):
@@ -191,7 +194,8 @@ async def asyncio(
 
      Committed events from index `from`, then live ones, each to its audience.
 
-    **Who:** whoever the app's access admits (a public app: anyone).
+    **Who:** whoever the app's access admits (`anyone`: any signed-in account; the legacy `public`:
+    signed out too).
 
     Args:
         app (str):

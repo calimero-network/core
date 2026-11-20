@@ -48,7 +48,7 @@ Generated from core's `docs/public/openapi.json`.
 | `files_list(app)` | `GET /apps/{app}/files` | List an app's sealed files |
 | `files_upload(app, body)` | `POST /apps/{app}/files` | Upload a sealed file. *Refusals:* `429 QUOTA_EXCEEDED` |
 | `get(app)` | `GET /apps/{app}` | One app |
-| `invite_create(app, ttl_secs=…, uses=…, scope=…, confirm=None)` | `POST /apps/{app}/invites` | Invite someone to an instance. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 GUESTS_NOT_ALLOWED`, `429 QUOTA_EXCEEDED` |
+| `invite_create(app, ttl_secs=…, uses=…, scope=…, confirm=None)` | `POST /apps/{app}/invites` | Invite someone to an instance. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 LEGACY_PUBLIC`, `429 QUOTA_EXCEEDED` |
 | `invite_list(app)` | `GET /apps/{app}/invites` | An instance's invites |
 | `invite_revoke(app, key, confirm=None)` | `DELETE /apps/{app}/invites/{key}` | Revoke an instance invite. **passkey** |
 | `link(app, name, body_app, confirm=None)` | `PUT /apps/{app}/links/{name}` | Attach an app to one of an app's references. **passkey**. *Refusals:* `400 NOT_ATTACHABLE`, `409 FEATURE_NOT_ACTIVE`, `409 NOT_AN_ATTACH_REFERENCE`, `409 WRONG_PACKAGE` |
@@ -222,7 +222,7 @@ Generated from core's `docs/public/openapi.json`.
 | `get(org)` | `GET /orgs/{org}` | One organization |
 | `invite_create(org, role, teams=…, ttl_secs=…, uses=…, all_apps=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/invites` | Make an invite. **passkey**. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `403 CANNOT_GRANT_UNHELD`, `409 FEATURE_NOT_ACTIVE` |
 | `invite_list(org)` | `GET /orgs/{org}/invites` | The organization's invites |
-| `invite_redeem(token)` | `POST /invites/{token}/redeem` | Join with an invite. *Refusals:* `409 GUESTS_NOT_ALLOWED` |
+| `invite_redeem(token)` | `POST /invites/{token}/redeem` | Join with an invite. *Refusals:* `409 GUESTS_NOT_ALLOWED`, `409 LEGACY_PUBLIC` |
 | `invite_revoke(org, key, confirm=None)` | `DELETE /orgs/{org}/invites/{key}` | Revoke an invite. **passkey** |
 | `member_metadata(org, account, metadata)` | `POST /orgs/{org}/members/{account}/metadata` | Set a member's metadata |
 | `member_remove_teams(org, account, teams, confirm=None)` | `DELETE /orgs/{org}/members/{account}/teams` | Remove a member from several teams, or leave them. **passkey**. *Refusals:* `400 BAD_TEAMS`, `409 FEATURE_NOT_ACTIVE` |
@@ -243,7 +243,7 @@ Generated from core's `docs/public/openapi.json`.
 | `set_member(org, account, role, confirm=None)` | `POST /orgs/{org}/members` | Set a member's role. **passkey** |
 | `settings(org, allow_guests=…, confirm=None)` | `POST /orgs/{org}/settings` | Change the organization's settings. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
 | `team_create(org, name, parent=…, join)` | `POST /orgs/{org}/teams` | Create a team |
-| `team_delete(org, team, confirm=None)` | `DELETE /orgs/{org}/teams/{team}` | Delete a team. **passkey** |
+| `team_delete(org, team, keep_apps=…, confirm=None)` | `DELETE /orgs/{org}/teams/{team}` | Delete a team. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
 | `team_get(org, team)` | `GET /orgs/{org}/teams/{team}` | One team |
 | `team_remove_member(org, team, account, confirm=None)` | `DELETE /orgs/{org}/teams/{team}/members/{account}` | Remove a team member, or leave. **passkey** |
 | `team_set_member(org, team, account, lead=…, role=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/teams/{team}/members` | Add or change a team member. **passkey** |
