@@ -2981,6 +2981,41 @@ impl Node {
         None
     }
 
+    /// How far `app`'s group got, as far as its replicas can say: every replica asked at
+    /// once (this node's own read if it is one, else `internal/last-write`), the furthest
+    /// applied index and the latest write among those that answer. `None` unless a
+    /// majority of the replicas answer ([`furthest_progress`]): any committed entry is
+    /// on a majority, so the furthest of a majority holds it, where the first replica to
+    /// answer may be behind. For an undo's lost writes (`api::undo::lost_writes`).
+    pub(crate) async fn group_progress(&self, app: &AppRecord) -> Option<ReplicaProgress> {
+        let body = json!({ "app": app.app_id });
+        let answers = futures_util::future::join_all(app.replicas.iter().map(|id| {
+            let body = &body;
+            async move {
+                if *id == self.config.node_id {
+                    let g = self.hosted(&app.app_id)?;
+                    return Some(g.read_local(|m, _| ReplicaProgress {
+                        applied: Some(m.state.last_index),
+                        last_write_ms: m.last_write_ms(),
+                    }));
+                }
+                let addr = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone()))?;
+                let v = self
+                    .peer_forward(&addr, "internal/last-write", body)
+                    .await
+                    .ok()?;
+                Some(ReplicaProgress {
+                    // A replica on a release before answers without it.
+                    applied: v["appliedIndex"].as_u64(),
+                    last_write_ms: v["lastWriteMs"].as_u64(),
+                })
+            }
+        }))
+        .await;
+        let answers: Vec<ReplicaProgress> = answers.into_iter().flatten().collect();
+        furthest_progress(&answers, app.replicas.len())
+    }
+
     /// A component app's xcalls (D25, D29), `{ pending, deadLetters }`: this node's
     /// replica's if it hosts the app, else the first replica that answers
     /// `internal/xcalls`, as [`Self::storage_stats`].
@@ -3922,6 +3957,27 @@ where
     }
 }
 
+/// The furthest of `answers`, the replicas of a group of `replicas` that answered: the
+/// highest applied index (`None` when an answer has none, from a release before, as it may
+/// be the furthest) and the latest write. `None` below a majority of `replicas`.
+pub(crate) fn furthest_progress(
+    answers: &[ReplicaProgress],
+    replicas: usize,
+) -> Option<ReplicaProgress> {
+    if answers.is_empty() || answers.len() < replicas / 2 + 1 {
+        return None;
+    }
+    let applied = answers
+        .iter()
+        .map(|a| a.applied)
+        .collect::<Option<Vec<u64>>>()
+        .and_then(|i| i.into_iter().max());
+    Some(ReplicaProgress {
+        applied,
+        last_write_ms: answers.iter().filter_map(|a| a.last_write_ms).max(),
+    })
+}
+
 /// How far a replica of an app got ([`Node::replica_progress`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ReplicaProgress {
@@ -4047,5 +4103,34 @@ mod capability_refusal_tests {
         assert_eq!((e.status, e.code.as_str()), (403, "CANNOT_GRANT_UNHELD"));
         let e = rejected(crate::system::UNKNOWN_CAPABILITIES);
         assert_eq!((e.status, e.code.as_str()), (400, "UNKNOWN_CAPABILITIES"));
+    }
+}
+
+#[cfg(test)]
+mod group_progress_tests {
+    use super::{furthest_progress, ReplicaProgress};
+
+    fn at(applied: Option<u64>, last: Option<u64>) -> ReplicaProgress {
+        ReplicaProgress {
+            applied,
+            last_write_ms: last,
+        }
+    }
+
+    #[test]
+    fn the_furthest_of_a_majority_answers_never_a_lone_lagging_replica() {
+        // One of three is no majority, however far it got.
+        assert_eq!(furthest_progress(&[at(Some(9), Some(5))], 3), None);
+        assert_eq!(furthest_progress(&[], 3), None);
+        // Two of three: the furthest index and the latest write, from whichever saw them.
+        assert_eq!(
+            furthest_progress(&[at(Some(2), Some(7)), at(Some(9), Some(5))], 3),
+            Some(at(Some(9), Some(7)))
+        );
+        // An answer without an index (a release before) may be the furthest: unknown.
+        assert_eq!(
+            furthest_progress(&[at(Some(9), None), at(None, Some(5))], 3),
+            Some(at(None, Some(5)))
+        );
     }
 }

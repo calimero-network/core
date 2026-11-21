@@ -38,7 +38,7 @@ async fn part_json(node: &Node, a: &AppRecord, p: &RestorePoint) -> Value {
             let replica = if hosted {
                 None
             } else {
-                Some(node.replica_progress(a).await)
+                Some(node.group_progress(a).await)
             };
             (lost_writes(v, f.source.index, replica), Value::Null)
         }
@@ -70,28 +70,42 @@ async fn part_json(node: &Node, a: &AppRecord, p: &RestorePoint) -> Value {
 /// (`entriesSince`, taken at `index`), its last write (`lastWriteAt`, Unix seconds), and
 /// `any` when it wrote after the restore point was taken (`holder`'s `takenAt`), which the
 /// restore takes back too. Read from `holder`, the restore point's node, while it hosts
-/// the app; else from `replica` (`Some` when this node asked a current replica, `None`
-/// inside it when none answered). What nobody can say is `null`, `any` included: an
-/// undo never says it loses no writes it cannot see.
+/// the app; else from `replica` (`Some` when this node asked the current replicas,
+/// [`Node::group_progress`], `None` inside it when no majority answered). Only an applied
+/// index at or past `index` counts entries or says no write is lost: a replica behind the
+/// restore point has not seen what came after it. What nobody can say is `null`, `any`
+/// included: an undo never says it loses no writes it cannot see.
 fn lost_writes(
     holder: &Value,
     index: u64,
     replica: Option<Option<crate::node::ReplicaProgress>>,
 ) -> Value {
-    let (entries, last) = match replica {
-        None => (
-            holder["entriesSince"].as_u64(),
-            holder["lastWriteMs"].as_u64(),
-        ),
-        Some(None) => {
-            return json!({ "entriesSince": null, "lastWriteAt": null, "any": null });
+    let unknown = json!({ "entriesSince": null, "lastWriteAt": null, "any": null });
+    let taken = holder["takenAt"].as_u64();
+    let wrote_since = |ms: u64| taken.is_none_or(|t| ms / 1000 >= t);
+    let r = match replica {
+        None => {
+            let last = holder["lastWriteMs"].as_u64();
+            return json!({
+                "entriesSince": holder["entriesSince"],
+                "lastWriteAt": last.map(|ms| ms / 1000),
+                "any": last.is_some_and(wrote_since),
+            });
         }
-        Some(Some(r)) => (r.applied.map(|i| i.saturating_sub(index)), r.last_write_ms),
+        Some(None) => return unknown,
+        Some(Some(r)) => r,
     };
+    let caught_up = r.applied.is_some_and(|i| i >= index);
+    let wrote = r.last_write_ms.is_some_and(wrote_since);
+    if !caught_up && !wrote {
+        return unknown;
+    }
+    // Past `index`, or a write after the restore point seen even so: a write since is a
+    // write lost, whoever saw it, and none is said only by a replica past `index`.
     json!({
-        "entriesSince": entries,
-        "lastWriteAt": last.map(|ms| ms / 1000),
-        "any": last.is_some_and(|ms| holder["takenAt"].as_u64().is_none_or(|t| ms / 1000 >= t)),
+        "entriesSince": r.applied.filter(|_| caught_up).map(|i| i - index),
+        "lastWriteAt": r.last_write_ms.map(|ms| ms / 1000),
+        "any": wrote,
     })
 }
 
@@ -299,7 +313,8 @@ mod tests {
             read,
             json!({ "entriesSince": 4, "lastWriteAt": 150, "any": true })
         );
-        // A replica on a release before has no index: the count is unknown, not zero.
+        // A replica on a release before has no index: it cannot show it is past the
+        // restore point, so its old last write says nothing either.
         let older = lost_writes(
             &holder,
             3,
@@ -310,7 +325,48 @@ mod tests {
         );
         assert_eq!(
             older,
-            json!({ "entriesSince": null, "lastWriteAt": 50, "any": false })
+            json!({ "entriesSince": null, "lastWriteAt": null, "any": null })
+        );
+        // A replica that has not applied up to the restore point (index 3) is behind:
+        // what it says of writes since is unknown, never `0` and `false`.
+        let lagging = lost_writes(
+            &holder,
+            3,
+            Some(Some(ReplicaProgress {
+                applied: Some(2),
+                last_write_ms: Some(50_000),
+            })),
+        );
+        assert_eq!(
+            lagging,
+            json!({ "entriesSince": null, "lastWriteAt": null, "any": null }),
+            "a lagging replica never says nothing is lost"
+        );
+        // Behind, yet it saw a write after the restore point: that write is lost.
+        let seen = lost_writes(
+            &holder,
+            3,
+            Some(Some(ReplicaProgress {
+                applied: Some(2),
+                last_write_ms: Some(150_000),
+            })),
+        );
+        assert_eq!(
+            seen,
+            json!({ "entriesSince": null, "lastWriteAt": 150, "any": true })
+        );
+        // Past it and no write since: nothing is lost.
+        let none = lost_writes(
+            &holder,
+            3,
+            Some(Some(ReplicaProgress {
+                applied: Some(3),
+                last_write_ms: Some(50_000),
+            })),
+        );
+        assert_eq!(
+            none,
+            json!({ "entriesSince": 0, "lastWriteAt": 50, "any": false })
         );
         // The holder hosting the app answers for itself.
         let hosted = json!({

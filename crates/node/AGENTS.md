@@ -1421,8 +1421,11 @@ is its command line.
   (`Node::seed_undo` -> `seed_undo_here` -> `seed_restore`, in its own task) and waits
   `UNDO_WAIT`; `GET /apps/{app}/undo` (`lostWrites` from `restore_point_here`: entries
   since, last write, `any`; `hosted: false` there, the node no longer hosting the app,
-  reads them from a current replica, `Node::replica_progress` over `internal/last-write`'s
-  `appliedIndex`, and `null`, `any` included, when none answers: `api::undo::lost_writes`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
+  reads them from the current replicas, `Node::group_progress` over `internal/last-write`'s
+  `appliedIndex`: every replica asked, the furthest of a majority, `furthest_progress`; an
+  index below the restore point's, none, or no majority is `null`, `any` included, never
+  `0`/`false`: `api::undo::lost_writes`; regressions `api::undo::tests`,
+  `node::group_progress_tests`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
   `UNDO_NOT_AS_NAMED`, `409 RESTORE_POINT_UNAVAILABLE`. *Waves* (`Feature::Rollouts`):
   `SystemState::rollouts` (deployment -> app -> `rollouts::RolloutState { version,
   waveHours, baseWave, baseAt, paused }`), `rollout_of` (defaults from the offer's
