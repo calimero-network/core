@@ -258,8 +258,9 @@ still waits for an owner's or admin's approval.
 
 From cluster version 1.0.0-rc.34 (`Feature::UpgradeClasses`) every `UpgradeApp`
 carries the class the proposing node computed for that app's move (the app and
-the members it has, as they run when it moves; a unit's run classifies each app
-as it comes). Apply cannot read a release's ABI (it is in the `.mpk`), but the
+the members it has, as they run when it moves; in a unit's run the instance
+carries the whole unit's class, its members moving to the run's targets, and
+each member its own). Apply cannot read a release's ABI (it is in the `.mpk`), but the
 log holds each release's pinned signer, its `outbound` prefixes, its secrets'
 hosts. Apply classifies the move again from
 those (`SystemState::check_class`) and refuses, `409 UPGRADE_CLASS_MISMATCH`, a
@@ -267,7 +268,10 @@ class that leaves out a reason the log shows (a new signer, a destination no
 release before reached), or that the classifier could never answer (red without
 a reason, green with one). So no node can log a red update as green. What the
 log cannot show (a state version, a method called as the person) is the
-proposer's to say. The class and its reasons are kept on the app's last upgrade
+proposer's to say. A move the log cannot rebuild (a release the app or a member
+runs, or a target, no longer installed, which is allowed while another release
+ships the same WASM) is never green: the log cannot confirm it, so apply refuses
+a green class for it and takes a red one, gated as red. The class and its reasons are kept on the app's last upgrade
 (`lastUpgrade.class`, `reasons`). An entry without a class (an earlier
 release's, a raw bundle's, or a release the classifier could not read) is taken
 as red by every rule below; one logged before the feature replays as it applied.
@@ -314,6 +318,16 @@ the policy (`409 ONE_APPROVAL` for a first approval of it), and so does every
 update without the policy. The operator's upgrades (where it holds app upgrades)
 are not judged by policies. A raw bundle carries no class, so under a second
 approver it never applies.
+
+A unit's upgrade (`/upgrade-unit`, the consent page's `upgradeUnit`) is judged
+once, as a whole, under its instance's policy, so it moves whole or not at all:
+the unit's class decides (a unit red only through a member waits too, and its
+page is refused before it exists), a second approver's first approval must be of
+that very unit (`unit`, the same targets), and the instance's `UpgradeApp`
+carries the unit's class. Each member the run then moves takes the instance's
+judgement in that run (`SystemState::run_update_gate`; its own class is still
+checked against the log), so a member's own policy never stops a unit half way.
+A member's own policy governs its upgrades alone.
 
 `GET /apps/{app}/update` adds the policy in force (`policy`), the first
 approvals waiting that cover the app (`pendingApprovals`), and on `available`

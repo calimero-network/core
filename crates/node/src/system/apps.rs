@@ -492,12 +492,18 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // The class it carries is judged against the log (a red update is never
             // logged as green), and where the app's policy asks for a second approver, a
             // red or unclassified update needs another owner's or admin's first approval
-            // (`SystemState::update_gate`). An entry without a class from before the
-            // policies replays as it applied: no policy existed yet.
+            // (`SystemState::update_gate`); a unit's run is judged once, under its
+            // instance's policy (`SystemState::run_update_gate`). An entry without a class
+            // from before the policies replays as it applied: no policy existed yet.
             let approved_by = match s.apps.get(&app_id) {
-                Some(a) if !by_operator => {
-                    s.update_gate(a, release.as_ref(), class.as_ref(), &actor, at)?
-                }
+                Some(a) if !by_operator => s.run_update_gate(
+                    a,
+                    release.as_ref(),
+                    class.as_ref(),
+                    run.as_deref(),
+                    &actor,
+                    at,
+                )?,
                 _ => None,
             };
             let by = if by_operator {
