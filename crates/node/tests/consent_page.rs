@@ -4239,14 +4239,14 @@ async fn a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node() {
     // One passkey throughout, so its signature counter only moves forward.
     let mut key = alice_key;
     for signed_in_at in 0..n {
-        let mut in_app_key =
+        let mut in_app_pk =
             SoftAuthenticator::with_key(&key, "localhost", &app_origin(signed_in_at));
         let in_app = c.client(signed_in_at);
-        let session = in_app.sign_in(&mut in_app_key).await.unwrap();
+        let session = in_app.sign_in(&mut in_app_pk).await.unwrap();
         // The very next step-up, through the typed client: the 412, then its retry.
         let done = in_app
             .apps()
-            .call(&app, "clear", Some(json!({})), None, Some(&mut in_app_key))
+            .call(&app, "clear", Some(json!({})), None, Some(&mut in_app_pk))
             .await;
         assert!(
             done.is_ok(),
@@ -4271,7 +4271,7 @@ async fn a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node() {
                         "confirm".into(),
                         json!({
                             "challengeId": d["challengeId"],
-                            "assertion": in_app_key.assert(&challenge),
+                            "assertion": in_app_pk.assert(&challenge),
                         }),
                     );
                 }
@@ -4284,15 +4284,15 @@ async fn a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node() {
                 );
             }
         }
-        key = in_app_key;
+        key = in_app_pk;
     }
 
     // The consent page the frontend opens: asked with the app-origin session, approved
     // with the same passkey on the node's own origin.
     // Signed in on the first node, asked on the last.
     let last = n - 1;
-    let mut in_app_key = SoftAuthenticator::with_key(&key, "localhost", &app_origin(0));
-    let session = c.client(0).sign_in(&mut in_app_key).await.unwrap();
+    let mut in_app_pk = SoftAuthenticator::with_key(&key, "localhost", &app_origin(0));
+    let session = c.client(0).sign_in(&mut in_app_pk).await.unwrap();
     let in_app = c.client(last);
     in_app.use_session(session).await;
     let made = post(
@@ -4305,7 +4305,7 @@ async fn a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node() {
     .unwrap();
     let url = made["url"].as_str().unwrap().to_owned();
     let page = Page::new(&url);
-    let mut page_key = SoftAuthenticator::with_key(&in_app_key, "localhost", &origin(&url));
+    let mut page_key = SoftAuthenticator::with_key(&in_app_pk, "localhost", &origin(&url));
     let ((code, done), _) = page.approve(&c, &mut page_key).await;
     assert_eq!(code, 200, "{done}");
 }
