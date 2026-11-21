@@ -798,19 +798,27 @@ async fn passes_take_turns_and_move_an_app_once() {
     })
     .await;
 
+    // The leader's own timed pass may run too (and apply it first): whichever pass moves
+    // the app, the others find nothing left to do.
     shift_update_clock(DAY + 600);
     let (a, b) = tokio::join!(pass(&c), pass(&c));
+    assert!(
+        a + b <= 1,
+        "the app moved once, not by both passes: {a} + {b}"
+    );
+    let moved = get_until(&alice, &format!("apps/{app}"), 15, |a| {
+        a["release"]["version"] == "1.1.0"
+    })
+    .await;
+    // Moved once: its last upgrade is that move, on its own, not a racing pass's failure.
+    let last = &moved["lastUpgrade"];
+    assert_eq!(last["ok"], true, "{moved}");
+    assert_eq!(last["auto"], true, "{moved}");
+    assert_eq!(last["toRelease"]["version"], "1.1.0", "{moved}");
     assert_eq!(
         calimero_node::testing::most_auto_update_passes_at_once(),
         1,
         "two passes ran at once"
     );
-    assert_eq!(a + b, 1, "the app moved once");
-    let moved = get_until(&alice, &format!("apps/{app}"), 15, |a| {
-        a["release"]["version"] == "1.1.0"
-    })
-    .await;
-    assert_eq!(moved["lastUpgrade"]["ok"], true, "{moved}");
-    assert_eq!(moved["lastUpgrade"]["auto"], true, "{moved}");
     shift_update_clock(0);
 }
