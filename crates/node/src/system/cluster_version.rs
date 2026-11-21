@@ -180,10 +180,20 @@ pub enum Feature {
     /// the setting; a visitor's call names `Caller::Visitor` in the app's log, which an
     /// earlier replica cannot decode, so visitors are admitted only at this version too.
     PublicLinks,
+    /// `UpgradeApp` with `class`: what the update classifier said of the move, judged at
+    /// apply against the log (`SystemState::check_class`) and recorded on the app's
+    /// `lastUpgrade`. An earlier release ignores the field and would apply a move logged as
+    /// green that the log shows red, where a later one refuses it.
+    UpgradeClasses,
+    /// Update policies and second approvers: `SetUpgradePolicy` and `ApproveUpgrade`
+    /// (`types::UpgradePolicy`, `types::PendingApproval`). An earlier release cannot decode
+    /// them, so it would keep no policy and apply a red update with one approval where a
+    /// later one waits for the second.
+    UpgradePolicies,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 41] = [
+pub const FEATURES: [Feature; 43] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -225,6 +235,8 @@ pub const FEATURES: [Feature; 41] = [
     Feature::AccessGrants,
     Feature::KeepTeamApps,
     Feature::PublicLinks,
+    Feature::UpgradeClasses,
+    Feature::UpgradePolicies,
 ];
 
 impl Feature {
@@ -273,6 +285,8 @@ impl Feature {
             Self::AccessGrants => "accessGrants",
             Self::KeepTeamApps => "keepTeamApps",
             Self::PublicLinks => "publicLinks",
+            Self::UpgradeClasses => "upgradeClasses",
+            Self::UpgradePolicies => "upgradePolicies",
         }
     }
 
@@ -319,6 +333,7 @@ impl Feature {
             | Self::AccessGrants
             | Self::KeepTeamApps
             | Self::PublicLinks => "1.0.0-rc.33",
+            Self::UpgradeClasses | Self::UpgradePolicies => "1.0.0-rc.34",
         }
     }
 }
@@ -561,8 +576,9 @@ impl SystemCmd {
             Self::UpgradeApp {
                 in_deployment,
                 owner_approves,
+                class,
                 ..
-            } if *in_deployment || *owner_approves => {
+            } if *in_deployment || *owner_approves || class.is_some() => {
                 let mut f = Vec::new();
                 if *in_deployment {
                     f.push(Feature::UpgradeInDeployment);
@@ -570,7 +586,13 @@ impl SystemCmd {
                 if *owner_approves {
                     f.push(Feature::OwnerApprovedUpgrades);
                 }
+                if class.is_some() {
+                    f.push(Feature::UpgradeClasses);
+                }
                 f
+            }
+            Self::SetUpgradePolicy { .. } | Self::ApproveUpgrade { .. } => {
+                vec![Feature::UpgradePolicies]
             }
             Self::CreateApiKey {
                 owner_approves: true,
@@ -852,6 +874,7 @@ mod tests {
     const RC31: &str = "1.0.0-rc.31";
     const RC32: &str = "1.0.0-rc.32";
     const RC33: &str = "1.0.0-rc.33";
+    const RC34: &str = "1.0.0-rc.34";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1086,6 +1109,11 @@ mod tests {
                 "app_id": "app", "bundle": "b", "actor": "a", "owner_approves": true })),
             Feature::PublicLinks => entry(json!({ "op": "setOrgSettings", "org": "org",
                 "settings": { "allowPublicLinks": false }, "actor": "alice" })),
+            Feature::UpgradeClasses => entry(json!({ "op": "upgradeApp",
+                "app_id": "app", "bundle": "b", "actor": "a",
+                "class": { "class": "green" } })),
+            Feature::UpgradePolicies => entry(json!({ "op": "setUpgradePolicy",
+                "org": "org", "policy": { "secondApprover": true }, "actor": "alice" })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1372,9 +1400,9 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
-            .iter()
-            .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33].contains(&f.since()));
+        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES.iter().partition(|f| {
+            ![RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34].contains(&f.since())
+        });
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -1447,8 +1475,10 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC29);
         let (rc30, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC31);
-        let (rc32, rc33): (Vec<Feature>, Vec<Feature>) =
+        let (rc32, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC32);
+        let (rc33, rc34): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC33);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -1538,6 +1568,8 @@ mod tests {
                 Feature::PublicLinks
             ]
         );
+        // rc.34's (update classes and policies) for every node on rc.34.
+        assert_eq!(rc34, [Feature::UpgradeClasses, Feature::UpgradePolicies]);
         for &feature in rc32.iter().chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
@@ -1586,6 +1618,24 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc33 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        for &feature in &rc34 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC33))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC34;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC34.into(),
+            nodes: (1..=3).map(|id| (id, RC34.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc34 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

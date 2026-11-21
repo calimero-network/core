@@ -51,6 +51,27 @@ class AppsFacade internal constructor(
         api(null, null, emptySet()).apps.appAccess(app = app, appAccessRequest = AppAccessRequest(grants = grants))
 
     /**
+     * Approve a red update first, for a second approver to apply
+     *
+     * Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /apps/{app}/upgrade-approvals` (`app_approve_upgrade`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun approveUpgrade(
+        app: kotlin.String,
+        version: kotlin.String,
+        unit: kotlin.Boolean? = null,
+        passkey: PasskeyProvider? = null,
+    ): AppApproveUpgrade200Response =
+        api(passkey, null, emptySet()).apps.appApproveUpgrade(app = app, appApproveUpgradeRequest = AppApproveUpgradeRequest(version = version, unit = unit))
+
+    /**
      * Every replica's receipt-key attestation
      *
      * Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`), and `cluster`, the cluster id each quote binds (with the replica's `node`): the documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any other query parameter is ignored.
@@ -368,6 +389,42 @@ class AppsFacade internal constructor(
         api(null, null, emptySet()).apps.appOpenapi(app = app)
 
     /**
+     * The update policy an app follows
+     *
+     * For whoever may read the app. Its own policy where an owner or admin set one, else its organization's, else the defaults: nothing updates on its own, one approval applies an update.
+     *
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+     *
+     * `GET /apps/{app}/upgrade-policy` (`app_policy`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun policy(
+        app: kotlin.String,
+    ): PolicyView =
+        api(null, null, emptySet()).apps.appPolicy(app = app)
+
+    /**
+     * Set an app's own update policy
+     *
+     * An owner or admin of the app's organization, with a step-up over `org:<org> / __set_upgrade_policy / { app, policy }`. `policy: null` (or left out) drops it: the app follows its organization's again. `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. A move to another organization drops it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /apps/{app}/upgrade-policy` (`app_policy_set`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun policySet(
+        app: kotlin.String,
+        policy: com.calimero.mero.Explicit<AppPolicySetRequestPolicy>? = null,
+        passkey: PasskeyProvider? = null,
+    ): PolicyView =
+        api(passkey, null, setOfNotNull("policy".takeIf { policy != null && policy.value == null })).apps.appPolicySet(app = app, appPolicySetRequest = AppPolicySetRequest(policy = policy?.value))
+
+    /**
      * One compute run
      *
      * Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.
@@ -552,7 +609,7 @@ class AppsFacade internal constructor(
     /**
      * Whether an update is available for an app
      *
-     * For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+     * For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
      *
      * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *

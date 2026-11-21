@@ -51,6 +51,37 @@ class Approvals(DeepCase):
 
 
 @case
+class UpgradePolicies(DeepCase):
+    name = "upgrade-policies"
+    area = "Governance"
+    since = "1.0.0-rc.34"
+    seeds = "an organization's update policy asking for a second approver, with a two-day hold (`org upgrade-policy`)"
+    verifies = ("the policy as the organization's owner reads it on every node; dropped on the new release and "
+                "read back as the defaults")
+
+    def populate(self, w):
+        pia = person(w, "pia")
+        org = new_org(pia, "Policy Org")
+        pia.raw("post", f"orgs/{org}/upgrade-policy", {"policy": {"secondApprover": True, "holdHours": 48}})
+        s = {"org": org, "policy": pia.get(f"orgs/{org}/upgrade-policy")}
+        eq(s["policy"]["policy"], {"autoApply": "never", "holdHours": 48, "secondApprover": True},
+           "the update policy as set")
+        return s
+
+    def check(self, w, s):
+        pia = person(w, "pia")
+        for n in w.members():
+            eq(pia.get(f"orgs/{s['org']}/upgrade-policy", node=n), s["policy"],
+               f"the organization's update policy on node {n}")
+
+    def exercise(self, w, s):
+        pia = person(w, "pia")
+        pia.raw("post", f"orgs/{s['org']}/upgrade-policy", {"policy": None})
+        s["policy"] = pia.get(f"orgs/{s['org']}/upgrade-policy")
+        eq(s["policy"]["source"], "default", "the update policy dropped")
+
+
+@case
 class OpsState(DeepCase):
     name = "ops-state"
     area = "Ops"

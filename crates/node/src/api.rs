@@ -87,6 +87,7 @@ mod public_links;
 mod recovery;
 mod restore;
 mod sign_up;
+mod update_policies;
 mod upgrades;
 
 pub(crate) use approvals::{
@@ -102,8 +103,8 @@ pub(crate) use orgs::{
 pub use pipeline_events::MAX_RUN_SUBSCRIBERS_PER_APP;
 pub(crate) use public_links::VisitorLimits;
 pub(crate) use upgrades::{
-    owner_approves, refuse_stalled, unit_plan, upgrade_app, upgrade_refusal, upgrade_unit,
-    UpgradeBody,
+    move_class, owner_approves, refuse_stalled, unit_gate, unit_plan, upgrade_app, upgrade_refusal,
+    upgrade_unit, UpgradeBody,
 };
 // The request bodies the OpenAPI registry names as `super::<Body>`.
 #[cfg(test)]
@@ -133,6 +134,7 @@ use {
     public_links::PublicLinkBody,
     recovery::{RecoveryBegin, RecoveryFinish, RecoveryKeyBody, RecoveryStart, RecoveryStartBody},
     sign_up::{OpsSignUpInviteBody, SignUpBody, SignUpInviteBody},
+    update_policies::{UpdatesQuery, UpgradeApprovalBody, UpgradePolicyBody},
     upgrades::{OpsUpgradeBody, OrgUpgradeBody, PublisherUpgradeBody},
 };
 
@@ -155,6 +157,7 @@ pub(crate) const AREA_SOURCES: &[(&str, &str)] = &[
     ("public_links", include_str!("api/public_links.rs")),
     ("recovery", include_str!("api/recovery.rs")),
     ("sign_up", include_str!("api/sign_up.rs")),
+    ("update_policies", include_str!("api/update_policies.rs")),
     ("upgrades", include_str!("api/upgrades.rs")),
 ];
 
@@ -2247,6 +2250,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .merge(calls::routes())
         .merge(files::routes())
         .merge(upgrades::routes())
+        .merge(update_policies::routes())
         .merge(orgs::routes())
         .merge(approvals::routes())
         .merge(deployments::routes())

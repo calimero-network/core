@@ -49,6 +49,7 @@ from .openapi.api.accounts import sessions_list as _sessions_list
 from .openapi.api.accounts import usage as _usage
 from .openapi.api.apps import app_abi as _app_abi
 from .openapi.api.apps import app_access as _app_access
+from .openapi.api.apps import app_approve_upgrade as _app_approve_upgrade
 from .openapi.api.apps import app_attestation as _app_attestation
 from .openapi.api.apps import app_create as _app_create
 from .openapi.api.apps import app_delegate as _app_delegate
@@ -66,6 +67,8 @@ from .openapi.api.apps import app_metadata as _app_metadata
 from .openapi.api.apps import app_method as _app_method
 from .openapi.api.apps import app_move as _app_move
 from .openapi.api.apps import app_openapi as _app_openapi
+from .openapi.api.apps import app_policy as _app_policy
+from .openapi.api.apps import app_policy_set as _app_policy_set
 from .openapi.api.apps import app_run as _app_run
 from .openapi.api.apps import app_run_logs as _app_run_logs
 from .openapi.api.apps import app_runs as _app_runs
@@ -184,6 +187,8 @@ from .openapi.api.organizations import org_get as _org_get
 from .openapi.api.organizations import org_members as _org_members
 from .openapi.api.organizations import org_metadata as _org_metadata
 from .openapi.api.organizations import org_outbound_approval as _org_outbound_approval
+from .openapi.api.organizations import org_policy as _org_policy
+from .openapi.api.organizations import org_policy_set as _org_policy_set
 from .openapi.api.organizations import org_publisher as _org_publisher
 from .openapi.api.organizations import org_release_approval as _org_release_approval
 from .openapi.api.organizations import org_remove_member as _org_remove_member
@@ -191,6 +196,7 @@ from .openapi.api.organizations import org_rename as _org_rename
 from .openapi.api.organizations import org_set_backup_key as _org_set_backup_key
 from .openapi.api.organizations import org_set_member as _org_set_member
 from .openapi.api.organizations import org_settings as _org_settings
+from .openapi.api.organizations import org_updates as _org_updates
 from .openapi.api.organizations import org_upgrade as _org_upgrade
 from .openapi.api.organizations import org_upgrade_retry as _org_upgrade_retry
 from .openapi.api.organizations import org_upgrade_status as _org_upgrade_status
@@ -265,6 +271,7 @@ from .openapi.models import AccountSetBackupKeyBody
 from .openapi.models import AliasSetBody
 from .openapi.models import ApikeyCreateBody
 from .openapi.models import AppAccessBody
+from .openapi.models import AppApproveUpgradeBody
 from .openapi.models import AppCreateBody
 from .openapi.models import AppDelegateBody
 from .openapi.models import AppInviteCreateBody
@@ -272,6 +279,7 @@ from .openapi.models import AppLinkBody
 from .openapi.models import AppMetadataBody
 from .openapi.models import AppMethodBody
 from .openapi.models import AppMoveBody
+from .openapi.models import AppPolicySetBody
 from .openapi.models import AppSecretSetBody
 from .openapi.models import AppTeamsScopeBody
 from .openapi.models import AppTransferBody
@@ -333,6 +341,7 @@ from .openapi.models import OrgCreateBody
 from .openapi.models import OrgMembersDetail
 from .openapi.models import OrgMetadataBody
 from .openapi.models import OrgOutboundApprovalBody
+from .openapi.models import OrgPolicySetBody
 from .openapi.models import OrgPublisherBody
 from .openapi.models import OrgReleaseApprovalBody
 from .openapi.models import OrgRenameBody
@@ -382,6 +391,13 @@ _APP_ACCESS = Operation(
     "app_access",
     body=AppAccessBody,
     answer="json",
+)
+_APP_APPROVE_UPGRADE = Operation(
+    _app_approve_upgrade,
+    "app_approve_upgrade",
+    body=AppApproveUpgradeBody,
+    answer="json",
+    confirm=True,
 )
 _APP_ATTESTATION = Operation(
     _app_attestation,
@@ -602,6 +618,19 @@ _PIPELINES_VALIDATE = Operation(
     body=PipelinesValidateBody,
     answer="json",
 )
+_APP_POLICY = Operation(
+    _app_policy,
+    "app_policy",
+    body="none",
+    answer="json",
+)
+_APP_POLICY_SET = Operation(
+    _app_policy_set,
+    "app_policy_set",
+    body=AppPolicySetBody,
+    answer="json",
+    confirm=True,
+)
 _PRESENCE_GET = Operation(
     _presence_get,
     "presence_get",
@@ -778,6 +807,29 @@ class Apps(Group):
         Returns: AppAccessResponse200
         """
         return self._run(_APP_ACCESS, (app,), {}, {"grants": grants})
+
+    def approve_upgrade(self, *, app, version, unit=UNSET, confirm=None):
+        """Approve a red update first, for a second approver to apply (`POST /apps/{app}/upgrade-approvals`, `app_approve_upgrade`).
+
+        Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            version: body `version`
+            unit: body `unit`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: AppApproveUpgradeResponse200
+        """
+        return self._run(
+            _APP_APPROVE_UPGRADE,
+            (app,),
+            {},
+            {"version": version, "unit": unit},
+            confirm=confirm,
+        )
 
     def attestation(self, *, app, nonce):
         """Every replica's receipt-key attestation (`GET /apps/{app}/attestation`, `app_attestation`).
@@ -1580,6 +1632,38 @@ class Apps(Group):
             {"source": source, "package": package, "version": version},
         )
 
+    def policy(self, *, app):
+        """The update policy an app follows (`GET /apps/{app}/upgrade-policy`, `app_policy`).
+
+        For whoever may read the app. Its own policy where an owner or admin set one, else its organization's, else the defaults: nothing updates on its own, one approval applies an update.
+
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+
+        Args:
+            app: path
+
+        Returns: PolicyView
+        """
+        return self._run(_APP_POLICY, (app,), {}, None)
+
+    def policy_set(self, *, app, policy=UNSET, confirm=None):
+        """Set an app's own update policy (`POST /apps/{app}/upgrade-policy`, `app_policy_set`).
+
+        An owner or admin of the app's organization, with a step-up over `org:<org> / __set_upgrade_policy / { app, policy }`. `policy: null` (or left out) drops it: the app follows its organization's again. `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. A move to another organization drops it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            policy: body `policy`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: PolicyView
+        """
+        return self._run(
+            _APP_POLICY_SET, (app,), {}, {"policy": policy}, confirm=confirm
+        )
+
     def presence_get(self, *, app):
         """Who is present (`GET /apps/{app}/presence`, `presence_get`).
 
@@ -1883,7 +1967,7 @@ class Apps(Group):
     def update(self, *, app):
         """Whether an update is available for an app (`GET /apps/{app}/update`, `app_update`).
 
-        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
 
         **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -4482,6 +4566,19 @@ _ORG_OUTBOUND_APPROVAL = Operation(
     answer="json",
     confirm=True,
 )
+_ORG_POLICY = Operation(
+    _org_policy,
+    "org_policy",
+    body="none",
+    answer="json",
+)
+_ORG_POLICY_SET = Operation(
+    _org_policy_set,
+    "org_policy_set",
+    body=OrgPolicySetBody,
+    answer="json",
+    confirm=True,
+)
 _ORG_PUBLISHER = Operation(
     _org_publisher, "org_publisher", body=OrgPublisherBody, answer="json", confirm=True
 )
@@ -4574,6 +4671,12 @@ _TEAM_UPDATE = Operation(
     _team_update,
     "team_update",
     body=TeamUpdateBody,
+    answer="json",
+)
+_ORG_UPDATES = Operation(
+    _org_updates,
+    "org_updates",
+    body="none",
     answer="json",
 )
 _ORG_UPGRADE = Operation(
@@ -5003,6 +5106,38 @@ class Orgs(Group):
             confirm=confirm,
         )
 
+    def policy(self, *, org):
+        """The organization's update policy (`GET /orgs/{org}/upgrade-policy`, `org_policy`).
+
+        For its members: the policy each of its apps without one of its own follows (`source: default` until an owner or admin sets one).
+
+        **Who:** a passkey session (an API key is refused).
+
+        Args:
+            org: path
+
+        Returns: PolicyView
+        """
+        return self._run(_ORG_POLICY, (org,), {}, None)
+
+    def policy_set(self, *, org, policy=UNSET, confirm=None):
+        """Set the organization's update policy (`POST /orgs/{org}/upgrade-policy`, `org_policy_set`).
+
+        The owner or an admin, with a step-up over `org:<org> / __set_upgrade_policy / { app: null, policy }`; `policy: null` (or left out) drops it (the defaults). `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            org: path
+            policy: body `policy`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: PolicyView
+        """
+        return self._run(
+            _ORG_POLICY_SET, (org,), {}, {"policy": policy}, confirm=confirm
+        )
+
     def publisher(self, *, org, signer_id, public_key, signature, confirm=None):
         """Bind a package signing key (`POST /orgs/{org}/publishers`, `org_publisher`).
 
@@ -5415,6 +5550,21 @@ class Orgs(Group):
             {},
             {"name": name, "join": join, "parent": parent, "metadata": metadata},
         )
+
+    def updates(self, *, org, after=UNSET):
+        """Updates waiting across an organization's apps (`GET /orgs/{org}/updates`, `org_updates`).
+
+        For its owner and admins (`403` to other members, `404` to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as `GET /apps/{app}/update` answers it with the app's `name`; `policy` is the organization's; `next` is the `after` of the next page, `null` at the end.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend).
+
+        Args:
+            org: path
+            after: query
+
+        Returns: OrgUpdatesResponse200
+        """
+        return self._run(_ORG_UPDATES, (org,), {"after": after}, None)
 
     def upgrade(
         self,

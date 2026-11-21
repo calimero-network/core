@@ -372,6 +372,7 @@ fn manage_application_lets_a_member_upgrade_and_approve_outbound() {
         owner_in_team: true,
         in_deployment: false,
         owner_approves: false,
+        class: None,
     };
     for (app, actor, may) in [
         ("in-org", "bob", true),
@@ -481,6 +482,7 @@ fn check(g: &Governance) {
         owner_in_team: true,
         in_deployment: false,
         owner_approves: false,
+        class: None,
     };
     let by_operator = m.run_authorized(upgrade(true, "")).is_ok();
     let by_owner = m.run_authorized(upgrade(false, "alice")).is_ok();
@@ -749,6 +751,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
         owner_in_team: true,
         in_deployment: false,
         owner_approves: false,
+        class: None,
     };
     let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
     assert!(e.contains("compute component"), "{e}");
@@ -1029,6 +1032,7 @@ fn an_upgrade_names_its_consent_or_its_run() {
         owner_in_team: true,
         in_deployment: false,
         owner_approves: false,
+        class: None,
     };
     assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, None)).is_err());
     let c = consent(
@@ -1151,6 +1155,7 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
         owner_in_team: true,
         in_deployment: false,
         owner_approves: false,
+        class: None,
     };
 
     // Logged before the mark: kept as the entry says, as it was.
@@ -6637,6 +6642,7 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
         owner_in_team: true,
         in_deployment: false,
         owner_approves: false,
+        class: None,
     };
     let install = |by: &str, version: &str, at: u64| SystemCmd::InstallPackage {
         package: "p".into(),
@@ -7097,6 +7103,7 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
             owner_in_team: true,
             in_deployment: false,
             owner_approves: false,
+            class: None,
         }
     };
     let e = m.run(upgrade("b2", 10, "cal_other")).unwrap_err();
@@ -7199,6 +7206,7 @@ fn a_package_says_whether_its_publisher_or_each_owner_upgrades_it() {
         owner_in_team: true,
         in_deployment: false,
         owner_approves: false,
+        class: None,
     };
     assert!(
         m.run_unproven(upgrade("cora", "b2")).is_err(),
@@ -7272,6 +7280,7 @@ fn upgrade_to(app: &str, actor: &str, bundle: &str, release: Option<(&str, &str)
         owner_in_team: true,
         in_deployment: false,
         owner_approves: false,
+        class: None,
     }
 }
 
@@ -11670,5 +11679,750 @@ fn an_instance_from_a_deployment_moves_only_to_what_it_offers() {
     assert_eq!(
         m.state.within_deployment(&member, None, Some("offered")),
         Err(OUTSIDE_DEPLOYMENT)
+    );
+}
+
+/// C8's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
+/// member) with `inst` on `p@1.0.0`; `p@1.0.1` ships the same WASM and destinations
+/// (green), `p@1.1.0` adds a telemetry host (red).
+fn classified() -> SystemMachine {
+    let (_key, signer) = publisher_key(41);
+    let mut m = publishing(&signer, "owner");
+    let _ok = m.run_unproven(account("eve")).unwrap();
+    if let Some(o) = m.state.orgs.get_mut("cust") {
+        let _prev = o.members.insert("eve".into(), crate::types::OrgRole::Admin);
+    }
+    if let Some(p) = m.state.packages.get_mut("p") {
+        for (version, mpk, bundle, outbound) in [
+            ("1.0.0", "00", "b1", json!(["https://ai.example/"])),
+            ("1.0.1", "02", "b1", json!(["https://ai.example/"])),
+            (
+                "1.1.0",
+                "01",
+                "b2",
+                json!(["https://ai.example/", "https://telemetry.example/"]),
+            ),
+        ] {
+            let _prev = p.versions.insert(
+                version.into(),
+                serde_json::from_value(json!({
+                    "version": version, "mpk": mpk, "mpkSize": 1, "source": "upload",
+                    "services": { "": bundle }, "installedBy": "pam", "installedAt": 0,
+                    "outbound": outbound
+                }))
+                .unwrap(),
+            );
+        }
+    }
+    instance_of(
+        &mut m,
+        "inst",
+        "b1",
+        json!({ "package": "p", "version": "1.0.0" }),
+    );
+    m
+}
+
+/// `actor`'s upgrade of `inst` to `version` carrying `class`, at `at`.
+fn classified_upgrade(
+    actor: &str,
+    version: &str,
+    class: Option<crate::types::UpgradeClass>,
+    at: u64,
+) -> SystemCmd {
+    let bundle = if version == "1.1.0" { "b2" } else { "b1" };
+    let mut cmd = upgrade_to("inst", actor, bundle, Some(("p", version)));
+    if let SystemCmd::UpgradeApp {
+        class: c,
+        owner_approves,
+        at: when,
+        ..
+    } = &mut cmd
+    {
+        *c = class;
+        *owner_approves = true;
+        *when = at;
+    }
+    cmd
+}
+
+fn green() -> crate::types::UpgradeClass {
+    crate::types::UpgradeClass {
+        class: calimero_bundle::update::Class::Green,
+        reasons: Vec::new(),
+    }
+}
+
+fn red(destinations: &[&str]) -> crate::types::UpgradeClass {
+    crate::types::UpgradeClass {
+        class: calimero_bundle::update::Class::Red,
+        reasons: vec![calimero_bundle::update::Reason::EgressAdded {
+            destinations: destinations.iter().map(|d| (*d).to_owned()).collect(),
+        }],
+    }
+}
+
+/// An update's class is judged again where it applies: a move the log shows adds a
+/// destination is never applied as green (nor as red leaving that destination out, nor
+/// as a class the classifier would never answer), and the class applied is kept on the
+/// app's last upgrade. An entry without a class (an earlier release's, a raw bundle's)
+/// applies as it did.
+#[test]
+fn an_updates_class_is_judged_against_the_log_and_recorded() {
+    use super::cluster_version::Feature;
+    use super::UPGRADE_CLASS_MISMATCH;
+    let mut m = classified();
+    assert_eq!(
+        classified_upgrade("cora", "1.1.0", Some(green()), 10).features(),
+        [Feature::OwnerApprovedUpgrades, Feature::UpgradeClasses]
+    );
+    for wrong in [
+        green(),
+        red(&["https://other.example/"]),
+        crate::types::UpgradeClass {
+            class: calimero_bundle::update::Class::Red,
+            reasons: Vec::new(),
+        },
+    ] {
+        assert_eq!(
+            m.run_unproven(classified_upgrade("cora", "1.1.0", Some(wrong.clone()), 10)),
+            Err(UPGRADE_CLASS_MISMATCH.to_owned()),
+            "{wrong:?}"
+        );
+    }
+    assert_eq!(m.state.apps["inst"].bundle, "b1", "a refusal moves nothing");
+    // Green where the log shows nothing new; a class with a reason the log cannot judge
+    // (a state version) is the proposer's to say.
+    let mut green_move = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let _ok = green_move
+        .run_unproven(classified_upgrade("cora", "1.0.1", Some(green()), 10))
+        .unwrap();
+    let rec = green_move.state.apps["inst"].last_upgrade.clone().unwrap();
+    assert_eq!(rec.class, Some(calimero_bundle::update::Class::Green));
+    assert!(rec.reasons.is_empty() && rec.approved_by.is_none());
+    let _ok = m
+        .run_unproven(classified_upgrade(
+            "cora",
+            "1.1.0",
+            Some(red(&["https://telemetry.example/"])),
+            10,
+        ))
+        .unwrap();
+    let rec = m.state.apps["inst"].last_upgrade.clone().unwrap();
+    assert_eq!(rec.class, Some(calimero_bundle::update::Class::Red));
+    assert_eq!(rec.reasons, red(&["https://telemetry.example/"]).reasons);
+    let shown = serde_json::to_value(&rec).unwrap();
+    assert_eq!(shown["class"], "red", "{shown}");
+    assert_eq!(shown["reasons"][0]["code"], "egressAdded", "{shown}");
+    // An entry logged without a class replays as it applied, and records none.
+    let mut old = classified();
+    let _ok = old
+        .run_unproven(upgrade_to("inst", "cora", "b2", Some(("p", "1.1.0"))))
+        .unwrap();
+    let rec = old.state.apps["inst"].last_upgrade.clone().unwrap();
+    assert_eq!(rec.class, None);
+    let shown = serde_json::to_value(&rec).unwrap();
+    assert!(shown.get("class").is_none() && shown.get("approvedBy").is_none());
+    // A raw bundle carries none.
+    assert_eq!(
+        classified()
+            .run_unproven({
+                let mut cmd = upgrade_to("inst", "cora", "raw", None);
+                if let SystemCmd::UpgradeApp { class, .. } = &mut cmd {
+                    *class = Some(green());
+                }
+                cmd
+            })
+            .unwrap_err(),
+        UPGRADE_CLASS_MISMATCH
+    );
+}
+
+/// An organization's update policy, and an app's own over it, are set by an owner or
+/// admin with their passkey over exactly that policy; the hold is a day to a week; an app
+/// follows its own, else its organization's, else the defaults (nothing on its own, one
+/// approval). A state from before policies reads with none and writes as it did.
+#[test]
+fn an_update_policy_is_an_owners_or_admins_and_bounded() {
+    use super::cluster_version::Feature;
+    use super::{BAD_UPGRADE_POLICY, NOT_AN_UPGRADE_APPROVER};
+    use crate::types::UpgradePolicy;
+    let (mut m, mut alice, ..) = proven_cluster();
+    let _prev = m.state.apps.insert(
+        "oa".into(),
+        serde_json::from_value(json!({
+            "appId": "oa", "name": "oa", "group": 5, "bundle": "b1", "owner": "alice",
+            "org": "org", "replicas": [1], "createdAt": 0
+        }))
+        .unwrap(),
+    );
+    let before = serde_json::to_value(&m.state.orgs["org"]).unwrap();
+    assert!(before.get("upgradePolicy").is_none(), "{before}");
+    let set = |app: Option<&str>, policy: Option<UpgradePolicy>, actor: &str, consent: Value| {
+        SystemCmd::SetUpgradePolicy {
+            org: "org".into(),
+            app: app.map(str::to_owned),
+            policy,
+            actor: actor.into(),
+            consent,
+        }
+    };
+    let strict = UpgradePolicy {
+        second_approver: true,
+        ..UpgradePolicy::default()
+    };
+    assert_eq!(
+        set(None, Some(strict), "alice", Value::Null).features(),
+        [Feature::UpgradePolicies]
+    );
+    let (policy, source) = m.state.upgrade_policy_of(&m.state.apps["oa"]);
+    assert_eq!((policy, source), (UpgradePolicy::default(), "default"));
+    assert!(
+        policy.auto_apply == crate::types::AutoApply::Never
+            && !policy.second_approver
+            && policy.hold_hours == 24
+    );
+    assert_eq!(
+        m.run_unproven(set(None, Some(strict), "bob", Value::Null)),
+        Err(NOT_AN_UPGRADE_APPROVER.to_owned()),
+        "a member"
+    );
+    needs_consent(
+        &mut m,
+        &mut alice,
+        ("org:org", "__set_upgrade_policy"),
+        &json!({ "app": null, "policy": { "autoApply": "never", "holdHours": 24, "secondApprover": true } }),
+        &json!({ "app": null, "policy": null }),
+        |c| set(None, Some(strict), "alice", c),
+    );
+    assert_eq!(
+        m.state.upgrade_policy_of(&m.state.apps["oa"]),
+        (strict, "org")
+    );
+    for hours in [0, 23, 169, u32::MAX] {
+        let bad = UpgradePolicy {
+            hold_hours: hours,
+            ..UpgradePolicy::default()
+        };
+        assert_eq!(
+            m.run_unproven(set(Some("oa"), Some(bad), "alice", Value::Null)),
+            Err(BAD_UPGRADE_POLICY.to_owned()),
+            "{hours}"
+        );
+    }
+    let own = UpgradePolicy {
+        auto_apply: crate::types::AutoApply::NoDestinations,
+        hold_hours: 168,
+        second_approver: false,
+    };
+    let answer = m
+        .run_unproven(set(Some("oa"), Some(own), "alice", Value::Null))
+        .unwrap();
+    assert_eq!(answer["source"], "app", "{answer}");
+    assert_eq!(answer["policy"]["holdHours"], 168, "{answer}");
+    assert_eq!(m.state.upgrade_policy_of(&m.state.apps["oa"]), (own, "app"));
+    assert!(
+        m.run_unproven(set(Some("app"), Some(own), "alice", Value::Null))
+            .is_err(),
+        "an app of another organization"
+    );
+    let _ok = m
+        .run_unproven(set(Some("oa"), None, "alice", Value::Null))
+        .unwrap();
+    assert_eq!(
+        m.state.upgrade_policy_of(&m.state.apps["oa"]),
+        (strict, "org"),
+        "dropped: the organization's again"
+    );
+    // Unknown fields are refused; every field may be left out.
+    assert!(serde_json::from_value::<UpgradePolicy>(json!({ "autoApply": "always" })).is_err());
+    assert_eq!(
+        serde_json::from_value::<UpgradePolicy>(json!({})).unwrap(),
+        UpgradePolicy::default()
+    );
+    let restored: crate::types::Org = serde_json::from_value(before.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+}
+
+/// With `secondApprover`, a red update (or one logged without a class) needs two distinct
+/// owners or admins: the first logs a pending approval, the second applies it, and the
+/// record names the first. A green one needs one. The same person twice, a member, an
+/// approver no longer an admin, an approval of another release and one older than a week
+/// let nothing through; an approval is spent once its app runs its target.
+#[test]
+fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
+    use super::{
+        APPROVAL_PENDING, NOT_AN_UPGRADE_APPROVER, ONE_APPROVAL, SECOND_APPROVAL_REQUIRED,
+    };
+    use crate::types::{UpgradePolicy, MAX_APPROVAL_AGE_SECS};
+    let telemetry = ["https://telemetry.example/"];
+    let mut m = classified();
+    let approve = |actor: &str, version: &str, class, at: u64| SystemCmd::ApproveUpgrade {
+        app_id: "inst".into(),
+        package: "p".into(),
+        version: version.into(),
+        targets: std::collections::BTreeMap::new(),
+        class,
+        actor: actor.into(),
+        at,
+        consent: Value::Null,
+    };
+    // Without the policy, one approval, and a first approval has nothing to wait for.
+    assert_eq!(
+        m.run_unproven(approve("cora", "1.1.0", red(&telemetry), 5)),
+        Err(ONE_APPROVAL.to_owned())
+    );
+    let _ok = m
+        .run_unproven(SystemCmd::SetUpgradePolicy {
+            org: "cust".into(),
+            app: None,
+            policy: Some(UpgradePolicy {
+                second_approver: true,
+                ..UpgradePolicy::default()
+            }),
+            actor: "eve".into(),
+            consent: Value::Null,
+        })
+        .unwrap();
+    // A green update still needs one.
+    let mut green_move = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let _ok = green_move
+        .run_unproven(classified_upgrade("cora", "1.0.1", Some(green()), 10))
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(approve("cora", "1.0.1", green(), 5)),
+        Err(ONE_APPROVAL.to_owned()),
+        "a green update needs no second"
+    );
+    // A red one, or one without a class, waits for a first approval by someone else.
+    for class in [Some(red(&telemetry)), None] {
+        assert_eq!(
+            m.run_unproven(classified_upgrade("cora", "1.1.0", class, 10)),
+            Err(SECOND_APPROVAL_REQUIRED.to_owned())
+        );
+    }
+    assert_eq!(
+        m.run_unproven(approve("dan", "1.1.0", red(&telemetry), 5)),
+        Err(NOT_AN_UPGRADE_APPROVER.to_owned()),
+        "a member"
+    );
+    assert_eq!(
+        m.run_unproven(approve("cora", "1.1.0", green(), 5)),
+        Err(ONE_APPROVAL.to_owned()),
+        "approved as green"
+    );
+    assert!(
+        m.run(approve("cora", "1.1.0", red(&telemetry), 5)).is_err(),
+        "without cora's passkey"
+    );
+    let pending = m
+        .run_unproven(approve("cora", "1.1.0", red(&telemetry), 5))
+        .unwrap();
+    assert_eq!(pending["by"], "cora", "{pending}");
+    assert_eq!(
+        m.run_unproven(approve("eve", "1.1.0", red(&telemetry), 6)),
+        Err(APPROVAL_PENDING.to_owned()),
+        "the second approver applies it instead"
+    );
+    // Not the same person twice, nor a week and a second later.
+    assert_eq!(
+        m.run_unproven(classified_upgrade(
+            "cora",
+            "1.1.0",
+            Some(red(&telemetry)),
+            10
+        )),
+        Err(SECOND_APPROVAL_REQUIRED.to_owned())
+    );
+    let late = 5 + MAX_APPROVAL_AGE_SECS + 1;
+    assert_eq!(
+        SystemMachine {
+            state: m.state.clone(),
+            ..Default::default()
+        }
+        .run_unproven(classified_upgrade(
+            "eve",
+            "1.1.0",
+            Some(red(&telemetry)),
+            late
+        )),
+        Err(SECOND_APPROVAL_REQUIRED.to_owned())
+    );
+    // Not once the first approver is no longer an admin.
+    let mut demoted = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    if let Some(o) = demoted.state.orgs.get_mut("cust") {
+        let _prev = o
+            .members
+            .insert("cora".into(), crate::types::OrgRole::Member);
+        let _prev = o.members.insert("pam".into(), crate::types::OrgRole::Owner);
+    }
+    assert_eq!(
+        demoted.run_unproven(classified_upgrade(
+            "eve",
+            "1.1.0",
+            Some(red(&telemetry)),
+            10
+        )),
+        Err(SECOND_APPROVAL_REQUIRED.to_owned())
+    );
+    // The second applies it; the record names the first, and the approval is spent.
+    let _ok = m
+        .run_unproven(classified_upgrade(
+            "eve",
+            "1.1.0",
+            Some(red(&telemetry)),
+            10,
+        ))
+        .unwrap();
+    let rec = m.state.apps["inst"].last_upgrade.clone().unwrap();
+    assert_eq!(
+        (rec.by.as_str(), rec.approved_by.as_deref()),
+        ("eve", Some("cora"))
+    );
+    assert!(m.state.orgs["cust"].pending_upgrades.is_empty());
+}
+
+/// A move the log cannot rebuild (the release the app runs, or a member's, no longer
+/// installed: allowed while another release ships its WASM) is never applied as green:
+/// the log cannot confirm it, so a claimed green is refused and a red one, gated as red,
+/// is the proposer's to say.
+#[test]
+fn a_move_the_log_cannot_rebuild_is_never_applied_as_green() {
+    use super::UPGRADE_CLASS_MISMATCH;
+    let telemetry = ["https://telemetry.example/"];
+    // `inst` runs p@1.0.0, uninstalled while p@1.0.1 still ships b1.
+    let mut m = classified();
+    let _gone = m
+        .state
+        .packages
+        .get_mut("p")
+        .and_then(|p| p.versions.remove("1.0.0"));
+    assert_eq!(
+        m.run_unproven(classified_upgrade("cora", "1.1.0", Some(green()), 10)),
+        Err(UPGRADE_CLASS_MISMATCH.to_owned()),
+        "a destination added, logged as green"
+    );
+    assert_eq!(m.state.apps["inst"].bundle, "b1", "a refusal moves nothing");
+    let _ok = m
+        .run_unproven(classified_upgrade(
+            "cora",
+            "1.1.0",
+            Some(red(&telemetry)),
+            10,
+        ))
+        .unwrap();
+    // A member whose release is no longer installed hides nothing either.
+    let mut m = classified();
+    instance_of(
+        &mut m,
+        "mem",
+        "b1",
+        json!({ "package": "p", "version": "1.0.1" }),
+    );
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        let _prev = a.links.insert("store".into(), "mem".into());
+    }
+    let _gone = m
+        .state
+        .packages
+        .get_mut("p")
+        .and_then(|p| p.versions.remove("1.0.1"));
+    assert_eq!(
+        m.run_unproven(classified_upgrade("cora", "1.1.0", Some(green()), 10)),
+        Err(UPGRADE_CLASS_MISMATCH.to_owned()),
+        "a member the log cannot rebuild"
+    );
+}
+
+/// A unit's run is judged once, as a whole, under its instance's policy: the instance's
+/// `UpgradeApp` carries the unit's class and is judged over the members' targets (a unit
+/// red only through a member is never logged green), and each member it moves takes the
+/// instance's judgement in that run, so a member's own policy cannot stop the unit half
+/// way. A member upgraded alone keeps its own policy.
+#[test]
+fn a_units_run_is_judged_once_under_its_instances_policy() {
+    use super::{SECOND_APPROVAL_REQUIRED, UPGRADE_CLASS_MISMATCH};
+    use crate::types::{RunTarget, UpgradePolicy, UpgradeRun};
+    let telemetry = ["https://telemetry.example/"];
+    let mut m = classified();
+    // `inst` on p@1.0.0 created `mem`, also on p@1.0.0; the unit moves `inst` to the green
+    // p@1.0.1 and `mem` to p@1.1.0, which adds a telemetry host: red only through `mem`.
+    instance_of(
+        &mut m,
+        "mem",
+        "b1",
+        json!({ "package": "p", "version": "1.0.0" }),
+    );
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        let _prev = a.links.insert("store".into(), "mem".into());
+    }
+    let targets: std::collections::BTreeMap<String, RunTarget> = std::iter::once((
+        "mem".to_owned(),
+        RunTarget {
+            package: "p".into(),
+            version: "1.1.0".into(),
+        },
+    ))
+    .collect();
+    let run = UpgradeRun {
+        run_id: "u".into(),
+        package: "p".into(),
+        version: "1.0.1".into(),
+        team: None,
+        cascade: false,
+        by: "cora".into(),
+        started_at: 9,
+        apps: vec!["inst".into(), "mem".into()],
+        done: Vec::new(),
+        failed: std::collections::BTreeMap::new(),
+        finished: false,
+        targets,
+    };
+    if let Some(o) = m.state.orgs.get_mut("cust") {
+        let _prev = o.upgrade_runs.insert("u".into(), run);
+        // Only the member asks for a second approver.
+        let _prev = o.app_upgrade_policies.insert(
+            "mem".into(),
+            UpgradePolicy {
+                second_approver: true,
+                ..UpgradePolicy::default()
+            },
+        );
+    }
+    let in_run = |app: &str, bundle: &str, version: &str, class| {
+        let mut cmd = upgrade_to(app, "cora", bundle, Some(("p", version)));
+        if let SystemCmd::UpgradeApp {
+            class: c,
+            owner_approves,
+            run,
+            ..
+        } = &mut cmd
+        {
+            *c = class;
+            *owner_approves = true;
+            *run = Some("u".into());
+        }
+        cmd
+    };
+    // The instance is judged over the unit: green is refused, the unit's red applies.
+    assert_eq!(
+        m.run_unproven(in_run("inst", "b1", "1.0.1", Some(green()))),
+        Err(UPGRADE_CLASS_MISMATCH.to_owned()),
+        "a unit red through its member, logged green"
+    );
+    let _ok = m
+        .run_unproven(in_run("inst", "b1", "1.0.1", Some(red(&telemetry))))
+        .unwrap();
+    // The member follows: its own policy does not stop the unit half way.
+    let _ok = m
+        .run_unproven(in_run("mem", "b2", "1.1.0", Some(red(&telemetry))))
+        .unwrap();
+    assert_eq!(m.state.apps["mem"].bundle, "b2");
+    // Alone, the member's own policy holds.
+    let mut alone = classified();
+    instance_of(
+        &mut alone,
+        "mem",
+        "b1",
+        json!({ "package": "p", "version": "1.0.0" }),
+    );
+    if let Some(o) = alone.state.orgs.get_mut("cust") {
+        let _prev = o.app_upgrade_policies.insert(
+            "mem".into(),
+            UpgradePolicy {
+                second_approver: true,
+                ..UpgradePolicy::default()
+            },
+        );
+    }
+    let mut cmd = upgrade_to("mem", "cora", "b2", Some(("p", "1.1.0")));
+    if let SystemCmd::UpgradeApp {
+        class,
+        owner_approves,
+        ..
+    } = &mut cmd
+    {
+        *class = Some(red(&telemetry));
+        *owner_approves = true;
+    }
+    assert_eq!(
+        alone.run_unproven(cmd),
+        Err(SECOND_APPROVAL_REQUIRED.to_owned())
+    );
+}
+
+/// Units nest: a parent unit's first approval may cover a member that is itself the
+/// instance of a unit. A live first approval of exactly that member's unit (the same
+/// targets) still lets its run through, whichever approval sorts first.
+#[test]
+fn a_units_own_approval_is_found_past_a_parent_units() {
+    use crate::types::{PendingApproval, RunTarget, UpgradePolicy, UpgradeRun};
+    let telemetry = ["https://telemetry.example/"];
+    let mut m = classified();
+    // `inst` created `mid`, which created `leaf`; all on p@1.0.0.
+    for id in ["mid", "leaf"] {
+        instance_of(
+            &mut m,
+            id,
+            "b1",
+            json!({ "package": "p", "version": "1.0.0" }),
+        );
+    }
+    for (parent, name, member) in [("inst", "mid", "mid"), ("mid", "leaf", "leaf")] {
+        if let Some(a) = m.state.apps.get_mut(parent) {
+            let _prev = a.links.insert(name.into(), member.into());
+        }
+    }
+    let to = |app: &str| -> std::collections::BTreeMap<String, RunTarget> {
+        std::iter::once((
+            app.to_owned(),
+            RunTarget {
+                package: "p".into(),
+                version: "1.1.0".into(),
+            },
+        ))
+        .collect()
+    };
+    let approval = |targets| PendingApproval {
+        package: "p".into(),
+        version: "1.1.0".into(),
+        targets,
+        by: "cora".into(),
+        at: 5,
+        class: red(&telemetry),
+    };
+    if let Some(o) = m.state.orgs.get_mut("cust") {
+        o.upgrade_policy = Some(UpgradePolicy {
+            second_approver: true,
+            ..UpgradePolicy::default()
+        });
+        // cora approved both units first: `inst`'s (which covers `mid`, and sorts
+        // first) and `mid`'s own.
+        let _prev = o
+            .pending_upgrades
+            .insert("inst".into(), approval(to("mid")));
+        let _prev = o
+            .pending_upgrades
+            .insert("mid".into(), approval(to("leaf")));
+        let _prev = o.upgrade_runs.insert(
+            "u".into(),
+            UpgradeRun {
+                run_id: "u".into(),
+                package: "p".into(),
+                version: "1.1.0".into(),
+                team: None,
+                cascade: false,
+                by: "eve".into(),
+                started_at: 9,
+                apps: vec!["mid".into(), "leaf".into()],
+                done: Vec::new(),
+                failed: std::collections::BTreeMap::new(),
+                finished: false,
+                targets: to("leaf"),
+            },
+        );
+    }
+    // eve applies `mid`'s unit, which cora approved.
+    let mut cmd = upgrade_to("mid", "eve", "b2", Some(("p", "1.1.0")));
+    if let SystemCmd::UpgradeApp {
+        class,
+        owner_approves,
+        run,
+        ..
+    } = &mut cmd
+    {
+        *class = Some(red(&telemetry));
+        *owner_approves = true;
+        *run = Some("u".into());
+    }
+    let _ok = m.run_unproven(cmd).unwrap();
+    let rec = m.state.apps["mid"].last_upgrade.clone().unwrap();
+    assert_eq!(rec.approved_by.as_deref(), Some("cora"));
+}
+
+/// Only a unit's consent (`__upgrade_unit`) states member targets: an organization's
+/// run keeps none, whatever its entry lists, so an app it moves is never taken for a
+/// unit's member and judged on its own policy.
+#[test]
+fn only_a_units_run_keeps_member_targets() {
+    use super::SECOND_APPROVAL_REQUIRED;
+    let (mut m, mut alice) = org_with_package_apps();
+    // `p1` created `p1b`, whose own policy asks for a second approver.
+    let _prev = m.state.apps.insert(
+        "p1b".into(),
+        serde_json::from_value(json!({
+            "appId": "p1b", "name": "p1b", "group": 7, "bundle": "b-1.0.0", "owner": "alice",
+            "org": "org", "grants": [{ "kind": "org" }], "replicas": [1, 2, 3],
+            "createdAt": 0, "release": { "package": "p", "version": "1.0.0" },
+        }))
+        .unwrap(),
+    );
+    if let Some(a) = m.state.apps.get_mut("p1") {
+        let _prev = a.links.insert("store".into(), "p1b".into());
+    }
+    if let Some(o) = m.state.orgs.get_mut("org") {
+        let _prev = o.app_upgrade_policies.insert(
+            "p1b".into(),
+            crate::types::UpgradePolicy {
+                second_approver: true,
+                ..crate::types::UpgradePolicy::default()
+            },
+        );
+    }
+    m.index = 10;
+    let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+    m.index = 11;
+    // An organization's run whose entry adds targets its consent never stated.
+    let c = consent(
+        &mut alice,
+        "org:org",
+        "__upgrade_org",
+        &json!({
+            "package": "p", "version": "2.0.0", "team": null,
+            "cascade": false, "migrate": null,
+        }),
+    );
+    let run: crate::types::UpgradeRun = serde_json::from_value(json!({
+        "runId": "r1", "package": "p", "version": "2.0.0", "by": "alice",
+        "startedAt": 0, "apps": [], "done": [], "failed": {}, "finished": false,
+        "targets": { "p1b": { "package": "p", "version": "2.0.0" } },
+    }))
+    .unwrap();
+    let _ok = m
+        .run(SystemCmd::StartUpgradeRun {
+            org: "org".into(),
+            run: Box::new(run),
+            consent: c,
+            by_release: false,
+            owner_approves: false,
+        })
+        .unwrap();
+    let upgrade = |app: &str| {
+        let mut cmd = upgrade_to(app, "alice", "b-2.0.0", Some(("p", "2.0.0")));
+        if let SystemCmd::UpgradeApp { run, .. } = &mut cmd {
+            *run = Some("r1".into());
+        }
+        cmd
+    };
+    m.index = 12;
+    let _ok = m.run(upgrade("p1")).unwrap();
+    m.index = 13;
+    assert_eq!(
+        m.run(upgrade("p1b")).unwrap_err(),
+        SECOND_APPROVAL_REQUIRED,
+        "judged on its own policy"
+    );
+    assert!(
+        m.state.orgs["org"].upgrade_runs["r1"].targets.is_empty(),
+        "targets no consent stated"
     );
 }

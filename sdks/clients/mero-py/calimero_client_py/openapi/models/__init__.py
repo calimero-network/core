@@ -35,6 +35,8 @@ from .app import App
 from .app_abi_response_200 import AppAbiResponse200
 from .app_access_body import AppAccessBody
 from .app_access_response_200 import AppAccessResponse200
+from .app_approve_upgrade_body import AppApproveUpgradeBody
+from .app_approve_upgrade_response_200 import AppApproveUpgradeResponse200
 from .app_attached import AppAttached
 from .app_attestation_response_200 import AppAttestationResponse200
 from .app_attestation_response_200_replicas_item_type_0 import (
@@ -81,6 +83,11 @@ from .app_method_response_200_events_item import AppMethodResponse200EventsItem
 from .app_move_body import AppMoveBody
 from .app_move_response_200 import AppMoveResponse200
 from .app_openapi_response_200 import AppOpenapiResponse200
+from .app_policy_set_body import AppPolicySetBody
+from .app_policy_set_body_policy_type_0 import AppPolicySetBodyPolicyType0
+from .app_policy_set_body_policy_type_0_auto_apply import (
+    AppPolicySetBodyPolicyType0AutoApply,
+)
 from .app_restore import AppRestore
 from .app_restore_source import AppRestoreSource
 from .app_run_logs_response_200 import AppRunLogsResponse200
@@ -128,6 +135,11 @@ from .app_update_response_200_available_type_0_egress import (
 from .app_update_response_200_available_type_0_source import (
     AppUpdateResponse200AvailableType0Source,
 )
+from .app_update_response_200_policy import AppUpdateResponse200Policy
+from .app_update_response_200_policy_auto_apply import (
+    AppUpdateResponse200PolicyAutoApply,
+)
+from .app_update_response_200_policy_source import AppUpdateResponse200PolicySource
 from .app_update_response_200_running_type_0 import AppUpdateResponse200RunningType0
 from .app_upgrade_body import AppUpgradeBody
 from .app_upgrade_response_200 import AppUpgradeResponse200
@@ -448,6 +460,7 @@ from .ops_upgrade_response_200 import OpsUpgradeResponse200
 from .org import Org
 from .org_all_apps_body import OrgAllAppsBody
 from .org_all_apps_response_200 import OrgAllAppsResponse200
+from .org_app_upgrade_policies import OrgAppUpgradePolicies
 from .org_apps_response_200 import OrgAppsResponse200
 from .org_capabilities import OrgCapabilities
 from .org_capabilities_body import OrgCapabilitiesBody
@@ -469,6 +482,27 @@ from .org_mode import OrgMode
 from .org_new_work_stopped_type_0 import OrgNewWorkStoppedType0
 from .org_outbound_approval_body import OrgOutboundApprovalBody
 from .org_outbound_approvals import OrgOutboundApprovals
+from .org_pending_upgrades import OrgPendingUpgrades
+from .org_pending_upgrades_additional_property import (
+    OrgPendingUpgradesAdditionalProperty,
+)
+from .org_pending_upgrades_additional_property_class import (
+    OrgPendingUpgradesAdditionalPropertyClass,
+)
+from .org_pending_upgrades_additional_property_class_class import (
+    OrgPendingUpgradesAdditionalPropertyClassClass,
+)
+from .org_pending_upgrades_additional_property_targets import (
+    OrgPendingUpgradesAdditionalPropertyTargets,
+)
+from .org_pending_upgrades_additional_property_targets_additional_property import (
+    OrgPendingUpgradesAdditionalPropertyTargetsAdditionalProperty,
+)
+from .org_policy_set_body import OrgPolicySetBody
+from .org_policy_set_body_policy_type_0 import OrgPolicySetBodyPolicyType0
+from .org_policy_set_body_policy_type_0_auto_apply import (
+    OrgPolicySetBodyPolicyType0AutoApply,
+)
 from .org_publisher_body import OrgPublisherBody
 from .org_publisher_response_200 import OrgPublisherResponse200
 from .org_quotas import OrgQuotas
@@ -485,6 +519,7 @@ from .org_set_member_response_200 import OrgSetMemberResponse200
 from .org_settings_body import OrgSettingsBody
 from .org_settings_response_200 import OrgSettingsResponse200
 from .org_teams import OrgTeams
+from .org_updates_response_200 import OrgUpdatesResponse200
 from .org_upgrade_body import OrgUpgradeBody
 from .org_upgrade_retry_body import OrgUpgradeRetryBody
 from .org_upgrade_runs import OrgUpgradeRuns
@@ -523,6 +558,12 @@ from .passkey_add_finish_response_200 import PasskeyAddFinishResponse200
 from .passkey_label_body import PasskeyLabelBody
 from .passkey_label_response_200 import PasskeyLabelResponse200
 from .passkey_remove_response_200 import PasskeyRemoveResponse200
+from .pending_approval import PendingApproval
+from .pending_approval_class import PendingApprovalClass
+from .pending_approval_targets import PendingApprovalTargets
+from .pending_approval_targets_additional_property import (
+    PendingApprovalTargetsAdditionalProperty,
+)
 from .pipeline_receipt_receipt_response_200 import PipelineReceiptReceiptResponse200
 from .pipelines_cancel_response_200 import PipelinesCancelResponse200
 from .pipelines_estimate_run_body import PipelinesEstimateRunBody
@@ -553,6 +594,8 @@ from .pipelines_validate_response_200 import PipelinesValidateResponse200
 from .pipelines_validate_response_200_errors_item import (
     PipelinesValidateResponse200ErrorsItem,
 )
+from .policy_view import PolicyView
+from .policy_view_source import PolicyViewSource
 from .presence_get_response_200 import PresenceGetResponse200
 from .presence_get_response_200_present_item import PresenceGetResponse200PresentItem
 from .presence_publish_body import PresencePublishBody
@@ -604,6 +647,7 @@ from .report_app_replicas_item import ReportAppReplicasItem
 from .report_app_upgrades_held_by import ReportAppUpgradesHeldBy
 from .report_upgrade import ReportUpgrade
 from .report_upgrade_actor_kind import ReportUpgradeActorKind
+from .report_upgrade_class import ReportUpgradeClass
 from .restore_recover_holder_body import RestoreRecoverHolderBody
 from .restore_recover_holder_body_apps_item import RestoreRecoverHolderBodyAppsItem
 from .restore_recover_holder_body_code_item import RestoreRecoverHolderBodyCodeItem
@@ -688,8 +732,11 @@ from .update_reason_type_4_code import UpdateReasonType4Code
 from .update_reason_type_5 import UpdateReasonType5
 from .update_reason_type_5_code import UpdateReasonType5Code
 from .upgrade import Upgrade
+from .upgrade_class import UpgradeClass
 from .upgrade_pending import UpgradePending
 from .upgrade_pending_nodes_item import UpgradePendingNodesItem
+from .upgrade_policy import UpgradePolicy
+from .upgrade_policy_auto_apply import UpgradePolicyAutoApply
 from .upgrade_run import UpgradeRun
 from .upgrade_run_failed import UpgradeRunFailed
 from .upgrade_run_targets import UpgradeRunTargets
@@ -740,6 +787,8 @@ __all__ = (
     "AppAbiResponse200",
     "AppAccessBody",
     "AppAccessResponse200",
+    "AppApproveUpgradeBody",
+    "AppApproveUpgradeResponse200",
     "AppAttached",
     "AppAttestationResponse200",
     "AppAttestationResponse200ReplicasItemType0",
@@ -780,6 +829,9 @@ __all__ = (
     "AppMoveBody",
     "AppMoveResponse200",
     "AppOpenapiResponse200",
+    "AppPolicySetBody",
+    "AppPolicySetBodyPolicyType0",
+    "AppPolicySetBodyPolicyType0AutoApply",
     "AppRestore",
     "AppRestoreSource",
     "ApprovedReleases",
@@ -816,6 +868,9 @@ __all__ = (
     "AppUpdateResponse200AvailableType0Class",
     "AppUpdateResponse200AvailableType0Egress",
     "AppUpdateResponse200AvailableType0Source",
+    "AppUpdateResponse200Policy",
+    "AppUpdateResponse200PolicyAutoApply",
+    "AppUpdateResponse200PolicySource",
     "AppUpdateResponse200RunningType0",
     "AppUpgradeBody",
     "AppUpgradeResponse200",
@@ -1086,6 +1141,7 @@ __all__ = (
     "OrgAllAppsBody",
     "OrgAllAppsResponse200",
     "OrgAppsResponse200",
+    "OrgAppUpgradePolicies",
     "OrgCapabilities",
     "OrgCapabilitiesBody",
     "OrgCapabilitiesResponse200",
@@ -1104,6 +1160,15 @@ __all__ = (
     "OrgNewWorkStoppedType0",
     "OrgOutboundApprovalBody",
     "OrgOutboundApprovals",
+    "OrgPendingUpgrades",
+    "OrgPendingUpgradesAdditionalProperty",
+    "OrgPendingUpgradesAdditionalPropertyClass",
+    "OrgPendingUpgradesAdditionalPropertyClassClass",
+    "OrgPendingUpgradesAdditionalPropertyTargets",
+    "OrgPendingUpgradesAdditionalPropertyTargetsAdditionalProperty",
+    "OrgPolicySetBody",
+    "OrgPolicySetBodyPolicyType0",
+    "OrgPolicySetBodyPolicyType0AutoApply",
     "OrgPublisherBody",
     "OrgPublisherResponse200",
     "OrgQuotas",
@@ -1120,6 +1185,7 @@ __all__ = (
     "OrgSettingsBody",
     "OrgSettingsResponse200",
     "OrgTeams",
+    "OrgUpdatesResponse200",
     "OrgUpgradeBody",
     "OrgUpgradeRetryBody",
     "OrgUpgradeRuns",
@@ -1154,6 +1220,10 @@ __all__ = (
     "PasskeyLabelBody",
     "PasskeyLabelResponse200",
     "PasskeyRemoveResponse200",
+    "PendingApproval",
+    "PendingApprovalClass",
+    "PendingApprovalTargets",
+    "PendingApprovalTargetsAdditionalProperty",
     "PipelineReceiptReceiptResponse200",
     "PipelinesCancelResponse200",
     "PipelinesEstimateRunBody",
@@ -1176,6 +1246,8 @@ __all__ = (
     "PipelinesValidateBody",
     "PipelinesValidateResponse200",
     "PipelinesValidateResponse200ErrorsItem",
+    "PolicyView",
+    "PolicyViewSource",
     "PresenceGetResponse200",
     "PresenceGetResponse200PresentItem",
     "PresencePublishBody",
@@ -1223,6 +1295,7 @@ __all__ = (
     "ReportAppUpgradesHeldBy",
     "ReportUpgrade",
     "ReportUpgradeActorKind",
+    "ReportUpgradeClass",
     "RestoreRecoverHolderBody",
     "RestoreRecoverHolderBodyAppsItem",
     "RestoreRecoverHolderBodyCodeItem",
@@ -1303,8 +1376,11 @@ __all__ = (
     "UpdateReasonType5",
     "UpdateReasonType5Code",
     "Upgrade",
+    "UpgradeClass",
     "UpgradePending",
     "UpgradePendingNodesItem",
+    "UpgradePolicy",
+    "UpgradePolicyAutoApply",
     "UpgradeRun",
     "UpgradeRunFailed",
     "UpgradeRunTargets",

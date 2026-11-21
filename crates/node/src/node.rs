@@ -955,9 +955,20 @@ pub fn rejected(reason: &str) -> ApiError {
         ApiError::new(409, "MODULE_IN_USE", reason)
     } else if let Some(code) = recovery_code(reason) {
         ApiError::new(409, code, reason)
+    } else if let Some((code, status)) = update_code(reason) {
+        ApiError::new(status, code, reason)
     } else {
         ApiError::bad_request(REJECTED, reason)
     }
+}
+
+/// The code and status of an update policy's or class's refusal
+/// (`system::UPDATE_REFUSALS`, each `CODE: why`).
+fn update_code(reason: &str) -> Option<(&'static str, u16)> {
+    crate::system::UPDATE_REFUSALS
+        .iter()
+        .find(|(r, _)| *r == reason)
+        .and_then(|(r, status)| Some((r.split_once(':')?.0, *status)))
 }
 
 /// The code of a recovery refusal that is a conflict with the organization's

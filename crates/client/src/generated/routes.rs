@@ -75,6 +75,30 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 
+    /// Approve a red update first, for a second approver to apply.
+    ///
+    /// `POST /apps/{app}/upgrade-approvals` (`app_approve_upgrade`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn approve_upgrade(
+        self,
+        app: &str,
+        version: &str,
+        unit: Option<bool>,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<AppApproveUpgradeResponse> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "version", &version)?;
+        route::put_some(&mut fields, "unit", unit)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("apps/{}/upgrade-approvals", route::segment(app)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
     /// Every replica's receipt-key attestation.
     ///
     /// `GET /apps/{app}/attestation` (`app_attestation`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
@@ -667,6 +691,39 @@ impl Apps<'_> {
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "pipelines/validate").json(body);
         route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// The update policy an app follows.
+    ///
+    /// `GET /apps/{app}/upgrade-policy` (`app_policy`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
+    pub async fn policy(self, app: &str) -> Result<PolicyView> {
+        let req = Request::new(
+            Method::GET,
+            format!("apps/{}/upgrade-policy", route::segment(app)),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Set an app's own update policy.
+    ///
+    /// `POST /apps/{app}/upgrade-policy` (`app_policy_set`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn policy_set(
+        self,
+        app: &str,
+        policy: Option<Option<AppPolicySetRequestPolicy>>,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<PolicyView> {
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "policy", policy)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("apps/{}/upgrade-policy", route::segment(app)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
     }
 
     /// Who is present.
@@ -2958,6 +3015,39 @@ impl Orgs<'_> {
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 
+    /// The organization's update policy.
+    ///
+    /// `GET /orgs/{org}/upgrade-policy` (`org_policy`). Who: a passkey session (an API key is refused).
+    pub async fn policy(self, org: &str) -> Result<PolicyView> {
+        let req = Request::new(
+            Method::GET,
+            format!("orgs/{}/upgrade-policy", route::segment(org)),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Set the organization's update policy.
+    ///
+    /// `POST /orgs/{org}/upgrade-policy` (`org_policy_set`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn policy_set(
+        self,
+        org: &str,
+        policy: Option<Option<OrgPolicySetRequestPolicy>>,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<PolicyView> {
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "policy", policy)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("orgs/{}/upgrade-policy", route::segment(org)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
     /// Bind a package signing key.
     ///
     /// `POST /orgs/{org}/publishers` (`org_publisher`). Who: an account holder (a passkey session not bound to an app's frontend).
@@ -3371,6 +3461,17 @@ impl Orgs<'_> {
             ),
         )
         .json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Updates waiting across an organization's apps.
+    ///
+    /// `GET /orgs/{org}/updates` (`org_updates`). Who: an account holder (a passkey session not bound to an app's frontend).
+    pub async fn updates(self, org: &str, after: Option<&str>) -> Result<OrgUpdatesResponse> {
+        let mut req = Request::new(Method::GET, format!("orgs/{}/updates", route::segment(org)));
+        if let Some(v) = after {
+            req = req.query("after", v);
+        }
         route::json(self.client.transport(), req, None, None, false).await
     }
 

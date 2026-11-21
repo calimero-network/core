@@ -1111,7 +1111,8 @@ pub async fn create(
         }
         CreateBody::Upgrade { subject, return_to } => {
             let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
-            let (action, model) = upgrade_request(&node, &p, &account, subject, false).await?;
+            let (action, model) =
+                upgrade_request(&node, &p, &account, subject, Part::Alone).await?;
             (action, model, to)
         }
         CreateBody::UpgradeUnit { subject, return_to } => {
@@ -1878,13 +1879,23 @@ fn withdrawal_model(
     })
 }
 
+/// Which part of an upgrade a sheet shows: an app upgraded alone, a unit's instance or one
+/// of its members (both judged as one unit by [`unit_upgrade_request`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Alone,
+    Instance,
+    Member,
+}
+
 async fn upgrade_request(
     node: &Node,
     p: &Principal,
     account: &str,
     subject: UpgradeSubject,
-    member_of_unit: bool,
+    part: Part,
 ) -> Result<(Action, Value), ApiError> {
+    let member_of_unit = part == Part::Member;
     owner_holds(node, |g| g.app_upgrades, "app upgrades")?;
     let app_id = node.canonical_app_id(&subject.app);
     let app = node.app(&app_id).await?;
@@ -1929,6 +1940,25 @@ async fn upgrade_request(
         ));
     }
     crate::api::refuse_stalled(node, &app, &bundle, Some(&to_release), now_secs())?;
+    // A red update whose policy asks for a second approver, without another owner's or
+    // admin's first approval: refused before a page exists, as the route refuses it. A
+    // unit's page is judged on the whole unit instead (`unit_upgrade_request`).
+    if part == Part::Alone {
+        let class = crate::api::move_class(node, &app_id, Some(&to_release)).await;
+        let now = now_secs();
+        if let Err(why) = node.sys(|s| {
+            s.update_gate(
+                &app,
+                Some(&to_release),
+                class.as_ref(),
+                &BTreeMap::new(),
+                account,
+                now,
+            )
+        }) {
+            return Err(crate::node::rejected(why));
+        }
+    }
     node.require_runtime(
         &app.replicas,
         Some(&to_release),
@@ -2092,7 +2122,7 @@ async fn unit_upgrade_request(
             app: app_id.clone(),
             to_version: subject.to_version.clone(),
         },
-        false,
+        Part::Instance,
     )
     .await?;
     let version = root["upgrade"]["to"]["version"]
@@ -2100,6 +2130,9 @@ async fn unit_upgrade_request(
         .map(str::to_owned)
         .ok_or_else(|| ApiError::internal("an upgrade sheet without its target"))?;
     let plan = crate::api::unit_plan(node, account, &app_id, &version).await?;
+    // Judged on the whole unit, under its instance's policy, before any page exists, as
+    // `upgrade-unit` judges it: a unit red only through a member waits too.
+    crate::api::unit_gate(node, &plan, account).await?;
     let mut from = BTreeMap::from([(app_id.clone(), plan.app.bundle.clone())]);
     let mut pages = vec![root.clone()];
     for member in &plan.members {
@@ -2114,7 +2147,7 @@ async fn unit_upgrade_request(
                 app: member.app_id.clone(),
                 to_version: Some(t.version.clone()),
             },
-            true,
+            Part::Member,
         )
         .await?;
         let _prev = from.insert(member.app_id.clone(), member.bundle.clone());

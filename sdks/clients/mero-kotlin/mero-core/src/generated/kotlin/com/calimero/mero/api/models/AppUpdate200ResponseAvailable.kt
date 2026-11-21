@@ -35,6 +35,7 @@ import kotlinx.serialization.Contextual
  * @param `package` 
  * @param version 
  * @param source 
+ * @param approvalsNeeded 
  * @param propertyClass 
  * @param reasons 
  * @param egress 
@@ -42,6 +43,7 @@ import kotlinx.serialization.Contextual
  * @param newMethods 
  * @param removedMethods 
  * @param signerChanged 
+ * @param approvedBy 
  */
 @Serializable
 
@@ -55,6 +57,9 @@ data class AppUpdate200ResponseAvailable (
 
     @SerialName(value = "source")
     val source: AppUpdate200ResponseAvailable.Source,
+
+    @SerialName(value = "approvalsNeeded")
+    val approvalsNeeded: kotlin.Long,
 
     @SerialName(value = "class")
     val propertyClass: AppUpdate200ResponseAvailable.PropertyClass? = null,
@@ -75,7 +80,10 @@ data class AppUpdate200ResponseAvailable (
     val removedMethods: kotlin.collections.List<kotlin.String>? = null,
 
     @SerialName(value = "signerChanged")
-    val signerChanged: kotlin.Boolean? = null
+    val signerChanged: kotlin.Boolean? = null,
+
+    @SerialName(value = "approvedBy")
+    val approvedBy: kotlin.String? = null
 
 ) {
 

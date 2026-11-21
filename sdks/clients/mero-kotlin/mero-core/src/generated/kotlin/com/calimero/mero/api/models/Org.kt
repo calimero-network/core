@@ -24,10 +24,12 @@
 package com.calimero.mero.api.models
 
 import com.calimero.mero.api.models.OrgNewWorkStopped
+import com.calimero.mero.api.models.OrgPendingUpgradesValue
 import com.calimero.mero.api.models.OrgRecovery
 import com.calimero.mero.api.models.OrgRole
 import com.calimero.mero.api.models.OutboundApproval
 import com.calimero.mero.api.models.Team
+import com.calimero.mero.api.models.UpgradePolicy
 import com.calimero.mero.api.models.UpgradeRun
 
 import kotlinx.serialization.Serializable
@@ -35,7 +37,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).
+ * An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).
  *
  * @param orgId 
  * @param name 
@@ -53,6 +55,9 @@ import kotlinx.serialization.Contextual
  * @param personal 
  * @param allowGuests 
  * @param allowPublicLinks 
+ * @param upgradePolicy 
+ * @param appUpgradePolicies 
+ * @param pendingUpgrades 
  * @param mode 
  * @param releaseApprovers 
  * @param publishes 
@@ -110,6 +115,15 @@ data class Org (
 
     @SerialName(value = "allowPublicLinks")
     val allowPublicLinks: kotlin.Boolean? = null,
+
+    @SerialName(value = "upgradePolicy")
+    val upgradePolicy: UpgradePolicy? = null,
+
+    @Contextual @SerialName(value = "appUpgradePolicies")
+    val appUpgradePolicies: kotlin.collections.Map<kotlin.String, UpgradePolicy>? = null,
+
+    @Contextual @SerialName(value = "pendingUpgrades")
+    val pendingUpgrades: kotlin.collections.Map<kotlin.String, OrgPendingUpgradesValue>? = null,
 
     @SerialName(value = "mode")
     val mode: Org.Mode? = null,

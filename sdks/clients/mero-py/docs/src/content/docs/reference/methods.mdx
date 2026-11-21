@@ -30,6 +30,7 @@ Generated from core's `docs/public/openapi.json`.
 | --- | --- | --- |
 | `abi(app)` | `GET /apps/{app}/abi` | An app's ABI |
 | `access(app, grants)` | `POST /apps/{app}/access` | Set who may reach an app |
+| `approve_upgrade(app, version, unit=…, confirm=None)` | `POST /apps/{app}/upgrade-approvals` | Approve a red update first, for a second approver to apply. **passkey**. *Refusals:* `409 APPROVAL_PENDING`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 NOT_INSTALLED`, `409 ONE_APPROVAL`, `409 OUTSIDE_DEPLOYMENT` |
 | `attestation(app, nonce)` | `GET /apps/{app}/attestation` | Every replica's receipt-key attestation |
 | `blob_delete(app, id)` | `DELETE /apps/{app}/blobs/{id}` | Forget a blob |
 | `blob_download(app, id, grant=…)` | `GET /apps/{app}/blobs/{id}` | Download a blob |
@@ -67,6 +68,8 @@ Generated from core's `docs/public/openapi.json`.
 | `pipelines_retry(app, run, limits=…, max_cost=…)` | `POST /apps/{app}/pipeline-runs/{run}/retry` | Retry a pipeline run. *Refusals:* `400 BAD_LIMITS`, `400 BAD_MAX_COST`, `400 LIMIT_EXCEEDS_CAP`, `409 CLUSTER_NOT_UPGRADED`, `409 NO_PRICE_TABLE`, `409 STILL_RUNNING`, `410 OUTPUT_EXPIRED`, `429 TOO_MANY_PIPELINE_RUNS` |
 | `pipelines_start(app, name, inputs=…, params=…, max_cost=…)` | `POST /apps/{app}/pipelines/{name}/runs` | Start a pipeline run. *Refusals:* `400 BAD_INPUTS`, `400 BAD_MAX_COST`, `400 BAD_PARAMS`, `404 NO_SUCH_PIPELINE`, `409 CLUSTER_NOT_UPGRADED`, `409 NO_PRICE_TABLE`, `410 OUTPUT_EXPIRED`, `422 PIPELINES_NEED_ONE_SERVICE`, `429 TOO_MANY_PIPELINE_RUNS` |
 | `pipelines_validate(source, package=…, version=…)` | `POST /pipelines/validate` | Validate a pipeline. *Refusals:* `400 BAD_RELEASE` |
+| `policy(app)` | `GET /apps/{app}/upgrade-policy` | The update policy an app follows |
+| `policy_set(app, policy=…, confirm=None)` | `POST /apps/{app}/upgrade-policy` | Set an app's own update policy. **passkey**. *Refusals:* `400 BAD_UPGRADE_POLICY`, `409 FEATURE_NOT_ACTIVE` |
 | `presence_get(app)` | `GET /apps/{app}/presence` | Who is present |
 | `presence_publish(app, seq, state=…)` | `POST /apps/{app}/presence` | Publish presence. *Refusals:* `400 BAD_STATE` |
 | `public_link_create(app, label=…, expires_at=…, rate_per_minute=…, confirm=None)` | `POST /apps/{app}/public-links` | Make a public link of an instance. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 PUBLIC_LINKS_OFF`, `429 QUOTA_EXCEEDED` |
@@ -235,6 +238,8 @@ Generated from core's `docs/public/openapi.json`.
 | `members(org, detail=…)` | `GET /orgs/{org}/members` | Members' lockout risk |
 | `metadata(org, metadata)` | `POST /orgs/{org}/metadata` | Set an organization's metadata |
 | `outbound_approval(org, package, prefixes=…, replace=…, confirm=None)` | `POST /orgs/{org}/outbound` | Approve outbound prefixes for the organization's apps. **passkey** |
+| `policy(org)` | `GET /orgs/{org}/upgrade-policy` | The organization's update policy |
+| `policy_set(org, policy=…, confirm=None)` | `POST /orgs/{org}/upgrade-policy` | Set the organization's update policy. **passkey**. *Refusals:* `400 BAD_UPGRADE_POLICY`, `409 FEATURE_NOT_ACTIVE` |
 | `publisher(org, signer_id, public_key, signature, confirm=None)` | `POST /orgs/{org}/publishers` | Bind a package signing key. **passkey** |
 | `publisher_upgrade(org, package, version, migrate=…, confirm=None)` | `POST /orgs/{org}/packages/{package}/upgrade` | Upgrade every instance of a publisher's package. **passkey** |
 | `recovery_cancel(org, confirm=None)` | `POST /orgs/{org}/recovery/cancel` | Cancel an organization recovery. **passkey** |
@@ -253,6 +258,7 @@ Generated from core's `docs/public/openapi.json`.
 | `team_remove_member(org, team, account, confirm=None)` | `DELETE /orgs/{org}/teams/{team}/members/{account}` | Remove a team member, or leave. **passkey** |
 | `team_set_member(org, team, account, lead=…, role=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/teams/{team}/members` | Add or change a team member. **passkey** |
 | `team_update(org, team, name=…, join=…, parent=…, metadata=…)` | `POST /orgs/{org}/teams/{team}` | Update a team |
+| `updates(org, after=…)` | `GET /orgs/{org}/updates` | Updates waiting across an organization's apps |
 | `upgrade(org, package, version, team=…, cascade=…, migrate=…, confirm=None)` | `POST /orgs/{org}/upgrade` | Start an upgrade run. **passkey** |
 | `upgrade_retry(org, run, confirm=None, operator_proof=None)` | `POST /orgs/{org}/upgrades/{run}/retry` | Retry an upgrade run's failed apps. **passkey**, **operator** |
 | `upgrade_status(org, run)` | `GET /orgs/{org}/upgrades/{run}` | An upgrade run's progress |

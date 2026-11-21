@@ -824,6 +824,22 @@ fn components() -> Vec<Component> {
         )
         .of::<QuotaSettings>(),
         component(
+            "UpgradePolicy",
+            "How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applying on its own after the hold; stored and validated now, carried out by a later release.",
+            r#"{ autoApply: "never" | "noDestinations", holdHours: uint, secondApprover: bool }"#,
+        )
+        .of::<crate::types::UpgradePolicy>(),
+        component(
+            "PolicyView",
+            "An update policy at one scope: the organization's (`app` absent) or an app's. `policy` is the one in force; `source` where it comes from (the app's own, its organization's, or the defaults); `own` the one set at this scope, `null` for none.",
+            r#"{ org: string, app?: string, policy: #UpgradePolicy, source: "app" | "org" | "default", own: #UpgradePolicy | null }"#,
+        ),
+        component(
+            "PendingApproval",
+            "A first approval of a red update waiting for its second (`POST /apps/{app}/upgrade-approvals`): the app approved (`app`), its target, a unit's members' (`targets`, by app), who approved and when, when it lapses (`expiresAt`, a week on), and the class its approver was shown.",
+            r#"{ app: string, package: string, version: string, targets: { [string]: { package: string, version: string } }, by: string, at: uint, expiresAt: uint, class: "green" | "red", reasons: #UpdateReason[] }"#,
+        ),
+        component(
             "UnitMember",
             "An app of a unit, by its path from the instance: its app id (absent on a release's card, where no app exists), the release it runs or would run, that release's signer, and the destinations it alone may send data to.",
             "{ app?: string, package: string, version: string, signer: string, destinations: string[] }",
@@ -925,8 +941,8 @@ fn components() -> Vec<Component> {
         .of::<crate::system::PackageRef>(),
         component(
             "Upgrade",
-            "The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it.",
-            "{ from: string, to: string, at: uint, by: string, ok: bool, error?: any, run?: string, apiKey?: string, fromRelease?: #PackageRef, toRelease?: #PackageRef }",
+            "The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second.",
+            r#"{ from: string, to: string, at: uint, by: string, ok: bool, error?: any, run?: string, apiKey?: string, fromRelease?: #PackageRef, toRelease?: #PackageRef, class?: "green" | "red", reasons?: #UpdateReason[], approvedBy?: string }"#,
         )
         .of::<crate::types::UpgradeRecord>(),
         component(
@@ -942,8 +958,8 @@ fn components() -> Vec<Component> {
         .of::<crate::types::ApiKeyRecord>(),
         component(
             "Org",
-            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33).",
-            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, allowGuests?: bool, allowPublicLinks?: bool, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
+            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).",
+            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, allowGuests?: bool, allowPublicLinks?: bool, upgradePolicy?: #UpgradePolicy, appUpgradePolicies?: { [string]: #UpgradePolicy }, pendingUpgrades?: { [string]: { package: string, version: string, targets?: { [string]: { package: string, version: string } }, by: string, at: uint, class: { class: "green" | "red", reasons?: #UpdateReason[] } } }, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
         )
         .of::<OrgAnswer>(),
         component(
@@ -998,7 +1014,7 @@ fn components() -> Vec<Component> {
         component(
             "ReportUpgrade",
             "An app's last upgrade as a report shows it. `actor`, `error`, `run` and `apiKey` are shown to the app's people, never to the operator.",
-            r#"{ from: #BundleRelease, to: #BundleRelease, at: uint, ok: bool, actorKind: "owner" | "member" | "operator", actor?: string, error?: any, run?: string, apiKey?: string }"#,
+            r#"{ from: #BundleRelease, to: #BundleRelease, at: uint, ok: bool, actorKind: "owner" | "member" | "operator", class?: "green" | "red", actor?: string, error?: any, run?: string, apiKey?: string, reasons?: #UpdateReason[], approvedBy?: string }"#,
         ),
         component(
             "ReportApp",
@@ -1389,13 +1405,29 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "OUTSIDE_DEPLOYMENT"), (409, "OUTSIDE_UNIT_RANGE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
         get("/apps/{app}/update", "app_update", AppAccess, "Whether an update is available for an app")
-            .about("For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).")
-            .ok("{ app: string, running: { package: string, version: string } | null, available: { package: string, version: string, source: \"deployment\" | \"release\", class?: \"green\" | \"red\", reasons?: #UpdateReason[], egress?: { before: string[], after: string[], added: string[], removed: string[] }, stateVersionChanged?: bool, newMethods?: string[], removedMethods?: string[], signerChanged?: bool } | null, mayApprove: bool, approvers: \"owner-and-admins\" | \"operator\" | \"managers\" }")
+            .about("For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).")
+            .ok("{ app: string, running: { package: string, version: string } | null, available: { package: string, version: string, source: \"deployment\" | \"release\", class?: \"green\" | \"red\", reasons?: #UpdateReason[], egress?: { before: string[], after: string[], added: string[], removed: string[] }, stateVersionChanged?: bool, newMethods?: string[], removedMethods?: string[], signerChanged?: bool, approvalsNeeded: uint, approvedBy?: string } | null, mayApprove: bool, approvers: \"owner-and-admins\" | \"operator\" | \"managers\", policy: { autoApply: \"never\" | \"noDestinations\", holdHours: uint, secondApprover: bool, source: \"app\" | \"org\" | \"default\" }, pendingApprovals: #PendingApproval[] }")
             .errors(&[(404, "NOT_FOUND")]),
         get("/apps/{app}/egress", "app_egress", AppAccess, "Where an app's unit may send data")
             .about("For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.")
             .ok("{ app: string, destinations: string[], members: { [string]: #UnitMember } }")
             .errors(&[(404, "NOT_FOUND")]),
+        get("/apps/{app}/upgrade-policy", "app_policy", AppAccess, "The update policy an app follows")
+            .about("For whoever may read the app. Its own policy where an owner or admin set one, else its organization's, else the defaults: nothing updates on its own, one approval applies an update.")
+            .ok("#PolicyView")
+            .errors(&[(404, "NOT_FOUND")]),
+        post("/apps/{app}/upgrade-policy", "app_policy_set", AccountHolder, "Set an app's own update policy")
+            .about("An owner or admin of the app's organization, with a step-up over `org:<org> / __set_upgrade_policy / { app, policy }`. `policy: null` (or left out) drops it: the app follows its organization's again. `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. A move to another organization drops it. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.")
+            .json::<super::UpgradePolicyBody>("{ policy?: { autoApply?: \"never\" | \"noDestinations\", holdHours?: uint, secondApprover?: bool } | null, confirm?: #Confirm }")
+            .ok("#PolicyView")
+            .step_up()
+            .errors(&[(400, "BAD_UPGRADE_POLICY"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
+        post("/apps/{app}/upgrade-approvals", "app_approve_upgrade", AccountHolder, "Approve a red update first, for a second approver to apply")
+            .about("Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.")
+            .json::<super::UpgradeApprovalBody>("{ version: string, unit?: bool, confirm?: #Confirm }")
+            .ok("{ app: string, approval: #PendingApproval }")
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "ONE_APPROVAL"), (409, "APPROVAL_PENDING"), (409, "NOT_INSTALLED"), (409, "OUTSIDE_DEPLOYMENT"), (409, "FEATURE_NOT_ACTIVE"), (409, "CONFLICT")]),
         post("/apps/{app}/upgrade-unit", "app_upgrade_unit", AccountHolder, "Upgrade an app and the apps it created, in one consent")
             .about("An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.")
             .json::<super::upgrades::UnitUpgradeBody>("{ version: string, confirm?: #Confirm }")
@@ -1815,6 +1847,21 @@ fn operations() -> Vec<Op> {
             .about("No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined; for an instance invite, the instance (`app`) and its organization, and `member`: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused `409 GUESTS_NOT_ALLOWED` unless the instance's release says `guests: allowed` and its organization's `allowGuests` is on, judged as the redemption applies.")
             .ok("{ org: string, app?: string, member?: bool }")
             .errors(&[(409, "GUESTS_NOT_ALLOWED")]),
+        get("/orgs/{org}/upgrade-policy", "org_policy", Session, "The organization's update policy")
+            .about("For its members: the policy each of its apps without one of its own follows (`source: default` until an owner or admin sets one).")
+            .ok("#PolicyView")
+            .errors(&[(404, "NOT_FOUND")]),
+        post("/orgs/{org}/upgrade-policy", "org_policy_set", AccountHolder, "Set the organization's update policy")
+            .about("The owner or an admin, with a step-up over `org:<org> / __set_upgrade_policy / { app: null, policy }`; `policy: null` (or left out) drops it (the defaults). `holdHours` outside 24 to 168 is `400 BAD_UPGRADE_POLICY` before the step-up. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.")
+            .json::<super::UpgradePolicyBody>("{ policy?: { autoApply?: \"never\" | \"noDestinations\", holdHours?: uint, secondApprover?: bool } | null, confirm?: #Confirm }")
+            .ok("#PolicyView")
+            .step_up()
+            .errors(&[(400, "BAD_UPGRADE_POLICY"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
+        get("/orgs/{org}/updates", "org_updates", AccountHolder, "Updates waiting across an organization's apps")
+            .about("For its owner and admins (`403` to other members, `404` to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as `GET /apps/{app}/update` answers it with the app's `name`; `policy` is the organization's; `next` is the `after` of the next page, `null` at the end.")
+            .query::<super::UpdatesQuery>("{ after?: string }")
+            .ok("{ org: string, policy: #UpgradePolicy, updates: any[], next: string | null }")
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
         post("/orgs/{org}/settings", "org_settings", Session, "Change the organization's settings")
             .about("`allowGuests` (default on): whether its instances take guests, accounts named on one instance (an `account` grant) that are not members, where the instance's release allows them too (`guests: allowed` in its signed manifest); off, every guest stops reaching its instances at their next request. `allowPublicLinks` (default on): whether its instances' public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor's next call. A setting left out is kept; none is `400`. The owner or an admin; `412` first. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.33.")
             .json::<super::OrgSettingsBody>("{ allowGuests?: bool, allowPublicLinks?: bool, confirm?: #Confirm }")

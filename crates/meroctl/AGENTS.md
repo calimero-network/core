@@ -50,6 +50,7 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   refreshed when they expire. An instance argument is an alias of the account or
   an id (`Env::app`).
 - What an owner approves (`instance update`, `instance transfer`, `org delete`, approvals,
+  update policies (`org|instance upgrade-policy` with a flag), `instance approve-update`,
   `team upgrade trigger/retry`, `app origins add/remove`, a deployment's changes) takes `--dev-passkey FILE` on a development
   cluster: `DevPasskey` loads it, gives it to the generated method as its
   `passkey` (the routes the document marks `x-calimero-step-up`) and saves it

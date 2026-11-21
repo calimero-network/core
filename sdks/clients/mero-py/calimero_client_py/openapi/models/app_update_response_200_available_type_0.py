@@ -39,6 +39,7 @@ class AppUpdateResponse200AvailableType0:
         package (str):
         version (str):
         source (AppUpdateResponse200AvailableType0Source):
+        approvals_needed (int):
         class_ (Union[Unset, AppUpdateResponse200AvailableType0Class]):
         reasons (Union[Unset, list[Union['UpdateReasonType0', 'UpdateReasonType1', 'UpdateReasonType2',
             'UpdateReasonType3', 'UpdateReasonType4', 'UpdateReasonType5']]]):
@@ -47,11 +48,13 @@ class AppUpdateResponse200AvailableType0:
         new_methods (Union[Unset, list[str]]):
         removed_methods (Union[Unset, list[str]]):
         signer_changed (Union[Unset, bool]):
+        approved_by (Union[Unset, str]):
     """
 
     package: str
     version: str
     source: AppUpdateResponse200AvailableType0Source
+    approvals_needed: int
     class_: Union[Unset, AppUpdateResponse200AvailableType0Class] = UNSET
     reasons: Union[
         Unset,
@@ -71,6 +74,7 @@ class AppUpdateResponse200AvailableType0:
     new_methods: Union[Unset, list[str]] = UNSET
     removed_methods: Union[Unset, list[str]] = UNSET
     signer_changed: Union[Unset, bool] = UNSET
+    approved_by: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -89,6 +93,8 @@ class AppUpdateResponse200AvailableType0:
         version = self.version
 
         source = self.source.value
+
+        approvals_needed = self.approvals_needed
 
         class_: Union[Unset, str] = UNSET
         if not isinstance(self.class_, Unset):
@@ -130,6 +136,8 @@ class AppUpdateResponse200AvailableType0:
 
         signer_changed = self.signer_changed
 
+        approved_by = self.approved_by
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -137,6 +145,7 @@ class AppUpdateResponse200AvailableType0:
                 "package": package,
                 "version": version,
                 "source": source,
+                "approvalsNeeded": approvals_needed,
             }
         )
         if class_ is not UNSET:
@@ -153,6 +162,8 @@ class AppUpdateResponse200AvailableType0:
             field_dict["removedMethods"] = removed_methods
         if signer_changed is not UNSET:
             field_dict["signerChanged"] = signer_changed
+        if approved_by is not UNSET:
+            field_dict["approvedBy"] = approved_by
 
         return field_dict
 
@@ -174,6 +185,8 @@ class AppUpdateResponse200AvailableType0:
         version = d.pop("version")
 
         source = AppUpdateResponse200AvailableType0Source(d.pop("source"))
+
+        approvals_needed = d.pop("approvalsNeeded")
 
         _class_ = d.pop("class", UNSET)
         class_: Union[Unset, AppUpdateResponse200AvailableType0Class]
@@ -273,10 +286,13 @@ class AppUpdateResponse200AvailableType0:
 
         signer_changed = d.pop("signerChanged", UNSET)
 
+        approved_by = d.pop("approvedBy", UNSET)
+
         app_update_response_200_available_type_0 = cls(
             package=package,
             version=version,
             source=source,
+            approvals_needed=approvals_needed,
             class_=class_,
             reasons=reasons,
             egress=egress,
@@ -284,6 +300,7 @@ class AppUpdateResponse200AvailableType0:
             new_methods=new_methods,
             removed_methods=removed_methods,
             signer_changed=signer_changed,
+            approved_by=approved_by,
         )
 
         app_update_response_200_available_type_0.additional_properties = d

@@ -89,6 +89,10 @@ def sync_detailed(
     caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's
     organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still
     below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a
+    red (or unclassified) update where the policy asks for a second approver, else 1;
+    `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the
+    first approvals waiting for their second that cover this app (its own, or its unit's).
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -137,6 +141,10 @@ def sync(
     caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's
     organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still
     below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a
+    red (or unclassified) update where the policy asks for a second approver, else 1;
+    `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the
+    first approvals waiting for their second that cover this app (its own, or its unit's).
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -180,6 +188,10 @@ async def asyncio_detailed(
     caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's
     organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still
     below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a
+    red (or unclassified) update where the policy asks for a second approver, else 1;
+    `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the
+    first approvals waiting for their second that cover this app (its own, or its unit's).
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -226,6 +238,10 @@ async def asyncio(
     caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's
     organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still
     below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a
+    red (or unclassified) update where the policy asks for a second approver, else 1;
+    `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the
+    first approvals waiting for their second that cover this app (its own, or its unit's).
 
     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 

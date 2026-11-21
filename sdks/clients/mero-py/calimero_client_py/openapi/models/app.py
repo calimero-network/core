@@ -53,7 +53,9 @@ class App:
             components (Union[Unset, AppComponents]):
             last_upgrade (Union[Unset, Upgrade]): The last upgrade tried on an app, done or failed: `from` and `to` are
                 bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the
-                upgrade key that made it.
+                upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it
+                applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the
+                first approver of a red update whose policy asks for a second.
             deployment (Union[Unset, str]):
             release (Union[Unset, PackageRef]): One service of one package release: `service` is absent for a single-service
                 bundle, `compute` (absent: false) marks the service's compute component.

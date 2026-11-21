@@ -657,6 +657,17 @@ pub struct UpgradeRecord {
     pub from_release: Option<crate::system::PackageRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_release: Option<crate::system::PackageRef>,
+    /// The class the update applied as (`UpgradeApp::class`), judged against the log where
+    /// it applied. Absent on a record from before, for a raw upload or a failed upgrade.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<calimero_bundle::update::Class>,
+    /// Why it was red; empty when green or unclassified.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<calimero_bundle::update::Reason>,
+    /// The owner or admin whose first approval ([`PendingApproval`]) let this red update
+    /// through, where the app's policy asks for a second approver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<AccountId>,
 }
 
 /// An upgrade of many apps at once, with cascade: every
@@ -1084,6 +1095,159 @@ pub struct Org {
     /// `true` (the default).
     #[serde(default = "allowed", skip_serializing_if = "is_allowed")]
     pub allow_public_links: bool,
+    /// The update policy of every app of it that sets none of its own
+    /// (`SystemCmd::SetUpgradePolicy` without an app); absent, [`UpgradePolicy::default`]:
+    /// nothing updates on its own and one owner's or admin's approval applies an update.
+    /// Left out when absent, so an organization from before writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade_policy: Option<UpgradePolicy>,
+    /// An app's own update policy, by app, over [`Self::upgrade_policy`]
+    /// (`SystemCmd::SetUpgradePolicy` naming the app). Kept by the organization, so an app
+    /// moved out leaves it behind (`MoveApp` drops it): the new organization's owner and
+    /// admins decide. Left out when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub app_upgrade_policies: BTreeMap<AppId, UpgradePolicy>,
+    /// First approvals of red updates whose policy asks for a second approver
+    /// (`SystemCmd::ApproveUpgrade`), by the app approved: one each, replaced by a newer
+    /// one, and dead once its apps run their targets or it is older than
+    /// [`MAX_APPROVAL_AGE_SECS`]. Left out when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending_upgrades: BTreeMap<AppId, PendingApproval>,
+}
+
+/// The shortest hold an update policy names ([`UpgradePolicy::hold_hours`]): Calimero's
+/// minimum, so a bad release can be pulled before it applies anywhere on its own.
+pub const MIN_HOLD_HOURS: u32 = 24;
+/// The longest hold an update policy names: a week.
+pub const MAX_HOLD_HOURS: u32 = 168;
+/// How long a first approval ([`PendingApproval`]) waits for its second, judged at the
+/// time the upgrade it would let through carries: a week.
+pub const MAX_APPROVAL_AGE_SECS: u64 = 7 * 24 * 3600;
+/// The most reasons an update's class lists ([`UpgradeClass::reasons`]).
+pub const MAX_CLASS_REASONS: usize = 64;
+
+/// How an organization's owner and admins let an app's updates apply
+/// (`SystemCmd::SetUpgradePolicy`), for one app or every app of the organization. Every
+/// field may be left out (its default); an unknown one is refused.
+///
+/// Only `second_approver` changes what applies in this release. `auto_apply` and
+/// `hold_hours` are stored and validated now; applying green updates on their own after
+/// the hold (with a restore point and waves) is a later release's, which only adds the
+/// execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpgradePolicy {
+    /// Which updates apply on their own after the hold ([`AutoApply`]): none by default.
+    #[serde(default)]
+    pub auto_apply: AutoApply,
+    /// How long a green update waits before it applies on its own, in hours:
+    /// [`MIN_HOLD_HOURS`] to [`MAX_HOLD_HOURS`], 24 by default.
+    #[serde(default = "default_hold_hours")]
+    pub hold_hours: u32,
+    /// A red update (or one no class was recorded for) needs two distinct owners or admins:
+    /// the first logs a [`PendingApproval`], the second applies it. Off by default.
+    #[serde(default)]
+    pub second_approver: bool,
+}
+
+/// Which updates an update policy lets apply on their own, after its hold
+/// ([`UpgradePolicy::auto_apply`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoApply {
+    /// None: every update waits for an owner's or admin's approval. The default: nothing
+    /// updates by default.
+    #[default]
+    Never,
+    /// A green update (the same signer and state version, no new destination, no new way to
+    /// act as the person) of an app whose unit has no destinations before or after it (no
+    /// `outbound` prefix or secret host, members counted: no data leaves Calimero).
+    NoDestinations,
+}
+
+const fn default_hold_hours() -> u32 {
+    MIN_HOLD_HOURS
+}
+
+impl Default for UpgradePolicy {
+    fn default() -> Self {
+        Self {
+            auto_apply: AutoApply::Never,
+            hold_hours: default_hold_hours(),
+            second_approver: false,
+        }
+    }
+}
+
+impl UpgradePolicy {
+    /// `Err` with the apply error when `hold_hours` is outside
+    /// [`MIN_HOLD_HOURS`]..=[`MAX_HOLD_HOURS`].
+    pub fn check(&self) -> Result<(), &'static str> {
+        if (MIN_HOLD_HOURS..=MAX_HOLD_HOURS).contains(&self.hold_hours) {
+            Ok(())
+        } else {
+            Err(crate::system::BAD_UPGRADE_POLICY)
+        }
+    }
+}
+
+/// What the classifier (`calimero_bundle::update::classify`) said of an update, as the
+/// log keeps it: green, or red with every reason.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpgradeClass {
+    pub class: calimero_bundle::update::Class,
+    /// Every rule that makes it red; empty when green. At most [`MAX_CLASS_REASONS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<calimero_bundle::update::Reason>,
+}
+
+impl UpgradeClass {
+    /// Whether it is green.
+    #[must_use]
+    pub fn is_green(&self) -> bool {
+        self.class == calimero_bundle::update::Class::Green
+    }
+}
+
+/// The first of the two approvals a red update needs where its policy asks for a second
+/// approver (`SystemCmd::ApproveUpgrade`): the app to `package`@`version`, and for a unit
+/// each member to its own target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingApproval {
+    pub package: String,
+    pub version: String,
+    /// A unit's upgrade: each member it moves, by app, to its own release. Empty for the
+    /// app alone.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub targets: BTreeMap<AppId, RunTarget>,
+    /// The owner or admin who approved first.
+    pub by: AccountId,
+    /// When (Unix seconds, the approving node's clock, logged with it).
+    pub at: u64,
+    /// The class the approver was shown.
+    pub class: UpgradeClass,
+}
+
+impl PendingApproval {
+    /// Whether it lets `app` move to `package`@`version`: the approved app itself, or a
+    /// member of its unit to the member's own target.
+    #[must_use]
+    pub fn covers(&self, approved: &str, app: &str, package: &str, version: &str) -> bool {
+        if approved == app {
+            return self.package == package && self.version == version;
+        }
+        self.targets
+            .get(app)
+            .is_some_and(|t| t.package == package && t.version == version)
+    }
+
+    /// Whether it may still let an upgrade logged at `at` through.
+    #[must_use]
+    pub const fn fresh_at(&self, at: u64) -> bool {
+        at <= self.at.saturating_add(MAX_APPROVAL_AGE_SECS)
+    }
 }
 
 /// [`Org::allow_guests`]' default.
