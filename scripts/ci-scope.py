@@ -53,6 +53,7 @@ EVERY_JOB = (
     ".cargo/*",
     ".github/workflows/ci-checks.yml",
     ".github/actions/setup-rust-ci/*",
+    ".github/actions/rust-toolchain/*",
     "scripts/ci-scope.py",
     "scripts/path-dep-closure.py",
 )
