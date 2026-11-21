@@ -13218,3 +13218,52 @@ fn an_automatic_failure_that_lost_to_another_move_records_nothing() {
     let last = m.state.apps["inst"].last_upgrade.clone().unwrap();
     assert!(!last.ok, "the release's own failure is noted: {last:?}");
 }
+
+/// An app whose record names no release (`release` absent: a record from before, or its
+/// release inferred from its bundle) runs the release `running` derives. An automatic
+/// update names that one as where it began, and apply judges it against the same: its own
+/// failure is noted, one that another move overtook is not. An automatic failure logged
+/// without `from_release` is judged on its target alone, as before the field.
+#[test]
+fn an_automatic_failure_is_judged_on_the_derived_release_of_an_app_without_one() {
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    instance_of(&mut m, "inst", "b1", Value::Null);
+    let to = |version: &str| PackageRef {
+        package: "p".into(),
+        version: version.into(),
+        service: None,
+        compute: false,
+    };
+    let inst = m.state.apps["inst"].clone();
+    assert!(inst.release.is_none());
+    // Where an update on its own begins: the release it runs, derived.
+    assert_eq!(m.state.auto_update_from(&inst), Some(to("1.0.0")));
+    let failed = |from: Option<&str>| SystemCmd::UpgradeFailed {
+        app_id: "inst".into(),
+        bundle: "b3".into(),
+        by: super::AUTO_UPDATE.into(),
+        at: 90_000,
+        error: json!("trap"),
+        run: None,
+        release: Some(to("1.0.2")),
+        from_release: from.map(to),
+    };
+    // Its own failure, from where it is: noted.
+    let _ok = m.run_unproven(failed(Some("1.0.0"))).unwrap();
+    let last = m.state.apps["inst"].last_upgrade.clone();
+    assert!(
+        last.as_ref().is_some_and(|u| !u.ok),
+        "the release's own failure is noted: {last:?}"
+    );
+    // A failure from a release it never ran (another move won): nothing.
+    m.state.apps.get_mut("inst").unwrap().last_upgrade = None;
+    let _ok = m.run_unproven(failed(Some("1.0.1"))).unwrap();
+    assert!(m.state.apps["inst"].last_upgrade.is_none(), "stale");
+    // An entry without `from_release` is noted unless the app runs the target.
+    let _ok = m.run_unproven(failed(None)).unwrap();
+    assert!(m.state.apps["inst"]
+        .last_upgrade
+        .as_ref()
+        .is_some_and(|u| !u.ok));
+}

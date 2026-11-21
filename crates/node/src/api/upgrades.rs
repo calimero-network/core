@@ -660,7 +660,7 @@ pub(crate) async fn auto_upgrade(
             run: None,
             owner_approves: true,
             auto: true,
-            from_release: app.release.clone(),
+            from_release: node.sys(|s| s.auto_update_from(app)),
         },
     )
     .await

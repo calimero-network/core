@@ -672,8 +672,17 @@ impl SystemState {
         }
     }
 
-    /// The release `app` runs, as the log names it.
-    fn running<'a>(&'a self, app: &'a AppRecord) -> Option<&'a PackageRef> {
+    /// Where an update of `app` on its own begins (`UpgradeFailed::from_release`): the
+    /// release it runs as the candidates and the gate judge it ([`Self::running`]: its
+    /// record's, else the one its bundle is governed by).
+    #[must_use]
+    pub fn auto_update_from(&self, app: &AppRecord) -> Option<PackageRef> {
+        self.running(app).cloned()
+    }
+
+    /// The release `app` runs, as the log names it: its record's, else the release its
+    /// bundle is governed by (a record without one).
+    pub(crate) fn running<'a>(&'a self, app: &'a AppRecord) -> Option<&'a PackageRef> {
         app.release.as_ref().or_else(|| self.governing_release(app))
     }
 
