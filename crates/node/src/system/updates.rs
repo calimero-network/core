@@ -377,8 +377,7 @@ impl SystemState {
             return Ok(None);
         }
         release
-            .and_then(|to| self.approval_for(app, &to.package, &to.version, actor, at))
-            .filter(|p| targets.is_empty() || p.targets == *targets)
+            .and_then(|to| self.approval_for(app, &to.package, &to.version, targets, actor, at))
             .map(|p| Some(p.by.clone()))
             .ok_or(SECOND_APPROVAL_REQUIRED)
     }
@@ -399,7 +398,8 @@ impl SystemState {
         }
     }
 
-    /// The unit's run `run` names, when it is one (`UpgradeRun::targets` set).
+    /// The unit's run `run` names, when it is one: only a unit's consent (`__upgrade_unit`)
+    /// keeps member targets on a run (`StartUpgradeRun` drops any other run's).
     fn unit_run(&self, run: Option<&str>) -> Option<&crate::types::UpgradeRun> {
         let id = run?;
         self.orgs
@@ -465,14 +465,18 @@ impl SystemState {
     }
 
     /// The live first approval ([`Self::approval_live`]) by someone other than `actor`
-    /// that lets `app` move to `package`@`version`: of the app itself, or of the unit it is
-    /// a member of, to its own target.
+    /// that lets `app` move to `package`@`version`: alone (`targets` empty), one of the app
+    /// itself or of the unit it is a member of, to its own target; as the instance of a
+    /// unit moving its members to `targets`, one of exactly that unit. Every live approval
+    /// is looked at, so another unit's that covers the app too (units nest) never hides
+    /// the one that matches.
     #[must_use]
     pub fn approval_for(
         &self,
         app: &AppRecord,
         package: &str,
         version: &str,
+        targets: &BTreeMap<AppId, RunTarget>,
         actor: &str,
         at: u64,
     ) -> Option<&PendingApproval> {
@@ -483,6 +487,7 @@ impl SystemState {
             .find(|(approved, p)| {
                 p.by != actor
                     && p.covers(approved, &app.app_id, package, version)
+                    && (targets.is_empty() || (**approved == app.app_id && p.targets == *targets))
                     && self.approval_live(&app.org, approved, p, at)
             })
             .map(|(_, p)| p)

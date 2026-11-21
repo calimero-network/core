@@ -219,9 +219,19 @@ async fn app_approve_upgrade(
         return Err(crate::node::rejected(crate::system::ONE_APPROVAL));
     }
     let now = now_secs();
+    // Another's live approval of this very move waits for its second, as `ApproveUpgrade`
+    // refuses it where it applies.
     let pending = node.sys(|s| {
-        s.approval_for(&app, &target.package, &target.version, &actor, now)
-            .is_some_and(|p| p.targets == targets)
+        s.orgs
+            .get(&app.org)
+            .and_then(|o| o.pending_upgrades.get(&app.app_id))
+            .is_some_and(|p| {
+                p.by != actor
+                    && p.package == target.package
+                    && p.version == target.version
+                    && p.targets == targets
+                    && s.approval_live(&app.org, &app.app_id, p, now)
+            })
     });
     if pending {
         return Err(crate::node::rejected(crate::system::APPROVAL_PENDING));

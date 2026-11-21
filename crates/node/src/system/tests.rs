@@ -12259,3 +12259,170 @@ fn a_units_run_is_judged_once_under_its_instances_policy() {
         Err(SECOND_APPROVAL_REQUIRED.to_owned())
     );
 }
+
+/// Units nest: a parent unit's first approval may cover a member that is itself the
+/// instance of a unit. A live first approval of exactly that member's unit (the same
+/// targets) still lets its run through, whichever approval sorts first.
+#[test]
+fn a_units_own_approval_is_found_past_a_parent_units() {
+    use crate::types::{PendingApproval, RunTarget, UpgradePolicy, UpgradeRun};
+    let telemetry = ["https://telemetry.example/"];
+    let mut m = classified();
+    // `inst` created `mid`, which created `leaf`; all on p@1.0.0.
+    for id in ["mid", "leaf"] {
+        instance_of(
+            &mut m,
+            id,
+            "b1",
+            json!({ "package": "p", "version": "1.0.0" }),
+        );
+    }
+    for (parent, name, member) in [("inst", "mid", "mid"), ("mid", "leaf", "leaf")] {
+        if let Some(a) = m.state.apps.get_mut(parent) {
+            let _prev = a.links.insert(name.into(), member.into());
+        }
+    }
+    let to = |app: &str| -> std::collections::BTreeMap<String, RunTarget> {
+        std::iter::once((
+            app.to_owned(),
+            RunTarget {
+                package: "p".into(),
+                version: "1.1.0".into(),
+            },
+        ))
+        .collect()
+    };
+    let approval = |targets| PendingApproval {
+        package: "p".into(),
+        version: "1.1.0".into(),
+        targets,
+        by: "cora".into(),
+        at: 5,
+        class: red(&telemetry),
+    };
+    if let Some(o) = m.state.orgs.get_mut("cust") {
+        o.upgrade_policy = Some(UpgradePolicy {
+            second_approver: true,
+            ..UpgradePolicy::default()
+        });
+        // cora approved both units first: `inst`'s (which covers `mid`, and sorts
+        // first) and `mid`'s own.
+        let _prev = o
+            .pending_upgrades
+            .insert("inst".into(), approval(to("mid")));
+        let _prev = o
+            .pending_upgrades
+            .insert("mid".into(), approval(to("leaf")));
+        let _prev = o.upgrade_runs.insert(
+            "u".into(),
+            UpgradeRun {
+                run_id: "u".into(),
+                package: "p".into(),
+                version: "1.1.0".into(),
+                team: None,
+                cascade: false,
+                by: "eve".into(),
+                started_at: 9,
+                apps: vec!["mid".into(), "leaf".into()],
+                done: Vec::new(),
+                failed: std::collections::BTreeMap::new(),
+                finished: false,
+                targets: to("leaf"),
+            },
+        );
+    }
+    // eve applies `mid`'s unit, which cora approved.
+    let mut cmd = upgrade_to("mid", "eve", "b2", Some(("p", "1.1.0")));
+    if let SystemCmd::UpgradeApp {
+        class,
+        owner_approves,
+        run,
+        ..
+    } = &mut cmd
+    {
+        *class = Some(red(&telemetry));
+        *owner_approves = true;
+        *run = Some("u".into());
+    }
+    let _ok = m.run_unproven(cmd).unwrap();
+    let rec = m.state.apps["mid"].last_upgrade.clone().unwrap();
+    assert_eq!(rec.approved_by.as_deref(), Some("cora"));
+}
+
+/// Only a unit's consent (`__upgrade_unit`) states member targets: an organization's
+/// run keeps none, whatever its entry lists, so an app it moves is never taken for a
+/// unit's member and judged on its own policy.
+#[test]
+fn only_a_units_run_keeps_member_targets() {
+    use super::SECOND_APPROVAL_REQUIRED;
+    let (mut m, mut alice) = org_with_package_apps();
+    // `p1` created `p1b`, whose own policy asks for a second approver.
+    let _prev = m.state.apps.insert(
+        "p1b".into(),
+        serde_json::from_value(json!({
+            "appId": "p1b", "name": "p1b", "group": 7, "bundle": "b-1.0.0", "owner": "alice",
+            "org": "org", "grants": [{ "kind": "org" }], "replicas": [1, 2, 3],
+            "createdAt": 0, "release": { "package": "p", "version": "1.0.0" },
+        }))
+        .unwrap(),
+    );
+    if let Some(a) = m.state.apps.get_mut("p1") {
+        let _prev = a.links.insert("store".into(), "p1b".into());
+    }
+    if let Some(o) = m.state.orgs.get_mut("org") {
+        let _prev = o.app_upgrade_policies.insert(
+            "p1b".into(),
+            crate::types::UpgradePolicy {
+                second_approver: true,
+                ..crate::types::UpgradePolicy::default()
+            },
+        );
+    }
+    m.index = 10;
+    let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+    m.index = 11;
+    // An organization's run whose entry adds targets its consent never stated.
+    let c = consent(
+        &mut alice,
+        "org:org",
+        "__upgrade_org",
+        &json!({
+            "package": "p", "version": "2.0.0", "team": null,
+            "cascade": false, "migrate": null,
+        }),
+    );
+    let run: crate::types::UpgradeRun = serde_json::from_value(json!({
+        "runId": "r1", "package": "p", "version": "2.0.0", "by": "alice",
+        "startedAt": 0, "apps": [], "done": [], "failed": {}, "finished": false,
+        "targets": { "p1b": { "package": "p", "version": "2.0.0" } },
+    }))
+    .unwrap();
+    let _ok = m
+        .run(SystemCmd::StartUpgradeRun {
+            org: "org".into(),
+            run: Box::new(run),
+            consent: c,
+            by_release: false,
+            owner_approves: false,
+        })
+        .unwrap();
+    let upgrade = |app: &str| {
+        let mut cmd = upgrade_to(app, "alice", "b-2.0.0", Some(("p", "2.0.0")));
+        if let SystemCmd::UpgradeApp { run, .. } = &mut cmd {
+            *run = Some("r1".into());
+        }
+        cmd
+    };
+    m.index = 12;
+    let _ok = m.run(upgrade("p1")).unwrap();
+    m.index = 13;
+    assert_eq!(
+        m.run(upgrade("p1b")).unwrap_err(),
+        SECOND_APPROVAL_REQUIRED,
+        "judged on its own policy"
+    );
+    assert!(
+        m.state.orgs["org"].upgrade_runs["r1"].targets.is_empty(),
+        "targets no consent stated"
+    );
+}

@@ -323,11 +323,14 @@ A unit's upgrade (`/upgrade-unit`, the consent page's `upgradeUnit`) is judged
 once, as a whole, under its instance's policy, so it moves whole or not at all:
 the unit's class decides (a unit red only through a member waits too, and its
 page is refused before it exists), a second approver's first approval must be of
-that very unit (`unit`, the same targets), and the instance's `UpgradeApp`
+that very unit (`unit`, the same targets; a parent unit's approval that covers the
+instance too never stands in for it), and the instance's `UpgradeApp`
 carries the unit's class. Each member the run then moves takes the instance's
 judgement in that run (`SystemState::run_update_gate`; its own class is still
 checked against the log), so a member's own policy never stops a unit half way.
-A member's own policy governs its upgrades alone.
+A member's own policy governs its upgrades alone. Only a unit's consent
+(`__upgrade_unit`) states member targets: an organization's or a publisher's run
+keeps none, whatever its entry lists, so each app it moves is judged on its own.
 
 `GET /apps/{app}/update` adds the policy in force (`policy`), the first
 approvals waiting that cover the app (`pendingApprovals`), and on `available`

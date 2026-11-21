@@ -581,6 +581,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if owner_approves && run.by != OPERATOR && !s.approves_upgrades(&org, &run.by) {
                 return Err(NOT_AN_UPGRADE_APPROVER);
             }
+            // Member targets are a unit's, stated by its consent (`__upgrade_unit`, held to
+            // them in `authorize`); any other run keeps none, whatever its entry lists, so
+            // no app of it is moved off the run's version or judged as a unit's member
+            // (`SystemState::run_update_gate`). No entry an honest node logged carries them
+            // outside a unit's run, so every such entry replays as it applied.
+            let unit_consent = serde_json::from_value::<crate::proof::Statement>(consent.clone())
+                .is_ok_and(|st| st.method == "__upgrade_unit");
+            if !unit_consent {
+                run.targets.clear();
+            }
             if s.holds_current_rules(index) {
                 // What the run covers and how far it got are the state's,
                 // not the proposer's: its consent names only the package,

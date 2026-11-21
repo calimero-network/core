@@ -1351,10 +1351,13 @@ is its command line.
   instance's policy (`run_update_gate`, `api::unit_gate` for `upgrade_unit` and the
   consent page's `upgradeUnit` before the passkey or any page): the instance's
   `UpgradeApp` carries the unit's class (`api::upgrades::run_class`) judged over the
-  run's targets, its approval must have the same `targets`, and each member the run
+  run's targets, its approval must have the same `targets` (`approval_for` looks at
+  every live approval, so a parent unit's covering one never hides it), and each member the run
   moves takes the instance's judgement once the instance is `done` in that run (its own
   class still checked), so a member's own policy (which governs it alone) never stops
-  a unit half way. `POST /apps/{app}/upgrade-approvals` answers `approval` in the
+  a unit half way. Only a `__upgrade_unit` consent keeps `targets` on a run
+  (`StartUpgradeRun` drops any other run's, whatever the entry lists), and its members are
+  the instance's `links` (`upgrade_run_apps`). `POST /apps/{app}/upgrade-approvals` answers `approval` in the
   `pendingApprovals` shape (`api::upgrades::approval_json`).
   The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
   `autoApply` (`noDestinations`: a green update of an app whose unit has no destinations
@@ -1369,7 +1372,9 @@ is its command line.
   `an_update_policy_is_an_owners_or_admins_and_bounded`,
   `a_red_update_needs_a_second_approver_where_the_policy_asks`,
   `a_move_the_log_cannot_rebuild_is_never_applied_as_green`,
-  `a_units_run_is_judged_once_under_its_instances_policy`),
+  `a_units_run_is_judged_once_under_its_instances_policy`,
+  `a_units_own_approval_is_found_past_a_parent_units`,
+  `only_a_units_run_keeps_member_targets`),
   `a_red_update_waits_for_a_second_approver`,
   `a_unit_red_through_a_member_gets_no_page_without_a_second_approver`,
   `a_unit_moves_whole_under_its_instances_policy` (`tests/consent_page.rs`).
