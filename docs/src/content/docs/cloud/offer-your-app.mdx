@@ -22,9 +22,10 @@ which secret values it holds; each instance, and every app its release creates
 with it, lives in a customer's organization and is theirs, while its usage
 names you as `developer` and them as `org`.
 
-This guide uses `meroctl raw` (`METHOD PATH [BODY]`): `meroctl` has no
-deployment commands yet. Every change below asks for a passkey step-up
-(`412 CONFIRM_REQUIRED` first). On a development cluster, `--dev-passkey FILE`
+This guide uses `meroctl deployment` ([reference](/operate/meroctl/#deployment));
+each command names the route it calls, so the same steps work from any client.
+A deployment is named by its id or by its name. Every change below asks for a
+passkey step-up (`412 CONFIRM_REQUIRED` first). On a development cluster, `--dev-passkey FILE`
 answers it; on a production cluster the step-up is a passkey in a browser:
 call the same routes from mero-js with `{ confirm: passkeyConfirm(browserPasskey()) }`,
 as in [Deploy from CI](/cloud/deploy-from-ci/). The protocol behind each step
@@ -84,22 +85,32 @@ meroctl app install chat@1.0.0
 The node fetches the release from the registry, verifies its signature and
 its pinned signer, and records it as installed by you.
 
+From the app's crate, `meroctl app release --version 1.0.0 --key release.key
+--publish` does the build, the signing, the push to the registry and this
+install in one step, and refuses a version that is not newer than the
+releases of the package the cluster has; on a development cluster, without
+`--publish`, it uploads the `.mpk` instead.
+
 ## 2. Create the deployment
 
 ```bash
-meroctl raw post /deployments '{"name":"Chat","owner":{"org":"<org-id>"}}' --dev-passkey ./dev-passkey.json
+meroctl deployment create Chat --owner org:<org-id> --dev-passkey ./dev-passkey.json
 # { "id": "3f2a…", "deployment": { … }, "host": "lprf….apps.example.com" }
 ```
 
-`owner` is `{"org": "<id>"}` or `{"account": "<id>"}`. The name is what
+`--owner` is `org:<id>`, `account:<id>`, or `account` for your own
+(`POST /deployments`, `owner` `{"org": "<id>"}` or `{"account": "<id>"}`). The name is what
 customers see. The id comes from your passkey consent, and `host` is the
 deployment's own frontend host. An owner has at most 16 deployments.
 
 ## 3. Offer a release
 
 ```bash
-meroctl raw post /deployments/<id>/apps '{"app":"chat","package":"chat","version":"1.0.0"}' --dev-passkey ./dev-passkey.json
+meroctl deployment offer Chat chat 1.0.0 --package chat --dev-passkey ./dev-passkey.json
 ```
+
+(`POST /deployments/{id}/apps { app, package, version }`; once `chat` is
+offered, a later offer may leave out `--package`.)
 
 `app` is the name of the entry in your deployment; it offers exactly one
 release. Offering the same `app` again with another version of the same
@@ -116,17 +127,20 @@ values once for every instance created from the deployment, so customers need
 not:
 
 ```bash
-meroctl raw put /deployments/<id>/secrets/NEAR_AI_API_KEY '{"value":"sk-…"}' --dev-passkey ./dev-passkey.json
+meroctl deployment secret set Chat NEAR_AI_API_KEY --dev-passkey ./dev-passkey.json < near-ai.key
 # { "deployment": "3f2a…", "name": "NEAR_AI_API_KEY", "fingerprint": "9c1e…", … }
-meroctl raw get /deployments/<id>/secrets
+meroctl deployment secret list Chat
 ```
+
+The value is read from stdin, or typed at a prompt that does not echo it,
+never from the command line (`PUT /deployments/{id}/secrets/{name} { value }`).
 
 The node fills it only into a request to that secret's declared hosts, for an
 instance whose release declares the name; an instance that sets its own value
 (`PUT /apps/{app}/secrets/{name}`) uses that instead, and without either the
 operator's applies. It is never shown again: the listing gives each value's
-fingerprint, who set it and when. `meroctl raw delete
-/deployments/<id>/secrets/NEAR_AI_API_KEY` removes it. A name no release you
+fingerprint, who set it and when. `meroctl deployment secret clear Chat
+NEAR_AI_API_KEY` removes it. A name no release you
 offer declares is refused (`404 UNDECLARED_SECRET`).
 
 If your release uses another app (`uses`, say Private Inference, which declares
@@ -220,7 +234,7 @@ decide who reaches it, and you have no path into its data.
 ## 6. See who uses it
 
 ```bash
-meroctl raw get /deployments/<id>/orgs
+meroctl deployment orgs Chat
 ```
 
 ```json
@@ -240,11 +254,12 @@ meroctl raw get /deployments/<id>/orgs
 For the deployment's managers only, from an unbound session (your app's own
 frontend session cannot read it), on fresh state: each customer organization
 with instances from this deployment, how many, which of your apps and the
-releases they run, and two counts of people. Never who the members are,
+releases they run, and two counts of people. `meroctl deployment usage Chat
+--by org --csv` writes the same as one CSV row per organization. Never who the members are,
 teams, instance names or data. Instances in personal organizations are only
 counted (`outsideOrgs`) on a cluster below 1.0.0-rc.32; from that version
 they are organizations like any other. Another deployment's customers never appear, even on
-the same release. `GET /deployments` lists the deployments you manage.
+the same release. `meroctl deployment list` (`GET /deployments`) lists the deployments you manage.
 
 ## Who is billed
 
@@ -265,7 +280,9 @@ A cluster may cap a developer's fuel per day (`maxFuelPerDeveloperPerDay`),
 summed over every instance of your deployments: past it, client calls to
 them answer `429 QUOTA_EXCEEDED` until the next UTC day. `GET /auth/usage`
 (your account) and `GET /orgs/{org}/usage` (your organization, for its
-admins) show today's `developerFuelToday` and `developerWritesToday`.
+admins) show today's `developerFuelToday` and `developerWritesToday`: one
+total for the developer over every deployment, not per customer organization,
+and no earlier days.
 
 ## Shipping a new version
 
@@ -297,8 +314,8 @@ customers'.
 ## Withdrawing an offer
 
 ```bash
-meroctl raw delete /deployments/<id>/apps/chat --dev-passkey ./dev-passkey.json
-meroctl raw delete /deployments/<id> --dev-passkey ./dev-passkey.json
+meroctl deployment withdraw Chat chat --dev-passkey ./dev-passkey.json
+meroctl deployment delete Chat --dev-passkey ./dev-passkey.json
 ```
 
 Withdrawing is refused while any instance created from this deployment still

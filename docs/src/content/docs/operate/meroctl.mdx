@@ -33,12 +33,13 @@ Its command names differ from the rest of these docs for a few objects
 | `account` | the signed-in account; each passkey is one of its devices |
 | `local` | a development cluster on this machine, and the build loop around it |
 | `cloud` | Calimero Cloud (organizations, clusters), and a cluster's compute |
+| `deployment` | a developer's deployments: the releases offered to other organizations |
 
 Output is JSON, pretty-printed: the route's answer as the client reads it,
 with any field the client's types do not name kept as the node sent it.
 Commands that stream (`instance watch`, `cloud compute pipeline watch`,
 `instance presence stream`, `ops metrics`, `blob download` to stdout, `app
-watch`, `local dev`) print their own lines, as do `app codegen`, `app abi
+watch`, `local dev`, `deployment usage --csv`) print their own lines, as do `app codegen`, `app abi
 diff` and `app signer`. The commands that need no node (`app new`, `app build`,
 `app codegen`, `app abi`, `app signer`, `app pack`, `app sign`, `app inspect`,
 `app publish`, `local`, `cloud` but `cloud compute`) never read `--node` or
@@ -138,6 +139,7 @@ list PACKAGE`).
 | `app versions PACKAGE` (`list-versions`) | `GET /packages/{package}` | Its installed versions. |
 | `app get-latest-version PACKAGE` | `GET /packages/{package}` | Its newest installed version. |
 | `app pipelines PACKAGE [--version V]` | `GET /packages/{package}/{version}/pipelines` | The pipelines a version registered (default: the newest): per name, `hash`, `worstCaseFuel`, the `modules` it pins and the canonical `pipeline`. |
+| `app release [DIR] --version V [pack's flags] [--publish [--registry URL] [--registry-api-key KEY] [--org ORG] [--cloud URL] [--public]]` | `GET /packages/{package}`, then `POST /packages` or (`--publish`) `POST /packages/install` | Ship a release in one step: `app pack` (DIR defaults to `.` when no `--wasm`, `--compute` or `--service` names the components; `--version` is its `--app-version`), then, with `--publish`, `app publish` to the registry (`--registry-api-key` is `app publish`'s `--api-key`, `CALIMERO_REGISTRY_API_KEY`), then the install: from the cluster's registry after `--publish`, else an upload of the `.mpk` (development clusters). Before anything is built, a version that is not semver, or not newer than every release of the package the cluster has installed, is refused. Answers `package`, `version`, `mpk`, `published` (the registry's answer, or `null`) and `installed`. The registry has no route meroctl reads its versions from, so a version it already holds is refused by the registry itself (`version_not_allowed`). |
 | `app uninstall PACKAGE [--version V]` | `DELETE /packages/{package}[/{version}]` | Uninstall one version or the whole application. Refused while a context runs it. |
 | `app watch --path FILE --dev-passkey FILE [-c INSTANCE]... [--once] [--interval-ms MS]` | uploads, then `POST /apps/{app}/upgrade` | Push a build now, then on every save. A `.mpk` is installed and this account's contexts of its package (or the `--instance`s named) are updated to its version; a raw `.wasm` updates only the `--instance`s named. `--interval-ms` defaults to `500`. |
 | `app origins list PACKAGE` (`ls`) | `GET /package-origins/{package}` | The web origins registered for the application: each `origin`, its `rpId`, `addedBy`, `addedAt` and `served` (whether the cluster serves the frontend there). Its manager's only. |
@@ -384,6 +386,30 @@ The signed-in account.
 | `account approve-release VERSION [--dev-passkey FILE]` | `POST /orgs/{org}/releases` | Approve a mero-tee release to hold the account's own contexts (its only organization's). |
 | `account outbound --package P [--prefix URL]... [--replace] [--dev-passkey FILE]` | `POST /orgs/{org}/outbound` | Approve outbound prefixes for the account's own contexts (its only organization's). |
 
+## deployment
+
+A developer's [deployments](/cloud/offer-your-app/): the apps each offers to
+other organizations, one installed release per app name, the secret values the
+instances made from it use, and the customer organizations that made them. A
+`DEPLOYMENT` argument is its id, or the name of one this account manages
+(`GET /deployments`; a name two of them share is refused with their ids).
+Every change is approved with a passkey: `--dev-passkey FILE` on a development
+cluster; without it the node answers `412 CONFIRM_REQUIRED` and nothing changes.
+
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `deployment list` (`ls`) | `GET /deployments` | The deployments this account manages: its own, and those of organizations where it holds `MANAGE_APPLICATION` org-wide. |
+| `deployment get DEPLOYMENT` | `GET /deployments/{id}` | Its name, its owner's kind and name, the release each app it offers runs; public, so without a session `DEPLOYMENT` is an id. |
+| `deployment create NAME --owner account\|account:ID\|org:ID [--dev-passkey FILE]` | `POST /deployments` | Create one owned by this account (`account`), or by an organization where it holds `MANAGE_APPLICATION`. Answers its `id` and frontend `host`. |
+| `deployment delete DEPLOYMENT [--dev-passkey FILE]` (`rm`) | `DELETE /deployments/{id}` | Delete one that offers nothing. |
+| `deployment offer DEPLOYMENT APP VERSION [--package P] [--dev-passkey FILE]` | `POST /deployments/{id}/apps` | Offer an installed release under the app name `APP` (`meroctl app release` installs it): new instances get it, and the instances made from the deployment are offered it as their update, which each owner approves. `--package` is required for an app the deployment does not offer yet; after that it defaults to the one it offers. |
+| `deployment withdraw DEPLOYMENT APP [--dev-passkey FILE]` | `DELETE /deployments/{id}/apps/{app}` | Stop offering an app; refused while an instance made from the deployment runs it. |
+| `deployment secret list DEPLOYMENT` (`ls`) | `GET /deployments/{id}/secrets` | Each secret its offered releases (or the releases they `use`) declare, or it holds: `set`, and when set its `fingerprint`, `setBy` and `setAt`. Never a value. |
+| `deployment secret set DEPLOYMENT NAME [--dev-passkey FILE]` | `PUT /deployments/{id}/secrets/{name}` | Set the value every instance made from it uses unless it set its own. The value is read from stdin (one trailing newline dropped: `printf %s "$KEY" \| meroctl ...` or `< key.txt`), or typed at a prompt that does not echo it; it is never an argument, never printed, and the answer carries its fingerprint only. |
+| `deployment secret clear DEPLOYMENT NAME [--dev-passkey FILE]` (`rm`) | `DELETE /deployments/{id}/secrets/{name}` | Remove its value: the instances fall back to the operator's. |
+| `deployment orgs DEPLOYMENT` | `GET /deployments/{id}/orgs` | The customer organizations with instances made from it: how many, the releases they run, `memberCount` and `activeMembers30d`; never who. |
+| `deployment usage DEPLOYMENT --by org [--csv]` | `GET /deployments/{id}/orgs` | The same per customer organization, as JSON or, with `--csv`, one row each (`org_id,name,instances,members,active_members_30d,releases,first_created_at`; a name a spreadsheet would run as a formula is prefixed with `'`). The node meters fuel and writes per developer (the deployment's owner, over all its deployments, today only: `account usage`, `GET /orgs/{org}/usage`), not per customer organization, so this is counts, not metered use; `--since` is refused as not supported by the node yet. |
+
 ## local
 
 A development cluster on this machine: `merod local` (mock attestation, a
@@ -548,4 +574,14 @@ A release:
 meroctl app signer new release.key                  # once; keep it safe
 meroctl app pack apps/kv-store/logic --key release.key --previous last.mpk --out release.mpk
 meroctl app publish release.mpk --public            # CALIMERO_REGISTRY_API_KEY
+```
+
+The same in one step, installed on the cluster and offered to customers:
+
+```bash
+meroctl app release apps/kv-store/logic --version 1.4.0 --key release.key --publish
+meroctl deployment create acme-apps --owner org:<org-id>     # once
+meroctl deployment offer acme-apps notes 1.4.0 --package com.calimero.kv-store
+meroctl deployment secret set acme-apps NEAR_AI_API_KEY < near-ai.key
+meroctl deployment usage acme-apps --by org --csv > customers.csv
 ```

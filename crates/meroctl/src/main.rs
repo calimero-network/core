@@ -22,6 +22,7 @@ mod app;
 mod blob;
 mod cloud;
 mod context;
+mod deployment;
 mod dev;
 mod env;
 mod file;
@@ -60,6 +61,8 @@ use env::{
         meroctl --node local app install --path ./kv-store.mpk\n  \
         meroctl --node local instance create --package com.example.kv --name notes\n  \
         meroctl --node local call --instance notes set --args '{\"key\":\"a\",\"value\":\"1\"}'\n  \
+        meroctl --node local app release --version 1.4.0\n  \
+        meroctl --node local deployment offer acme-apps notes 1.4.0\n  \
         meroctl --node local --ops-token $TOKEN ops status\n  \
         meroctl --node local proxy --listen 127.0.0.1:2580"
 )]
@@ -168,6 +171,10 @@ enum Cmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
+    /// Deployments: offer your app's releases to other organizations, set
+    /// the secret values their instances use, see the customer organizations.
+    #[command(subcommand)]
+    Deployment(deployment::DeploymentCmd),
     /// An instance's blobs: list, upload, download, info, delete.
     #[command(subcommand)]
     Blob(blob::BlobCmd),
@@ -570,6 +577,7 @@ async fn main() -> eyre::Result<()> {
                 to_json(&out?)?
             }
         }
+        Cmd::Deployment(cmd) => deployment::run(cmd, &env).await?,
         Cmd::Blob(cmd) => blob::run(cmd, &env).await?,
         Cmd::File(cmd) => file::run(cmd, &env).await?,
         Cmd::Cloud(cloud::CloudCmd::Compute(cmd)) => match cmd {
@@ -906,6 +914,145 @@ mod tests {
         ] {
             let parsed = Cli::try_parse_from(args);
             assert!(parsed.is_ok(), "{args:?}: {}", parsed.unwrap_err());
+        }
+    }
+
+    /// The deployment commands and `app release`, as the design writes them.
+    #[test]
+    fn deployment_and_release_commands_parse() {
+        for args in [
+            &["meroctl", "deployment", "list"][..],
+            &["meroctl", "deployment", "get", "acme-apps"],
+            &[
+                "meroctl",
+                "deployment",
+                "create",
+                "acme-apps",
+                "--owner",
+                "account",
+            ],
+            &[
+                "meroctl",
+                "deployment",
+                "create",
+                "acme-apps",
+                "--owner",
+                "org:o1",
+                "--dev-passkey",
+                "pk.json",
+            ],
+            &["meroctl", "deployment", "delete", "acme-apps"],
+            &[
+                "meroctl",
+                "deployment",
+                "offer",
+                "acme-apps",
+                "notes",
+                "1.4.0",
+            ],
+            &[
+                "meroctl",
+                "deployment",
+                "offer",
+                "acme-apps",
+                "notes",
+                "1.4.0",
+                "--package",
+                "com.acme.notes",
+            ],
+            &["meroctl", "deployment", "withdraw", "acme-apps", "notes"],
+            &["meroctl", "deployment", "secret", "list", "acme-apps"],
+            &[
+                "meroctl",
+                "deployment",
+                "secret",
+                "set",
+                "acme-apps",
+                "NEAR_AI_API_KEY",
+            ],
+            &[
+                "meroctl",
+                "deployment",
+                "secret",
+                "clear",
+                "acme-apps",
+                "NEAR_AI_API_KEY",
+            ],
+            &["meroctl", "deployment", "orgs", "acme-apps"],
+            &[
+                "meroctl",
+                "deployment",
+                "usage",
+                "acme-apps",
+                "--by",
+                "org",
+                "--since",
+                "2026-11-01",
+                "--csv",
+            ],
+            &["meroctl", "app", "release", "--version", "1.4.0"],
+            &[
+                "meroctl",
+                "app",
+                "release",
+                "apps/notes",
+                "--version",
+                "1.4.0",
+                "--key",
+                "k.json",
+                "--publish",
+                "--org",
+                "acme",
+                "--public",
+            ],
+            &[
+                "meroctl",
+                "app",
+                "release",
+                "--version",
+                "1.4.0",
+                "--wasm",
+                "a.wasm",
+                "--package",
+                "com.acme.notes",
+            ],
+        ] {
+            let parsed = Cli::try_parse_from(args);
+            assert!(parsed.is_ok(), "{args:?}: {}", parsed.unwrap_err());
+        }
+        for refused in [
+            // A secret's value is never an argument.
+            &[
+                "meroctl",
+                "deployment",
+                "secret",
+                "set",
+                "d",
+                "NAME",
+                "sk-1",
+            ][..],
+            &["meroctl", "deployment", "create", "d", "--owner", "team:x"],
+            &["meroctl", "deployment", "usage", "d", "--by", "team"],
+            &[
+                "meroctl",
+                "app",
+                "release",
+                "--version",
+                "1",
+                "--app-version",
+                "2",
+            ],
+            &[
+                "meroctl",
+                "app",
+                "release",
+                "--version",
+                "1",
+                "--org",
+                "acme",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(refused).is_err(), "{refused:?}");
         }
     }
 

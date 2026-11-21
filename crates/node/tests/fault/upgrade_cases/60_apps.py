@@ -377,13 +377,18 @@ class Presence(DeepCase):
 class TransferMove(DeepCase):
     name = "app-transfer-move"
     area = "Apps"
-    seeds = "an app handed to another account (transfer); an app moved to another organization with its members"
-    verifies = ("the owner and organization of each, their data; the former owner refused; the moved app's "
-                "members reach it in its new organization; handed back on the new release")
+    seeds = ("an app handed to another member of its organization (transfer); an app moved to another "
+             "organization with its members")
+    verifies = ("the owner and organization of each, their data; the moved app's members reach it in its new "
+                "organization; handed back on the new release")
 
     def populate(self, w):
         tess, ted, mae = people(w, "tess", "ted", "mae")
-        given = tess.deploy(kv_wasm(w), "given")
+        home = new_org(tess, "Home Org")
+        # Organizations are ordinary (1.0.0-rc.32): an app goes only to a member of its
+        # organization, so ted joins tess's first.
+        join(tess, home, ted)
+        given = tess.deploy(kv_wasm(w), "given", org=home)
         tess.call(given, "set", {"key": "k", "value": "given"})
         tess.raw("post", f"apps/{given}/transfer", {"to": ted.id})
         src, dst = new_org(tess, "Source Org"), new_org(tess, "Target Org")
@@ -394,8 +399,9 @@ class TransferMove(DeepCase):
         s = {"given": given, "moved": moved, "src": src, "dst": dst, "owner": "ted"}
         s["records"] = {"given": snap(ted, f"apps/{given}"), "moved": snap(tess, f"apps/{moved}")}
         eq(s["records"]["moved"].get("org"), dst, "the moved app's organization")
+        eq((s["records"]["given"].get("owner"), s["records"]["given"].get("org")), (ted.id, home),
+           "the transferred app's owner, in its organization")
         s["decisions"] = self._decide(w, s)
-        check(s["decisions"]["tess reads given"] != "ok", f"the former owner reads: {s['decisions']}")
         return s
 
     def _decide(self, w, s):
@@ -417,16 +423,14 @@ class TransferMove(DeepCase):
 
     def exercise(self, w, s):
         ted, tess = people(w, "ted", "tess")
-        # Organizations are ordinary on the new release: an app goes only to a member of
-        # its organization (ted's, where the old release's transfer put it), so tess joins.
+        # The app stays in tess's organization, where both are members.
         org = ted.get(f"apps/{s['given']}")["org"]
-        join(ted, org, tess)
         ted.raw("post", f"apps/{s['given']}/transfer", {"to": tess.id})
         s["owner"] = "tess"
         s["records"]["given"] = snap(tess, f"apps/{s['given']}")
         s["decisions"] = self._decide(w, s)
-        # The app stays in ted's organization (its app goes only to a member), so ted, its
-        # owner, still reaches it as one; the app is tess's.
+        # The app stays in its organization, so ted, a member of it, still reaches it; the
+        # app is tess's.
         eq((s["records"]["given"].get("owner"), s["records"]["given"].get("org")), (tess.id, org),
            "handed back on the new release, in its organization")
         eq((s["decisions"]["tess reads given"], s["decisions"]["ted reads given"]), ("ok", "ok"),

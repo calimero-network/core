@@ -43,6 +43,9 @@ calimero-client = { workspace = true, features = ["testing"] }
 calimero-identity = { workspace = true, features = ["testing"] }
 calimero-utils-fs.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [features]
 default = ["compute"]
 # `meroctl local compute run`: the job node's wasmtime engine, the largest dependency.
