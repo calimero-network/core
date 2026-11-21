@@ -3,7 +3,9 @@
 //! `pack`, `sign`, `inspect`, `publish`) need no node (`make.rs`); an
 //! application is then installed once on the cluster (verified on every
 //! node), and each running copy of it is an instance (`meroctl instance create
-//! --package`). `meroctl package` is the same command.
+//! --package`). `meroctl package` is the same command. `check` judges a
+//! release against the one it replaces (`app/check.rs`): offline against a
+//! `.mpk`, with a node against an installed version.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -13,6 +15,8 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::env::{load_dev_passkey, read_file, save_passkey, to_json, DevPasskey, Env};
+
+pub mod check;
 
 #[derive(Debug, Subcommand)]
 pub enum AppCmd {
@@ -51,6 +55,12 @@ pub enum AppCmd {
     /// Publish a signed `.mpk` to the app registry, or to a Calimero Cloud
     /// organization (`--org`). No node.
     Publish(crate::make::PublishArgs),
+    /// What people running the app will see when this release replaces an
+    /// earlier one: green or red and why, where its data goes, new
+    /// methods, state version, signer. `--fail-on red|egress` makes it a
+    /// release gate (exit 1; 2 when it cannot judge). No node with `--against
+    /// FILE.mpk`; `--against VERSION` reads the node's installed release.
+    Check(Box<check::CheckArgs>),
     /// Ship a release in one step: `pack` (build from DIR, default `.`, and
     /// sign), then install it on the cluster, ready for `meroctl deployment
     /// offer`: uploaded (development clusters), or with `--publish` pushed
@@ -194,7 +204,7 @@ impl AppCmd {
                 | Self::Sign(_)
                 | Self::Inspect { .. }
                 | Self::Publish(_)
-        )
+        ) || matches!(self, Self::Check(a) if !a.needs_node())
     }
 }
 
@@ -212,6 +222,7 @@ pub async fn run_offline(cmd: AppCmd) -> eyre::Result<Value> {
         AppCmd::Sign(a) => make::sign(&a),
         AppCmd::Inspect { mpk } => make::inspect(&mpk),
         AppCmd::Publish(a) => make::publish(&a).await,
+        AppCmd::Check(a) => check::run(*a, None).await,
         _ => unreachable!("a node command"),
     }
 }
@@ -261,6 +272,7 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
             return Ok(Value::Null);
         }
         AppCmd::Origins(cmd) => origins(cmd, env).await?,
+        AppCmd::Check(a) => check::run(*a, Some(env)).await?,
         AppCmd::Release(a) => release(&a, env).await?,
         AppCmd::New(_)
         | AppCmd::Build(_)
