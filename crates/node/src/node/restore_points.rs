@@ -60,6 +60,12 @@ impl Node {
         &self,
         app_id: &str,
     ) -> Result<RestorePointFile, ApiError> {
+        #[cfg(feature = "testing")]
+        if crate::testing::restore_points_fail() {
+            return Err(ApiError::unavailable(
+                "the restore point was not taken (testing::fail_restore_points)",
+            ));
+        }
         let g = self
             .hosted(app_id)
             .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
@@ -173,7 +179,10 @@ impl Node {
     /// On the node that holds `file`: whether it is there and whole, with what
     /// `app_id`'s group applied since (`entriesSince`), its last write (`lastWriteMs`)
     /// and when the restore point was taken (`takenAt`, Unix seconds, this node's clock
-    /// as the write's is its leader's), for the undo's answer.
+    /// as the write's is its leader's), for the undo's answer. `hosted: false` (and
+    /// both counts `null`) when this node no longer hosts the app (a replica move took
+    /// it off): the undo then reads them from a replica it is on now, never takes the
+    /// `null`s for no writes (`api::undo::lost_writes`).
     pub(crate) fn restore_point_here(
         &self,
         app_id: &str,
@@ -195,6 +204,7 @@ impl Node {
             )
         });
         Ok(json!({
+            "hosted": applied.is_some(),
             "entriesSince": applied.map(|i| i.saturating_sub(file.source.index)),
             "lastWriteMs": last_write,
             "takenAt": found.manifest.as_ref().map(|m| m.written_at),

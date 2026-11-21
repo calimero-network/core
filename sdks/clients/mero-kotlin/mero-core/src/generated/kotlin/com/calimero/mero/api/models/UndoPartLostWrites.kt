@@ -46,7 +46,7 @@ data class UndoPartLostWrites (
     val lastWriteAt: kotlin.Long?,
 
     @SerialName(value = "any")
-    val any: kotlin.Boolean
+    val any: kotlin.Boolean?
 
 ) {
 

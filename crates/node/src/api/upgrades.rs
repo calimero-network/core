@@ -509,8 +509,13 @@ async fn run_upgrade(
             .err(),
     };
     if let Some(e) = refusal {
-        let error = json!({ "code": e.code, "message": e.message });
-        note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
+        // An update on its own refused before anything ran is not the release's
+        // failure: the leader tries it again after a backoff (`node::auto_updates`), and
+        // a failed record would stop it applying until a person upgraded the app.
+        if !who.auto {
+            let error = json!({ "code": e.code, "message": e.message });
+            note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
+        }
         return Err(e);
     }
     // A compute-only app has no group state to switch: the directory record is all there is.
@@ -521,11 +526,9 @@ async fn run_upgrade(
     // The restore point an undo goes back to, taken just before anything runs.
     let restore_point = match take_restore_point(node, &app_id, &bundle, compute_only).await {
         Ok(taken) => taken,
-        Err(e) if who.auto => {
-            let error = json!({ "code": e.code, "message": e.message });
-            note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
-            return Err(e);
-        }
+        // An update on its own needs one; a replica that is down or has no snapshot yet
+        // is a passing failure, retried by the leader, not noted on the app.
+        Err(e) if who.auto => return Err(e),
         Err(e) => {
             warn!(app = %app_id, error = %e.message, "no restore point was taken; this upgrade cannot be undone");
             None
@@ -552,13 +555,19 @@ async fn run_upgrade(
     let applied = match ran {
         Ok(a) => a,
         Err(e) => {
-            let error = json!({ "code": e.code, "message": e.message });
-            note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
+            // The app's group did not answer (no leader, a bundle it could not fetch):
+            // for an update on its own, passing, so retried rather than noted.
+            if !who.auto {
+                let error = json!({ "code": e.code, "message": e.message });
+                note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
+            }
             return Err(e);
         }
     };
     // A refused or failed upgrade leaves the app on its bundle; say so as an
-    // error, not a 200 a client can mistake for success.
+    // error, not a 200 a client can mistake for success. This one is the release's
+    // own (the group ran it, or refused it for good), so it is noted for an update on
+    // its own too, which then never applies that release again by itself.
     if applied.status != Status::Ok {
         note_failed_upgrade(
             node,
@@ -614,8 +623,10 @@ async fn run_upgrade(
 /// pass does (`node::auto_updates`): the release's part for the service the app runs,
 /// judged like any upgrade (runtime, authority, deployment, release deadlines) and by
 /// `SystemState::auto_update_allows` in place of who may, with a restore point first;
-/// `UpgradeApp { auto }` is judged again at apply. A refusal before anything ran on the
-/// group is noted on the app only once it ran (`run_upgrade`).
+/// `UpgradeApp { auto }` is judged again at apply. Only a failure of the release itself
+/// is noted on the app (the group ran the upgrade and it failed, or refused it): a
+/// refusal or failure before that leaves no record, and the leader tries again after a
+/// backoff (`node::auto_updates`).
 pub(crate) async fn auto_upgrade(
     node: &Node,
     app: &crate::types::AppRecord,

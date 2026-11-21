@@ -1105,7 +1105,7 @@ pub struct UndoPartLostWrites {
     pub entries_since: Option<u64>,
     #[serde(rename = "lastWriteAt")]
     pub last_write_at: Option<u64>,
-    pub any: bool,
+    pub any: Option<bool>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -1120,7 +1120,7 @@ pub struct UndoPartUnavailable {
     pub extra: Map<String, Value>,
 }
 
-/// One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade; `null` while the restore point's node does not answer, which `unavailable` then says).
+/// One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade, read from a replica the app is on now when the restore point's node no longer hosts it; each of them `null` when nobody can say, never `false` for writes it cannot see; `lostWrites` itself `null` while the restore point's node does not answer, which `unavailable` then says).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UndoPart {
     pub app: String,

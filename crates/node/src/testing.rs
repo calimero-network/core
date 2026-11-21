@@ -119,6 +119,23 @@ pub(crate) fn backup_file_write(dir: &std::path::Path) {
     let _left = slowed(-1);
 }
 
+/// Whether every node in this process fails to take a restore point ([`fail_restore_points`]).
+static FAIL_RESTORE_POINTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Make every node started in this process answer `503` when asked to take a restore
+/// point (`Node::take_restore_point_here`), as a replica does while it is down or its
+/// group has no snapshot yet, so a test sees what a passing failure before an upgrade
+/// leaves behind. `false` puts it back.
+pub fn fail_restore_points(fail: bool) {
+    FAIL_RESTORE_POINTS.store(fail, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether [`fail_restore_points`] is on.
+pub(crate) fn restore_points_fail() -> bool {
+    FAIL_RESTORE_POINTS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// How far update decisions' times run ahead of the clock ([`shift_update_clock`]).
 static UPDATE_CLOCK_SHIFT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

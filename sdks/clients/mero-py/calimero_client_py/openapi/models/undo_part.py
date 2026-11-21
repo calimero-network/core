@@ -23,8 +23,10 @@ T = TypeVar("T", bound="UndoPart")
 class UndoPart:
     """One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and
     by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`:
-    the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade;
-    `null` while the restore point's node does not answer, which `unavailable` then says).
+    the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade, read
+    from a replica the app is on now when the restore point's node no longer hosts it; each of them `null` when nobody
+    can say, never `false` for writes it cannot see; `lostWrites` itself `null` while the restore point's node does not
+    answer, which `unavailable` then says).
 
         Attributes:
             app (str):

@@ -12315,10 +12315,14 @@ fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
     let found = m.state.auto_update_candidates(hold_over);
     assert_eq!(found.len(), 1);
     assert_eq!(
-        (found[0].0.app_id.as_str(), found[0].1.version.as_str()),
+        (found[0].0.app_id.as_str(), found[0].1[0].version.as_str()),
         ("inst", "1.0.2"),
-        "the newest release of its package"
+        "the newest release of its package first"
     );
+    // Then each older one the leader falls back to should it classify the newest red;
+    // never `1.1.0`, which the log shows sends data out.
+    let order: Vec<&str> = found[0].1.iter().map(|r| r.version.as_str()).collect();
+    assert_eq!(order, ["1.0.2", "1.0.1"]);
     let _ok = m.run(cmd).unwrap();
     let a = &m.state.apps["inst"];
     assert_eq!(
@@ -12475,7 +12479,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     // The release it undid never applies on its own again; a newer one may.
     let later = hold_over + 10;
     let found = m.state.auto_update_candidates(later);
-    assert_eq!(found[0].1.version, "1.0.2");
+    assert_eq!(found[0].1[0].version, "1.0.2");
     if let Some(p) = m.state.packages.get_mut("p") {
         let _gone = p.versions.remove("1.0.2");
     }

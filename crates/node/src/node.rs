@@ -34,7 +34,7 @@ mod job;
 pub(crate) mod recovery_disk;
 pub(crate) mod restore;
 mod restore_points;
-pub use auto_updates::{AUTO_UPDATE_EVERY, MAX_AUTO_UPDATES_PER_PASS};
+pub use auto_updates::{AUTO_UPDATE_EVERY, AUTO_UPDATE_RETRY_MAX_SECS, MAX_AUTO_UPDATES_PER_PASS};
 pub use restore_points::{
     MAX_RESTORE_POINTS_PER_APP, RESTORE_POINTS_DIR, RESTORE_POINT_SWEEP_EVERY,
 };
@@ -645,6 +645,9 @@ pub struct Node {
     /// ([`Node::auto_update`]), and whether one runs.
     auto_update_due: Mutex<Option<tokio::time::Instant>>,
     auto_updating: std::sync::atomic::AtomicBool,
+    /// What the system leader's passes remember between them: backoffs and verdicts
+    /// (in memory only, [`auto_updates::AutoUpdateMemory`]).
+    auto_update_memory: Mutex<auto_updates::AutoUpdateMemory>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here (spec section 7).
@@ -1125,6 +1128,7 @@ impl Node {
             cluster_version: Mutex::default(),
             auto_update_due: Mutex::default(),
             auto_updating: std::sync::atomic::AtomicBool::new(false),
+            auto_update_memory: Mutex::default(),
             peer_releases: Mutex::new(HashMap::new()),
             peer_runtimes: Mutex::default(),
             callers: Mutex::new(HashMap::new()),
@@ -2946,12 +2950,20 @@ impl Node {
 
     /// When `app` last committed a write (Unix milliseconds,
     /// [`crate::app::AppMachine::last_write_ms`]), as a replica applied it:
-    /// this node's own if it hosts the app, else the first replica that
-    /// answers `internal/last-write`. `None` before the app's first write, and
+    /// [`Self::replica_progress`]'s. `None` before the app's first write, and
     /// when no replica answered.
     pub async fn last_write_ms(&self, app: &AppRecord) -> Option<u64> {
+        self.replica_progress(app).await?.last_write_ms
+    }
+
+    /// How far a replica of `app` got: this node's own if it hosts the app, else the
+    /// first replica that answers `internal/last-write`. `None` when no replica answered.
+    pub(crate) async fn replica_progress(&self, app: &AppRecord) -> Option<ReplicaProgress> {
         if let Some(g) = self.hosted(&app.app_id) {
-            return g.read_local(|m, _| m.last_write_ms());
+            return Some(g.read_local(|m, _| ReplicaProgress {
+                applied: Some(m.state.last_index),
+                last_write_ms: m.last_write_ms(),
+            }));
         }
         let body = json!({ "app": app.app_id });
         for id in &app.replicas {
@@ -2959,7 +2971,11 @@ impl Node {
                 continue;
             };
             if let Ok(v) = self.peer_forward(&addr, "internal/last-write", &body).await {
-                return v["lastWriteMs"].as_u64();
+                return Some(ReplicaProgress {
+                    // A replica on a release before answers without it.
+                    applied: v["appliedIndex"].as_u64(),
+                    last_write_ms: v["lastWriteMs"].as_u64(),
+                });
             }
         }
         None
@@ -3904,6 +3920,16 @@ where
             done => return done,
         }
     }
+}
+
+/// How far a replica of an app got ([`Node::replica_progress`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReplicaProgress {
+    /// The index of the app's last entry it applied (`AppState::last_index`); `None` from
+    /// a replica on a release before that answers without it.
+    pub applied: Option<u64>,
+    /// Its last write, Unix milliseconds; `None` before the app's first write.
+    pub last_write_ms: Option<u64>,
 }
 
 #[cfg(test)]

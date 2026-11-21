@@ -17,12 +17,12 @@ class UndoPartLostWritesType0:
     Attributes:
         entries_since (Union[None, int]):
         last_write_at (Union[None, int]):
-        any_ (bool):
+        any_ (Union[None, bool]):
     """
 
     entries_since: Union[None, int]
     last_write_at: Union[None, int]
-    any_: bool
+    any_: Union[None, bool]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -32,6 +32,7 @@ class UndoPartLostWritesType0:
         last_write_at: Union[None, int]
         last_write_at = self.last_write_at
 
+        any_: Union[None, bool]
         any_ = self.any_
 
         field_dict: dict[str, Any] = {}
@@ -64,7 +65,12 @@ class UndoPartLostWritesType0:
 
         last_write_at = _parse_last_write_at(d.pop("lastWriteAt"))
 
-        any_ = d.pop("any")
+        def _parse_any_(data: object) -> Union[None, bool]:
+            if data is None:
+                return data
+            return cast(Union[None, bool], data)
+
+        any_ = _parse_any_(d.pop("any"))
 
         undo_part_lost_writes_type_0 = cls(
             entries_since=entries_since,

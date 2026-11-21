@@ -21,28 +21,29 @@ pub(super) struct UndoBody {
 }
 
 /// One app an undo reverts, as the routes answer it: the release it leaves and the one
-/// it returns to, when, and what is lost (`lostWrites`: what its group applied since
-/// the restore point, `entriesSince`, and its last write, `lastWriteAt`; `any` when it
-/// wrote after the restore point was taken, which the restore takes back too).
+/// it returns to, when, and what is lost ([`lost_writes`]).
 async fn part_json(node: &Node, a: &AppRecord, p: &RestorePoint) -> Value {
     let status = match &p.file {
         Some(f) => Some(node.restore_point_status(&a.app_id, f).await),
         None => None,
     };
-    let (lost, available) = match &status {
-        Some(Ok(v)) => {
-            let last = v["lastWriteMs"].as_u64();
-            (
-                json!({
-                    "entriesSince": v["entriesSince"],
-                    "lastWriteAt": last.map(|ms| ms / 1000),
-                    "any": last.is_some_and(|ms| v["takenAt"].as_u64().is_none_or(|t| ms / 1000 >= t)),
-                }),
-                Value::Null,
-            )
+    let (lost, available) = match (&status, &p.file) {
+        (Some(Ok(v)), Some(f)) => {
+            // The restore point's node no longer hosts the app (a node from before says
+            // nothing of it, and has no count then): what it wrote since is a current
+            // replica's to say.
+            let hosted = v["hosted"]
+                .as_bool()
+                .unwrap_or_else(|| v["entriesSince"].is_u64());
+            let replica = if hosted {
+                None
+            } else {
+                Some(node.replica_progress(a).await)
+            };
+            (lost_writes(v, f.source.index, replica), Value::Null)
         }
-        Some(Err(e)) => (Value::Null, json!({ "code": e.code, "message": e.message })),
-        None => (
+        (Some(Err(e)), _) => (Value::Null, json!({ "code": e.code, "message": e.message })),
+        _ => (
             json!({ "entriesSince": 0, "lastWriteAt": null, "any": false }),
             Value::Null,
         ),
@@ -62,6 +63,35 @@ async fn part_json(node: &Node, a: &AppRecord, p: &RestorePoint) -> Value {
         "undoneAt": p.undone_at,
         "lostWrites": lost,
         "unavailable": available,
+    })
+}
+
+/// What an undo loses (`lostWrites`): the app group's entries since the restore point
+/// (`entriesSince`, taken at `index`), its last write (`lastWriteAt`, Unix seconds), and
+/// `any` when it wrote after the restore point was taken (`holder`'s `takenAt`), which the
+/// restore takes back too. Read from `holder`, the restore point's node, while it hosts
+/// the app; else from `replica` (`Some` when this node asked a current replica, `None`
+/// inside it when none answered). What nobody can say is `null`, `any` included: an
+/// undo never says it loses no writes it cannot see.
+fn lost_writes(
+    holder: &Value,
+    index: u64,
+    replica: Option<Option<crate::node::ReplicaProgress>>,
+) -> Value {
+    let (entries, last) = match replica {
+        None => (
+            holder["entriesSince"].as_u64(),
+            holder["lastWriteMs"].as_u64(),
+        ),
+        Some(None) => {
+            return json!({ "entriesSince": null, "lastWriteAt": null, "any": null });
+        }
+        Some(Some(r)) => (r.applied.map(|i| i.saturating_sub(index)), r.last_write_ms),
+    };
+    json!({
+        "entriesSince": entries,
+        "lastWriteAt": last.map(|ms| ms / 1000),
+        "any": last.is_some_and(|ms| holder["takenAt"].as_u64().is_none_or(|t| ms / 1000 >= t)),
     })
 }
 
@@ -238,4 +268,57 @@ async fn app_undo(
 
 pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new().route("/apps/{app}/undo", get(app_undo_view).post(app_undo))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::ReplicaProgress;
+
+    #[test]
+    fn lost_writes_are_unknown_when_no_replica_answers_never_none() {
+        let holder = json!({
+            "hosted": false, "entriesSince": null, "lastWriteMs": null, "takenAt": 100,
+        });
+        // The holder alone would read as no writes: never answered so.
+        let unknown = lost_writes(&holder, 3, Some(None));
+        assert_eq!(
+            unknown,
+            json!({ "entriesSince": null, "lastWriteAt": null, "any": null })
+        );
+        // A current replica says what it wrote since.
+        let read = lost_writes(
+            &holder,
+            3,
+            Some(Some(ReplicaProgress {
+                applied: Some(7),
+                last_write_ms: Some(150_000),
+            })),
+        );
+        assert_eq!(
+            read,
+            json!({ "entriesSince": 4, "lastWriteAt": 150, "any": true })
+        );
+        // A replica on a release before has no index: the count is unknown, not zero.
+        let older = lost_writes(
+            &holder,
+            3,
+            Some(Some(ReplicaProgress {
+                applied: None,
+                last_write_ms: Some(50_000),
+            })),
+        );
+        assert_eq!(
+            older,
+            json!({ "entriesSince": null, "lastWriteAt": 50, "any": false })
+        );
+        // The holder hosting the app answers for itself.
+        let hosted = json!({
+            "hosted": true, "entriesSince": 2, "lastWriteMs": 120_000, "takenAt": 100,
+        });
+        assert_eq!(
+            lost_writes(&hosted, 3, None),
+            json!({ "entriesSince": 2, "lastWriteAt": 120, "any": true })
+        );
+    }
 }

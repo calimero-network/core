@@ -6533,7 +6533,7 @@ public enum Components {
                 case undoneAt
             }
         }
-        /// One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade; `null` while the restore point's node does not answer, which `unavailable` then says).
+        /// One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade, read from a replica the app is on now when the restore point's node no longer hosts it; each of them `null` when nobody can say, never `false` for writes it cannot see; `lostWrites` itself `null` while the restore point's node does not answer, which `unavailable` then says).
         ///
         /// - Remark: Generated from `#/components/schemas/UndoPart`.
         public struct UndoPart: Codable, Hashable, Sendable {
@@ -6593,7 +6593,7 @@ public enum Components {
                 /// - Remark: Generated from `#/components/schemas/UndoPart/lostWrites/lastWriteAt`.
                 public var lastWriteAt: Swift.Int64?
                 /// - Remark: Generated from `#/components/schemas/UndoPart/lostWrites/any`.
-                public var any: Swift.Bool
+                public var any: Swift.Bool?
                 /// Creates a new `LostWritesPayload`.
                 ///
                 /// - Parameters:
@@ -6603,7 +6603,7 @@ public enum Components {
                 public init(
                     entriesSince: Swift.Int64? = nil,
                     lastWriteAt: Swift.Int64? = nil,
-                    any: Swift.Bool
+                    any: Swift.Bool? = nil
                 ) {
                     self.entriesSince = entriesSince
                     self.lastWriteAt = lastWriteAt

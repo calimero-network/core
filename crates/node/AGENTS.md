@@ -1382,11 +1382,19 @@ is its command line.
   rollout routes in `api/deployments.rs`; docs: protocol upgrades "Updates that apply on
   their own"). *On its own* (`Feature::AutoUpdates`, rc.34): the system leader's pass
   (`Node::auto_update` from `reconcile`, every `AUTO_UPDATE_EVERY`, at most
-  `MAX_AUTO_UPDATES_PER_PASS`) pauses failing rollouts (`failing_rollouts`), then takes
-  `SystemState::auto_update_candidates(at)` (policy `noDestinations`, the newest release
-  that may apply, never one a failed update or an undo left), classifies each
-  (`move_class`) and runs the green ones through `api::upgrades::auto_upgrade` ->
-  `run_upgrade` (`Upgrader::auto`, `Caller::System`, actor `system::AUTO_UPDATE`).
+  `MAX_AUTO_UPDATES_PER_PASS` apps tried; skipped ones do not count) pauses failing
+  rollouts (`failing_rollouts`), then takes `SystemState::auto_update_candidates(at)`
+  (policy `noDestinations`; per app the releases that may apply, newest first, never one
+  a failed update or an undo left), classifies them newest first (`move_class`, at most
+  `MAX_AUTO_UPDATE_CLASSES_PER_PASS` a pass) and runs each app's first green one through
+  `api::upgrades::auto_upgrade` -> `run_upgrade` (`Upgrader::auto`, `Caller::System`,
+  actor `system::AUTO_UPDATE`): a release red only by its code (state version, delegated
+  methods) never holds back a green one below it. Only the release's own failure is
+  noted (`UpgradeFailed`: the group ran it and it failed or refused it); one before
+  anything ran (refusal, restore point, runtime, no leader) is not, and the leader
+  retries that move after a backoff (`node::auto_updates::AutoUpdateMemory`, in memory:
+  `AUTO_UPDATE_RETRY_FIRST_SECS` doubling to `AUTO_UPDATE_RETRY_MAX_SECS`, and moves found
+  not green for `NOT_GREEN_KEPT_SECS`, each at most `MAX_AUTO_UPDATE_MEMORY`).
   `UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that
   actor); apply judges `SystemState::auto_update_gate`: policy, green class (and
   `check_class`), newer release of its package, not a unit member, the logged unit with
@@ -1412,7 +1420,9 @@ is its command line.
   node }` as `RestoreApp` does; `POST /apps/{app}/undo` then asks that node to seed it
   (`Node::seed_undo` -> `seed_undo_here` -> `seed_restore`, in its own task) and waits
   `UNDO_WAIT`; `GET /apps/{app}/undo` (`lostWrites` from `restore_point_here`: entries
-  since, last write, `any`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
+  since, last write, `any`; `hosted: false` there, the node no longer hosting the app,
+  reads them from a current replica, `Node::replica_progress` over `internal/last-write`'s
+  `appliedIndex`, and `null`, `any` included, when none answers: `api::undo::lost_writes`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
   `UNDO_NOT_AS_NAMED`, `409 RESTORE_POINT_UNAVAILABLE`. *Waves* (`Feature::Rollouts`):
   `SystemState::rollouts` (deployment -> app -> `rollouts::RolloutState { version,
   waveHours, baseWave, baseAt, paused }`), `rollout_of` (defaults from the offer's
@@ -1425,7 +1435,11 @@ is its command line.
   (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`,
   `an_upgrade_is_undone_within_a_week_back_to_its_restore_point`,
   `a_deployments_offer_reaches_its_instances_in_waves_and_pauses_on_failures`),
-  `system::rollouts::tests`, `tests/auto_updates.rs`. Not done: an automatic update that
+  `system::rollouts::tests`, `tests/auto_updates.rs`
+  (`a_passing_failure_before_an_automatic_update_is_retried_not_held_against_it`,
+  `a_red_newest_release_does_not_hold_back_a_green_one_below_it`,
+  `an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app`),
+  `node::auto_updates::tests`, `api::undo::tests`. Not done: an automatic update that
   moves a unit's members, waves for a publisher's run, a restore point kept on more than
   one node.
 - **Upgrades are code-only**: a component upgrade swaps the bundle

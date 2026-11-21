@@ -561,9 +561,9 @@ async fn internal_storage(
     })))
 }
 
-/// When a hosted app last committed a write, for a peer's report
-/// ([`Node::last_write_ms`]). App data, so only for a release approved to
-/// hold the app, as `internal/storage`.
+/// When a hosted app last committed a write, and the index of the app's last entry it
+/// applied (`appliedIndex`), for a peer's report or undo ([`Node::replica_progress`]).
+/// App data, so only for a release approved to hold the app, as `internal/storage`.
 async fn internal_last_write(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -575,9 +575,9 @@ async fn internal_last_write(
     let g = node
         .hosted(&body.app)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
-    Ok(Json(
-        json!({ "lastWriteMs": g.read_local(|m, _| m.last_write_ms()) }),
-    ))
+    Ok(Json(g.read_local(
+        |m, _| json!({ "lastWriteMs": m.last_write_ms(), "appliedIndex": m.state.last_index }),
+    )))
 }
 
 /// A hosted app's xcalls, for a peer's `GET /apps/{app}/xcalls`

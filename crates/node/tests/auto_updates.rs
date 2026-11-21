@@ -92,6 +92,51 @@ fn variant(wasm: &[u8], tag: &str) -> Vec<u8> {
     out
 }
 
+/// `wasm` with its embedded ABI (`calimero:abi`) declaring state version `version`: a
+/// release an update to which is red (`stateVersionChanged`) though it sends no data out.
+fn state_version(wasm: &[u8], version: u64) -> Vec<u8> {
+    let data = wasmparser::Parser::new(0)
+        .parse_all(wasm)
+        .find_map(|p| match p {
+            Ok(wasmparser::Payload::CustomSection(s)) if s.name() == "calimero:abi" => {
+                let at = usize::try_from(s.data_offset()).unwrap();
+                Some(at..at + s.data().len())
+            }
+            _ => None,
+        })
+        .expect("the fixture embeds its ABI");
+    let abi: Value = serde_json::from_slice(&wasm[data.clone()]).unwrap();
+    let was = abi["state"]["version"].as_u64().expect("a state version");
+    let (from, to) = (
+        format!("\"version\":{was}"),
+        format!("\"version\":{version}"),
+    );
+    assert_eq!(
+        from.len(),
+        to.len(),
+        "a same-length edit keeps the section's size"
+    );
+    // The one occurrence whose change moves the state's version and nothing else.
+    let section = &wasm[data.clone()];
+    for at in (0..section.len()).filter(|i| section[*i..].starts_with(from.as_bytes())) {
+        let mut edited = section.to_vec();
+        edited[at..at + to.len()].copy_from_slice(to.as_bytes());
+        let Ok(mut new) = serde_json::from_slice::<Value>(&edited) else {
+            continue;
+        };
+        if new["state"]["version"] != json!(version) {
+            continue;
+        }
+        new["state"]["version"] = json!(was);
+        if new == abi {
+            let mut out = wasm.to_vec();
+            out[data].copy_from_slice(&edited);
+            return out;
+        }
+    }
+    panic!("no state version to change in the fixture's ABI");
+}
+
 #[allow(
     clippy::result_large_err,
     reason = "the client's own error, passed through for the test to read its status"
@@ -499,4 +544,236 @@ async fn a_deployments_offer_rolls_out_in_waves_its_managers_pause_and_resume() 
         assert_eq!(running(&carol, app).await, "1.1.0");
     }
     shift_update_clock(0);
+}
+
+/// An app on a `noDestinations` policy (`holdHours` 24), at 1.0.0 with key `k` set, and
+/// its organization: what the tests below start from.
+async fn auto_app(
+    alice: &calimero_client::Client,
+    alice_pk: &mut calimero_identity::testing::SoftAuthenticator,
+    publisher: &ed25519_dalek::SigningKey,
+) -> String {
+    let _ = alice
+        .packages()
+        .upload(release("1.0.0", &kv_wasm(), publisher))
+        .await
+        .unwrap();
+    let org = home_org(alice).await;
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0", "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "before" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
+            alice_pk,
+        )
+        .await
+        .unwrap();
+    app
+}
+
+/// A failure before an automatic update runs anything (here its restore point, as when
+/// the replica that would take it is briefly down) is not the release's fault: it leaves
+/// no failed upgrade on the app, and once the problem is gone the same release applies
+/// on its own after the leader's backoff, with nobody stepping in. The backoff holds the
+/// retry for a while, so a lasting problem is not tried on every pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_passing_failure_before_an_automatic_update_is_retried_not_held_against_it() {
+    shift_update_clock(0);
+    calimero_node::testing::fail_restore_points(false);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+    let app = auto_app(&alice, &mut alice_pk, &publisher).await;
+    let _ = alice
+        .packages()
+        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .await
+        .unwrap();
+    let _ = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
+        u["available"]["class"] == "green"
+    })
+    .await;
+
+    // Past the hold, no node can take a restore point: nothing applies, nothing is held
+    // against the release.
+    calimero_node::testing::fail_restore_points(true);
+    shift_update_clock(DAY + 600);
+    assert_eq!(pass(&c).await, 0);
+    let after = get(&alice, &format!("apps/{app}")).await.unwrap();
+    assert_eq!(after["release"]["version"], "1.0.0", "{after}");
+    assert!(
+        after["lastUpgrade"].is_null(),
+        "a passing failure is no failed upgrade: {after}"
+    );
+
+    // The problem is gone; the leader waits out its backoff, then the update applies.
+    calimero_node::testing::fail_restore_points(false);
+    assert_eq!(pass(&c).await, 0, "retried before the backoff passed");
+    assert_eq!(running(&alice, &app).await, "1.0.0");
+    // Past the longest backoff, whatever the leader counted.
+    shift_update_clock(DAY + 600 + calimero_node::node::AUTO_UPDATE_RETRY_MAX_SECS);
+    passes_until(
+        &c,
+        || async { running(&alice, &app).await == "1.1.0" },
+        "the update never applied once restore points could be taken again",
+    )
+    .await;
+    let moved = get(&alice, &format!("apps/{app}")).await.unwrap();
+    assert_eq!(moved["lastUpgrade"]["auto"], true, "{moved}");
+    assert_eq!(moved["lastUpgrade"]["ok"], true, "{moved}");
+    shift_update_clock(0);
+}
+
+/// The newest release may be red for its code alone (its state version changed) while
+/// sending no data out: the leader's classification finds it red, and the app moves on
+/// its own to the newest release below it that is green, never left where it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_red_newest_release_does_not_hold_back_a_green_one_below_it() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
+    let app = auto_app(&alice, &mut alice_pk, &publisher).await;
+    for (version, wasm) in [
+        ("1.1.0", variant(&kv_wasm(), "v11")),
+        ("1.2.0", state_version(&variant(&kv_wasm(), "v12"), 2)),
+    ] {
+        let _ = alice
+            .packages()
+            .upload(release(version, &wasm, &publisher))
+            .await
+            .unwrap();
+    }
+    let update = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
+        u["available"]["version"] == "1.2.0"
+    })
+    .await;
+    assert_eq!(update["available"]["class"], "red", "{update}");
+
+    shift_update_clock(DAY + 600);
+    passes_until(
+        &c,
+        || async { running(&alice, &app).await == "1.1.0" },
+        "the green release below a red newest one never applied",
+    )
+    .await;
+    // And the red one never does on its own.
+    assert_eq!(pass(&c).await, 0);
+    assert_eq!(running(&alice, &app).await, "1.1.0");
+    shift_update_clock(0);
+}
+
+/// The node that took a restore point may no longer host the app when an undo is asked
+/// for (a replica move took the app off it): what the app wrote since is then read from a
+/// replica it is on now, and the undo never says it loses no writes when they are there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app() {
+    shift_update_clock(0);
+    let c = Cluster::start(4).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[45; 32]);
+    let app = auto_app(&alice, &mut alice_pk, &publisher).await;
+    let _ = alice
+        .packages()
+        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .await
+        .unwrap();
+    let info = get(&alice, &format!("apps/{app}")).await.unwrap();
+    let replicas: Vec<u64> = serde_json::from_value(info["replicas"].clone()).unwrap();
+    let leader = c.app_leader(&app).expect("the app's leader") as u64 + 1;
+    let follower = *replicas.iter().find(|r| **r != leader).unwrap();
+    let spare = (1..=4).find(|n| !replicas.contains(n)).unwrap();
+
+    // Upgraded through the follower, which takes the restore point itself.
+    let at_follower = c.client(follower as usize - 1);
+    let _s = at_follower.sign_in(&mut alice_pk).await.unwrap();
+    let _up = at_follower
+        .apps()
+        .upgrade(
+            &app,
+            typed(json!({ "version": "1.1.0" })),
+            Some(&mut alice_pk),
+        )
+        .await
+        .unwrap();
+    let moved = get_until(&alice, &format!("apps/{app}"), 15, |a| {
+        a["release"]["version"] == "1.1.0"
+    })
+    .await;
+    assert_eq!(
+        moved["restorePoint"]["file"]["node"],
+        json!(follower),
+        "{moved}"
+    );
+    let _r = alice
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "after" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // The app moves off the follower; its restore point stays there.
+    let ops = c.client(leader as usize - 1);
+    ops.use_api_key("ops-secret").await;
+    let kept: Vec<u64> = replicas
+        .iter()
+        .copied()
+        .filter(|r| *r != follower)
+        .chain([spare])
+        .collect();
+    let _ = ops
+        .ops()
+        .set_replicas(&app, typed(json!(kept)), Some(&harness::operator_sign))
+        .await
+        .unwrap();
+    let gone = &c.nodes[follower as usize - 1].as_ref().unwrap().node;
+    for _ in 0..100 {
+        if gone.hosted(&app).is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        gone.hosted(&app).is_none(),
+        "the follower still hosts the app"
+    );
+
+    let plan = get(&alice, &format!("apps/{app}/undo")).await.unwrap();
+    assert_eq!(plan["available"], true, "{plan}");
+    let lost = &plan["apps"][0]["lostWrites"];
+    assert_eq!(
+        lost["any"], true,
+        "the write since the upgrade is lost: {plan}"
+    );
+    assert!(
+        lost["entriesSince"].as_u64().is_some_and(|n| n >= 1),
+        "{plan}"
+    );
 }

@@ -342,10 +342,12 @@ node's updates page shows.
 Under a `noDestinations` policy, a green update applies without anyone's
 approval once its hold has passed (`Feature::AutoUpdates`, 1.0.0-rc.34). The
 system leader looks every `AUTO_UPDATE_EVERY` (5 s; `node::auto_updates`,
-from `reconcile`) for apps it would move
-(`SystemState::auto_update_candidates`), classifies each move as any upgrade
-does, and runs the green ones through the usual path, restore point first
-(`api::upgrades::auto_upgrade`), at most `MAX_AUTO_UPDATES_PER_PASS` (16) a pass.
+from `reconcile`) for apps it would move and the releases each could move to,
+newest first (`SystemState::auto_update_candidates`), classifies each move as
+any upgrade does, and runs the first green one of each app through the usual
+path, restore point first (`api::upgrades::auto_upgrade`), at most
+`MAX_AUTO_UPDATES_PER_PASS` (16) apps a pass; an app it skips does not count.
+A pass classifies at most `MAX_AUTO_UPDATE_CLASSES_PER_PASS` (64) moves.
 The entry is `UpgradeApp { auto: true }` with `actor: "policy:auto-update"`
 (`system::AUTO_UPDATE`, never an account) and no consent: the policy is its
 authority, and apply judges it again from the log alone
@@ -365,10 +367,20 @@ authority, and apply judges it again from the log alone
 - a restore point was taken where the upgrade runs on the app's group.
 
 Refusals: `409 AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `ROLLOUT_WAITS`,
-`RESTORE_POINT_REQUIRED`. The leader takes the newest release that may apply
-(a newer red one waits for an owner or admin and does not hold back a quiet
-one), and never one an update to failed or an undo left: an owner or admin
-decides on those. The record says `lastUpgrade.auto: true`. Only the app moves:
+`RESTORE_POINT_REQUIRED`. The leader takes the newest release that may apply:
+a newer red one, whether the log shows it (its destinations or signer) or only
+the leader's classification does (a state version that changed, a new way to
+act as the person), waits for an owner or admin and does not hold back a quiet
+one below it. It never takes one an update to failed or an undo left: an owner
+or admin decides on those. Only the release's own failure counts: the app's
+group ran the upgrade and it failed or refused it (`lastUpgrade.ok: false`).
+A failure before anything ran (a replica down, no restore point, a runtime not
+ready yet, no leader) leaves no record; the leader tries that move again after
+a backoff it keeps in memory (`AUTO_UPDATE_RETRY_FIRST_SECS`, 60 s, doubling to
+`AUTO_UPDATE_RETRY_MAX_SECS`, 1 hour), and remembers a move it found not green
+for `NOT_GREEN_KEPT_SECS` (1 hour), so the next pass reaches the apps after
+it. Neither is replicated: a new leader starts without them, which only means
+the work is done again. The record says `lastUpgrade.auto: true`. Only the app moves:
 an update that would move its members (an `upgrade-unit`) waits for an owner or
 admin.
 
@@ -401,7 +413,10 @@ restore point is the state just before the upgrade, so whatever the app wrote
 since is lost: `GET /apps/{app}/undo` says what would be undone and lost
 before anyone decides (`lostWrites`: the group's entries since the restore
 point, its last write, and whether it wrote after the restore point was
-taken), and the `POST` answers the same. A unit undoes together: an undo of
+taken), and the `POST` answers the same. When the restore point's node no
+longer hosts the app (a replica move took it off), those are read from a
+replica the app is on now; when none answers, each is `null` (`any: null`),
+never `false`: the undo does not say it loses no writes it cannot see. A unit undoes together: an undo of
 the instance reverts each member its unit's upgrade moved in the same run
 (`SystemState::undo_set`); a member that run moved is not undone alone (`409
 UNDO_NOT_AS_NAMED`). Once the restore finishes (`FinishRestore`) the restore

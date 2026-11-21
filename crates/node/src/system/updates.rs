@@ -482,14 +482,16 @@ impl SystemState {
         }
     }
 
-    /// The apps an update would apply to on their own at `at`, each with the release it
-    /// would move to: on a `noDestinations` policy, not being restored, the offer of
-    /// their deployment (for its instances) or else the newest installed release of the
-    /// package they run, where [`Self::auto_update_allows`] lets it through as green
-    /// (the class itself is the leader's to classify). Never the release an update to
-    /// failed or an undo left: an owner or admin decides on that one.
+    /// The apps an update would apply to on their own at `at`, each with the releases it
+    /// could move to, newest first: on a `noDestinations` policy, not being restored, the
+    /// offer of their deployment (for its instances) or else the installed releases of
+    /// the package they run, each where [`Self::auto_update_allows`] lets it through as
+    /// green (the class itself is the leader's to classify, so a release the log shows as
+    /// green may still be red for its code: the leader then tries the next one down).
+    /// Never the release an update to failed or an undo left: an owner or admin decides
+    /// on that one. An app with no such release is left out.
     #[must_use]
-    pub fn auto_update_candidates(&self, at: u64) -> Vec<(AppRecord, PackageRef)> {
+    pub fn auto_update_candidates(&self, at: u64) -> Vec<(AppRecord, Vec<PackageRef>)> {
         let green = UpgradeClass {
             class: calimero_bundle::update::Class::Green,
             reasons: Vec::new(),
@@ -517,26 +519,29 @@ impl SystemState {
                         .cloned()
                         .collect(),
                 };
-                // The newest that may apply on its own: a newer one that sends data out
-                // waits for an owner or admin, and does not hold back a quiet one.
+                // Newest first: a newer one that sends data out (or that the leader finds
+                // red) waits for an owner or admin, and does not hold back a quiet one.
                 versions.sort_by(|x, y| compare_versions(y, x));
-                versions.into_iter().find_map(|version| {
-                    let to = PackageRef {
+                let to: Vec<PackageRef> = versions
+                    .into_iter()
+                    .map(|version| PackageRef {
                         package: running.package.clone(),
                         version,
                         service: running.service.clone(),
                         compute: false,
-                    };
-                    let refused = a.last_upgrade.as_ref().is_some_and(|u| {
-                        (!u.ok && u.to_release.as_ref() == Some(&to))
-                            || (u.undo && u.from_release.as_ref() == Some(&to))
-                    });
-                    (!refused
-                        && self
-                            .auto_update_allows(a, Some(&to), Some(&green), at)
-                            .is_ok())
-                    .then(|| (a.clone(), to))
-                })
+                    })
+                    .filter(|to| {
+                        let refused = a.last_upgrade.as_ref().is_some_and(|u| {
+                            (!u.ok && u.to_release.as_ref() == Some(to))
+                                || (u.undo && u.from_release.as_ref() == Some(to))
+                        });
+                        !refused
+                            && self
+                                .auto_update_allows(a, Some(to), Some(&green), at)
+                                .is_ok()
+                    })
+                    .collect();
+                (!to.is_empty()).then(|| (a.clone(), to))
             })
             .collect()
     }
