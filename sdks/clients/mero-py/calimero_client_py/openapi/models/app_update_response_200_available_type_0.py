@@ -18,6 +18,7 @@ from typing import cast, Union
 from typing import Union
 
 if TYPE_CHECKING:
+    from ..models.update_reason_type_6 import UpdateReasonType6
     from ..models.app_update_response_200_available_type_0_egress import (
         AppUpdateResponse200AvailableType0Egress,
     )
@@ -42,7 +43,7 @@ class AppUpdateResponse200AvailableType0:
         approvals_needed (int):
         class_ (Union[Unset, AppUpdateResponse200AvailableType0Class]):
         reasons (Union[Unset, list[Union['UpdateReasonType0', 'UpdateReasonType1', 'UpdateReasonType2',
-            'UpdateReasonType3', 'UpdateReasonType4', 'UpdateReasonType5']]]):
+            'UpdateReasonType3', 'UpdateReasonType4', 'UpdateReasonType5', 'UpdateReasonType6']]]):
         egress (Union[Unset, AppUpdateResponse200AvailableType0Egress]):
         state_version_changed (Union[Unset, bool]):
         new_methods (Union[Unset, list[str]]):
@@ -67,6 +68,7 @@ class AppUpdateResponse200AvailableType0:
                 "UpdateReasonType3",
                 "UpdateReasonType4",
                 "UpdateReasonType5",
+                "UpdateReasonType6",
             ]
         ],
     ] = UNSET
@@ -80,6 +82,7 @@ class AppUpdateResponse200AvailableType0:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.update_reason_type_6 import UpdateReasonType6
         from ..models.app_update_response_200_available_type_0_egress import (
             AppUpdateResponse200AvailableType0Egress,
         )
@@ -116,6 +119,8 @@ class AppUpdateResponse200AvailableType0:
                 elif isinstance(reasons_item_data, UpdateReasonType3):
                     reasons_item = reasons_item_data.to_dict()
                 elif isinstance(reasons_item_data, UpdateReasonType4):
+                    reasons_item = reasons_item_data.to_dict()
+                elif isinstance(reasons_item_data, UpdateReasonType5):
                     reasons_item = reasons_item_data.to_dict()
                 else:
                     reasons_item = reasons_item_data.to_dict()
@@ -175,6 +180,7 @@ class AppUpdateResponse200AvailableType0:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.update_reason_type_6 import UpdateReasonType6
         from ..models.app_update_response_200_available_type_0_egress import (
             AppUpdateResponse200AvailableType0Egress,
         )
@@ -214,6 +220,7 @@ class AppUpdateResponse200AvailableType0:
                 "UpdateReasonType3",
                 "UpdateReasonType4",
                 "UpdateReasonType5",
+                "UpdateReasonType6",
             ]:
                 try:
                     if not isinstance(data, dict):
@@ -265,13 +272,23 @@ class AppUpdateResponse200AvailableType0:
                     return componentsschemas_update_reason_type_4
                 except:  # noqa: E722
                     pass
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    componentsschemas_update_reason_type_5 = (
+                        UpdateReasonType5.from_dict(data)
+                    )
+
+                    return componentsschemas_update_reason_type_5
+                except:  # noqa: E722
+                    pass
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_update_reason_type_5 = UpdateReasonType5.from_dict(
+                componentsschemas_update_reason_type_6 = UpdateReasonType6.from_dict(
                     data
                 )
 
-                return componentsschemas_update_reason_type_5
+                return componentsschemas_update_reason_type_6
 
             reasons_item = _parse_reasons_item(reasons_item_data)
 

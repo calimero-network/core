@@ -6021,7 +6021,7 @@ public enum Components {
                 case destinations
             }
         }
-        /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself.
+        /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
         ///
         /// - Remark: Generated from `#/components/schemas/UpdateReason`.
         @frozen public enum UpdateReason: Codable, Hashable, Sendable {
@@ -6259,6 +6259,47 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/UpdateReason/case6`.
             case case6(Components.Schemas.UpdateReason.Case6Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case7`.
+            public struct Case7Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/code`.
+                @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case unclassified = "unclassified"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/code`.
+                public var code: Components.Schemas.UpdateReason.Case7Payload.CodePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/member`.
+                public var member: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/version`.
+                public var version: Swift.String
+                /// Creates a new `Case7Payload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - member:
+                ///   - package:
+                ///   - version:
+                public init(
+                    code: Components.Schemas.UpdateReason.Case7Payload.CodePayload,
+                    member: Swift.String? = nil,
+                    package: Swift.String,
+                    version: Swift.String
+                ) {
+                    self.code = code
+                    self.member = member
+                    self.package = package
+                    self.version = version
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case member
+                    case package
+                    case version
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case7`.
+            case case7(Components.Schemas.UpdateReason.Case7Payload)
             public init(from decoder: any Decoder) throws {
                 var errors: [any Error] = []
                 do {
@@ -6297,6 +6338,12 @@ public enum Components {
                 } catch {
                     errors.append(error)
                 }
+                do {
+                    self = .case7(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
                 throw Swift.DecodingError.failedToDecodeOneOfSchema(
                     type: Self.self,
                     codingPath: decoder.codingPath,
@@ -6316,6 +6363,8 @@ public enum Components {
                 case let .case5(value):
                     try value.encode(to: encoder)
                 case let .case6(value):
+                    try value.encode(to: encoder)
+                case let .case7(value):
                     try value.encode(to: encoder)
                 }
             }

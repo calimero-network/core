@@ -613,14 +613,36 @@ impl SystemState {
         root: Option<(&str, &str)>,
         targets: &BTreeMap<AppId, RunTarget>,
     ) -> Option<Unit> {
-        let at = match root {
-            Some((p, v)) => self.logged_release(p, v)?,
+        let mut parts = self.unit_parts(app, root, targets)?.into_iter();
+        let (_, package, version) = parts.next()?;
+        let mut unit = Unit::of(self.logged_release(&package, &version)?);
+        for (path, package, version) in parts {
+            let _prev = unit
+                .members
+                .insert(path, self.logged_release(&package, &version)?);
+        }
+        Some(unit)
+    }
+
+    /// Each part of `app`'s unit with the release the log names for it, as
+    /// [`Self::logged_unit`] reads them, installed or not: `(path, package, version)`, the
+    /// app first (path `""`, at `root`, else the release it runs), then each member
+    /// (`links`, transitively) at the release it runs, or a direct member at its entry in
+    /// `targets`. `None` when the app runs no release.
+    fn unit_parts(
+        &self,
+        app: &AppRecord,
+        root: Option<(&str, &str)>,
+        targets: &BTreeMap<AppId, RunTarget>,
+    ) -> Option<Vec<(String, String, String)>> {
+        let (package, version) = match root {
+            Some((p, v)) => (p.to_owned(), v.to_owned()),
             None => {
                 let r = self.running(app)?;
-                self.logged_release(&r.package, &r.version)?
+                (r.package.clone(), r.version.clone())
             }
         };
-        let mut unit = Unit::of(at);
+        let mut parts = vec![(String::new(), package, version)];
         let mut stack = vec![(String::new(), app, 0_usize)];
         while let Some((path, rec, depth)) = stack.pop() {
             if depth >= crate::api::apps::MAX_UNIT_DEPTH {
@@ -633,22 +655,70 @@ impl SystemState {
                 let Some(runs) = self.running(member) else {
                     continue;
                 };
-                let release = match targets.get(id).filter(|_| path.is_empty()) {
-                    Some(t) if t.package == runs.package => {
-                        self.logged_release(&t.package, &t.version)?
-                    }
-                    _ => self.logged_release(&runs.package, &runs.version)?,
+                let at = match targets.get(id).filter(|_| path.is_empty()) {
+                    Some(t) if t.package == runs.package => (&t.package, &t.version),
+                    _ => (&runs.package, &runs.version),
                 };
                 let path = if path.is_empty() {
                     name.clone()
                 } else {
                     format!("{path}/{name}")
                 };
-                let _prev = unit.members.insert(path.clone(), release);
+                parts.push((path.clone(), at.0.clone(), at.1.clone()));
                 stack.push((path, member, depth + 1));
             }
         }
-        Some(unit)
+        Some(parts)
+    }
+
+    /// Why `app`'s move to `to` (with a unit's member `targets`) cannot be classified from
+    /// the log: an [`Reason::Unclassified`] for each part, before or after, whose release
+    /// is not installed (the release it runs uninstalled while another ships its WASM), at
+    /// most [`MAX_CLASS_REASONS`]. Empty when the log rebuilds both sides.
+    #[must_use]
+    pub fn unclassified_reasons(
+        &self,
+        app: &AppRecord,
+        to: (&str, &str),
+        targets: &BTreeMap<AppId, RunTarget>,
+    ) -> Vec<Reason> {
+        let mut reasons: Vec<Reason> = Vec::new();
+        let sides = [
+            self.unit_parts(app, None, &BTreeMap::new()),
+            self.unit_parts(app, Some(to), targets),
+        ];
+        for (path, package, version) in sides.into_iter().flatten().flatten() {
+            if self.logged_release(&package, &version).is_some() {
+                continue;
+            }
+            let r = Reason::Unclassified {
+                member: (!path.is_empty()).then_some(path),
+                package,
+                version,
+            };
+            if !reasons.contains(&r) {
+                reasons.push(r);
+            }
+        }
+        reasons.truncate(MAX_CLASS_REASONS);
+        reasons
+    }
+
+    /// The class of `app`'s move to `to` (with a unit's member `targets`) when the log
+    /// cannot classify it: red, with [`Self::unclassified_reasons`]. `None` when the log
+    /// rebuilds both sides (the classifier's to judge).
+    #[must_use]
+    pub fn unclassified(
+        &self,
+        app: &AppRecord,
+        to: (&str, &str),
+        targets: &BTreeMap<AppId, RunTarget>,
+    ) -> Option<UpgradeClass> {
+        let reasons = self.unclassified_reasons(app, to, targets);
+        (!reasons.is_empty()).then_some(UpgradeClass {
+            class: calimero_bundle::update::Class::Red,
+            reasons,
+        })
     }
 
     /// Refuse a `claimed` class of `app`'s move to `to` (with a unit's member `targets`)
@@ -659,6 +729,8 @@ impl SystemState {
     /// say. A move the log cannot rebuild on either side (a release the app or a member
     /// runs, or a target, no longer installed) is never green: the log cannot confirm
     /// it, so only a red class, gated as red, passes, its reasons the proposer's word.
+    /// An `unclassified` reason must name a part the log lacks
+    /// ([`Self::unclassified_reasons`]), so a move the log rebuilds never carries one.
     ///
     /// # Errors
     /// [`UPGRADE_CLASS_MISMATCH`].
@@ -673,6 +745,20 @@ impl SystemState {
             || claimed.is_green() != claimed.reasons.is_empty()
         {
             return Err(UPGRADE_CLASS_MISMATCH);
+        }
+        if claimed
+            .reasons
+            .iter()
+            .any(|r| matches!(r, Reason::Unclassified { .. }))
+        {
+            let lacks = self.unclassified_reasons(app, to, targets);
+            if claimed
+                .reasons
+                .iter()
+                .any(|r| matches!(r, Reason::Unclassified { .. }) && !lacks.contains(r))
+            {
+                return Err(UPGRADE_CLASS_MISMATCH);
+            }
         }
         let empty = BTreeMap::new();
         let (Some(before), Some(after)) = (

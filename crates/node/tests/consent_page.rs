@@ -4309,3 +4309,130 @@ async fn a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node() {
     let ((code, done), _) = page.approve(&c, &mut page_key).await;
     assert_eq!(code, 200, "{done}");
 }
+
+/// A red update of an app whose running release was uninstalled (allowed while another
+/// release still ships its WASM) cannot be classified: the log no longer holds the side it
+/// moves from. Under a `secondApprover` policy it still gets its first approval, recorded
+/// red with the reason (`unclassified`, naming the release that is gone), and another
+/// owner or admin applies it with that approval, the upgrade recorded red too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_red_update_from_an_uninstalled_release_is_approved_first_and_applied_second() {
+    const TELEMETRY: &str = "https://telemetry.example/";
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+    for (version, outbound) in [("1.0.0", &[][..]), ("2.0.0", &[TELEMETRY][..])] {
+        let d = Declares {
+            outbound,
+            ..Declares::default()
+        };
+        let (mpk, _) = release(version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let org = home_org(&alice).await;
+    let token = alice
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "admin" })), Some(&mut alice_pk))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = bob.orgs().invite_redeem(&token).await.unwrap();
+    let notes = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0", "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let alice_id = account_of(&alice).await;
+    let bob_id = account_of(&bob).await;
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy"))
+                .json(json!({ "policy": { "secondApprover": true } })),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    // 2.0.0 ships the same WASM, so the release the app runs may go.
+    let _gone = alice
+        .packages()
+        .version_uninstall(PACKAGE, "1.0.0")
+        .await
+        .unwrap();
+    let _ = get_until(&bob, &format!("apps/{notes}/upgrade-policy"), |p| {
+        p["policy"]["secondApprover"] == true
+    })
+    .await;
+
+    // The first approval: red, the reason naming the release that is gone.
+    let first = alice
+        .apps()
+        .approve_upgrade(&notes, "2.0.0", None, Some(&mut alice_pk))
+        .await
+        .unwrap();
+    let approval = &first.approval;
+    assert_eq!(approval.by, alice_id, "{first:?}");
+    assert_eq!(
+        approval.class,
+        calimero_client::types::PendingApprovalClass::Red,
+        "{first:?}"
+    );
+    assert_eq!(
+        wire(&approval.reasons),
+        json!([{ "code": "unclassified", "member": null, "package": PACKAGE, "version": "1.0.0" }]),
+        "{first:?}"
+    );
+    // Alone, still the second approver's to apply.
+    let e = alice
+        .apps()
+        .upgrade(
+            &notes,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut alice_pk),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("SECOND_APPROVAL_REQUIRED"), "{e}");
+
+    // The admin applies it: the update shows the approval waiting, and the upgrade takes
+    // it as the approval of this move.
+    let update = get_until(&bob, &format!("apps/{notes}/update"), |u| {
+        u["pendingApprovals"]
+            .as_array()
+            .is_some_and(|p| !p.is_empty())
+    })
+    .await;
+    assert_eq!(
+        update["pendingApprovals"][0]["by"],
+        json!(alice_id),
+        "{update}"
+    );
+    let _done = bob
+        .apps()
+        .upgrade(
+            &notes,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut bob_pk),
+        )
+        .await
+        .unwrap();
+    let moved = get_until(&alice, &format!("apps/{notes}"), |a| {
+        a["release"]["version"] == "2.0.0"
+    })
+    .await;
+    let last = &moved["lastUpgrade"];
+    assert_eq!(last["class"], "red", "{moved}");
+    assert_eq!(last["by"], json!(bob_id), "{moved}");
+    assert_eq!(last["approvedBy"], json!(alice_id), "{moved}");
+    assert_eq!(last["reasons"][0]["code"], "unclassified", "{moved}");
+}

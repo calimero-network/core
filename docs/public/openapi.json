@@ -32966,9 +32966,38 @@
               "package",
               "methods"
             ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "unclassified"
+                ]
+              },
+              "member": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "package": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "member",
+              "package",
+              "version"
+            ]
           }
         ],
-        "description": "Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself."
+        "description": "Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red."
       },
       "RestorePoint": {
         "type": "object",

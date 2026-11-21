@@ -101,6 +101,14 @@ pub fn reason_words(r: &Reason) -> String {
             of(member),
             methods.join(", ")
         ),
+        Reason::Unclassified {
+            member,
+            package,
+            version,
+        } => format!(
+            "{}This update could not be checked: {package} {version}, which it runs, is no longer installed. Treat it as red.",
+            of(member)
+        ),
     }
 }
 

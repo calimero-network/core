@@ -78,6 +78,17 @@ async fn class_of(
         return None;
     }
     let app = node.sys(|s| s.apps.get(app_id).cloned())?;
+    // A side the log no longer holds (the release it runs uninstalled while another ships
+    // its WASM): red, naming it, as its first approval was (`approve_upgrade`). A unit's
+    // members that move are at installed targets, so the alone form names the same parts.
+    let unclassified = node.sys(|s| {
+        s.running(&app)
+            .filter(|r| r.package == to.package)
+            .and_then(|_| s.unclassified(&app, (&to.package, &to.version), &BTreeMap::new()))
+    });
+    if unclassified.is_some() {
+        return unclassified;
+    }
     if node.release_of_app(&app)?.at.package != to.package {
         return None;
     }
@@ -233,18 +244,22 @@ pub(crate) async fn upgrade_app(
         return Err(e);
     }
     // A version alone means the app's own package and service: the release
-    // it runs, not merely one shipping its WASM.
-    let current = node.release_of_app(&app);
+    // it runs, not merely one shipping its WASM; named by the record even once
+    // uninstalled while another release ships its WASM.
+    let current = node
+        .release_of_app(&app)
+        .map(|r| r.at)
+        .or_else(|| app.release.clone());
     let package = body.package.clone().or_else(|| {
         // An instance from a deployment names nothing to accept its offer.
         (body.version.is_some() || app.deployment.is_some())
-            .then(|| current.as_ref().map(|r| r.at.package.clone()))
+            .then(|| current.as_ref().map(|r| r.package.clone()))
             .flatten()
     });
     let service = body
         .service
         .clone()
-        .or_else(|| current.as_ref().and_then(|r| r.at.service.clone()));
+        .or_else(|| current.as_ref().and_then(|r| r.service.clone()));
     // An upgrade to a release with the app's own bundle (a release that changes
     // only its frontend) is an upgrade like any other: the same authority,
     // consent and record, and the instance runs the new release after it.

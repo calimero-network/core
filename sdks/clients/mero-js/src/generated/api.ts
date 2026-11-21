@@ -4723,7 +4723,7 @@ export interface components {
             signer: string;
             destinations: string[];
         };
-        /** @description Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. */
+        /** @description Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red. */
         UpdateReason: {
             /** @enum {string} */
             code: "signerChanged";
@@ -4760,6 +4760,12 @@ export interface components {
             member: string | null;
             package: string;
             methods: string[];
+        } | {
+            /** @enum {string} */
+            code: "unclassified";
+            member: string | null;
+            package: string;
+            version: string;
         };
         /** @description An app's one undo (`POST /apps/{app}/undo`): the release and bundle its last upgrade moved it from (`fromRelease`, `fromBundle`) and to, when (`at`, the start of the week to undo it) and by whom (`policy:auto-update` for an update that applied on its own), the run it was part of (a unit's members undo with their instance), the app group's snapshot (`file`: the node that holds it, absent where the upgrade ran nothing on the group) and `undoneAt` while an undo's restore is under way. */
         RestorePoint: {

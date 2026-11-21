@@ -1001,7 +1001,7 @@ pub struct UnitMember {
     pub extra: Map<String, Value>,
 }
 
-/// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself.
+/// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "code")]
 pub enum UpdateReason {
@@ -1034,6 +1034,12 @@ pub enum UpdateReason {
     #[serde(rename = "delegatedMethodsAdded")]
     DelegatedMethodsAdded {
         methods: Vec<String>,
+        member: Option<String>,
+        package: String,
+    },
+    #[serde(rename = "unclassified")]
+    Unclassified {
+        version: String,
         member: Option<String>,
         package: String,
     },

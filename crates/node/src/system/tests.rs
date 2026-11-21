@@ -12643,6 +12643,104 @@ fn a_move_the_log_cannot_rebuild_is_never_applied_as_green() {
     );
 }
 
+/// A move the log cannot classify (the release the app runs uninstalled while another
+/// ships its WASM) still gets its first approval under `secondApprover`: red, its reason
+/// `unclassified` naming the release the log lacks, as `SystemState::unclassified` says
+/// from the log alone. A second approver applies it with that approval. An `unclassified`
+/// reason naming anything else, or on a move the log rebuilds, is refused.
+#[test]
+fn an_unclassified_move_is_approved_first_as_red_naming_what_the_log_lacks() {
+    use super::UPGRADE_CLASS_MISMATCH;
+    use crate::types::{UpgradeClass, UpgradePolicy};
+    use calimero_bundle::update::{Class, Reason};
+    let unclassified = |version: &str| UpgradeClass {
+        class: Class::Red,
+        reasons: vec![Reason::Unclassified {
+            member: None,
+            package: "p".into(),
+            version: version.into(),
+        }],
+    };
+    let approve = |actor: &str, class, at: u64| SystemCmd::ApproveUpgrade {
+        app_id: "inst".into(),
+        package: "p".into(),
+        version: "1.1.0".into(),
+        targets: std::collections::BTreeMap::new(),
+        class,
+        actor: actor.into(),
+        at,
+        consent: Value::Null,
+    };
+    let mut m = classified();
+    let _ok = m
+        .run_unproven(SystemCmd::SetUpgradePolicy {
+            org: "cust".into(),
+            app: None,
+            policy: Some(UpgradePolicy {
+                second_approver: true,
+                ..UpgradePolicy::default()
+            }),
+            actor: "eve".into(),
+            consent: Value::Null,
+        })
+        .unwrap();
+    let empty = std::collections::BTreeMap::new();
+    // While the log rebuilds the move, nothing is unclassified, and no reason says so.
+    let inst = m.state.apps["inst"].clone();
+    assert_eq!(m.state.unclassified(&inst, ("p", "1.1.0"), &empty), None);
+    assert_eq!(
+        m.run_unproven(approve("cora", unclassified("1.0.0"), 5)),
+        Err(UPGRADE_CLASS_MISMATCH.to_owned())
+    );
+    // `inst` runs p@1.0.0, uninstalled while p@1.0.1 still ships b1.
+    let _gone = m
+        .state
+        .packages
+        .get_mut("p")
+        .and_then(|p| p.versions.remove("1.0.0"));
+    assert_eq!(
+        m.state.unclassified(&inst, ("p", "1.1.0"), &empty),
+        Some(unclassified("1.0.0"))
+    );
+    assert_eq!(
+        m.run_unproven(approve("cora", unclassified("1.0.1"), 5)),
+        Err(UPGRADE_CLASS_MISMATCH.to_owned()),
+        "a release the log holds"
+    );
+    let pending = m
+        .run_unproven(approve("cora", unclassified("1.0.0"), 5))
+        .unwrap();
+    assert_eq!(pending["class"]["class"], "red", "{pending}");
+    assert_eq!(
+        pending["class"]["reasons"],
+        json!([{ "code": "unclassified", "member": null, "package": "p", "version": "1.0.0" }]),
+        "{pending}"
+    );
+    // The same person twice is refused; another admin applies it, recorded red.
+    assert!(m
+        .run_unproven(classified_upgrade(
+            "cora",
+            "1.1.0",
+            Some(unclassified("1.0.0")),
+            10
+        ))
+        .is_err());
+    let _ok = m
+        .run_unproven(classified_upgrade(
+            "eve",
+            "1.1.0",
+            Some(unclassified("1.0.0")),
+            10,
+        ))
+        .unwrap();
+    let rec = m.state.apps["inst"].last_upgrade.clone().unwrap();
+    assert_eq!(
+        (rec.by.as_str(), rec.approved_by.as_deref()),
+        ("eve", Some("cora"))
+    );
+    assert_eq!(rec.class, Some(Class::Red));
+}
+
 /// A unit's run is judged once, as a whole, under its instance's policy: the instance's
 /// `UpgradeApp` carries the unit's class and is judged over the members' targets (a unit
 /// red only through a member is never logged green), and each member it moves takes the
