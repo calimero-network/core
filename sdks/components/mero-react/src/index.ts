@@ -48,6 +48,10 @@ export type {
   UnreleasedApp,
 } from './create-workspace';
 
+// Updates
+export { UpdateBanner, useUpdate } from './updates';
+export type { UpdateBannerLabels, UpdateBannerProps, UseUpdateResult } from './updates';
+
 // Invite
 export { InviteDialog, AcceptInviteDialog, describeCapabilities } from './invite';
 export type { InviteDialogProps, InviteLabels, AcceptInviteDialogProps, AcceptInviteLabels, JoinedInvite, CreatedInvite, InviteRole } from './invite';

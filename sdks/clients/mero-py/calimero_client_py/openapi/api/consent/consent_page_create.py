@@ -17,7 +17,10 @@ from ...models.consent_page_create_body_type_14 import ConsentPageCreateBodyType
 from ...models.consent_page_create_body_type_15 import ConsentPageCreateBodyType15
 from ...models.consent_page_create_body_type_16 import ConsentPageCreateBodyType16
 from ...models.consent_page_create_body_type_17 import ConsentPageCreateBodyType17
+from ...models.consent_page_create_body_type_18 import ConsentPageCreateBodyType18
+from ...models.consent_page_create_body_type_19 import ConsentPageCreateBodyType19
 from ...models.consent_page_create_body_type_2 import ConsentPageCreateBodyType2
+from ...models.consent_page_create_body_type_20 import ConsentPageCreateBodyType20
 from ...models.consent_page_create_body_type_3 import ConsentPageCreateBodyType3
 from ...models.consent_page_create_body_type_4 import ConsentPageCreateBodyType4
 from ...models.consent_page_create_body_type_5 import ConsentPageCreateBodyType5
@@ -44,7 +47,10 @@ def _get_kwargs(
         "ConsentPageCreateBodyType15",
         "ConsentPageCreateBodyType16",
         "ConsentPageCreateBodyType17",
+        "ConsentPageCreateBodyType18",
+        "ConsentPageCreateBodyType19",
         "ConsentPageCreateBodyType2",
+        "ConsentPageCreateBodyType20",
         "ConsentPageCreateBodyType3",
         "ConsentPageCreateBodyType4",
         "ConsentPageCreateBodyType5",
@@ -95,6 +101,12 @@ def _get_kwargs(
     elif isinstance(body, ConsentPageCreateBodyType15):
         _kwargs["json"] = body.to_dict()
     elif isinstance(body, ConsentPageCreateBodyType16):
+        _kwargs["json"] = body.to_dict()
+    elif isinstance(body, ConsentPageCreateBodyType17):
+        _kwargs["json"] = body.to_dict()
+    elif isinstance(body, ConsentPageCreateBodyType18):
+        _kwargs["json"] = body.to_dict()
+    elif isinstance(body, ConsentPageCreateBodyType19):
         _kwargs["json"] = body.to_dict()
     else:
         _kwargs["json"] = body.to_dict()
@@ -174,7 +186,10 @@ def sync_detailed(
         "ConsentPageCreateBodyType15",
         "ConsentPageCreateBodyType16",
         "ConsentPageCreateBodyType17",
+        "ConsentPageCreateBodyType18",
+        "ConsentPageCreateBodyType19",
         "ConsentPageCreateBodyType2",
+        "ConsentPageCreateBodyType20",
         "ConsentPageCreateBodyType3",
         "ConsentPageCreateBodyType4",
         "ConsentPageCreateBodyType5",
@@ -186,7 +201,12 @@ def sync_detailed(
 ) -> Response[Union[ConsentPageCreateResponse200, Error]]:
     """Ask the account's owner to approve
 
-     From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new
+     From an app's frontend: an instance of a release or a deployment's offer (`install`: the install
+    sheet, what gets created, where data can go and that updates wait for an approval; `outcome` names
+    the `appId` and its `links`), an update policy (`updatePolicy`, an owner or admin of the
+    organization), the node's updates page (`updates`, at `/updates/{request}`: the person unlocks it
+    with their passkey, then it lists the updates waiting across the apps they approve and their
+    organizations' policies), a release approval, an upgrade of its instance, outbound prefixes, a new
     organization, a new invite or joining with one, leaving an organization, a member's removal, role,
     teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or
     all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the
@@ -201,9 +221,11 @@ def sync_detailed(
             'ConsentPageCreateBodyType12', 'ConsentPageCreateBodyType13',
             'ConsentPageCreateBodyType14', 'ConsentPageCreateBodyType15',
             'ConsentPageCreateBodyType16', 'ConsentPageCreateBodyType17',
-            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3', 'ConsentPageCreateBodyType4',
-            'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6', 'ConsentPageCreateBodyType7',
-            'ConsentPageCreateBodyType8', 'ConsentPageCreateBodyType9']):
+            'ConsentPageCreateBodyType18', 'ConsentPageCreateBodyType19',
+            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType20', 'ConsentPageCreateBodyType3',
+            'ConsentPageCreateBodyType4', 'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6',
+            'ConsentPageCreateBodyType7', 'ConsentPageCreateBodyType8',
+            'ConsentPageCreateBodyType9']):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -238,7 +260,10 @@ def sync(
         "ConsentPageCreateBodyType15",
         "ConsentPageCreateBodyType16",
         "ConsentPageCreateBodyType17",
+        "ConsentPageCreateBodyType18",
+        "ConsentPageCreateBodyType19",
         "ConsentPageCreateBodyType2",
+        "ConsentPageCreateBodyType20",
         "ConsentPageCreateBodyType3",
         "ConsentPageCreateBodyType4",
         "ConsentPageCreateBodyType5",
@@ -250,7 +275,12 @@ def sync(
 ) -> Optional[Union[ConsentPageCreateResponse200, Error]]:
     """Ask the account's owner to approve
 
-     From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new
+     From an app's frontend: an instance of a release or a deployment's offer (`install`: the install
+    sheet, what gets created, where data can go and that updates wait for an approval; `outcome` names
+    the `appId` and its `links`), an update policy (`updatePolicy`, an owner or admin of the
+    organization), the node's updates page (`updates`, at `/updates/{request}`: the person unlocks it
+    with their passkey, then it lists the updates waiting across the apps they approve and their
+    organizations' policies), a release approval, an upgrade of its instance, outbound prefixes, a new
     organization, a new invite or joining with one, leaving an organization, a member's removal, role,
     teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or
     all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the
@@ -265,9 +295,11 @@ def sync(
             'ConsentPageCreateBodyType12', 'ConsentPageCreateBodyType13',
             'ConsentPageCreateBodyType14', 'ConsentPageCreateBodyType15',
             'ConsentPageCreateBodyType16', 'ConsentPageCreateBodyType17',
-            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3', 'ConsentPageCreateBodyType4',
-            'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6', 'ConsentPageCreateBodyType7',
-            'ConsentPageCreateBodyType8', 'ConsentPageCreateBodyType9']):
+            'ConsentPageCreateBodyType18', 'ConsentPageCreateBodyType19',
+            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType20', 'ConsentPageCreateBodyType3',
+            'ConsentPageCreateBodyType4', 'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6',
+            'ConsentPageCreateBodyType7', 'ConsentPageCreateBodyType8',
+            'ConsentPageCreateBodyType9']):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -297,7 +329,10 @@ async def asyncio_detailed(
         "ConsentPageCreateBodyType15",
         "ConsentPageCreateBodyType16",
         "ConsentPageCreateBodyType17",
+        "ConsentPageCreateBodyType18",
+        "ConsentPageCreateBodyType19",
         "ConsentPageCreateBodyType2",
+        "ConsentPageCreateBodyType20",
         "ConsentPageCreateBodyType3",
         "ConsentPageCreateBodyType4",
         "ConsentPageCreateBodyType5",
@@ -309,7 +344,12 @@ async def asyncio_detailed(
 ) -> Response[Union[ConsentPageCreateResponse200, Error]]:
     """Ask the account's owner to approve
 
-     From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new
+     From an app's frontend: an instance of a release or a deployment's offer (`install`: the install
+    sheet, what gets created, where data can go and that updates wait for an approval; `outcome` names
+    the `appId` and its `links`), an update policy (`updatePolicy`, an owner or admin of the
+    organization), the node's updates page (`updates`, at `/updates/{request}`: the person unlocks it
+    with their passkey, then it lists the updates waiting across the apps they approve and their
+    organizations' policies), a release approval, an upgrade of its instance, outbound prefixes, a new
     organization, a new invite or joining with one, leaving an organization, a member's removal, role,
     teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or
     all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the
@@ -324,9 +364,11 @@ async def asyncio_detailed(
             'ConsentPageCreateBodyType12', 'ConsentPageCreateBodyType13',
             'ConsentPageCreateBodyType14', 'ConsentPageCreateBodyType15',
             'ConsentPageCreateBodyType16', 'ConsentPageCreateBodyType17',
-            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3', 'ConsentPageCreateBodyType4',
-            'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6', 'ConsentPageCreateBodyType7',
-            'ConsentPageCreateBodyType8', 'ConsentPageCreateBodyType9']):
+            'ConsentPageCreateBodyType18', 'ConsentPageCreateBodyType19',
+            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType20', 'ConsentPageCreateBodyType3',
+            'ConsentPageCreateBodyType4', 'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6',
+            'ConsentPageCreateBodyType7', 'ConsentPageCreateBodyType8',
+            'ConsentPageCreateBodyType9']):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -359,7 +401,10 @@ async def asyncio(
         "ConsentPageCreateBodyType15",
         "ConsentPageCreateBodyType16",
         "ConsentPageCreateBodyType17",
+        "ConsentPageCreateBodyType18",
+        "ConsentPageCreateBodyType19",
         "ConsentPageCreateBodyType2",
+        "ConsentPageCreateBodyType20",
         "ConsentPageCreateBodyType3",
         "ConsentPageCreateBodyType4",
         "ConsentPageCreateBodyType5",
@@ -371,7 +416,12 @@ async def asyncio(
 ) -> Optional[Union[ConsentPageCreateResponse200, Error]]:
     """Ask the account's owner to approve
 
-     From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new
+     From an app's frontend: an instance of a release or a deployment's offer (`install`: the install
+    sheet, what gets created, where data can go and that updates wait for an approval; `outcome` names
+    the `appId` and its `links`), an update policy (`updatePolicy`, an owner or admin of the
+    organization), the node's updates page (`updates`, at `/updates/{request}`: the person unlocks it
+    with their passkey, then it lists the updates waiting across the apps they approve and their
+    organizations' policies), a release approval, an upgrade of its instance, outbound prefixes, a new
     organization, a new invite or joining with one, leaving an organization, a member's removal, role,
     teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or
     all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the
@@ -386,9 +436,11 @@ async def asyncio(
             'ConsentPageCreateBodyType12', 'ConsentPageCreateBodyType13',
             'ConsentPageCreateBodyType14', 'ConsentPageCreateBodyType15',
             'ConsentPageCreateBodyType16', 'ConsentPageCreateBodyType17',
-            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3', 'ConsentPageCreateBodyType4',
-            'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6', 'ConsentPageCreateBodyType7',
-            'ConsentPageCreateBodyType8', 'ConsentPageCreateBodyType9']):
+            'ConsentPageCreateBodyType18', 'ConsentPageCreateBodyType19',
+            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType20', 'ConsentPageCreateBodyType3',
+            'ConsentPageCreateBodyType4', 'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6',
+            'ConsentPageCreateBodyType7', 'ConsentPageCreateBodyType8',
+            'ConsentPageCreateBodyType9']):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

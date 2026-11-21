@@ -36,6 +36,7 @@ import { passkeyConfirm, type PasskeyConfirmOptions } from '../runtime/passkey.j
 
 import { exportFile, exportFileTo, type ExportedFile, type FileSink } from './files.js';
 import { signRecovery } from './recovery-key.js';
+import { Updates } from './updates.js';
 import { verifyAppCluster, verifyPipelineReceipt, type AttestedCluster, type PipelineReceipt, type ReceiptAnswer } from './receipts.js';
 import {
   CONSENT_STORAGE_KEY,
@@ -381,6 +382,13 @@ export class CalimeroClient {
   readonly deployments: Routes['deployments'];
 
   /**
+   * An instance's update as the node judges it (green or red, with a one-line `summary`), its
+   * first approval, the node's update sheet and updates page, and update policies:
+   * `client.updates.get(app)`, `client.updates.openSheet(app)`, `client.updates.policy.set(...)`.
+   */
+  readonly updates: Updates;
+
+  /**
    * A client for the Calimero Cloud cluster named `cluster`: its node list read
    * from the public node directory, those in `zone` first, each group in
    * weighted-random order. The directory only picks which nodes to try: each is
@@ -412,6 +420,7 @@ export class CalimeroClient {
     this.public = routes.public;
     this.packages = routes.packages;
     this.deployments = routes.deployments;
+    this.updates = new Updates(this);
   }
 
   /** A generated method's answer, as the type this class has always answered. */

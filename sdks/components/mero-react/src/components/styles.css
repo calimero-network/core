@@ -410,3 +410,45 @@
   text-decoration: underline;
   cursor: pointer;
 }
+
+/* Update banner (UpdateBanner) */
+.mero-update-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  background: var(--mero-bg-secondary);
+  border: 1px solid var(--mero-border);
+  border-radius: var(--mero-radius);
+  color: var(--mero-text);
+  font-size: 14px;
+}
+.mero-update-banner--red { border-color: var(--mero-error); }
+.mero-update-badge {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.mero-update-badge--green { background: var(--mero-accent); color: var(--mero-on-primary); }
+.mero-update-badge--red { background: var(--mero-error); color: var(--mero-bg); }
+.mero-update-text { flex: 1 1 16em; min-width: 0; }
+.mero-update-text span { color: var(--mero-text-secondary); }
+.mero-update-error { color: var(--mero-error) !important; }
+.mero-update-who { color: var(--mero-text-secondary); font-size: 13px; }
+.mero-update-review {
+  flex: none;
+  padding: 6px 14px;
+  background: var(--mero-accent);
+  color: var(--mero-on-primary);
+  border: 1px solid var(--mero-accent);
+  border-radius: var(--mero-radius);
+  font-weight: 600;
+  cursor: pointer;
+}
+.mero-update-review:hover:not(:disabled) { background: var(--mero-accent-hover); }
+.mero-update-review:disabled { opacity: 0.6; cursor: progress; }

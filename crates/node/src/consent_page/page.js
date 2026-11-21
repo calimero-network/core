@@ -97,9 +97,12 @@
   }
 
   var EYEBROWS = {
-    release: "Server version approval", upgrade: "Update request", outbound: "Outbound access",
-    createOrg: "New organization", createInvite: "Invite", acceptInvite: "Invitation",
+    release: "Server version approval", upgrade: "Update request", upgradeUnit: "Update request",
+    outbound: "Outbound access", createOrg: "New organization", createInvite: "Invite",
+    acceptInvite: "Invitation", install: "New app", updatePolicy: "Update policy", updates: "Updates",
   };
+  // The updates page (`updates`): approving unlocks its list instead of leaving.
+  var hub = false;
 
   function render(m) {
     var host = location.host;
@@ -113,6 +116,7 @@
     renderMeans(m);
     renderChecks(m, host);
     renderFacts(m);
+    renderExtra(m);
     var pill = el("span", cautions.length ? cautions.length + " to check" : "Checks passed", cautions.length ? "pill pill-warn" : "pill pill-ok");
     document.querySelector("#tech > summary").appendChild(pill);
     renderCode(m.code || "");
@@ -121,11 +125,211 @@
     $("tech").hidden = false;
     $("meta").hidden = false;
     countdown(m.expiresAt, m.status === "pending");
+    hub = m.kind === "updates";
+    if (hub) {
+      renderHub(m);
+      return;
+    }
     if (m.status === "pending") {
       $("actions").hidden = false;
     } else {
       $("status").textContent = "This request was " + m.status + " already.";
     }
+  }
+
+  // What the sheet's kind adds above the facts: the update's class and what changes,
+  // the install sheet, a policy change. Every sentence is the node's.
+  function section(parent, title) {
+    var box = add(parent, el("section"));
+    if (title) box.appendChild(el("h2", title));
+    return box;
+  }
+  function bullets(parent, items) {
+    var ul = add(parent, el("ul", null, "points"));
+    (items || []).forEach(function (i) { if (i) ul.appendChild(el("li", i)); });
+    return ul;
+  }
+  function badge(cls) {
+    var name = cls === "green" ? "Green" : cls === "red" ? "Red" : "Unchecked";
+    return el("span", name, "badge badge-" + (cls || "none"));
+  }
+  function labels(approve, decline, keepFirst, note) {
+    if (approve) $("approve-label").textContent = approve;
+    if (decline) $("decline").textContent = decline;
+    if (keepFirst) {
+      // The safe choice leads: keeping the version running now.
+      $("decline").className = "primary";
+      $("approve").className = "secondary";
+    }
+    if (note) { $("keep-note").textContent = note; $("keep-note").hidden = false; }
+  }
+  function renderExtra(m) {
+    var x = $("extra");
+    if ((m.kind === "upgrade" || m.kind === "upgradeUnit") && m.update) renderUpdate(x, m.update);
+    if (m.kind === "install" && m.install) renderInstall(x, m.install);
+    if (m.kind === "updatePolicy" && m.policy) renderPolicyChange(x, m.policy);
+  }
+  function renderUpdate(x, u) {
+    var box = section(x);
+    box.className = "class-" + (u.class || "none");
+    var line = add(box, el("p", null, "class-line"));
+    line.appendChild(badge(u.class));
+    line.appendChild(el("span", u.summary));
+    if (u.class === "red" && has(u.reasons)) bullets(box, u.reasons);
+    var d = u.destinations || {};
+    var where = el("span", d.words || "Unknown");
+    if (has(d.added)) where.className = "plus";
+    var rows = [["Destinations", where], ["Acts as you in other apps", Array.isArray(u.actsAs) ? u.actsAs.join(" ") : u.actsAs]];
+    if (has(u.newMethods)) rows.push(["New methods", u.newMethods.join(", ")]);
+    if (has(u.removedMethods)) rows.push(["Removed methods", u.removedMethods.join(", ")]);
+    rows.push(["Stored data", u.stateVersion], ["Signed", u.signer]);
+    if (has(u.members)) rows.push(["Apps it created", u.members.join(" · ")]);
+    var dl = facts(rows.map(function (r) { return [r[0], r[1], true]; }));
+    dl.className = "update-facts";
+    box.appendChild(dl);
+    var pol = section(x, "Updates of this app");
+    bullets(pol, (u.policy && u.policy.words) || []);
+    if (u.approvalWords) pol.appendChild(el("p", u.approvalWords, "note-box"));
+    if (u.hold) pol.appendChild(el("p", u.hold, "note-box"));
+    labels(u.approveLabel, u.keepLabel, u.keepByDefault, u.class === "red" ? u.keepWords : null);
+  }
+  function renderInstall(x, i) {
+    var made = section(x, "What gets created for you");
+    var ul = add(made, el("ul", null, "creates"));
+    (i.creates || []).forEach(function (c) {
+      var li = add(ul, el("li"));
+      li.appendChild(el("span", c.name + " " + c.version, "n"));
+      li.appendChild(el("span", c.what, "s"));
+    });
+    var where = section(x, "Where your data can go");
+    bullets(where, has(i.destinations) ? i.destinations : ["Nowhere outside Calimero."]);
+    where.appendChild(el("p", i.where, "small muted"));
+    var up = section(x, "Updates");
+    bullets(up, i.updates);
+    if (i.payer) x.appendChild(el("p", i.payer + " pays for this app; you have no Calimero bill for it.", "note-box"));
+    labels("Create with passkey", "Cancel", false, null);
+  }
+  function renderPolicyChange(x, p) {
+    bullets(section(x, "Now"), p.now && p.now.words);
+    bullets(section(x, "Once you approve"), p.afterWords);
+    labels("Change with passkey", "Cancel", false, null);
+  }
+
+  // ---------------------------------------------------------------- updates page
+  function renderHub(m) {
+    var x = $("extra");
+    while (x.firstChild) x.removeChild(x.firstChild);
+    $("tech").hidden = true;
+    if (m.locked !== false) {
+      bullets(section(x), m.points);
+      labels("Show my updates", "Back to the app", false, null);
+      $("actions").hidden = m.status !== "pending";
+      if (m.status !== "pending") $("status").textContent = "This page is no longer open. Ask the app again.";
+      return;
+    }
+    $("content").querySelector(".match").hidden = true;
+    $("attention").hidden = true;
+    $("actions").hidden = true;
+    var u = m.updates || {};
+    var pending = u.pending || [];
+    var tabs = add(x, el("div", null, "tabs"));
+    tabs.setAttribute("role", "tablist");
+    var panes = [];
+    function tab(name, fill) {
+      var b = add(tabs, el("button", name, "secondary"));
+      b.type = "button"; b.setAttribute("role", "tab");
+      var pane = add(x, el("section"));
+      fill(pane);
+      panes.push([b, pane]);
+      b.addEventListener("click", function () { show(b); });
+    }
+    function show(which) {
+      panes.forEach(function (p) { p[0].setAttribute("aria-selected", String(p[0] === which)); p[1].hidden = p[0] !== which; });
+    }
+    tab("Pending (" + pending.length + ")", function (pane) {
+      if (!pending.length) pane.appendChild(el("p", "Nothing waits for your approval.", "muted"));
+      pending.forEach(function (r) { hubRow(pane, r); });
+      if (u.truncated) pane.appendChild(el("p", "More apps than this page reads at once: approve some, then reload.", "small muted"));
+    });
+    tab("Policies", function (pane) { (u.policies || []).forEach(function (o) { policyBlock(pane, o); }); });
+    show(panes[0][0]);
+    if (/[?&]result=approved/.test(location.search)) $("status").textContent = "Done. The list shows what waits now.";
+  }
+  function ago(at) {
+    var h = Math.max(0, Math.floor((Date.now() / 1000 - at) / 3600));
+    return h >= 48 ? Math.floor(h / 24) + " days" : h + " h";
+  }
+  function hubRow(pane, r) {
+    var row = add(pane, el("div", null, "hub-row"));
+    var left = add(row, el("div"));
+    var top = add(left, el("p", null, "class-line"));
+    top.appendChild(badge(r.class));
+    top.appendChild(el("span", r.name + " " + (r.from || "?") + " \u2192 " + (r.to || "?"), "n"));
+    left.appendChild(el("p", r.orgName + " · " + (r.summary || ""), "s"));
+    if (r.approvedBy) {
+      left.appendChild(el("p", (r.approvedByYou ? "You approved it first" : "Approved first by " + r.approvedBy) +
+        (r.waitingSince ? ", " + ago(r.waitingSince) + " ago" : "") + "; it needs a second owner or admin.", "s"));
+    }
+    if (r.to && !r.approvedByYou && r.mayApprove !== false) {
+      var b = add(row, el("button", "Review", "secondary"));
+      b.type = "button";
+      b.addEventListener("click", function () {
+        openChild({ kind: r.unit ? "upgradeUnit" : "upgrade", subject: { app: r.app, toVersion: r.to } }, b);
+      });
+    }
+  }
+  function policyBlock(pane, o) {
+    var box = add(pane, el("div", null, "policy"));
+    box.appendChild(el("p", o.name, "n"));
+    bullets(box, o.policy && o.policy.words);
+    policyForm(box, o.policy || {}, function (policy) { return { org: o.org, policy: policy }; });
+    (o.apps || []).forEach(function (a) {
+      var sub = add(box, el("div", null, "policy"));
+      sub.appendChild(el("p", (a.name || a.app) + ": its own policy", "n"));
+      bullets(sub, a.policy && a.policy.words);
+      var clear = add(sub, el("button", "Follow the organization's policy", "secondary"));
+      clear.type = "button";
+      clear.addEventListener("click", function () { openChild({ kind: "updatePolicy", subject: { app: a.app, policy: null } }, clear); });
+    });
+  }
+  function policyForm(box, p, subject) {
+    var form = add(box, el("div", null, "policy-form"));
+    var autoL = add(form, el("label", "Apply on their own: "));
+    var auto = add(autoL, el("select"));
+    [["never", "never"], ["noDestinations", "updates that keep data in Calimero"]].forEach(function (o) {
+      var opt = add(auto, el("option", o[1])); opt.value = o[0];
+      if (p.autoApply === o[0]) opt.selected = true;
+    });
+    var holdL = add(form, el("label", "after "));
+    var hold = add(holdL, el("input"));
+    hold.type = "number"; hold.min = "24"; hold.max = "168"; hold.value = String(p.holdHours || 24);
+    holdL.appendChild(document.createTextNode(" h"));
+    var secondL = add(form, el("label"));
+    var second = add(secondL, el("input"));
+    second.type = "checkbox"; second.checked = !!p.secondApprover;
+    secondL.appendChild(document.createTextNode(" a second approver for red updates"));
+    var save = add(form, el("button", "Change with passkey", "secondary"));
+    save.type = "button";
+    save.addEventListener("click", function () {
+      openChild({ kind: "updatePolicy", subject: subject({
+        autoApply: auto.value, holdHours: parseInt(hold.value, 10) || 24, secondApprover: second.checked,
+      }) }, save);
+    });
+  }
+  // A sheet for one update or policy change, on this node, returning here.
+  function openChild(body, button) {
+    button.disabled = true;
+    $("status").textContent = "";
+    post("/open", body).then(function (r) {
+      if (r.status !== 200) throw new Error((r.body && r.body.message) || "refused: " + r.status);
+      var u = new URL(r.body.url);
+      if (u.origin !== location.origin) throw new Error("bad page address");
+      location.assign(u.href);
+    }).catch(function (e) { button.disabled = false; $("status").textContent = e.message; });
+  }
+  function load() {
+    return fetch(base + "/model", { credentials: "omit" })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || r.status); return j; }); });
   }
   function renderVersion(m) {
     var u = m.kind === "upgrade" && m.upgrade;
@@ -472,6 +676,11 @@
       });
     }).then(function (r) {
       if (r.status !== 200) throw new Error((r.body && r.body.message) || "refused: " + r.status);
+      if (hub) {
+        // Unlocked: the page reads its list afresh.
+        location.reload();
+        return;
+      }
       finished();
       leave(r.body.redirect);
     }).catch(function (e) { step(0); busy(false, (withdrawing ? "Not withdrawn: " : "Not approved: ") + e.message); });
@@ -486,8 +695,7 @@
 
   $("approve").addEventListener("click", approve);
   $("decline").addEventListener("click", decline);
-  fetch(base + "/model", { credentials: "omit" })
-    .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.message || r.status); return j; }); })
+  load()
     .then(render)
     .catch(function (e) {
       document.querySelectorAll(".host").forEach(function (h) { h.textContent = location.host; });

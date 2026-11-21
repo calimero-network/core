@@ -274,6 +274,51 @@ open (a member's role, the organization's name, what a deletion takes, the
 capabilities held, the all-apps grant), `/approve` answers
 `409 CONSENT_STALE` if it did.
 
+### Installs, updates and update policies
+
+Three kinds serve owner-approved updates (`consent_page/updates.rs`):
+
+- **`install { package, version?, deployment?, name, org?, newOrg?, initArgs? }`**:
+  the install sheet. It shows what gets created (the app and every app its
+  release creates with it, `uses` with `mode: create`, each with its version),
+  where data can go over that whole unit ("Your data stays in Calimero." or
+  "This app can send data to: *hosts*."), that updates wait for an approval
+  (the policy the instance will follow, the defaults for a new organization),
+  and, for an instance from a deployment, who pays. A frontend asks only for its
+  own installed package (`403` otherwise); the release must be installed
+  (`409 NOT_INSTALLED`: the sheet installs nothing). Approving runs `POST /apps`'s
+  own code behind an unlogged step-up over `account:<a> / __create_instance /
+  { name, package, version, deployment, org }`, so the log holds exactly the
+  route's entries; `outcome` is `{ appId, links }`.
+- **Update sheets** (`upgrade`, `upgradeUnit`) carry `update`: the class
+  (green, or red with each reason in plain words), the destinations before and
+  after, whether it acts as the person in other apps, new methods, the state
+  version, the apps that move with it and the policy in force. A red update that
+  adds a destination makes keeping the current version the leading button
+  (`keepByDefault`, "Keep *version*"). Where the policy asks for a second
+  approver and no other owner's or admin's first approval waits, the sheet is
+  **Approve (1 of 2)** and approving logs the first approval
+  (`POST /apps/{app}/upgrade-approvals`' code); with one waiting, **Approve and
+  update (2 of 2)** applies it. A person whose own first approval waits is
+  refused `409 SECOND_APPROVAL_REQUIRED` before a page exists.
+- **`updatePolicy { org? | app?, policy | null }`**: an owner or admin sets or
+  drops a policy; the page shows it now and after, and approving runs the
+  route's code (`org:<org> / __set_upgrade_policy`, logged).
+
+**The updates page** (`updates { org? }`) lives at `/updates/{id}`. The app
+holds its address, so the page lists nothing until the person confirms with
+their passkey on the node's origin (an unlogged step-up over
+`account:<a> / __view_updates / { org }`). Unlocked, its model is read live:
+for each organization whose updates the person approves, the updates waiting
+across its apps (at most `MAX_UPDATES_PAGE_APPS` read; class, versions, what
+changes, a first approval waiting), its policy and the apps' own. "Review" and a
+policy change call `POST /consent/{id}/open { kind: upgrade | upgradeUnit |
+updatePolicy, subject }` (same-origin, unlocked only, `409 LOCKED` before),
+which makes an ordinary request for the same account returning to the updates
+page. The updates page approves nothing itself, so it is kept apart from the
+account's one undecided request: a newer updates page replaces it, and the
+sheets it opens leave it in place.
+
 ### Where the app may be sent back
 
 `returnTo` is never arbitrary: a node that redirects anywhere would lend its

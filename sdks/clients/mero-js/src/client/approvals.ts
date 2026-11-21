@@ -189,6 +189,8 @@ export type ConsentScope = 'account' | { org: string };
  * - `leaveOrg`, `removeMember`, `setMemberRole`, `setMemberTeams`,
  *   `removeMemberTeams`, `revokeInvite`, `renameOrg`, `deleteOrg`,
  *   `setCapabilities`, `setAllApps` (core#5018): managing an organization.
+ * - `install`, `updatePolicy`, `updates`: the install sheet, an update policy
+ *   change, the node's updates page (`client.updates`).
  *
  * `returnTo` is where the page sends the person back: the package's frontend
  * origin, or one its manifest names.
@@ -268,8 +270,8 @@ export async function confirmationCode(requestId: string): Promise<string> {
 
 /**
  * What an approval made, by kind (`outcome` on {@link ConsentResult}, once
- * approved): `createOrg`, `createInvite`, `acceptInvite`, `renameOrg` and
- * `deleteOrg` make something; the other kinds nothing. An invite's `token` is
+ * approved): `createOrg`, `createInvite`, `acceptInvite`, `renameOrg`,
+ * `deleteOrg` and `install` make something; the other kinds nothing. An invite's `token` is
  * a credential: keep it out of logs.
  */
 export interface ConsentOutcomes {
@@ -292,6 +294,10 @@ export interface ConsentOutcomes {
   deleteOrg: Required<Pick<GeneratedOutcome, 'apps'>>;
   setCapabilities: never;
   setAllApps: never;
+  /** The instance the install sheet created, and the apps it created with it by name. */
+  install: Required<Pick<GeneratedOutcome, 'appId' | 'links'>>;
+  updatePolicy: never;
+  updates: never;
 }
 
 /** The route's generated answer, whose one `outcome` has every kind's fields optional. */
