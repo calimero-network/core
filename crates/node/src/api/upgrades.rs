@@ -46,6 +46,29 @@ pub(crate) async fn move_class(
     app_id: &str,
     release: Option<&PackageRef>,
 ) -> Option<crate::types::UpgradeClass> {
+    class_of(node, app_id, release, false).await
+}
+
+/// The class an upgrade run's `UpgradeApp` of `app_id` carries: for the instance of a
+/// unit's run, the whole unit's (its members moving to the run's targets), as apply
+/// judges it ([`crate::system::SystemState::run_update_gate`]); else [`move_class`].
+async fn run_class(
+    node: &Node,
+    app_id: &str,
+    release: Option<&PackageRef>,
+    run: Option<&str>,
+) -> Option<crate::types::UpgradeClass> {
+    let whole_unit = node.sys(|s| s.is_unit_instance(run, app_id));
+    class_of(node, app_id, release, whole_unit).await
+}
+
+/// [`move_class`], or with `whole_unit` the class of the unit's move (`upgrade-unit`).
+async fn class_of(
+    node: &Node,
+    app_id: &str,
+    release: Option<&PackageRef>,
+    whole_unit: bool,
+) -> Option<crate::types::UpgradeClass> {
     let to = release?;
     if node
         .require_features(&[Feature::UpgradeClasses])
@@ -58,7 +81,7 @@ pub(crate) async fn move_class(
     if node.release_of_app(&app)?.at.package != to.package {
         return None;
     }
-    match crate::egress::update(node, &app, &to.version, false).await {
+    match crate::egress::update(node, &app, &to.version, whole_unit).await {
         Ok(c) => c.and_then(upgrade_class),
         Err(e) => {
             warn!(app = %app_id, error = %e.message, "the upgrade was not classified");
@@ -302,9 +325,16 @@ pub(crate) async fn upgrade_app(
     // A red update whose policy asks for a second approver waits for another owner's or
     // admin's first approval: refused before the passkey, as `UpgradeApp` refuses it.
     let class = move_class(node, &app_id, release.as_ref()).await;
-    if let Err(why) =
-        node.sys(|s| s.update_gate(&app, release.as_ref(), class.as_ref(), &account, now))
-    {
+    if let Err(why) = node.sys(|s| {
+        s.update_gate(
+            &app,
+            release.as_ref(),
+            class.as_ref(),
+            &BTreeMap::new(),
+            &account,
+            now,
+        )
+    }) {
         return Err(crate::node::rejected(why));
     }
     let args = json!({ "bundle": bundle, "migrate": body.migrate, "manifest": manifest });
@@ -417,7 +447,7 @@ async fn run_upgrade(
     // the record of an upgrade the app's group already ran.
     let begun = crate::types::update_now();
     let has_compute = compute_bundle.is_some();
-    let class = move_class(node, &app_id, release.as_ref()).await;
+    let class = run_class(node, &app_id, release.as_ref(), who.run.as_deref()).await;
     // Who may, and where to: judged here, for every path (one app, an
     // organization's run, a publisher's run), before anything runs on the
     // app's group; `UpgradeApp` judges both again.
@@ -447,8 +477,14 @@ async fn run_upgrade(
             ));
         }
         if !who.by_operator {
-            if let Err(why) = s.update_gate(a, release.as_ref(), class.as_ref(), &who.actor, begun)
-            {
+            if let Err(why) = s.run_update_gate(
+                a,
+                release.as_ref(),
+                class.as_ref(),
+                who.run.as_deref(),
+                &who.actor,
+                begun,
+            ) {
                 return Some(crate::node::rejected(why));
             }
         }
@@ -889,7 +925,8 @@ async fn start_run_with(
                     // frontend-only one) may differ, which the directory
                     // records; `UpgradeApp` judges who may as for any upgrade,
                     // and a refusal is noted on the app and the run.
-                    let class = move_class(&node, &app.app_id, t.release.as_ref()).await;
+                    let class =
+                        run_class(&node, &app.app_id, t.release.as_ref(), who.run.as_deref()).await;
                     let written = node
                         .sys_write(&SystemCmd::UpgradeApp {
                             app_id: app.app_id.clone(),
@@ -1495,34 +1532,7 @@ pub(crate) async fn upgrade_unit(
         node.require_features(&[crate::system::cluster_version::Feature::UnitUpgrade])
             .await?;
     }
-    // A red unit whose instance's policy asks for a second approver waits for another
-    // owner's or admin's first approval of this very unit (`upgrade-approvals` with
-    // `unit`): refused before the passkey. Each app's `UpgradeApp` is judged again.
-    let unit = crate::egress::update(node, &plan.app, &plan.target.version, true)
-        .await
-        .ok()
-        .flatten();
-    let green = unit
-        .as_ref()
-        .is_some_and(|c| c.class == calimero_bundle::update::Class::Green);
-    let now = now_secs();
-    let waits = node.sys(|s| {
-        s.upgrade_policy_of(&plan.app).0.second_approver
-            && !green
-            && s.approval_for(
-                &plan.app,
-                &plan.target.package,
-                &plan.target.version,
-                &account,
-                now,
-            )
-            .is_none_or(|p| p.targets != plan.targets)
-    });
-    if waits {
-        return Err(crate::node::rejected(
-            crate::system::SECOND_APPROVAL_REQUIRED,
-        ));
-    }
+    unit_gate(node, &plan, &account).await?;
     let consent = consent(
         node,
         p,
@@ -1562,6 +1572,29 @@ pub(crate) async fn upgrade_unit(
     let mut apps = vec![plan.app];
     apps.extend(plan.members);
     start_run_with(node, org, run, apps, who, false, plan.targets).await
+}
+
+/// A unit's run, judged once as a whole under its instance's policy, as its `UpgradeApp`s
+/// apply ([`crate::system::SystemState::run_update_gate`]): the unit's class (its members
+/// moving to `plan`'s targets), and where the instance's policy asks for a second
+/// approver and the unit is not green, another owner's or admin's first approval of this
+/// very unit (`upgrade-approvals` with `unit`). Asked before the passkey, by the route
+/// and the consent page alike.
+pub(crate) async fn unit_gate(node: &Node, plan: &UnitPlan, account: &str) -> Result<(), ApiError> {
+    let class = class_of(node, &plan.app.app_id, Some(&plan.target), true).await;
+    let now = now_secs();
+    node.sys(|s| {
+        s.update_gate(
+            &plan.app,
+            Some(&plan.target),
+            class.as_ref(),
+            &plan.targets,
+            account,
+            now,
+        )
+    })
+    .map(|_| ())
+    .map_err(crate::node::rejected)
 }
 
 /// A unit member is not moved on its own off the range the instance that created it
@@ -1781,20 +1814,25 @@ pub(super) fn pending_approvals(
             (**approved == app.app_id || p.targets.contains_key(&app.app_id))
                 && s.approval_live(&app.org, approved, p, now)
         })
-        .map(|(approved, p)| {
-            json!({
-                "app": approved,
-                "package": p.package,
-                "version": p.version,
-                "targets": p.targets,
-                "by": p.by,
-                "at": p.at,
-                "expiresAt": p.at.saturating_add(crate::types::MAX_APPROVAL_AGE_SECS),
-                "class": p.class.class,
-                "reasons": p.class.reasons,
-            })
-        })
+        .map(|(approved, p)| approval_json(approved, p))
         .collect()
+}
+
+/// A first approval `p` of `approved` as the API answers it (the `PendingApproval`
+/// schema): `pendingApprovals` lists these, and `POST /apps/{app}/upgrade-approvals`
+/// answers the one it logged.
+pub(super) fn approval_json(approved: &str, p: &crate::types::PendingApproval) -> Value {
+    json!({
+        "app": approved,
+        "package": p.package,
+        "version": p.version,
+        "targets": p.targets,
+        "by": p.by,
+        "at": p.at,
+        "expiresAt": p.at.saturating_add(crate::types::MAX_APPROVAL_AGE_SECS),
+        "class": p.class.class,
+        "reasons": p.class.reasons,
+    })
 }
 
 /// The app `app_id` for whoever `GET /apps/{app}` admits (`principal`, `within`,

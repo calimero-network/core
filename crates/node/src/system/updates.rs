@@ -748,7 +748,9 @@ impl SystemState {
     /// than [`MAX_CLASS_REASONS`]) or that leaves out a reason the log shows: a new signer
     /// or a destination no release before it reached, judged over the unit. What the log
     /// cannot show (state versions, methods called as the person) is the proposer's to
-    /// say.
+    /// say. A move the log cannot rebuild on either side (a release the app or a member
+    /// runs, or a target, no longer installed) is never green: the log cannot confirm
+    /// it, so only a red class, gated as red, passes, its reasons the proposer's word.
     ///
     /// # Errors
     /// [`UPGRADE_CLASS_MISMATCH`].
@@ -769,7 +771,11 @@ impl SystemState {
             self.logged_unit(app, None, &empty),
             self.logged_unit(app, Some(to), targets),
         ) else {
-            return Ok(());
+            return if claimed.is_green() {
+                Err(UPGRADE_CLASS_MISMATCH)
+            } else {
+                Ok(())
+            };
         };
         let derived = classify(&before, &after).reasons;
         if derived
@@ -782,11 +788,13 @@ impl SystemState {
         }
     }
 
-    /// What lets `actor`'s upgrade of `app` to `release`, carrying `class`, at `at` apply:
-    /// a class the log agrees with ([`Self::check_class`]; a raw upload carries none),
-    /// and, where the app's policy asks for a second approver and the update is not green,
-    /// another owner's or admin's live first approval of exactly this move
-    /// ([`Self::approval_for`]), whose approver it answers.
+    /// What lets `actor`'s upgrade of `app` to `release`, carrying `class`, at `at` apply,
+    /// alone (`targets` empty) or as the instance of a unit whose members move to
+    /// `targets`: a class the log agrees with, judged over the unit as it moves
+    /// ([`Self::check_class`]; a raw upload carries none), and, where the app's policy
+    /// asks for a second approver and the update is not green, another owner's or admin's
+    /// live first approval of exactly this move ([`Self::approval_for`]; for a unit, of
+    /// the same targets), whose approver it answers.
     ///
     /// # Errors
     /// [`UPGRADE_CLASS_MISMATCH`], [`SECOND_APPROVAL_REQUIRED`].
@@ -795,36 +803,117 @@ impl SystemState {
         app: &AppRecord,
         release: Option<&PackageRef>,
         class: Option<&UpgradeClass>,
+        targets: &BTreeMap<AppId, RunTarget>,
         actor: &str,
         at: u64,
     ) -> Result<Option<AccountId>, &'static str> {
-        match (release, class) {
-            (Some(to), Some(c)) => {
-                self.check_class(app, (&to.package, &to.version), &BTreeMap::new(), c)?;
-            }
-            (None, Some(_)) => return Err(UPGRADE_CLASS_MISMATCH),
-            (_, None) => {}
-        }
+        self.class_agrees(app, release, class, targets)?;
         if !self.upgrade_policy_of(app).0.second_approver
             || class.is_some_and(UpgradeClass::is_green)
         {
             return Ok(None);
         }
         release
-            .and_then(|to| self.approval_for(app, &to.package, &to.version, actor, at))
+            .and_then(|to| self.approval_for(app, &to.package, &to.version, targets, actor, at))
             .map(|p| Some(p.by.clone()))
             .ok_or(SECOND_APPROVAL_REQUIRED)
     }
 
+    /// [`Self::check_class`] of the class an `UpgradeApp` carries, if any: a raw upload
+    /// (no release) carries none.
+    fn class_agrees(
+        &self,
+        app: &AppRecord,
+        release: Option<&PackageRef>,
+        class: Option<&UpgradeClass>,
+        targets: &BTreeMap<AppId, RunTarget>,
+    ) -> Result<(), &'static str> {
+        match (release, class) {
+            (Some(to), Some(c)) => self.check_class(app, (&to.package, &to.version), targets, c),
+            (None, Some(_)) => Err(UPGRADE_CLASS_MISMATCH),
+            (_, None) => Ok(()),
+        }
+    }
+
+    /// The unit's run `run` names, when it is one: only a unit's consent (`__upgrade_unit`)
+    /// keeps member targets on a run (`StartUpgradeRun` drops any other run's).
+    fn unit_run(&self, run: Option<&str>) -> Option<&crate::types::UpgradeRun> {
+        let id = run?;
+        self.orgs
+            .values()
+            .find_map(|o| o.upgrade_runs.get(id))
+            .filter(|r| !r.targets.is_empty())
+    }
+
+    /// Whether `app` is the instance a unit's run `run` moves with its members: the app
+    /// the run names first, which its consent named (`upgrade_run_apps`).
+    #[must_use]
+    pub fn is_unit_instance(&self, run: Option<&str>, app: &str) -> bool {
+        self.unit_run(run)
+            .is_some_and(|r| r.apps.first().is_some_and(|a| a == app))
+    }
+
+    /// [`Self::update_gate`] for an `UpgradeApp` logged by `run` (if any). A unit's run is
+    /// judged once, as a whole, under its instance's policy: the instance's own entry
+    /// carries the unit's class and is judged over the run's member targets, and a member
+    /// the run moves takes that judgement once the instance moved in the same run (its
+    /// own class is still checked against the log), so a member's own policy never stops
+    /// a unit half way. A member whose instance has not moved in the run, an app of any
+    /// other run and an app upgraded alone are judged on their own.
+    ///
+    /// # Errors
+    /// [`UPGRADE_CLASS_MISMATCH`], [`SECOND_APPROVAL_REQUIRED`].
+    pub fn run_update_gate(
+        &self,
+        app: &AppRecord,
+        release: Option<&PackageRef>,
+        class: Option<&UpgradeClass>,
+        run: Option<&str>,
+        actor: &str,
+        at: u64,
+    ) -> Result<Option<AccountId>, &'static str> {
+        let alone = BTreeMap::new();
+        let Some(r) = self.unit_run(run) else {
+            return self.update_gate(app, release, class, &alone, actor, at);
+        };
+        if !r.targets.contains_key(&app.app_id) {
+            let targets = if self.is_unit_instance(run, &app.app_id) {
+                &r.targets
+            } else {
+                &alone
+            };
+            return self.update_gate(app, release, class, targets, actor, at);
+        }
+        let moved = r
+            .apps
+            .first()
+            .filter(|root| r.done.contains(root))
+            .and_then(|root| self.apps.get(root))
+            .filter(|root| root.links.values().any(|m| *m == app.app_id));
+        let Some(root) = moved else {
+            return self.update_gate(app, release, class, &alone, actor, at);
+        };
+        self.class_agrees(app, release, class, &alone)?;
+        Ok(root
+            .last_upgrade
+            .as_ref()
+            .filter(|u| u.ok && u.run.as_deref() == run)
+            .and_then(|u| u.approved_by.clone()))
+    }
+
     /// The live first approval ([`Self::approval_live`]) by someone other than `actor`
-    /// that lets `app` move to `package`@`version`: of the app itself, or of the unit it is
-    /// a member of, to its own target.
+    /// that lets `app` move to `package`@`version`: alone (`targets` empty), one of the app
+    /// itself or of the unit it is a member of, to its own target; as the instance of a
+    /// unit moving its members to `targets`, one of exactly that unit. Every live approval
+    /// is looked at, so another unit's that covers the app too (units nest) never hides
+    /// the one that matches.
     #[must_use]
     pub fn approval_for(
         &self,
         app: &AppRecord,
         package: &str,
         version: &str,
+        targets: &BTreeMap<AppId, RunTarget>,
         actor: &str,
         at: u64,
     ) -> Option<&PendingApproval> {
@@ -835,6 +924,7 @@ impl SystemState {
             .find(|(approved, p)| {
                 p.by != actor
                     && p.covers(approved, &app.app_id, package, version)
+                    && (targets.is_empty() || (**approved == app.app_id && p.targets == *targets))
                     && self.approval_live(&app.org, approved, p, at)
             })
             .map(|(_, p)| p)

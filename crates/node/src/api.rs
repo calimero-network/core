@@ -104,7 +104,7 @@ pub(crate) use orgs::{
 pub use pipeline_events::MAX_RUN_SUBSCRIBERS_PER_APP;
 pub(crate) use public_links::VisitorLimits;
 pub(crate) use upgrades::{
-    move_class, owner_approves, refuse_stalled, unit_plan, upgrade_app, upgrade_refusal,
+    move_class, owner_approves, refuse_stalled, unit_gate, unit_plan, upgrade_app, upgrade_refusal,
     upgrade_unit, UpgradeBody,
 };
 // The request bodies the OpenAPI registry names as `super::<Body>`.
