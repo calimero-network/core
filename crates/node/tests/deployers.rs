@@ -642,3 +642,137 @@ async fn the_cluster_owner_grants_deployers_once_the_operator_names_it() {
             .unwrap_err(),
     );
 }
+
+/// On a shared, granted cluster an account of another org must not get org A's
+/// private package by installing it from the operator's registry. The registry
+/// here serves anyone (the cluster's credential is not modelled), as the real one
+/// does the cluster; the registry answers per cluster, so the node must decide.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn another_orgs_account_cannot_install_a_private_package_from_the_registry() {
+    let registry = Registry::default();
+    let url = registry.serve().await;
+    registry.publish("com.acme.secret", "1.0.0");
+    registry.publish("com.acme.secret2", "1.0.0");
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.registry = Some(url.clone());
+        cfg.governance.deployments = Deployments::Granted;
+    })
+    .await;
+    let ops = ops(&c).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    for who in [&alice, &bob] {
+        let _ok = ops_signed(
+            &ops,
+            "ops/deployers",
+            json!({ "deployer": { "account": account_of(who).await } }),
+        )
+        .await
+        .unwrap();
+    }
+    let _acme = alice.orgs().create("Acme", None, None).await.unwrap();
+    let _bobco = bob.orgs().create("Bobco", None, None).await.unwrap();
+    let mut alices_app = String::new();
+    for p in ["com.acme.secret", "com.acme.secret2"] {
+        let _ok = alice.packages().install(p, "1.0.0").await.unwrap();
+        alices_app = alice
+            .apps()
+            .create(typed(
+                json!({ "name": "a", "package": p, "version": "1.0.0" }),
+            ))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+    }
+
+    let hidden = |what: &str, e: calimero_client::Error| {
+        assert!(
+            matches!(
+                e,
+                calimero_client::Error::Api {
+                    status: 403 | 404,
+                    ..
+                }
+            ),
+            "{what}: {e}"
+        );
+    };
+    let p = bob.packages();
+    hidden("control get", p.get("com.acme.secret").await.unwrap_err());
+    hidden(
+        "control get 2",
+        p.get("com.acme.secret2").await.unwrap_err(),
+    );
+    hidden(
+        "control alice's app",
+        bob.apps().get(&alices_app).await.unwrap_err(),
+    );
+
+    let mut leaks = Vec::new();
+    match p.install("com.acme.secret", "1.0.0").await.map(wire) {
+        Ok(v) => leaks.push(format!("bob's install from the registry answered 200: {v}")),
+        Err(e) => hidden("bob's install", e),
+    }
+    match p.get("com.acme.secret").await.map(wire) {
+        Ok(v) => leaks.push(format!("bob get now 200: {v}")),
+        Err(e) => hidden("get after", e),
+    }
+    for (what, r) in [
+        (
+            "pipelines",
+            p.pipelines("com.acme.secret", "1.0.0").await.map(wire),
+        ),
+        (
+            "capabilities",
+            p.capabilities("com.acme.secret", "1.0.0", None)
+                .await
+                .map(wire),
+        ),
+    ] {
+        if let Ok(v) = r {
+            let v = v.to_string();
+            leaks.push(format!("bob {what} now 200: {}", &v[..v.len().min(200)]));
+        }
+    }
+    match bob
+        .apps()
+        .create(typed(
+            json!({ "name": "b", "package": "com.acme.secret", "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+    {
+        Ok(app) => {
+            let abi = bob
+                .apps()
+                .abi(app["appId"].as_str().unwrap())
+                .await
+                .map(wire);
+            let abi = format!("{abi:?}");
+            leaks.push(format!(
+                "bob created his own instance {app}; its ABI read: {}",
+                &abi[..abi.len().min(200)]
+            ));
+        }
+        Err(e) => hidden("bob create after install", e),
+    }
+    // Create alone, with no explicit install, on a package bob has not touched.
+    match bob
+        .apps()
+        .create(typed(
+            json!({ "name": "c", "package": "com.acme.secret2", "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+    {
+        Ok(app) => leaks.push(format!(
+            "bob's create with no install installed from the registry and answered 200: {app}"
+        )),
+        Err(e) => hidden("bob create without install", e),
+    }
+    hidden(
+        "alice's app stays unreadable",
+        bob.apps().get(&alices_app).await.unwrap_err(),
+    );
+    assert!(leaks.is_empty(), "{}", leaks.join("\n"));
+}

@@ -7263,3 +7263,133 @@ async fn within(limit: Duration, done: impl Fn() -> bool) -> bool {
     }
     false
 }
+
+/// A session bound to a package's frontend origin, opened by an account that
+/// cannot see that package, must not see or use it either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_bound_session_does_not_open_a_package_its_account_cannot_see() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.apps_domain = Some("localhost".into());
+        cfg.allow_unsigned_bundles = false;
+    })
+    .await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, bob_pk) = signed_up(&c, 1, "bob").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let _o = bob.orgs().create("Bobco", None, None).await.unwrap();
+    // Alice's package has no frontend.
+    let _ = alice
+        .packages()
+        .upload(mpk(
+            "com.acme.secret",
+            "1.0.0",
+            &variant(&kv_wasm(), "s"),
+            &publisher,
+        ))
+        .await
+        .unwrap();
+    let alices_app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "a", "package": "com.acme.secret", "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let not_visible = |what: &str, e: Error| {
+        assert!(
+            matches!(
+                e,
+                Error::Api {
+                    status: 403 | 404,
+                    ..
+                }
+            ),
+            "{what}: {e}"
+        );
+    };
+    let p = bob.packages();
+    not_visible("control get", p.get("com.acme.secret").await.unwrap_err());
+    not_visible(
+        "control pipelines",
+        p.pipelines("com.acme.secret", "1.0.0").await.unwrap_err(),
+    );
+    not_visible(
+        "control capabilities",
+        p.capabilities("com.acme.secret", "1.0.0", None)
+            .await
+            .unwrap_err(),
+    );
+    not_visible(
+        "alice's app",
+        bob.apps().get(&alices_app).await.unwrap_err(),
+    );
+
+    // Bob signs in with his own passkey, claiming the package's frontend origin.
+    let site = on_frontend(&c, 1, &bob_pk, "com.acme.secret").await;
+
+    // Every exposure is reported, not just the first.
+    let mut leaks = Vec::new();
+    let p = site.packages();
+    let got = p.get("com.acme.secret").await.map(wire);
+    let pipes = p.pipelines("com.acme.secret", "1.0.0").await.map(wire);
+    let caps = p
+        .capabilities("com.acme.secret", "1.0.0", None)
+        .await
+        .map(wire);
+    for (what, r) in [("get", got), ("pipelines", pipes), ("capabilities", caps)] {
+        match r {
+            Ok(v) => leaks.push(format!("bound {what} answered 200: {v}")),
+            Err(e) => not_visible(what, e),
+        }
+    }
+    let made = site
+        .apps()
+        .create(typed(
+            json!({ "name": "b", "package": "com.acme.secret", "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire);
+    match made {
+        Ok(app) => {
+            let abi = site
+                .apps()
+                .abi(app["appId"].as_str().unwrap())
+                .await
+                .map(wire);
+            leaks.push(format!("bound create made {app}; its ABI read: {abi:?}"));
+        }
+        // As for a release the cluster lacks.
+        Err(Error::Api { status: 400, .. }) => {}
+        Err(e) => not_visible("bound create", e),
+    }
+    not_visible(
+        "bound read of alice's app",
+        site.apps().get(&alices_app).await.unwrap_err(),
+    );
+    assert!(leaks.is_empty(), "{}", leaks.join("\n"));
+}
+
+/// A client of node `i` signed in with `key` on `package`'s frontend origin: a
+/// session bound to that package.
+async fn on_frontend(
+    c: &Cluster,
+    i: usize,
+    key: &SoftAuthenticator,
+    package: &str,
+) -> calimero_client::Client {
+    let label = calimero_node::app_host::label(package);
+    let port = url::Url::parse(&c.urls[i]).unwrap().port().unwrap();
+    let origin = format!("http://{label}.localhost:{port}");
+    let site = c.client(i);
+    let mut key = SoftAuthenticator::with_key(key, "localhost", &origin);
+    let _s = site.sign_in(&mut key).await.unwrap();
+    let me = site.auth().me().await.map(wire).unwrap();
+    assert_eq!(me["app"], json!(package), "{me}");
+    site
+}
