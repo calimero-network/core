@@ -110,6 +110,7 @@ use crate::types::{now_secs, Caller, OrgRole};
 
 mod diff;
 mod orgs;
+mod updates;
 
 pub use orgs::{
     MemberSubject, OrgSubject, RemoveMemberTeamsSubject, RenameOrgSubject, RevokeInviteSubject,
@@ -118,6 +119,10 @@ pub use orgs::{
 };
 
 pub use diff::{capability_sheet, Side};
+pub use updates::{
+    policy_words, reason_words, update_summary, InstallSubject, NewOrgSubject, UpdatePolicySubject,
+    UpdatesSubject, MAX_UPDATES_PAGE_APPS,
+};
 
 /// How long a request waits for its decision.
 pub const CONSENT_REQUEST_TTL: u64 = 10 * 60;
@@ -274,6 +279,22 @@ pub enum CreateBody {
     /// Give a member every app added later, or stop it.
     SetAllApps {
         subject: SetAllAppsSubject,
+        return_to: String,
+    },
+    /// Create an instance from a deployment's offer or a release: the install sheet.
+    Install {
+        subject: Box<InstallSubject>,
+        return_to: String,
+    },
+    /// Set or drop an organization's or an app's update policy.
+    UpdatePolicy {
+        subject: UpdatePolicySubject,
+        return_to: String,
+    },
+    /// The node's updates page, for the apps whose updates the person approves.
+    Updates {
+        #[serde(default)]
+        subject: UpdatesSubject,
         return_to: String,
     },
 }
@@ -529,6 +550,32 @@ enum Action {
     },
     /// A membership change or a setting of an organization (`orgs`).
     Org(orgs::OrgAction),
+    /// The first of two approvals of a red update (`secondApprover`): `app` to `version`,
+    /// with `unit` its members too.
+    ApproveFirst {
+        app: String,
+        version: String,
+        unit: bool,
+        /// Each app's bundle when the page was made.
+        from: BTreeMap<String, String>,
+    },
+    /// An instance made as `POST /apps` makes it, of the release whose `.mpk` the sheet read.
+    Install {
+        install: crate::api::apps::Install,
+        mpk: String,
+    },
+    /// An update policy set (`policy`) or dropped at one scope; `own` is the one set there
+    /// when the page was made.
+    UpdatePolicy {
+        org: String,
+        app: Option<String>,
+        policy: Option<crate::types::UpgradePolicy>,
+        own: Value,
+    },
+    /// The updates page: approves nothing; the passkey unlocks the list.
+    Updates {
+        org: Option<String>,
+    },
 }
 
 /// What a release request changes.
@@ -586,6 +633,13 @@ struct ConsentRequest {
     outcome: Option<Outcome>,
 }
 
+impl ConsentRequest {
+    /// The updates page, which approves nothing itself.
+    const fn is_hub(&self) -> bool {
+        matches!(self.action, Action::Updates { .. })
+    }
+}
+
 /// What an approval made. It may hold an invite's token, so it never shows
 /// in a `Debug` print.
 #[derive(Clone)]
@@ -626,11 +680,17 @@ impl ConsentRequests {
     /// asked for last. A page swapped for another app's request (a forged page
     /// on the node's host, with a malicious app's request behind it) then has
     /// nothing to swap in: the other app's request is gone, and an app whose
-    /// own request was replaced finds it gone at `/result` (`404`).
+    /// own request was replaced finds it gone at `/result` (`404`). The updates page
+    /// (`updates`) is apart: it approves nothing, so a newer one replaces only the
+    /// account's previous one, and the requests it opens leave it in place.
     fn insert(&self, node_id: u64, req: ConsentRequest, now: u64) -> Result<String, ApiError> {
         let mut open = self.open();
+        let hub = req.is_hub();
         open.retain(|_, r| {
-            r.expires_at > now && !(r.account == req.account && r.decision == Decision::Pending)
+            r.expires_at > now
+                && !(r.account == req.account
+                    && r.is_hub() == hub
+                    && (hub || r.decision == Decision::Pending))
         });
         if open.len() >= MAX_CONSENT_REQUESTS {
             return Err(ApiError::new(
@@ -1150,6 +1210,21 @@ pub async fn create(
             let (action, model) = accept_invite_request(&node, &account, subject)?;
             (action, model, to)
         }
+        CreateBody::Install { subject, return_to } => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = updates::install_request(&node, &p, &account, *subject).await?;
+            (action, model, to)
+        }
+        CreateBody::UpdatePolicy { subject, return_to } => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = updates::policy_request(&node, &p, &account, subject).await?;
+            (action, model, to)
+        }
+        CreateBody::Updates { subject, return_to } => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = updates::updates_request(&node, &account, subject)?;
+            (action, model, to)
+        }
         // `into_org_ask` took these.
         CreateBody::LeaveOrg { .. }
         | CreateBody::RemoveMember { .. }
@@ -1196,6 +1271,12 @@ async fn hold(
         );
         let _prev = o.insert("expiresAt".into(), json!(expires_at));
     }
+    // The updates page lives at `/updates/{id}`; every other request at `/consent/{id}`.
+    let at = if matches!(action, Action::Updates { .. }) {
+        "updates"
+    } else {
+        "consent"
+    };
     let id = node.consent.insert(
         node.config.node_id,
         ConsentRequest {
@@ -1214,7 +1295,7 @@ async fn hold(
     let base = Url::parse(&node.config.public_url)
         .map_err(|e| ApiError::internal(&format!("this node's public URL: {e}")))?;
     let url = base
-        .join(&format!("consent/{id}"))
+        .join(&format!("{at}/{id}"))
         .map_err(|e| ApiError::internal(&e.to_string()))?;
     Ok(Json(json!({
         "requestId": id,
@@ -1940,25 +2021,20 @@ async fn upgrade_request(
         ));
     }
     crate::api::refuse_stalled(node, &app, &bundle, Some(&to_release), now_secs())?;
-    // A red update whose policy asks for a second approver, without another owner's or
-    // admin's first approval: refused before a page exists, as the route refuses it. A
-    // unit's page is judged on the whole unit instead (`unit_upgrade_request`).
-    if part == Part::Alone {
+    // Where the approval stands under the app's policy: a red update whose policy asks for
+    // a second approver is approved first here ("Approve (1 of 2)") unless another owner's
+    // or admin's first approval waits, which this one then applies; the person's own first
+    // approval waiting is refused before a page exists. A unit's page is judged on the
+    // whole unit instead (`unit_upgrade_request`).
+    let step = if part == Part::Alone {
         let class = crate::api::move_class(node, &app_id, Some(&to_release)).await;
-        let now = now_secs();
-        if let Err(why) = node.sys(|s| {
-            s.update_gate(
-                &app,
-                Some(&to_release),
-                class.as_ref(),
-                &BTreeMap::new(),
-                account,
-                now,
-            )
-        }) {
-            return Err(crate::node::rejected(why));
-        }
-    }
+        let green = class
+            .as_ref()
+            .is_some_and(crate::types::UpgradeClass::is_green);
+        updates::approval_step(node, &app, &to_release, &BTreeMap::new(), green, account)?
+    } else {
+        updates::ApprovalStep::Only
+    };
     node.require_runtime(
         &app.replicas,
         Some(&to_release),
@@ -2059,8 +2135,11 @@ async fn upgrade_request(
         points.push(json!(destinations_point(c, !app.links.is_empty())));
         attention.extend(unit_attention(c, &sheet));
     }
+    let update = (!member_of_unit)
+        .then(|| updates::update_section(node, &app, unit.as_ref(), &step, (old, new), Vec::new()));
     let model = json!({
         "kind": "upgrade",
+        "update": update,
         "scope": {
             "kind": "app",
             "app": app_id,
@@ -2089,7 +2168,14 @@ async fn upgrade_request(
         "notes": notes,
         "upgrade": sheet,
     });
-    Ok((
+    let action = if step == updates::ApprovalStep::First {
+        Action::ApproveFirst {
+            from: BTreeMap::from([(app_id.clone(), app.bundle.clone())]),
+            app: app_id,
+            version: target.version.clone(),
+            unit: false,
+        }
+    } else {
         Action::Upgrade {
             app: app_id,
             from_bundle: app.bundle,
@@ -2097,9 +2183,9 @@ async fn upgrade_request(
             version: target.version.clone(),
             service,
             mpk: target.mpk.clone(),
-        },
-        model,
-    ))
+        }
+    };
+    Ok((action, model))
 }
 
 /// An `upgradeUnit` request: the plan the route would carry out (`api::unit_plan`), and
@@ -2130,9 +2216,6 @@ async fn unit_upgrade_request(
         .map(str::to_owned)
         .ok_or_else(|| ApiError::internal("an upgrade sheet without its target"))?;
     let plan = crate::api::unit_plan(node, account, &app_id, &version).await?;
-    // Judged on the whole unit, under its instance's policy, before any page exists, as
-    // `upgrade-unit` judges it: a unit red only through a member waits too.
-    crate::api::unit_gate(node, &plan, account).await?;
     let mut from = BTreeMap::from([(app_id.clone(), plan.app.bundle.clone())]);
     let mut pages = vec![root.clone()];
     for member in &plan.members {
@@ -2190,10 +2273,48 @@ async fn unit_upgrade_request(
         attention.retain(|a| a["flag"] != "newDestinations");
         attention.extend(unit_attention(c, &root["upgrade"]));
     }
+    // The approval of the whole unit's move, judged on its class over the members.
+    let green = unit
+        .as_ref()
+        .is_some_and(|c| c.class == calimero_bundle::update::Class::Green);
+    let running = node
+        .release_of_app(&plan.app)
+        .ok_or_else(|| ApiError::internal("a unit without its release"))?
+        .at;
+    let to_release = PackageRef {
+        package: running.package.clone(),
+        version: version.clone(),
+        service: running.service.clone(),
+        compute: false,
+    };
+    // The approval of the whole unit's move, of exactly its targets (as `upgrade-unit` and
+    // apply judge it), so a unit red only through a member is approved first here too.
+    let step = updates::approval_step(node, &plan.app, &to_release, &plan.targets, green, account)?;
+    let moves: Vec<String> = pages
+        .iter()
+        .skip(1)
+        .filter_map(|m| {
+            Some(format!(
+                "{} {} to {}",
+                m["scope"]["name"].as_str()?,
+                m["upgrade"]["from"]["version"].as_str()?,
+                m["upgrade"]["to"]["version"].as_str()?
+            ))
+        })
+        .collect();
+    let update = updates::update_section(
+        node,
+        &plan.app,
+        unit.as_ref(),
+        &step,
+        (&running.version, &version),
+        moves,
+    );
     let mut model = root.clone();
     if let Some(o) = model.as_object_mut() {
         let _prev = o.insert("kind".into(), json!("upgradeUnit"));
         let _prev = o.insert("unit".into(), json!(unit));
+        let _prev = o.insert("update".into(), update);
         let _prev = o.insert(
             "headline".into(),
             json!(format!(
@@ -2215,15 +2336,22 @@ async fn unit_upgrade_request(
                 .collect::<Vec<_>>()),
         );
     }
-    Ok((
+    let action = if step == updates::ApprovalStep::First {
+        Action::ApproveFirst {
+            app: app_id,
+            version,
+            unit: true,
+            from,
+        }
+    } else {
         Action::UpgradeUnit {
             app: app_id,
             version,
             targets: plan.targets,
             from,
-        },
-        model,
-    ))
+        }
+    };
+    Ok((action, model))
 }
 
 fn join(items: &[Value]) -> String {
@@ -2928,6 +3056,7 @@ enum PageRoute {
     Model,
     Approve,
     Decline,
+    Open,
 }
 
 /// Outside the sealed channel and CORS: `GET /consent/{id}`, `GET
@@ -2935,6 +3064,14 @@ enum PageRoute {
 /// /consent/{id}/decline`. Everything else goes on to the node's routes.
 pub async fn layer(State(node): State<Arc<Node>>, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_owned();
+    // The updates page is a request too, at its own address.
+    if let Some(id) = path.strip_prefix("/updates/") {
+        let get = req.method() == Method::GET || req.method() == Method::HEAD;
+        if get && is_request_id(id) {
+            return page(&node, id);
+        }
+        return next.run(req).await;
+    }
     let Some(rest) = path.strip_prefix("/consent/") else {
         return next.run(req).await;
     };
@@ -2948,6 +3085,7 @@ pub async fn layer(State(node): State<Arc<Node>>, req: Request, next: Next) -> R
         "model" if get => PageRoute::Model,
         "approve" if post => PageRoute::Approve,
         "decline" if post => PageRoute::Decline,
+        "open" if post => PageRoute::Open,
         _ => return next.run(req).await,
     };
     if !is_request_id(id) {
@@ -2956,14 +3094,15 @@ pub async fn layer(State(node): State<Arc<Node>>, req: Request, next: Next) -> R
     let id = id.to_owned();
     let answer = match route {
         PageRoute::Page => return page(&node, &id),
-        PageRoute::Model => model(&node, &id),
-        PageRoute::Approve | PageRoute::Decline => {
+        PageRoute::Model => page_model(&node, &id).await,
+        PageRoute::Approve | PageRoute::Decline | PageRoute::Open => {
             if let Err(e) = same_origin(&node, req.headers()) {
                 return guarded(e.into_response());
             }
             match to_bytes(req.into_body(), MAX_CONSENT_BODY_BYTES).await {
                 Err(_) => Err(ApiError::new(413, "TOO_LARGE", "body too large")),
                 Ok(body) if matches!(route, PageRoute::Approve) => approve(&node, &id, &body).await,
+                Ok(body) if matches!(route, PageRoute::Open) => open(&node, &id, &body).await,
                 Ok(_) => decline(&node, &id),
             }
         }
@@ -3062,6 +3201,47 @@ fn model(node: &Node, id: &str) -> Result<Value, ApiError> {
     Ok(m)
 }
 
+/// [`model`], and for the unlocked updates page what it lists, read now
+/// ([`updates::hub_model`]).
+async fn page_model(node: &Node, id: &str) -> Result<Value, ApiError> {
+    let mut m = model(node, id)?;
+    let r = node.consent.get(id, now_secs())?;
+    if let (Action::Updates { org }, Decision::Approved { .. }) = (&r.action, &r.decision) {
+        let _caught_up = node.sys_fresh().await;
+        m["locked"] = json!(false);
+        m["updates"] = updates::hub_model(node, &r.account, org.as_deref()).await;
+    }
+    Ok(m)
+}
+
+/// `POST /consent/{id}/open { kind, subject }`: from the unlocked updates page `id`, an
+/// update sheet (`upgrade`, `upgradeUnit`) or a policy change (`updatePolicy`) for its
+/// account, returning to the updates page; answers where that page is.
+async fn open(node: &Arc<Node>, id: &str, body: &[u8]) -> Result<Value, ApiError> {
+    let r = node.consent.get(id, now_secs())?;
+    if !r.is_hub() {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "only the updates page opens other requests",
+        ));
+    }
+    if !matches!(r.decision, Decision::Approved { .. }) {
+        return Err(ApiError::new(
+            409,
+            "LOCKED",
+            "confirm it is you on the updates page first",
+        ));
+    }
+    let body: updates::OpenBody = serde_json::from_slice(body)
+        .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?;
+    let base = Url::parse(&node.config.public_url)
+        .map_err(|e| ApiError::internal(&format!("this node's public URL: {e}")))?;
+    let back = base
+        .join(&format!("updates/{id}"))
+        .map_err(|e| ApiError::internal(&e.to_string()))?;
+    updates::open(node, &r.account, back, body).await
+}
+
 // ---------------------------------------------------------------- verifier
 
 /// The longest `--attestation-verifier-url` taken.
@@ -3142,6 +3322,40 @@ fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
         | Action::CreateInvite { .. }
         | Action::AcceptInvite { .. } => Ok(()),
         Action::Org(a) => orgs::still_current(node, a),
+        Action::Updates { .. } => Ok(()),
+        Action::Install { install, mpk } => {
+            let now = node.sys(|s| {
+                s.packages
+                    .get(&install.package)?
+                    .versions
+                    .get(install.version.as_deref()?)
+                    .map(|v| v.mpk.clone())
+            });
+            if now.as_ref() != Some(mpk) {
+                return Err(stale(&format!(
+                    "{} {}",
+                    install.package,
+                    install.version.as_deref().unwrap_or_default()
+                )));
+            }
+            Ok(())
+        }
+        Action::UpdatePolicy { org, app, own, .. } => {
+            if node.sys(|s| s.policy_json(org, app.as_deref()))["own"] != *own {
+                return Err(stale("the update policy"));
+            }
+            Ok(())
+        }
+        Action::ApproveFirst { from, .. } => {
+            let moved = node.sys(|s| {
+                from.iter()
+                    .any(|(app, bundle)| s.apps.get(app).map(|a| &a.bundle) != Some(bundle))
+            });
+            if moved {
+                return Err(stale("the release the app runs"));
+            }
+            Ok(())
+        }
         Action::Delegate {
             source,
             source_release,
@@ -3206,7 +3420,7 @@ fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
 /// `POST /consent/{id}/approve`: without `confirm`, the route's own `412
 /// CONFIRM_REQUIRED` over the request's frozen arguments; with it, the
 /// approval, written as the request's account, and where to go next.
-async fn approve(node: &Node, id: &str, body: &[u8]) -> Result<Value, ApiError> {
+async fn approve(node: &Arc<Node>, id: &str, body: &[u8]) -> Result<Value, ApiError> {
     let body: ApproveBody = if body.is_empty() {
         ApproveBody { confirm: None }
     } else {
@@ -3277,26 +3491,84 @@ impl Acted {
 /// Run the request's route as its account, through the consent page.
 /// `sys_index` is the index the approval's round named: the route's own
 /// checks wait for it rather than run another round (`Node::sys_fresh_from`).
+/// The principal the page acts as for `account`: this node vouches for the account, as for
+/// a session it signed.
+fn page_principal(node: &Node, account: &str, sys_index: Option<u64>) -> Principal {
+    Principal {
+        caller: Caller::Account {
+            account: account.to_owned(),
+        },
+        session: None,
+        api_key: None,
+        issuer_release: Some(node.own_release()),
+        consent_page: true,
+        sys_index,
+    }
+}
+
 async fn act(
-    node: &Node,
+    node: &Arc<Node>,
     req: &ConsentRequest,
     confirm: Option<ConfirmBody>,
     sys_index: Option<u64>,
 ) -> Result<Acted, ApiError> {
-    let p = Principal {
-        caller: Caller::Account {
-            account: req.account.clone(),
-        },
-        session: None,
-        api_key: None,
-        // This node vouches for the account, as for a session it signed.
-        issuer_release: Some(node.own_release()),
-        consent_page: true,
-        sys_index,
-    };
+    let p = page_principal(node, &req.account, sys_index);
     let account_subject = format!("account:{}", req.account);
     let Json(v) = match &req.action {
         Action::Org(a) => return orgs::act(node, &p, a, confirm).await,
+        Action::Updates { org } => {
+            // Nothing is logged: the passkey shows the list to the person on this page,
+            // never to the app that holds its address.
+            let _consent = consent(
+                node,
+                &p,
+                &account_subject,
+                "__view_updates",
+                &json!({ "org": org }),
+                confirm,
+            )
+            .await?;
+            return Ok(Acted::shown(json!({ "unlocked": true })));
+        }
+        Action::Install { install, .. } => {
+            // `POST /apps` takes no passkey; the page does, so the person (not the app that
+            // sent them) creates it. Nothing is logged beyond what `POST /apps` logs.
+            let args = json!({
+                "name": install.name,
+                "package": install.package,
+                "version": install.version,
+                "deployment": install.deployment,
+                "org": install.org,
+            });
+            let _consent = consent(
+                node,
+                &p,
+                &account_subject,
+                "__create_instance",
+                &args,
+                confirm,
+            )
+            .await?;
+            let v =
+                crate::api::apps::create_installed(node, &p, req.account.clone(), install.clone())
+                    .await?;
+            let outcome = json!({ "appId": v["appId"], "links": v["links"] });
+            return Ok(Acted {
+                shown: outcome.clone(),
+                outcome: Some(outcome),
+            });
+        }
+        Action::UpdatePolicy {
+            org, app, policy, ..
+        } => {
+            crate::api::set_upgrade_policy(node, &p, org, app.as_deref(), *policy, confirm).await?
+        }
+        Action::ApproveFirst {
+            app, version, unit, ..
+        } => {
+            let record = node.app(app).await?;
+            crate::api::approve_upgrade(node, &p, &record, version, *unit, confirm).await?
+        }
         Action::CreateOrg {
             name,
             app_team,

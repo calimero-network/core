@@ -48,6 +48,7 @@ class AppUpdateResponse200AvailableType0:
         new_methods (Union[Unset, list[str]]):
         removed_methods (Union[Unset, list[str]]):
         signer_changed (Union[Unset, bool]):
+        summary (Union[Unset, str]):
         approved_by (Union[Unset, str]):
     """
 
@@ -74,6 +75,7 @@ class AppUpdateResponse200AvailableType0:
     new_methods: Union[Unset, list[str]] = UNSET
     removed_methods: Union[Unset, list[str]] = UNSET
     signer_changed: Union[Unset, bool] = UNSET
+    summary: Union[Unset, str] = UNSET
     approved_by: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -136,6 +138,8 @@ class AppUpdateResponse200AvailableType0:
 
         signer_changed = self.signer_changed
 
+        summary = self.summary
+
         approved_by = self.approved_by
 
         field_dict: dict[str, Any] = {}
@@ -162,6 +166,8 @@ class AppUpdateResponse200AvailableType0:
             field_dict["removedMethods"] = removed_methods
         if signer_changed is not UNSET:
             field_dict["signerChanged"] = signer_changed
+        if summary is not UNSET:
+            field_dict["summary"] = summary
         if approved_by is not UNSET:
             field_dict["approvedBy"] = approved_by
 
@@ -286,6 +292,8 @@ class AppUpdateResponse200AvailableType0:
 
         signer_changed = d.pop("signerChanged", UNSET)
 
+        summary = d.pop("summary", UNSET)
+
         approved_by = d.pop("approvedBy", UNSET)
 
         app_update_response_200_available_type_0 = cls(
@@ -300,6 +308,7 @@ class AppUpdateResponse200AvailableType0:
             new_methods=new_methods,
             removed_methods=removed_methods,
             signer_changed=signer_changed,
+            summary=summary,
             approved_by=approved_by,
         )
 

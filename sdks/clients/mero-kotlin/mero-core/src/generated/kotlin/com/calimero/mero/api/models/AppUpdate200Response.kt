@@ -38,6 +38,7 @@ import kotlinx.serialization.Contextual
  * @param app 
  * @param running 
  * @param available 
+ * @param unit 
  * @param mayApprove 
  * @param approvers 
  * @param policy 
@@ -55,6 +56,9 @@ data class AppUpdate200Response (
 
     @SerialName(value = "available")
     val available: AppUpdate200ResponseAvailable?,
+
+    @SerialName(value = "unit")
+    val unit: kotlin.Boolean,
 
     @SerialName(value = "mayApprove")
     val mayApprove: kotlin.Boolean,

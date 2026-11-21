@@ -7,6 +7,7 @@ class ConsentPageResultResponse200Kind(str, Enum):
     CREATEORG = "createOrg"
     DELEGATE = "delegate"
     DELETEORG = "deleteOrg"
+    INSTALL = "install"
     LEAVEORG = "leaveOrg"
     OUTBOUND = "outbound"
     RELEASE = "release"
@@ -18,6 +19,8 @@ class ConsentPageResultResponse200Kind(str, Enum):
     SETCAPABILITIES = "setCapabilities"
     SETMEMBERROLE = "setMemberRole"
     SETMEMBERTEAMS = "setMemberTeams"
+    UPDATEPOLICY = "updatePolicy"
+    UPDATES = "updates"
     UPGRADE = "upgrade"
     UPGRADEUNIT = "upgradeUnit"
 

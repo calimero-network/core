@@ -1348,8 +1348,9 @@ is its command line.
   `MAX_APPROVAL_AGE_SECS` of the upgrade's `at`, approver still an owner or admin, not
   every covered app at its target), else `SECOND_APPROVAL_REQUIRED`;
   `drop_spent_approvals` after each upgrade. A unit's run is judged once, under its
-  instance's policy (`run_update_gate`, `api::unit_gate` for `upgrade_unit` and the
-  consent page's `upgradeUnit` before the passkey or any page): the instance's
+  instance's policy (`run_update_gate`, `api::unit_gate` for `upgrade_unit` before the
+  passkey; the consent page's `upgradeUnit` asks `approval_step` over the unit's class and
+  targets, so a unit red only through a member is approved first there): the instance's
   `UpgradeApp` carries the unit's class (`api::upgrades::run_class`) judged over the
   run's targets, its approval must have the same `targets` (`approval_for` looks at
   every live approval, so a parent unit's covering one never hides it), and each member the run
@@ -1375,7 +1376,7 @@ is its command line.
   `a_units_own_approval_is_found_past_a_parent_units`,
   `only_a_units_run_keeps_member_targets`),
   `a_red_update_waits_for_a_second_approver`,
-  `a_unit_red_through_a_member_gets_no_page_without_a_second_approver`,
+  `a_unit_red_through_a_member_is_approved_first_on_its_page`,
   `a_unit_moves_whole_under_its_instances_policy` (`tests/consent_page.rs`).
 - **Updates on their own, restore points, undo and waves** (C9; `system/updates.rs`,
   `system/rollouts.rs`, `node/auto_updates.rs`, `node/restore_points.rs`, `api/undo.rs`,
@@ -1448,6 +1449,31 @@ is its command line.
   `node::auto_updates::tests`, `api::undo::tests`. Not done: an automatic update that
   moves a unit's members, waves for a publisher's run, a restore point kept on more than
   one node.
+- **Install and update pages** (C10; `consent_page/updates.rs`; docs: protocol consent page
+  "Installs, updates and update policies", build "Show updates in your app"): the words
+  (`reason_words`, `update_summary`, `policy_words`) shared by the sheets, the updates page
+  and `GET /apps/{app}/update`'s `available.summary` (the design's `GET /apps/{app}/updates`:
+  `/update` already answers it; `unit` says whether members move with it). Consent kinds:
+  `install` (`install_request`: a bound frontend asks for its own installed package only; the
+  release installed already, `409 NOT_INSTALLED`; the unit from `egress::release_unit`; `act`
+  runs `api::apps::create_installed` (`POST /apps`'s `create_instance`, `from_frontend` for
+  the bound session's visibility) behind an unlogged `account:<a> / __create_instance` step-up;
+  `outcome { appId, links }`), `updatePolicy` (`policy_request`; `act` runs
+  `api::set_upgrade_policy`, the routes' shared code), and the upgrade sheets' `update`
+  (`update_section`: class, reasons in words, destinations, state version, policy,
+  `approval { needed, step: only|first|second }`, `keepByDefault` for a red update adding a
+  destination). `approval_step`: under `secondApprover` a red (or unclassified) update with no
+  other approver's live first approval is `Action::ApproveFirst` ("Approve (1 of 2)", `act` runs
+  `api::approve_upgrade`, the upgrade-approvals route's code); with one, the usual upgrade
+  ("Approve and update (2 of 2)"); the person's own waiting is `409 SECOND_APPROVAL_REQUIRED`.
+  The updates page (`updates { org? }`, `Action::Updates`, served at `/updates/{id}`) lists
+  nothing until an unlogged `__view_updates` step-up (its address is the app's), then
+  `page_model` reads `hub_model` live (`MAX_UPDATES_PAGE_APPS`); `POST /consent/{id}/open`
+  (same-origin, unlocked, `409 LOCKED`) holds an ordinary child request returning to it.
+  `ConsentRequests::insert` keeps it apart from the one undecided request per account
+  (`is_hub`). No feature gate: the log entries are the routes'. Regressions:
+  `an_install_sheet_shows_what_gets_created_and_where_data_can_go`,
+  `an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`tests/consent_page.rs`).
 - **Upgrades are code-only**: a component upgrade swaps the bundle
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
   consent page shows the state version each side's `calimero:abi` declares and flags a
@@ -1749,7 +1775,7 @@ is its command line.
   `a_custom_domains_host_names_one_origin`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
-  `POST /consent/requests { kind: release|upgrade|upgradeUnit|delegate|outbound|createOrg|createInvite|acceptInvite|leaveOrg|removeMember|setMemberRole|setMemberTeams|removeMemberTeams|revokeInvite|renameOrg|deleteOrg|setCapabilities|setAllApps,
+  `POST /consent/requests { kind: release|upgrade|upgradeUnit|delegate|outbound|createOrg|createInvite|acceptInvite|leaveOrg|removeMember|setMemberRole|setMemberTeams|removeMemberTeams|revokeInvite|renameOrg|deleteOrg|setCapabilities|setAllApps|install|updatePolicy|updates,
   scope?, subject, returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
   `withdraw: true` withdrawing its approval) and gets `{ requestId, url,
   expiresAt, code }` (`consent_page::confirmation_code`, shown on the page

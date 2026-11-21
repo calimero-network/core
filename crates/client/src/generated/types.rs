@@ -3883,6 +3883,8 @@ pub struct AppUpdateResponseAvailable {
     #[serde(rename = "signerChanged")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer_changed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     #[serde(rename = "approvalsNeeded")]
     pub approvals_needed: u64,
     #[serde(rename = "approvedBy")]
@@ -4034,6 +4036,7 @@ pub struct AppUpdateResponse {
     pub app: String,
     pub running: Option<AppUpdateResponseRunning>,
     pub available: Option<AppUpdateResponseAvailable>,
+    pub unit: bool,
     #[serde(rename = "mayApprove")]
     pub may_approve: bool,
     pub approvers: AppUpdateResponseApprovers,
@@ -4942,6 +4945,105 @@ pub struct ConsentPageCreateRequestSetAllAppsSubject {
     pub all_apps: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestInstallSubjectNewOrg {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestInstallSubject {
+    pub package: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<String>,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    #[serde(rename = "newOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_org: Option<ConsentPageCreateRequestInstallSubjectNewOrg>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    #[serde(rename = "initArgs")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub init_args: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ConsentPageCreateRequestUpdatePolicySubjectPolicyAutoApply {
+    /// `never`.
+    Never,
+    /// `noDestinations`.
+    NoDestinations,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl ConsentPageCreateRequestUpdatePolicySubjectPolicyAutoApply {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Never => "never",
+            Self::NoDestinations => "noDestinations",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for ConsentPageCreateRequestUpdatePolicySubjectPolicyAutoApply {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ConsentPageCreateRequestUpdatePolicySubjectPolicyAutoApply {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "never" => Self::Never,
+            "noDestinations" => Self::NoDestinations,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestUpdatePolicySubjectPolicy {
+    #[serde(rename = "autoApply")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_apply: Option<ConsentPageCreateRequestUpdatePolicySubjectPolicyAutoApply>,
+    #[serde(rename = "holdHours")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_hours: Option<u64>,
+    #[serde(rename = "secondApprover")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub second_approver: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestUpdatePolicySubject {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub policy: Option<Option<ConsentPageCreateRequestUpdatePolicySubjectPolicy>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestUpdatesSubject {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum ConsentPageCreateRequest {
@@ -5055,6 +5157,25 @@ pub enum ConsentPageCreateRequest {
         return_to: String,
         subject: ConsentPageCreateRequestSetAllAppsSubject,
     },
+    #[serde(rename = "install")]
+    Install {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestInstallSubject,
+    },
+    #[serde(rename = "updatePolicy")]
+    UpdatePolicy {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestUpdatePolicySubject,
+    },
+    #[serde(rename = "updates")]
+    Updates {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subject: Option<ConsentPageCreateRequestUpdatesSubject>,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -5108,6 +5229,12 @@ pub enum ConsentPageResultResponseKind {
     SetCapabilities,
     /// `setAllApps`.
     SetAllApps,
+    /// `install`.
+    Install,
+    /// `updatePolicy`.
+    UpdatePolicy,
+    /// `updates`.
+    Updates,
     /// A value this client does not know yet.
     Other(String),
 }
@@ -5135,6 +5262,9 @@ impl ConsentPageResultResponseKind {
             Self::DeleteOrg => "deleteOrg",
             Self::SetCapabilities => "setCapabilities",
             Self::SetAllApps => "setAllApps",
+            Self::Install => "install",
+            Self::UpdatePolicy => "updatePolicy",
+            Self::Updates => "updates",
             Self::Other(s) => s,
         }
     }
@@ -5167,6 +5297,9 @@ impl<'de> Deserialize<'de> for ConsentPageResultResponseKind {
             "deleteOrg" => Self::DeleteOrg,
             "setCapabilities" => Self::SetCapabilities,
             "setAllApps" => Self::SetAllApps,
+            "install" => Self::Install,
+            "updatePolicy" => Self::UpdatePolicy,
+            "updates" => Self::Updates,
             other => Self::Other(other.to_owned()),
         })
     }
@@ -5230,6 +5363,11 @@ pub struct ConsentPageResultResponseOutcome {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apps: Option<Vec<String>>,
+    #[serde(rename = "appId")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<BTreeMap<String, String>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

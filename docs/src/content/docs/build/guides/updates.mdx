@@ -1,0 +1,109 @@
+---
+title: Show updates in your app
+description: Tell your users an update of their instance is waiting, in the node's own words (green or red, and why), and send whoever approves updates to the node's page to review it, with mero-js client.updates or mero-react's UpdateBanner.
+sidebar:
+  order: 12
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Task:** when you offer a new release, show the people using your app that an
+update of their instance is waiting, say in one line what it changes, and let
+the person who may approve it open the review, without your page ever
+approving anything itself.
+
+An instance is updated only when an owner or admin of its organization
+approves the update on the node's own consent page, with their passkey
+([The consent page](/protocol/consent-page/), [upgrades](/protocol/upgrades/)).
+Your frontend's session is bound to your package, and the node refuses it every
+approval route: it can only read the update and open the page.
+
+## What the node says about an update
+
+`GET /apps/{app}/update` (any session that reaches the instance, your
+frontend's included) answers the update available to it and the node's
+verdict over the whole unit, the app and the apps it created with it:
+
+- `available.class`: **green** when nothing changes where data goes (the same
+  signer, no new destination, the same state version, no new way to act as the
+  person), else **red**, with `reasons`.
+- `available.summary`: one plain line for your banner, the same words the
+  node's pages use: "Nothing changes where your data goes", "This update can
+  send data to a new place: api.acme.com", or the first reason.
+- `mayApprove`: whether the signed-in person may approve it (an owner or admin
+  of the instance's organization); `unit`: whether apps it created move with it.
+- `available.approvalsNeeded` and `approvedBy`: where the organization's policy
+  asks for a second approver, a red update needs two owners or admins.
+
+The design's `GET /apps/{app}/updates` is this route: it already names the
+pending release, its class and the line to show, so no second route exists.
+
+## In React: one line
+
+```tsx
+import { ConsentPopupReturn, UpdateBanner } from '@calimero-network/mero-react';
+
+export function App() {
+  return (
+    <ConsentPopupReturn>
+      <UpdateBanner />
+      {/* … the app … */}
+    </ConsentPopupReturn>
+  );
+}
+```
+
+`UpdateBanner` renders nothing while there is no update. With one it shows
+"Update 1.4.0 is ready · Nothing changes where your data goes" and the class.
+"Review" opens the node's update sheet in a pop-up, waits for the decision and
+reads the update again. A member who may not approve sees "An owner or admin
+approves updates" instead of the button. `useUpdate(app)` gives the same data
+(`banner`, `review()`) for a banner of your own. Mount `ConsentPopupReturn` at
+the root so the pop-up closes itself when the node sends it back.
+
+## With mero-js
+
+```ts
+const view = await client.updates.get(appId);         // GET /apps/{app}/update
+if (view.available) {
+  showBanner(view.available.version, view.available.summary, view.mayApprove);
+}
+
+// In the click handler of "Review": the node's update sheet, in a pop-up.
+const opened = await client.updates.openSheet(appId);
+const result = await client.waitForConsent(opened.requestId, { expiresAt: opened.expiresAt });
+```
+
+`openSheet` opens the pop-up before its first request, so call it from the
+click. It asks for an `upgradeUnit` sheet when the instance has apps of its
+own, else an `upgrade` sheet, to the available version; the page returns to the
+current page (`returnTo`).
+
+Other pages the node serves, each opened the same way:
+
+- `client.updates.manage()`: the node's **updates page** ("Manage updates"):
+  after the person confirms with their passkey there, every update waiting
+  across the apps they approve, and their organizations' policies.
+- `client.updates.policy.set({ org } | { app }, policy)`: change an update
+  policy on the node's page; `client.updates.policy.get(...)` reads it.
+- `client.updates.install({ package, deployment, name })`: the **install
+  sheet**, which creates an instance and its unit after showing what gets
+  created, where data can go and that updates wait for an approval.
+- `client.updates.approve(app)`: the first of two approvals of a red update,
+  for a session that is not bound to a frontend (a console, a script with a
+  passkey); a frontend opens the sheet instead.
+
+## What the person sees
+
+The sheet leads with the class: green ("Nothing changes where your data goes")
+or red with each reason in plain words. Under it: the destinations before and
+after, whether it acts as the person in other apps, new methods, the state
+version, the apps it created and the policy that applies. A red update that
+adds a destination makes **Keep 1.4** the leading button. Where the policy asks
+for a second approver, the first owner or admin sees **Approve (1 of 2)** and
+the second **Approve and update (2 of 2)**.
+
+<Aside type="caution">
+Never put an approve button in your own UI: the node would refuse it, and the
+person should learn to approve only on the node's page, on its own origin.
+</Aside>

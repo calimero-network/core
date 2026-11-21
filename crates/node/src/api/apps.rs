@@ -394,6 +394,50 @@ pub(super) struct CreateAppBody {
     /// unit_offer }`). The node's own, never a client's.
     #[serde(skip)]
     unit_offer: Option<PackageRef>,
+    /// Asked by a session bound to the package's own frontend through the consent page's
+    /// install sheet: it runs a release that frontend sees, as `POST /apps` from that
+    /// session does. The node's own, never a client's.
+    #[serde(skip)]
+    from_frontend: bool,
+}
+
+/// What the consent page's install sheet creates (`install`), in `POST /apps`'s terms.
+#[derive(Clone, Debug)]
+pub(crate) struct Install {
+    pub name: String,
+    pub package: String,
+    pub version: Option<String>,
+    pub deployment: Option<String>,
+    pub org: Option<String>,
+    pub new_org: Option<String>,
+    pub init_args: Value,
+    /// Asked from the package's own frontend (a session bound to it).
+    pub from_frontend: bool,
+}
+
+/// Create the instance an install sheet showed, for `owner`, as `POST /apps` does.
+pub(crate) async fn create_installed(
+    node: &Arc<Node>,
+    p: &Principal,
+    owner: String,
+    i: Install,
+) -> Result<Value, ApiError> {
+    let body = CreateAppBody {
+        name: i.name,
+        bundle: None,
+        package: Some(i.package),
+        version: i.version,
+        service: None,
+        org: i.org,
+        new_org: i.new_org.map(|name| NewOrgBody { name }),
+        grants: None,
+        init_args: i.init_args,
+        metadata: Value::Null,
+        deployment: i.deployment,
+        unit_offer: None,
+        from_frontend: i.from_frontend,
+    };
+    create_instance(node, p, owner, body, 0).await
 }
 
 async fn app_create(
@@ -489,7 +533,7 @@ async fn create_instance(
                 // Checked above: a bound session names its own package only. A member from
                 // a deployment runs the release its instance's offered release pins, whether
                 // or not its owner sees it otherwise, as the instance does.
-                p.bound_app().is_some() || body.unit_offer.is_some(),
+                p.bound_app().is_some() || body.unit_offer.is_some() || body.from_frontend,
             )
             .await?
         }
@@ -600,6 +644,7 @@ async fn create_instance(
                         metadata: json!({ "unit": { "of": body.name, "as": name } }),
                         deployment: body.deployment.clone(),
                         unit_offer: unit_offer.clone(),
+                        from_frontend: body.from_frontend,
                     };
                     let made = Box::pin(create_instance(node, p, owner.clone(), member, depth + 1))
                         .await?;

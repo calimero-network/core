@@ -216,9 +216,27 @@ from .consent_page_create_body_type_16_subject import ConsentPageCreateBodyType1
 from .consent_page_create_body_type_17 import ConsentPageCreateBodyType17
 from .consent_page_create_body_type_17_kind import ConsentPageCreateBodyType17Kind
 from .consent_page_create_body_type_17_subject import ConsentPageCreateBodyType17Subject
+from .consent_page_create_body_type_18 import ConsentPageCreateBodyType18
+from .consent_page_create_body_type_18_kind import ConsentPageCreateBodyType18Kind
+from .consent_page_create_body_type_18_subject import ConsentPageCreateBodyType18Subject
+from .consent_page_create_body_type_18_subject_new_org import (
+    ConsentPageCreateBodyType18SubjectNewOrg,
+)
+from .consent_page_create_body_type_19 import ConsentPageCreateBodyType19
+from .consent_page_create_body_type_19_kind import ConsentPageCreateBodyType19Kind
+from .consent_page_create_body_type_19_subject import ConsentPageCreateBodyType19Subject
+from .consent_page_create_body_type_19_subject_policy_type_0 import (
+    ConsentPageCreateBodyType19SubjectPolicyType0,
+)
+from .consent_page_create_body_type_19_subject_policy_type_0_auto_apply import (
+    ConsentPageCreateBodyType19SubjectPolicyType0AutoApply,
+)
 from .consent_page_create_body_type_1_kind import ConsentPageCreateBodyType1Kind
 from .consent_page_create_body_type_1_subject import ConsentPageCreateBodyType1Subject
 from .consent_page_create_body_type_2 import ConsentPageCreateBodyType2
+from .consent_page_create_body_type_20 import ConsentPageCreateBodyType20
+from .consent_page_create_body_type_20_kind import ConsentPageCreateBodyType20Kind
+from .consent_page_create_body_type_20_subject import ConsentPageCreateBodyType20Subject
 from .consent_page_create_body_type_2_kind import ConsentPageCreateBodyType2Kind
 from .consent_page_create_body_type_2_subject import ConsentPageCreateBodyType2Subject
 from .consent_page_create_body_type_3 import ConsentPageCreateBodyType3
@@ -256,6 +274,9 @@ from .consent_page_result_response_200 import ConsentPageResultResponse200
 from .consent_page_result_response_200_kind import ConsentPageResultResponse200Kind
 from .consent_page_result_response_200_outcome import (
     ConsentPageResultResponse200Outcome,
+)
+from .consent_page_result_response_200_outcome_links import (
+    ConsentPageResultResponse200OutcomeLinks,
 )
 from .consent_page_result_response_200_status import ConsentPageResultResponse200Status
 from .dead_letter import DeadLetter
@@ -954,9 +975,21 @@ __all__ = (
     "ConsentPageCreateBodyType17",
     "ConsentPageCreateBodyType17Kind",
     "ConsentPageCreateBodyType17Subject",
+    "ConsentPageCreateBodyType18",
+    "ConsentPageCreateBodyType18Kind",
+    "ConsentPageCreateBodyType18Subject",
+    "ConsentPageCreateBodyType18SubjectNewOrg",
+    "ConsentPageCreateBodyType19",
+    "ConsentPageCreateBodyType19Kind",
+    "ConsentPageCreateBodyType19Subject",
+    "ConsentPageCreateBodyType19SubjectPolicyType0",
+    "ConsentPageCreateBodyType19SubjectPolicyType0AutoApply",
     "ConsentPageCreateBodyType1Kind",
     "ConsentPageCreateBodyType1Subject",
     "ConsentPageCreateBodyType2",
+    "ConsentPageCreateBodyType20",
+    "ConsentPageCreateBodyType20Kind",
+    "ConsentPageCreateBodyType20Subject",
     "ConsentPageCreateBodyType2Kind",
     "ConsentPageCreateBodyType2Subject",
     "ConsentPageCreateBodyType3",
@@ -987,6 +1020,7 @@ __all__ = (
     "ConsentPageResultResponse200",
     "ConsentPageResultResponse200Kind",
     "ConsentPageResultResponse200Outcome",
+    "ConsentPageResultResponse200OutcomeLinks",
     "ConsentPageResultResponse200Status",
     "DeadLetter",
     "Deadlines",

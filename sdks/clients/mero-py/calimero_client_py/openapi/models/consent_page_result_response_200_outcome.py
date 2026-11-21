@@ -10,6 +10,12 @@ from ..types import UNSET, Unset
 from typing import cast
 from typing import Union
 
+if TYPE_CHECKING:
+    from ..models.consent_page_result_response_200_outcome_links import (
+        ConsentPageResultResponse200OutcomeLinks,
+    )
+
+
 T = TypeVar("T", bound="ConsentPageResultResponse200Outcome")
 
 
@@ -23,6 +29,8 @@ class ConsentPageResultResponse200Outcome:
         org (Union[Unset, str]):
         name (Union[Unset, str]):
         apps (Union[Unset, list[str]]):
+        app_id (Union[Unset, str]):
+        links (Union[Unset, ConsentPageResultResponse200OutcomeLinks]):
     """
 
     org_id: Union[Unset, str] = UNSET
@@ -31,9 +39,15 @@ class ConsentPageResultResponse200Outcome:
     org: Union[Unset, str] = UNSET
     name: Union[Unset, str] = UNSET
     apps: Union[Unset, list[str]] = UNSET
+    app_id: Union[Unset, str] = UNSET
+    links: Union[Unset, "ConsentPageResultResponse200OutcomeLinks"] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.consent_page_result_response_200_outcome_links import (
+            ConsentPageResultResponse200OutcomeLinks,
+        )
+
         org_id = self.org_id
 
         team_id = self.team_id
@@ -47,6 +61,12 @@ class ConsentPageResultResponse200Outcome:
         apps: Union[Unset, list[str]] = UNSET
         if not isinstance(self.apps, Unset):
             apps = self.apps
+
+        app_id = self.app_id
+
+        links: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.links, Unset):
+            links = self.links.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -63,11 +83,19 @@ class ConsentPageResultResponse200Outcome:
             field_dict["name"] = name
         if apps is not UNSET:
             field_dict["apps"] = apps
+        if app_id is not UNSET:
+            field_dict["appId"] = app_id
+        if links is not UNSET:
+            field_dict["links"] = links
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.consent_page_result_response_200_outcome_links import (
+            ConsentPageResultResponse200OutcomeLinks,
+        )
+
         d = dict(src_dict)
         org_id = d.pop("orgId", UNSET)
 
@@ -81,6 +109,15 @@ class ConsentPageResultResponse200Outcome:
 
         apps = cast(list[str], d.pop("apps", UNSET))
 
+        app_id = d.pop("appId", UNSET)
+
+        _links = d.pop("links", UNSET)
+        links: Union[Unset, ConsentPageResultResponse200OutcomeLinks]
+        if isinstance(_links, Unset):
+            links = UNSET
+        else:
+            links = ConsentPageResultResponse200OutcomeLinks.from_dict(_links)
+
         consent_page_result_response_200_outcome = cls(
             org_id=org_id,
             team_id=team_id,
@@ -88,6 +125,8 @@ class ConsentPageResultResponse200Outcome:
             org=org,
             name=name,
             apps=apps,
+            app_id=app_id,
+            links=links,
         )
 
         consent_page_result_response_200_outcome.additional_properties = d
