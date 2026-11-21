@@ -4195,3 +4195,117 @@ async fn a_unit_moves_whole_under_its_instances_policy() {
     // The instance's record carries the unit's class: red, the member's destination.
     assert_eq!(instance["lastUpgrade"]["class"], "red", "{instance}");
 }
+
+/// The step-up right after a sign-in on an app's own origin (a frontend served at
+/// `<label>.<apps_domain>`, its passkey asserting there): the `412 CONFIRM_REQUIRED` a
+/// confirm method answers, then its retry with the assertion, wherever each lands. The
+/// challenge lives on the node that began it (`{node}.{random}`) and any node takes it
+/// from there, so the retry is never `UNKNOWN_CHALLENGE`: on the node the session was made
+/// on, on the node that asked, or on another; through the typed client in one go; and an
+/// upgrade approved on the consent page the frontend opens through another node. (The
+/// reported `UNKNOWN_CHALLENGE` did not reproduce on 1, 3 or 5 nodes; this is its coverage.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let n = c.urls.len();
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    for version in ["1.0.0", "2.0.0"] {
+        let (mpk, _) = release(version, &kv_wasm(), &publisher, &Declares::default());
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let app_origin = |i: usize| {
+        let port = url::Url::parse(&c.urls[i]).unwrap().port().unwrap();
+        format!(
+            "http://{}.localhost:{port}",
+            calimero_node::app_host::label(PACKAGE)
+        )
+    };
+    let clear = || {
+        Request::new(Method::POST, format!("apps/{app}/intents"))
+            .json(json!({ "method": "clear", "args": {} }))
+    };
+    // One passkey throughout, so its signature counter only moves forward.
+    let mut key = alice_key;
+    for signed_in_at in 0..n {
+        let mut in_app_key =
+            SoftAuthenticator::with_key(&key, "localhost", &app_origin(signed_in_at));
+        let in_app = c.client(signed_in_at);
+        let session = in_app.sign_in(&mut in_app_key).await.unwrap();
+        // The very next step-up, through the typed client: the 412, then its retry.
+        let done = in_app
+            .apps()
+            .call(&app, "clear", Some(json!({})), None, Some(&mut in_app_key))
+            .await;
+        assert!(
+            done.is_ok(),
+            "signed in on node {signed_in_at}: {:?}",
+            done.err()
+        );
+        // Asked on one node, answered on each, the same session on both.
+        for asked_at in 0..n {
+            for answered_at in 0..n {
+                let asking = c.client(asked_at);
+                asking.use_session(session.clone()).await;
+                let e = asking.transport().json(clear()).await.unwrap_err();
+                assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+                let d = e.details().unwrap().clone();
+                let challenge =
+                    calimero_identity::from_b64url(d["challenge"].as_str().unwrap()).unwrap();
+                let answering = c.client(answered_at);
+                answering.use_session(session.clone()).await;
+                let mut retry = clear();
+                if let calimero_client::Body::Json(Value::Object(b)) = &mut retry.body {
+                    let _prev = b.insert(
+                        "confirm".into(),
+                        json!({
+                            "challengeId": d["challengeId"],
+                            "assertion": in_app_key.assert(&challenge),
+                        }),
+                    );
+                }
+                let r = answering.transport().json(retry).await;
+                assert!(
+                    r.is_ok(),
+                    "signed in on node {signed_in_at}, asked on {asked_at}, answered on \
+                     {answered_at}: {:?}",
+                    r.err()
+                );
+            }
+        }
+        key = in_app_key;
+    }
+
+    // The consent page the frontend opens: asked with the app-origin session, approved
+    // with the same passkey on the node's own origin.
+    // Signed in on the first node, asked on the last.
+    let last = n - 1;
+    let mut in_app_key = SoftAuthenticator::with_key(&key, "localhost", &app_origin(0));
+    let session = c.client(0).sign_in(&mut in_app_key).await.unwrap();
+    let in_app = c.client(last);
+    in_app.use_session(session).await;
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgrade", "subject": { "app": app, "toVersion": "2.0.0" },
+                "returnTo": format!("{}/1.0.0/", app_origin(0)) }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let mut page_key = SoftAuthenticator::with_key(&in_app_key, "localhost", &origin(&url));
+    let ((code, done), _) = page.approve(&c, &mut page_key).await;
+    assert_eq!(code, 200, "{done}");
+}
