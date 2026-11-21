@@ -24,6 +24,7 @@ use crate::system::{normalize_addr, output, SystemCmd, SystemMachine, SystemStat
 use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord, NodeRole};
 use crate::usage::{Meter, Usage};
 
+mod auto_updates;
 pub(crate) mod blob_guards;
 mod cluster_version;
 mod component;
@@ -32,6 +33,11 @@ pub(crate) mod disk;
 mod job;
 pub(crate) mod recovery_disk;
 pub(crate) mod restore;
+mod restore_points;
+pub use auto_updates::{AUTO_UPDATE_EVERY, AUTO_UPDATE_RETRY_MAX_SECS, MAX_AUTO_UPDATES_PER_PASS};
+pub use restore_points::{
+    MAX_RESTORE_POINTS_PER_APP, RESTORE_POINTS_DIR, RESTORE_POINT_SWEEP_EVERY,
+};
 mod runtime;
 mod segments;
 
@@ -635,6 +641,16 @@ pub struct Node {
     /// The system leader's bookkeeping for the cluster version
     /// ([`Node::raise_cluster_version`]).
     cluster_version: Mutex<cluster_version::Raising>,
+    /// When the system leader's next pass of updates that apply on their own is due
+    /// ([`Node::auto_update`]), and whether one runs.
+    auto_update_due: Mutex<Option<tokio::time::Instant>>,
+    auto_updating: std::sync::atomic::AtomicBool,
+    /// What the system leader's passes remember between them: backoffs and verdicts
+    /// (in memory only, [`auto_updates::AutoUpdateMemory`]).
+    auto_update_memory: Mutex<auto_updates::AutoUpdateMemory>,
+    /// Held by each automatic-update pass while it runs ([`Node::auto_update_once`]), so
+    /// passes on this node never overlap.
+    auto_update_turn: tokio::sync::Mutex<()>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here (spec section 7).
@@ -1113,6 +1129,10 @@ impl Node {
             moving: Mutex::default(),
             promoting: std::sync::atomic::AtomicBool::new(false),
             cluster_version: Mutex::default(),
+            auto_update_due: Mutex::default(),
+            auto_updating: std::sync::atomic::AtomicBool::new(false),
+            auto_update_memory: Mutex::default(),
+            auto_update_turn: tokio::sync::Mutex::new(()),
             peer_releases: Mutex::new(HashMap::new()),
             peer_runtimes: Mutex::default(),
             callers: Mutex::new(HashMap::new()),
@@ -2394,6 +2414,7 @@ impl Node {
             }
             self.admit_registered_nodes();
             self.promote_learners();
+            self.auto_update();
         }
         // An app waiting for its backup (a cluster founded again) is hosted nowhere.
         // Through the replica index: this node's apps, not every app.
@@ -2933,12 +2954,20 @@ impl Node {
 
     /// When `app` last committed a write (Unix milliseconds,
     /// [`crate::app::AppMachine::last_write_ms`]), as a replica applied it:
-    /// this node's own if it hosts the app, else the first replica that
-    /// answers `internal/last-write`. `None` before the app's first write, and
+    /// [`Self::replica_progress`]'s. `None` before the app's first write, and
     /// when no replica answered.
     pub async fn last_write_ms(&self, app: &AppRecord) -> Option<u64> {
+        self.replica_progress(app).await?.last_write_ms
+    }
+
+    /// How far a replica of `app` got: this node's own if it hosts the app, else the
+    /// first replica that answers `internal/last-write`. `None` when no replica answered.
+    pub(crate) async fn replica_progress(&self, app: &AppRecord) -> Option<ReplicaProgress> {
         if let Some(g) = self.hosted(&app.app_id) {
-            return g.read_local(|m, _| m.last_write_ms());
+            return Some(g.read_local(|m, _| ReplicaProgress {
+                applied: Some(m.state.last_index),
+                last_write_ms: m.last_write_ms(),
+            }));
         }
         let body = json!({ "app": app.app_id });
         for id in &app.replicas {
@@ -2946,10 +2975,49 @@ impl Node {
                 continue;
             };
             if let Ok(v) = self.peer_forward(&addr, "internal/last-write", &body).await {
-                return v["lastWriteMs"].as_u64();
+                return Some(ReplicaProgress {
+                    // A replica on a release before answers without it.
+                    applied: v["appliedIndex"].as_u64(),
+                    last_write_ms: v["lastWriteMs"].as_u64(),
+                });
             }
         }
         None
+    }
+
+    /// How far `app`'s group got, as far as its replicas can say: every replica asked at
+    /// once (this node's own read if it is one, else `internal/last-write`), the furthest
+    /// applied index and the latest write among those that answer. `None` unless a
+    /// majority of the replicas answer ([`furthest_progress`]): any committed entry is
+    /// on a majority, so the furthest of a majority holds it, where the first replica to
+    /// answer may be behind. For an undo's lost writes (`api::undo::lost_writes`).
+    pub(crate) async fn group_progress(&self, app: &AppRecord) -> Option<ReplicaProgress> {
+        let body = json!({ "app": app.app_id });
+        let answers = futures_util::future::join_all(app.replicas.iter().map(|id| {
+            let body = &body;
+            async move {
+                if *id == self.config.node_id {
+                    let g = self.hosted(&app.app_id)?;
+                    return Some(g.read_local(|m, _| ReplicaProgress {
+                        applied: Some(m.state.last_index),
+                        last_write_ms: m.last_write_ms(),
+                    }));
+                }
+                let addr = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone()))?;
+                let v = self
+                    .peer_forward(&addr, "internal/last-write", body)
+                    .await
+                    .ok()?;
+                Some(ReplicaProgress {
+                    // A replica on a release before answers without it.
+                    applied: v["appliedIndex"].as_u64(),
+                    last_write_ms: v["lastWriteMs"].as_u64(),
+                })
+            }
+        }))
+        .await;
+        let answers: Vec<ReplicaProgress> = answers.into_iter().flatten().collect();
+        furthest_progress(&answers, app.replicas.len())
     }
 
     /// A component app's xcalls (D25, D29), `{ pending, deadLetters }`: this node's
@@ -3893,6 +3961,37 @@ where
     }
 }
 
+/// The furthest of `answers`, the replicas of a group of `replicas` that answered: the
+/// highest applied index (`None` when an answer has none, from a release before, as it may
+/// be the furthest) and the latest write. `None` below a majority of `replicas`.
+pub(crate) fn furthest_progress(
+    answers: &[ReplicaProgress],
+    replicas: usize,
+) -> Option<ReplicaProgress> {
+    if answers.is_empty() || answers.len() < replicas / 2 + 1 {
+        return None;
+    }
+    let applied = answers
+        .iter()
+        .map(|a| a.applied)
+        .collect::<Option<Vec<u64>>>()
+        .and_then(|i| i.into_iter().max());
+    Some(ReplicaProgress {
+        applied,
+        last_write_ms: answers.iter().filter_map(|a| a.last_write_ms).max(),
+    })
+}
+
+/// How far a replica of an app got ([`Node::replica_progress`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReplicaProgress {
+    /// The index of the app's last entry it applied (`AppState::last_index`); `None` from
+    /// a replica on a release before that answers without it.
+    pub applied: Option<u64>,
+    /// Its last write, Unix milliseconds; `None` before the app's first write.
+    pub last_write_ms: Option<u64>,
+}
+
 #[cfg(test)]
 mod retry_within_tests {
     use super::retry_within;
@@ -4008,5 +4107,34 @@ mod capability_refusal_tests {
         assert_eq!((e.status, e.code.as_str()), (403, "CANNOT_GRANT_UNHELD"));
         let e = rejected(crate::system::UNKNOWN_CAPABILITIES);
         assert_eq!((e.status, e.code.as_str()), (400, "UNKNOWN_CAPABILITIES"));
+    }
+}
+
+#[cfg(test)]
+mod group_progress_tests {
+    use super::{furthest_progress, ReplicaProgress};
+
+    fn at(applied: Option<u64>, last: Option<u64>) -> ReplicaProgress {
+        ReplicaProgress {
+            applied,
+            last_write_ms: last,
+        }
+    }
+
+    #[test]
+    fn the_furthest_of_a_majority_answers_never_a_lone_lagging_replica() {
+        // One of three is no majority, however far it got.
+        assert_eq!(furthest_progress(&[at(Some(9), Some(5))], 3), None);
+        assert_eq!(furthest_progress(&[], 3), None);
+        // Two of three: the furthest index and the latest write, from whichever saw them.
+        assert_eq!(
+            furthest_progress(&[at(Some(2), Some(7)), at(Some(9), Some(5))], 3),
+            Some(at(Some(9), Some(7)))
+        );
+        // An answer without an index (a release before) may be the furthest: unknown.
+        assert_eq!(
+            furthest_progress(&[at(Some(9), None), at(None, Some(5))], 3),
+            Some(at(None, Some(5)))
+        );
     }
 }

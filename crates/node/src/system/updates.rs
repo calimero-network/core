@@ -14,7 +14,9 @@ use super::*;
 
 use calimero_bundle::update::{classify, Reason, Release, Unit};
 
-use crate::types::{PendingApproval, RunTarget, UpgradeClass, UpgradePolicy, MAX_CLASS_REASONS};
+use crate::types::{
+    AutoApply, PendingApproval, RunTarget, UpgradeClass, UpgradePolicy, MAX_CLASS_REASONS,
+};
 
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 pub(super) fn authorize(
@@ -49,6 +51,18 @@ pub(super) fn authorize(
             let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
             let args = approve_upgrade_args(package, version, targets, class);
             proofs.states(&st, app_id, "__approve_upgrade", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::UndoUpgrade {
+            app_id,
+            apps,
+            actor,
+            consent,
+            ..
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = proofs.s.undo_args(apps.keys());
+            proofs.states(&st, app_id, "__undo_upgrade", &|a| *a == args)?;
             Ok(Some(used))
         }
         _ => Ok(None),
@@ -172,6 +186,91 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let _prev = o.pending_upgrades.insert(app_id, approval);
             Ok(out)
         }
+        SystemCmd::UndoUpgrade {
+            app_id,
+            apps,
+            actor,
+            at,
+            ..
+        } => {
+            let a = s.apps.get(&app_id).ok_or("no such app")?;
+            if !s.approves_upgrades(&a.org, &actor) {
+                return Err(NOT_AN_UPGRADE_APPROVER);
+            }
+            let named: BTreeSet<&AppId> = apps.keys().collect();
+            let expected = s.undo_set(&app_id)?;
+            if named != expected.iter().collect() {
+                return Err(UNDO_NOT_AS_NAMED);
+            }
+            // Every part is judged before any moves: all or nothing.
+            for (id, replicas) in &apps {
+                let a = s.apps.get(id).ok_or("no such app")?;
+                let p = a.restore_point.as_ref().ok_or(NO_RESTORE_POINT)?;
+                s.may_undo(a, p, at)?;
+                match &p.file {
+                    Some(f) => {
+                        let distinct: BTreeSet<u64> = replicas.iter().copied().collect();
+                        if replicas.first() != Some(&f.node)
+                            || distinct.len() != replicas.len()
+                            || replicas.iter().any(|n| s.replica_node(n).is_none())
+                        {
+                            return Err(UNDO_NOT_AS_NAMED);
+                        }
+                    }
+                    None if !replicas.is_empty() => return Err(UNDO_NOT_AS_NAMED),
+                    None => {}
+                }
+                if !s.bundles.contains_key(&p.from_bundle) {
+                    return Err(RESTORE_BUNDLE_GONE);
+                }
+            }
+            let mut groups = serde_json::Map::new();
+            for (id, replicas) in apps {
+                let group = s.next_group.max(1) + 1;
+                let a = s.apps.get_mut(&id).ok_or("no such app")?;
+                let Some(mut p) = a.restore_point.take() else {
+                    return Err(NO_RESTORE_POINT);
+                };
+                a.last_upgrade = Some(crate::types::UpgradeRecord {
+                    from: a.bundle.clone(),
+                    to: p.from_bundle.clone(),
+                    at,
+                    by: actor.clone(),
+                    ok: true,
+                    error: Value::Null,
+                    run: p.run.clone(),
+                    api_key: None,
+                    from_release: p.to_release.clone(),
+                    to_release: p.from_release.clone(),
+                    class: None,
+                    reasons: Vec::new(),
+                    approved_by: None,
+                    auto: false,
+                    undo: true,
+                });
+                a.bundle = p.from_bundle.clone();
+                a.compute_bundle = p.from_compute.clone();
+                a.release = p.from_release.clone();
+                if let Some(f) = &p.file {
+                    // Into a new group the holder seeds from the restore point, as a
+                    // restore does; the restore point stays until that restore finishes,
+                    // so a seed that stopped half way may be sent again.
+                    a.group = group;
+                    a.replicas = replicas;
+                    a.restore = Some(crate::types::PendingRestore {
+                        seed: Some(f.node),
+                        source: Some(f.source.clone()),
+                    });
+                    p.undone_at = Some(p.undone_at.unwrap_or(at));
+                    a.restore_point = Some(p);
+                    s.next_group = group;
+                    let _prev = groups.insert(id, json!(group));
+                } else {
+                    let _prev = groups.insert(id, Value::Null);
+                }
+            }
+            Ok(json!({ "groups": groups }))
+        }
         _ => unreachable!("a command of another area reached updates::apply"),
     }
 }
@@ -188,6 +287,243 @@ fn says_at_least(claimed: &Reason, derived: &Reason) -> bool {
 }
 
 impl SystemState {
+    /// The apps an undo of `app_id` reverts: the app, and each direct member whose
+    /// restore point is of the same unit's run as the app's.
+    ///
+    /// # Errors
+    /// [`NO_RESTORE_POINT`] when the app has none.
+    pub fn undo_set(&self, app_id: &str) -> Result<BTreeSet<AppId>, &'static str> {
+        let a = self.apps.get(app_id).ok_or("no such app")?;
+        let p = a.restore_point.as_ref().ok_or(NO_RESTORE_POINT)?;
+        // A member its unit's run moved goes back with its instance, never alone.
+        if p.run.is_some() && self.unit_parent(app_id).is_some() {
+            return Err(UNDO_NOT_AS_NAMED);
+        }
+        let mut out: BTreeSet<AppId> = std::iter::once(a.app_id.clone()).collect();
+        if let Some(run) = &p.run {
+            for m in a.links.values() {
+                let same = self.apps.get(m).and_then(|m| m.restore_point.as_ref());
+                if same.is_some_and(|q| q.run.as_ref() == Some(run)) {
+                    let _new = out.insert(m.clone());
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// What an owner or admin consents to when undoing (`<app> / __undo_upgrade`): each
+    /// app reverted, with the release it goes back to (`null`: a raw bundle, named in
+    /// `bundle`), the one it leaves and the restore point's file (`null` when the upgrade
+    /// ran nothing on its group).
+    #[must_use]
+    pub fn undo_args<'a>(&self, apps: impl IntoIterator<Item = &'a AppId>) -> Value {
+        let parts: serde_json::Map<String, Value> = apps
+            .into_iter()
+            .map(|id| {
+                let p = self.apps.get(id).and_then(|a| a.restore_point.as_ref());
+                (
+                    id.clone(),
+                    p.map_or(Value::Null, |p| {
+                        json!({
+                            "to": p.from_release,
+                            "bundle": p.from_bundle,
+                            "from": p.to_release,
+                            "restorePoint": p.file.as_ref().map(|f| &f.source.sha256),
+                        })
+                    }),
+                )
+            })
+            .collect();
+        json!({ "apps": parts })
+    }
+
+    /// Whether `app`'s restore point `p` may be undone at `at`: first within the window
+    /// and while the app runs what the upgrade moved it to; once undone, again only while
+    /// that restore is under way (a seed sent again).
+    ///
+    /// # Errors
+    /// [`UNDO_WINDOW_PASSED`], [`UNDO_STALE`].
+    pub fn may_undo(
+        &self,
+        app: &AppRecord,
+        p: &crate::types::RestorePoint,
+        at: u64,
+    ) -> Result<(), &'static str> {
+        if p.undone_at.is_some() {
+            let restoring = app.restore.as_ref().and_then(|r| r.source.as_ref());
+            return if restoring.is_some() && restoring == p.file.as_ref().map(|f| &f.source) {
+                Ok(())
+            } else {
+                Err(UNDO_STALE)
+            };
+        }
+        if !p.open_at(at) {
+            return Err(UNDO_WINDOW_PASSED);
+        }
+        if app.bundle != p.to_bundle || app.release != p.to_release || app.restore.is_some() {
+            return Err(UNDO_STALE);
+        }
+        Ok(())
+    }
+
+    /// What lets an update of `app` to `to` (its `bundle`), carrying `class`, apply on
+    /// its own at `at` with restore point `taken` (`UpgradeApp::auto`): the app's policy
+    /// says `noDestinations`; the class is green; it moves the app along its package to
+    /// a newer release; the app is no unit's member (a member moves with its unit); its
+    /// unit, as the log holds it, has no destination before or after; its hold has
+    /// passed since the release was logged (its deployment's offer of exactly it for an
+    /// instance of a deployment, else its install); and a restore point was taken where
+    /// the upgrade runs on the app's group.
+    ///
+    /// # Errors
+    /// [`AUTO_UPDATE_REFUSED`], [`HOLD_NOT_OVER`], [`RESTORE_POINT_REQUIRED`], or the
+    /// class's own ([`Self::check_class`]).
+    pub fn auto_update_gate(
+        &self,
+        app: &AppRecord,
+        to: Option<&PackageRef>,
+        bundle: &str,
+        class: Option<&UpgradeClass>,
+        at: u64,
+        taken: Option<&crate::types::TakenRestorePoint>,
+    ) -> Result<(), &'static str> {
+        self.auto_update_allows(app, to, class, at)?;
+        let runs_on_group = app.components.is_app() && bundle != app.bundle;
+        match taken {
+            Some(t) if t.file.is_some() || !runs_on_group => Ok(()),
+            _ => Err(RESTORE_POINT_REQUIRED),
+        }
+    }
+
+    /// The apps an update would apply to on their own at `at`, each with the releases it
+    /// could move to, newest first: on a `noDestinations` policy, not being restored, the
+    /// offer of their deployment (for its instances) or else the installed releases of
+    /// the package they run, each where [`Self::auto_update_allows`] lets it through as
+    /// green (the class itself is the leader's to classify, so a release the log shows as
+    /// green may still be red for its code: the leader then tries the next one down).
+    /// Never the release an update to failed or an undo left: an owner or admin decides
+    /// on that one. An app with no such release is left out.
+    #[must_use]
+    pub fn auto_update_candidates(&self, at: u64) -> Vec<(AppRecord, Vec<PackageRef>)> {
+        let green = UpgradeClass {
+            class: calimero_bundle::update::Class::Green,
+            reasons: Vec::new(),
+        };
+        self.apps
+            .values()
+            .filter(|a| a.restore.is_none())
+            .filter(|a| self.upgrade_policy_of(a).0.auto_apply == AutoApply::NoDestinations)
+            .filter_map(|a| {
+                let running = self.running(a)?.clone();
+                let mut versions: Vec<String> = match &a.deployment {
+                    Some(d) => vec![self
+                        .deployments
+                        .get(d)?
+                        .apps
+                        .values()
+                        .find(|o| o.package == running.package)?
+                        .version
+                        .clone()],
+                    None => self
+                        .packages
+                        .get(&running.package)?
+                        .versions
+                        .keys()
+                        .cloned()
+                        .collect(),
+                };
+                // Newest first: a newer one that sends data out (or that the leader finds
+                // red) waits for an owner or admin, and does not hold back a quiet one.
+                versions.sort_by(|x, y| compare_versions(y, x));
+                let to: Vec<PackageRef> = versions
+                    .into_iter()
+                    .map(|version| PackageRef {
+                        package: running.package.clone(),
+                        version,
+                        service: running.service.clone(),
+                        compute: false,
+                    })
+                    .filter(|to| {
+                        let refused = a.last_upgrade.as_ref().is_some_and(|u| {
+                            (!u.ok && u.to_release.as_ref() == Some(to))
+                                || (u.undo && u.from_release.as_ref() == Some(to))
+                        });
+                        !refused
+                            && self
+                                .auto_update_allows(a, Some(to), Some(&green), at)
+                                .is_ok()
+                    })
+                    .collect();
+                (!to.is_empty()).then(|| (a.clone(), to))
+            })
+            .collect()
+    }
+
+    /// [`Self::auto_update_gate`] but for its restore point: what the leader asks before
+    /// it takes one.
+    ///
+    /// # Errors
+    /// As [`Self::auto_update_gate`], but [`RESTORE_POINT_REQUIRED`].
+    pub fn auto_update_allows(
+        &self,
+        app: &AppRecord,
+        to: Option<&PackageRef>,
+        class: Option<&UpgradeClass>,
+        at: u64,
+    ) -> Result<(), &'static str> {
+        let (policy, _) = self.upgrade_policy_of(app);
+        if policy.auto_apply != AutoApply::NoDestinations {
+            return Err(AUTO_UPDATE_REFUSED);
+        }
+        let (Some(to), Some(class)) = (to, class) else {
+            return Err(AUTO_UPDATE_REFUSED);
+        };
+        if !class.is_green() || self.unit_parent(&app.app_id).is_some() {
+            return Err(AUTO_UPDATE_REFUSED);
+        }
+        self.check_class(app, (&to.package, &to.version), &BTreeMap::new(), class)?;
+        let newer = self.running(app).is_some_and(|r| {
+            r.package == to.package
+                && compare_versions(&to.version, &r.version) == std::cmp::Ordering::Greater
+        });
+        if !newer {
+            return Err(AUTO_UPDATE_REFUSED);
+        }
+        let empty = BTreeMap::new();
+        let destinations = [
+            self.logged_unit(app, None, &empty),
+            self.logged_unit(app, Some((&to.package, &to.version)), &empty),
+        ];
+        if !destinations
+            .iter()
+            .all(|u| u.as_ref().is_some_and(|u| u.egress().is_empty()))
+        {
+            return Err(AUTO_UPDATE_REFUSED);
+        }
+        let since = match &app.deployment {
+            Some(d) => self
+                .deployments
+                .get(d)
+                .and_then(|d| {
+                    d.apps
+                        .values()
+                        .find(|o| o.package == to.package && o.version == to.version)
+                })
+                .map(|o| o.added_at)
+                .ok_or(AUTO_UPDATE_REFUSED)?,
+            None => self
+                .packages
+                .get(&to.package)
+                .and_then(|p| p.versions.get(&to.version))
+                .map(|v| v.installed_at)
+                .ok_or(AUTO_UPDATE_REFUSED)?,
+        };
+        if at < since.saturating_add(u64::from(policy.hold_hours) * 3600) {
+            return Err(HOLD_NOT_OVER);
+        }
+        Ok(())
+    }
+
     /// The update policy `app` follows, and where it comes from: its own (`app`), its
     /// organization's (`org`), or the defaults (`default`: nothing updates on its own, one
     /// approval applies an update).
@@ -232,8 +568,17 @@ impl SystemState {
         }
     }
 
-    /// The release `app` runs, as the log names it.
-    fn running<'a>(&'a self, app: &'a AppRecord) -> Option<&'a PackageRef> {
+    /// Where an update of `app` on its own begins (`UpgradeFailed::from_release`): the
+    /// release it runs as the candidates and the gate judge it ([`Self::running`]: its
+    /// record's, else the one its bundle is governed by).
+    #[must_use]
+    pub fn auto_update_from(&self, app: &AppRecord) -> Option<PackageRef> {
+        self.running(app).cloned()
+    }
+
+    /// The release `app` runs, as the log names it: its record's, else the release its
+    /// bundle is governed by (a record without one).
+    pub(crate) fn running<'a>(&'a self, app: &'a AppRecord) -> Option<&'a PackageRef> {
         app.release.as_ref().or_else(|| self.governing_release(app))
     }
 

@@ -852,7 +852,7 @@ impl<'de> Deserialize<'de> for UpgradePolicyAutoApply {
     }
 }
 
-/// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applying on its own after the hold; stored and validated now, carried out by a later release.
+/// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UpgradePolicy {
     #[serde(rename = "autoApply")]
@@ -1037,6 +1037,114 @@ pub enum UpdateReason {
         member: Option<String>,
         package: String,
     },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestorePointFileSource {
+    pub name: String,
+    pub sha256: String,
+    pub index: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestorePointFile {
+    pub node: u64,
+    pub group: u64,
+    pub source: RestorePointFileSource,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// An app's one undo (`POST /apps/{app}/undo`): the release and bundle its last upgrade moved it from (`fromRelease`, `fromBundle`) and to, when (`at`, the start of the week to undo it) and by whom (`policy:auto-update` for an update that applied on its own), the run it was part of (a unit's members undo with their instance), the app group's snapshot (`file`: the node that holds it, absent where the upgrade ran nothing on the group) and `undoneAt` while an undo's restore is under way.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestorePoint {
+    #[serde(rename = "fromBundle")]
+    pub from_bundle: String,
+    #[serde(rename = "fromCompute")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_compute: Option<String>,
+    #[serde(rename = "fromRelease")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_release: Option<PackageRef>,
+    #[serde(rename = "toBundle")]
+    pub to_bundle: String,
+    #[serde(rename = "toRelease")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_release: Option<PackageRef>,
+    pub at: u64,
+    pub by: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<RestorePointFile>,
+    #[serde(rename = "undoneAt")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undone_at: Option<u64>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UndoPartRestorePoint {
+    pub node: u64,
+    pub index: u64,
+    pub sha256: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UndoPartLostWrites {
+    #[serde(rename = "entriesSince")]
+    pub entries_since: Option<u64>,
+    #[serde(rename = "lastWriteAt")]
+    pub last_write_at: Option<u64>,
+    pub any: Option<bool>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UndoPartUnavailable {
+    pub code: String,
+    pub message: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade, read from a replica the app is on now when the restore point's node no longer hosts it; each of them `null` when nobody can say, never `false` for writes it cannot see; `lostWrites` itself `null` while the restore point's node does not answer, which `unavailable` then says).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UndoPart {
+    pub app: String,
+    pub from: Option<PackageRef>,
+    pub to: Option<PackageRef>,
+    #[serde(rename = "toBundle")]
+    pub to_bundle: String,
+    #[serde(rename = "upgradedAt")]
+    pub upgraded_at: u64,
+    #[serde(rename = "upgradedBy")]
+    pub upgraded_by: String,
+    pub auto: bool,
+    #[serde(rename = "undoUntil")]
+    pub undo_until: u64,
+    #[serde(rename = "restorePoint")]
+    pub restore_point: Option<UndoPartRestorePoint>,
+    #[serde(rename = "undoneAt")]
+    pub undone_at: Option<u64>,
+    #[serde(rename = "lostWrites")]
+    pub lost_writes: Option<UndoPartLostWrites>,
+    pub unavailable: Option<UndoPartUnavailable>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.
@@ -1650,7 +1758,7 @@ pub struct AppRestore {
     pub extra: Map<String, Value>,
 }
 
-/// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.
+/// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct App {
     #[serde(rename = "appId")]
@@ -1691,6 +1799,9 @@ pub struct App {
     pub links: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attached: Option<BTreeMap<String, String>>,
+    #[serde(rename = "restorePoint")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_point: Option<RestorePoint>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -1770,7 +1881,7 @@ impl<'de> Deserialize<'de> for UpgradeClass {
     }
 }
 
-/// The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second.
+/// The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second. `auto`: it applied on its own under the app's update policy (`by` is `policy:auto-update`); `undo`: it undid the upgrade before it (`fromRelease` the release undone).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Upgrade {
     pub from: String,
@@ -1803,6 +1914,10 @@ pub struct Upgrade {
     #[serde(rename = "approvedBy")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<bool>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3558,6 +3673,44 @@ pub struct AppStorageResponse {
         with = "crate::route::present"
     )]
     pub last_write_at: Option<Option<u64>>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppUndoViewResponseReason {
+    pub code: String,
+    pub message: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppUndoViewResponse {
+    pub app: String,
+    pub available: bool,
+    pub reason: Option<AppUndoViewResponseReason>,
+    #[serde(rename = "undoUntil")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub undo_until: Option<Option<u64>>,
+    pub apps: Vec<UndoPart>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppUndoResponse {
+    pub app: String,
+    pub groups: BTreeMap<String, Option<u64>>,
+    pub restored: bool,
+    pub apps: Vec<UndoPart>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

@@ -87,8 +87,9 @@ mod public_links;
 mod recovery;
 mod restore;
 mod sign_up;
+mod undo;
 mod update_policies;
-mod upgrades;
+pub(crate) mod upgrades;
 
 pub(crate) use approvals::{
     set_outbound_approval, set_release_approval, OutboundApprovalBody, ReleaseApprovalBody,
@@ -158,6 +159,7 @@ pub(crate) const AREA_SOURCES: &[(&str, &str)] = &[
     ("public_links", include_str!("api/public_links.rs")),
     ("recovery", include_str!("api/recovery.rs")),
     ("sign_up", include_str!("api/sign_up.rs")),
+    ("undo", include_str!("api/undo.rs")),
     ("update_policies", include_str!("api/update_policies.rs")),
     ("upgrades", include_str!("api/upgrades.rs")),
 ];
@@ -2252,6 +2254,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .merge(files::routes())
         .merge(upgrades::routes())
         .merge(update_policies::routes())
+        .merge(undo::routes())
         .merge(orgs::routes())
         .merge(approvals::routes())
         .merge(deployments::routes())

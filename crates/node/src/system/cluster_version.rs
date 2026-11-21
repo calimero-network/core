@@ -190,10 +190,19 @@ pub enum Feature {
     /// them, so it would keep no policy and apply a red update with one approval where a
     /// later one waits for the second.
     UpgradePolicies,
+    /// `UpgradeApp { auto }`: a green update of an app on a `noDestinations` policy
+    /// applies on its own once its hold passed, proposed by the system leader and judged
+    /// at apply from the log (`SystemState::auto_update_gate`). An earlier release would
+    /// take it as an upgrade by the actor it names, which is no account, and refuse it.
+    AutoUpdates,
+    /// `UpgradeApp { restore_point }` and `UndoUpgrade`: the restore point an upgrade
+    /// takes, kept on the app, and the undo back to it. An earlier release would keep no
+    /// restore point and could not decode the undo.
+    RestorePoints,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 43] = [
+pub const FEATURES: [Feature; 45] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -237,6 +246,8 @@ pub const FEATURES: [Feature; 43] = [
     Feature::PublicLinks,
     Feature::UpgradeClasses,
     Feature::UpgradePolicies,
+    Feature::AutoUpdates,
+    Feature::RestorePoints,
 ];
 
 impl Feature {
@@ -287,6 +298,8 @@ impl Feature {
             Self::PublicLinks => "publicLinks",
             Self::UpgradeClasses => "upgradeClasses",
             Self::UpgradePolicies => "upgradePolicies",
+            Self::AutoUpdates => "autoUpdates",
+            Self::RestorePoints => "restorePoints",
         }
     }
 
@@ -333,7 +346,10 @@ impl Feature {
             | Self::AccessGrants
             | Self::KeepTeamApps
             | Self::PublicLinks => "1.0.0-rc.33",
-            Self::UpgradeClasses | Self::UpgradePolicies => "1.0.0-rc.34",
+            Self::UpgradeClasses
+            | Self::UpgradePolicies
+            | Self::AutoUpdates
+            | Self::RestorePoints => "1.0.0-rc.34",
         }
     }
 }
@@ -577,8 +593,15 @@ impl SystemCmd {
                 in_deployment,
                 owner_approves,
                 class,
+                auto,
+                restore_point,
                 ..
-            } if *in_deployment || *owner_approves || class.is_some() => {
+            } if *in_deployment
+                || *owner_approves
+                || class.is_some()
+                || *auto
+                || restore_point.is_some() =>
+            {
                 let mut f = Vec::new();
                 if *in_deployment {
                     f.push(Feature::UpgradeInDeployment);
@@ -589,11 +612,22 @@ impl SystemCmd {
                 if class.is_some() {
                     f.push(Feature::UpgradeClasses);
                 }
+                if *auto {
+                    f.push(Feature::AutoUpdates);
+                }
+                if restore_point.is_some() {
+                    f.push(Feature::RestorePoints);
+                }
                 f
             }
+            Self::UpgradeFailed {
+                from_release: Some(_),
+                ..
+            } => vec![Feature::AutoUpdates],
             Self::SetUpgradePolicy { .. } | Self::ApproveUpgrade { .. } => {
                 vec![Feature::UpgradePolicies]
             }
+            Self::UndoUpgrade { .. } => vec![Feature::RestorePoints],
             Self::CreateApiKey {
                 owner_approves: true,
                 ..
@@ -1114,6 +1148,10 @@ mod tests {
                 "class": { "class": "green" } })),
             Feature::UpgradePolicies => entry(json!({ "op": "setUpgradePolicy",
                 "org": "org", "policy": { "secondApprover": true }, "actor": "alice" })),
+            Feature::AutoUpdates => entry(json!({ "op": "upgradeApp",
+                "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true })),
+            Feature::RestorePoints => entry(json!({ "op": "undoUpgrade",
+                "app_id": "app", "apps": { "app": [1] }, "actor": "alice", "at": 1 })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1569,7 +1607,15 @@ mod tests {
             ]
         );
         // rc.34's (update classes and policies) for every node on rc.34.
-        assert_eq!(rc34, [Feature::UpgradeClasses, Feature::UpgradePolicies]);
+        assert_eq!(
+            rc34,
+            [
+                Feature::UpgradeClasses,
+                Feature::UpgradePolicies,
+                Feature::AutoUpdates,
+                Feature::RestorePoints
+            ]
+        );
         for &feature in rc32.iter().chain(&rc33) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(

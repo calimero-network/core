@@ -17,8 +17,8 @@ class UpgradePolicy:
     /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover`
     (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a
     green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and
-    `holdHours` (24 to 168, default 24): such an update applying on its own after the hold; stored and validated now,
-    carried out by a later release.
+    `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the
+    release was logged (its install, or its deployment's offer), after a restore point.
 
         Attributes:
             auto_apply (UpgradePolicyAutoApply):

@@ -84,6 +84,8 @@ Generated from core's `docs/public/openapi.json`.
 | `storage(app)` | `GET /apps/{app}/storage` | What an app stores |
 | `transfer(app, to, confirm=None)` | `POST /apps/{app}/transfer` | Hand an app to another account. **passkey** |
 | `undelegate(app, target)` | `DELETE /apps/{app}/delegations/{target}` | Take back what an app may do on another as you. *Refusals:* `404 NOT_DELEGATED`, `409 FEATURE_NOT_ACTIVE` |
+| `undo(app, confirm=None)` | `POST /apps/{app}/undo` | Undo an app's last upgrade. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NO_RESTORE_POINT`, `409 RESTORE_POINT_UNAVAILABLE`, `409 UNDO_NOT_AS_NAMED`, `409 UNDO_STALE`, `409 UNDO_WINDOW_PASSED`, `409 UPGRADE_PENDING` |
+| `undo_view(app)` | `GET /apps/{app}/undo` | The upgrade an app may undo |
 | `unlink(app, name, confirm=None)` | `DELETE /apps/{app}/links/{name}` | Detach an app attached to an app. **passkey**. *Refusals:* `404 NOT_ATTACHED`, `409 FEATURE_NOT_ACTIVE` |
 | `update(app)` | `GET /apps/{app}/update` | Whether an update is available for an app |
 | `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `409 CONFLICT`, `409 OUTSIDE_DEPLOYMENT`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |

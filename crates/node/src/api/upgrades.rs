@@ -376,6 +376,8 @@ pub(crate) async fn upgrade_app(
             consent,
             run: None,
             owner_approves,
+            auto: false,
+            from_release: None,
         },
     )
     .await
@@ -395,6 +397,12 @@ struct Upgrader {
     /// Judged by the rule only an organization's owner and admins approve
     /// ([`owner_approves`]): carried on its entries.
     owner_approves: bool,
+    /// An update applying on its own under the app's policy (`UpgradeApp::auto`), the
+    /// system leader's (`node::auto_updates`): judged by the policy, not by who may.
+    auto: bool,
+    /// For an update on its own, the release the app ran when the pass chose it
+    /// (`UpgradeFailed::from_release`).
+    from_release: Option<PackageRef>,
 }
 
 impl Upgrader {
@@ -441,7 +449,7 @@ async fn run_upgrade(
     // Judged once, before the migration runs; `UpgradeApp` carries this time
     // so `apply` judges the deadline at the same moment and never refuses
     // the record of an upgrade the app's group already ran.
-    let begun = now_secs();
+    let begun = crate::types::update_now();
     let has_compute = compute_bundle.is_some();
     let class = run_class(node, &app_id, release.as_ref(), who.run.as_deref()).await;
     // Who may, and where to: judged here, for every path (one app, an
@@ -449,7 +457,11 @@ async fn run_upgrade(
     // app's group; `UpgradeApp` judges both again.
     let refusal = node.sys(|s| {
         let a = s.apps.get(&app_id)?;
-        if !who.by_operator && !s.may_upgrade(a, &who.actor, who.owner_approves) {
+        if who.auto {
+            if let Err(why) = s.auto_update_allows(a, release.as_ref(), class.as_ref(), begun) {
+                return Some(crate::node::rejected(why));
+            }
+        } else if !who.by_operator && !s.may_upgrade(a, &who.actor, who.owner_approves) {
             return upgrade_refusal(s, a, &who.actor, who.owner_approves);
         }
         let to = s.governing(release.as_ref(), &bundle, begun);
@@ -501,8 +513,13 @@ async fn run_upgrade(
             .err(),
     };
     if let Some(e) = refusal {
-        let error = json!({ "code": e.code, "message": e.message });
-        note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
+        // An update on its own refused before anything ran is not the release's
+        // failure: the leader tries it again after a backoff (`node::auto_updates`), and
+        // a failed record would stop it applying until a person upgraded the app.
+        if !who.auto {
+            let error = json!({ "code": e.code, "message": e.message });
+            note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
+        }
         return Err(e);
     }
     // A compute-only app has no group state to switch: the directory record is all there is.
@@ -510,6 +527,17 @@ async fn run_upgrade(
     if compute_only && migrate.is_some() {
         return Err(ApiError::no_app_component());
     }
+    // The restore point an undo goes back to, taken just before anything runs.
+    let restore_point = match take_restore_point(node, &app_id, &bundle, compute_only).await {
+        Ok(taken) => taken,
+        // An update on its own needs one; a replica that is down or has no snapshot yet
+        // is a passing failure, retried by the leader, not noted on the app.
+        Err(e) if who.auto => return Err(e),
+        Err(e) => {
+            warn!(app = %app_id, error = %e.message, "no restore point was taken; this upgrade cannot be undone");
+            None
+        }
+    };
     let ran = if compute_only {
         Ok(crate::app::Applied {
             index: 0,
@@ -531,13 +559,19 @@ async fn run_upgrade(
     let applied = match ran {
         Ok(a) => a,
         Err(e) => {
-            let error = json!({ "code": e.code, "message": e.message });
-            note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
+            // The app's group did not answer (no leader, a bundle it could not fetch):
+            // for an update on its own, passing, so retried rather than noted.
+            if !who.auto {
+                let error = json!({ "code": e.code, "message": e.message });
+                note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
+            }
             return Err(e);
         }
     };
     // A refused or failed upgrade leaves the app on its bundle; say so as an
-    // error, not a 200 a client can mistake for success.
+    // error, not a 200 a client can mistake for success. This one is the release's
+    // own (the group ran it, or refused it for good), so it is noted for an update on
+    // its own too, which then never applies that release again by itself.
     if applied.status != Status::Ok {
         note_failed_upgrade(
             node,
@@ -577,6 +611,8 @@ async fn run_upgrade(
             in_deployment,
             owner_approves: who.owner_approves,
             class,
+            auto: who.auto,
+            restore_point,
         })
         .await?;
     Ok(Json(json!({
@@ -585,6 +621,78 @@ async fn run_upgrade(
         "error": applied.error,
         "compute": has_compute,
     })))
+}
+
+/// Apply `to` to `app` on its own under the app's update policy, as the system leader's
+/// pass does (`node::auto_updates`): the release's part for the service the app runs,
+/// judged like any upgrade (runtime, authority, deployment, release deadlines) and by
+/// `SystemState::auto_update_allows` in place of who may, with a restore point first;
+/// `UpgradeApp { auto }` is judged again at apply. Only a failure of the release itself
+/// is noted on the app (the group ran the upgrade and it failed, or refused it): a
+/// refusal or failure before that leaves no record, and the leader tries again after a
+/// backoff (`node::auto_updates`).
+pub(crate) async fn auto_upgrade(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    to: &PackageRef,
+) -> ApiResult {
+    let service = to.service.clone().unwrap_or_default();
+    let target = node
+        .sys(|s| {
+            let v = s.packages.get(&to.package)?.versions.get(&to.version)?;
+            Some(Target {
+                bundle: v.app_parts().get(&service).cloned()?,
+                compute_bundle: v.compute.get(&service).cloned(),
+                release: Some(to.clone()),
+            })
+        })
+        .ok_or_else(|| crate::node::rejected(crate::system::AUTO_UPDATE_REFUSED))?;
+    run_upgrade(
+        node,
+        app.app_id.clone(),
+        target,
+        None,
+        Upgrader {
+            caller: Caller::System,
+            actor: crate::system::AUTO_UPDATE.to_owned(),
+            by_operator: false,
+            consent: Value::Null,
+            run: None,
+            owner_approves: true,
+            auto: true,
+            from_release: node.sys(|s| s.auto_update_from(app)),
+        },
+    )
+    .await
+}
+
+/// Whether upgrades take restore points ([`Feature::RestorePoints`]): once every node
+/// reads `UpgradeApp::restore_point`.
+pub(crate) async fn restore_points_rule(node: &Node) -> bool {
+    node.require_features(&[Feature::RestorePoints])
+        .await
+        .is_ok()
+}
+
+/// The restore point an upgrade of `app_id` to `bundle` takes before it runs, once every
+/// node reads it ([`restore_points_rule`]): none needed (`file: None`) where nothing runs
+/// on the app's group (a compute-only app, the bundle it runs already), else the group's
+/// snapshot on a replica (`Node::take_restore_point`). `Ok(None)` below the feature.
+async fn take_restore_point(
+    node: &Node,
+    app_id: &str,
+    bundle: &str,
+    compute_only: bool,
+) -> Result<Option<crate::types::TakenRestorePoint>, ApiError> {
+    if !restore_points_rule(node).await {
+        return Ok(None);
+    }
+    let app = node.app(app_id).await?;
+    if compute_only || app.bundle == bundle {
+        return Ok(Some(crate::types::TakenRestorePoint::default()));
+    }
+    let file = node.take_restore_point(&app).await?;
+    Ok(Some(crate::types::TakenRestorePoint { file: Some(file) }))
 }
 
 /// Whether an `UpgradeApp` of `app_id` carries `in_deployment`: for an instance
@@ -626,6 +734,13 @@ async fn note_failed_upgrade(
     who: &Upgrader,
     error: Value,
 ) {
+    // An update on its own names the release it began from, so apply notes nothing if
+    // another move of the app won meanwhile.
+    let from_release = if who.auto {
+        who.from_release.clone()
+    } else {
+        None
+    };
     let _r = node
         .sys_write(&SystemCmd::UpgradeFailed {
             app_id: app_id.to_owned(),
@@ -635,6 +750,7 @@ async fn note_failed_upgrade(
             error,
             run: who.run.clone(),
             release: release.cloned(),
+            from_release,
         })
         .await;
 }
@@ -851,6 +967,10 @@ async fn start_run_with(
                             in_deployment: in_deployment_rule(&node, &app.app_id).await,
                             owner_approves: who.owner_approves,
                             class,
+                            auto: false,
+                            restore_point: restore_points_rule(&node)
+                                .await
+                                .then(crate::types::TakenRestorePoint::default),
                         })
                         .await;
                     if let Err(e) = written {
@@ -940,6 +1060,8 @@ async fn org_upgrade(
         consent,
         run: None,
         owner_approves,
+        auto: false,
+        from_release: None,
     };
     start_run(node, org, body, apps, who, false).await
 }
@@ -1024,6 +1146,8 @@ async fn publisher_upgrade(
         consent,
         run: None,
         owner_approves,
+        auto: false,
+        from_release: None,
     };
     let run = OrgUpgradeBody {
         package,
@@ -1074,6 +1198,8 @@ async fn ops_org_upgrade(
         consent,
         run: None,
         owner_approves: false,
+        auto: false,
+        from_release: None,
     };
     start_run(node, org, body, apps, who, false).await
 }
@@ -1139,6 +1265,8 @@ async fn org_upgrade_retry(
             consent,
             run: None,
             owner_approves: false,
+            auto: false,
+            from_release: None,
         };
         return start_run(node, org, retry, failed, who, false).await;
     }
@@ -1165,6 +1293,8 @@ async fn org_upgrade_retry(
         consent,
         run: None,
         owner_approves,
+        auto: false,
+        from_release: None,
     };
     start_run(node, org, retry, failed, who, false).await
 }
@@ -1286,6 +1416,8 @@ async fn ops_upgrade(
             consent,
             run: None,
             owner_approves: false,
+            auto: false,
+            from_release: None,
         },
     )
     .await
@@ -1452,6 +1584,8 @@ pub(crate) async fn upgrade_unit(
         consent,
         run: None,
         owner_approves: plan.owner_approves,
+        auto: false,
+        from_release: None,
     };
     let run = OrgUpgradeBody {
         package: plan.target.package,

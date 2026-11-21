@@ -968,6 +968,30 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Undo an app's last upgrade.
+    ///
+    /// `POST /apps/{app}/undo` (`app_undo`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn undo(
+        self,
+        app: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<AppUndoResponse> {
+        let body = Value::Object(Map::new());
+        let req =
+            Request::new(Method::POST, format!("apps/{}/undo", route::segment(app))).json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// The upgrade an app may undo.
+    ///
+    /// `GET /apps/{app}/undo` (`app_undo_view`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
+    pub async fn undo_view(self, app: &str) -> Result<AppUndoViewResponse> {
+        let req = Request::new(Method::GET, format!("apps/{}/undo", route::segment(app)));
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// Detach an app attached to an app.
     ///
     /// `DELETE /apps/{app}/links/{name}` (`app_unlink`). Who: an account holder (a passkey session not bound to an app's frontend).

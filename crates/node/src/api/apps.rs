@@ -691,6 +691,7 @@ async fn create_instance(
                 restore: None,
                 links,
                 attached: BTreeMap::new(),
+                restore_point: None,
             }),
             unit_offer: body.unit_offer,
         })

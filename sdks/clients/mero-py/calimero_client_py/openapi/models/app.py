@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from ..models.app_attached import AppAttached
     from ..models.grant_type_4 import GrantType4
     from ..models.grant_type_1 import GrantType1
+    from ..models.restore_point import RestorePoint
 
 
 T = TypeVar("T", bound="App")
@@ -33,7 +34,8 @@ T = TypeVar("T", bound="App")
 class App:
     """An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which
     this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw
-    upload; `restore` is a restore from a backup under way.
+    upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which
+    an owner or admin may undo for a week (`POST /apps/{app}/undo`).
 
         Attributes:
             app_id (str):
@@ -55,13 +57,20 @@ class App:
                 bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the
                 upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it
                 applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the
-                first approver of a red update whose policy asks for a second.
+                first approver of a red update whose policy asks for a second. `auto`: it applied on its own under the app's
+                update policy (`by` is `policy:auto-update`); `undo`: it undid the upgrade before it (`fromRelease` the release
+                undone).
             deployment (Union[Unset, str]):
             release (Union[Unset, PackageRef]): One service of one package release: `service` is absent for a single-service
                 bundle, `compute` (absent: false) marks the service's compute component.
             restore (Union[Unset, AppRestore]):
             links (Union[Unset, AppLinks]):
             attached (Union[Unset, AppAttached]):
+            restore_point (Union[Unset, RestorePoint]): An app's one undo (`POST /apps/{app}/undo`): the release and bundle
+                its last upgrade moved it from (`fromRelease`, `fromBundle`) and to, when (`at`, the start of the week to undo
+                it) and by whom (`policy:auto-update` for an update that applied on its own), the run it was part of (a unit's
+                members undo with their instance), the app group's snapshot (`file`: the node that holds it, absent where the
+                upgrade ran nothing on the group) and `undoneAt` while an undo's restore is under way.
     """
 
     app_id: str
@@ -87,6 +96,7 @@ class App:
     restore: Union[Unset, "AppRestore"] = UNSET
     links: Union[Unset, "AppLinks"] = UNSET
     attached: Union[Unset, "AppAttached"] = UNSET
+    restore_point: Union[Unset, "RestorePoint"] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -100,6 +110,7 @@ class App:
         from ..models.app_attached import AppAttached
         from ..models.grant_type_4 import GrantType4
         from ..models.grant_type_1 import GrantType1
+        from ..models.restore_point import RestorePoint
 
         app_id = self.app_id
 
@@ -172,6 +183,10 @@ class App:
         if not isinstance(self.attached, Unset):
             attached = self.attached.to_dict()
 
+        restore_point: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.restore_point, Unset):
+            restore_point = self.restore_point.to_dict()
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -208,6 +223,8 @@ class App:
             field_dict["links"] = links
         if attached is not UNSET:
             field_dict["attached"] = attached
+        if restore_point is not UNSET:
+            field_dict["restorePoint"] = restore_point
 
         return field_dict
 
@@ -223,6 +240,7 @@ class App:
         from ..models.app_attached import AppAttached
         from ..models.grant_type_4 import GrantType4
         from ..models.grant_type_1 import GrantType1
+        from ..models.restore_point import RestorePoint
 
         d = dict(src_dict)
         app_id = d.pop("appId")
@@ -356,6 +374,13 @@ class App:
         else:
             attached = AppAttached.from_dict(_attached)
 
+        _restore_point = d.pop("restorePoint", UNSET)
+        restore_point: Union[Unset, RestorePoint]
+        if isinstance(_restore_point, Unset):
+            restore_point = UNSET
+        else:
+            restore_point = RestorePoint.from_dict(_restore_point)
+
         app = cls(
             app_id=app_id,
             name=name,
@@ -378,6 +403,7 @@ class App:
             restore=restore,
             links=links,
             attached=attached,
+            restore_point=restore_point,
         )
 
         app.additional_properties = d

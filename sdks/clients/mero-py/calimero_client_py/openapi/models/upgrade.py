@@ -31,7 +31,8 @@ class Upgrade:
     `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and
     `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version
     1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy
-    asks for a second.
+    asks for a second. `auto`: it applied on its own under the app's update policy (`by` is `policy:auto-update`);
+    `undo`: it undid the upgrade before it (`fromRelease` the release undone).
 
         Attributes:
             from_ (str):
@@ -51,6 +52,8 @@ class Upgrade:
             reasons (Union[Unset, list[Union['UpdateReasonType0', 'UpdateReasonType1', 'UpdateReasonType2',
                 'UpdateReasonType3', 'UpdateReasonType4', 'UpdateReasonType5']]]):
             approved_by (Union[Unset, str]):
+            auto (Union[Unset, bool]):
+            undo (Union[Unset, bool]):
     """
 
     from_: str
@@ -78,6 +81,8 @@ class Upgrade:
         ],
     ] = UNSET
     approved_by: Union[Unset, str] = UNSET
+    auto: Union[Unset, bool] = UNSET
+    undo: Union[Unset, bool] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -139,6 +144,10 @@ class Upgrade:
 
         approved_by = self.approved_by
 
+        auto = self.auto
+
+        undo = self.undo
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -166,6 +175,10 @@ class Upgrade:
             field_dict["reasons"] = reasons
         if approved_by is not UNSET:
             field_dict["approvedBy"] = approved_by
+        if auto is not UNSET:
+            field_dict["auto"] = auto
+        if undo is not UNSET:
+            field_dict["undo"] = undo
 
         return field_dict
 
@@ -295,6 +308,10 @@ class Upgrade:
 
         approved_by = d.pop("approvedBy", UNSET)
 
+        auto = d.pop("auto", UNSET)
+
+        undo = d.pop("undo", UNSET)
+
         upgrade = cls(
             from_=from_,
             to=to,
@@ -309,6 +326,8 @@ class Upgrade:
             class_=class_,
             reasons=reasons,
             approved_by=approved_by,
+            auto=auto,
+            undo=undo,
         )
 
         upgrade.additional_properties = d

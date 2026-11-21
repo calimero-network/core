@@ -16,6 +16,16 @@ pub(super) fn authorize(
 ) -> Result<Option<String>, &'static str> {
     let s = proofs.s;
     match cmd {
+        // An update applying on its own carries no person's consent: the app's policy is
+        // its authority, judged at apply (`SystemState::auto_update_gate`).
+        SystemCmd::UpgradeApp {
+            auto: true,
+            by_operator: false,
+            run: None,
+            actor,
+            ..
+        } if actor == AUTO_UPDATE => Ok(None),
+        SystemCmd::UpgradeApp { auto: true, .. } => Err(AUTO_UPDATE_REFUSED),
         SystemCmd::UpgradeApp {
             app_id,
             bundle,
@@ -406,6 +416,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             in_deployment,
             owner_approves,
             class,
+            auto,
+            restore_point,
         } => {
             if !s.bundles.contains_key(&bundle) {
                 return Err("unknown bundle");
@@ -448,8 +460,22 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 });
             }
             let owner_approves = s.owner_approves(owner_approves);
+            // An update on its own is its app's policy's, judged from the log alone.
+            if auto {
+                let a = s.apps.get(&app_id).ok_or("no such app")?;
+                s.auto_update_gate(
+                    a,
+                    release.as_ref(),
+                    &bundle,
+                    class.as_ref(),
+                    at,
+                    restore_point.as_ref(),
+                )?;
+            }
             let allowed = if by_operator {
                 s.apps.contains_key(&app_id)
+            } else if auto {
+                true
             } else {
                 s.apps.get(&app_id).is_some_and(|a| {
                     s.may_upgrade_as_logged(
@@ -517,7 +543,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     from: a.bundle.clone(),
                     to: bundle.clone(),
                     at,
-                    by,
+                    by: by.clone(),
                     ok: true,
                     error: Value::Null,
                     run: run.clone(),
@@ -529,6 +555,22 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     class: class.as_ref().map(|c| c.class),
                     reasons: class.map(|c| c.reasons).unwrap_or_default(),
                     approved_by,
+                    auto,
+                    undo: false,
+                });
+                // The restore point it took is the app's one undo, replacing any before;
+                // without one, the app keeps none (an undo would skip this upgrade).
+                a.restore_point = restore_point.map(|t| crate::types::RestorePoint {
+                    from_bundle: a.bundle.clone(),
+                    from_compute: a.compute_bundle.clone(),
+                    from_release: a.release.clone(),
+                    to_bundle: bundle.clone(),
+                    to_release: release.clone(),
+                    at,
+                    by,
+                    run: run.clone(),
+                    file: t.file,
+                    undone_at: None,
                 });
                 a.bundle = bundle;
                 a.compute_bundle = compute_bundle;
@@ -548,7 +590,26 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             error,
             run,
             release,
+            from_release,
         } => {
+            // An update on its own that lost to another move of the app (a pass on another
+            // node after a failover, a person's upgrade) is not the release's failure: the
+            // app runs the target already, or no longer runs what the update began from.
+            // Such entries exist only from the version that brings `Feature::AutoUpdates`,
+            // so every replica judges them by this rule.
+            // The release it runs is judged as the candidates and the gate judge it
+            // (`SystemState::running`: its record's, else the one its bundle is governed
+            // by), so an app without `release` is judged alike. An entry without
+            // `from_release` (logged before the field) is judged on its target alone.
+            if by == super::AUTO_UPDATE {
+                let a = s.apps.get(&app_id).ok_or("no such app")?;
+                let runs = s.running(a);
+                let done = a.bundle == bundle || (release.is_some() && runs == release.as_ref());
+                let moved = from_release.as_ref().is_some_and(|f| runs != Some(f));
+                if done || moved {
+                    return Ok(json!({ "stale": true }));
+                }
+            }
             let a = s.apps.get_mut(&app_id).ok_or("no such app")?;
             a.last_upgrade = Some(crate::types::UpgradeRecord {
                 from_release: a.release.clone(),
@@ -564,6 +625,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 class: None,
                 reasons: Vec::new(),
                 approved_by: None,
+                auto: false,
+                undo: false,
             });
             s.note_run(run.as_deref(), &app_id, Some(error));
             Ok(Value::Null)
@@ -834,6 +897,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             app.compute_bundle = compute_bundle;
             app.group = group;
             app.replicas = replicas;
+            // The operator's restore replaces the state an undo would go back from.
+            app.restore_point = None;
             app.restore = Some(crate::types::PendingRestore {
                 seed: Some(seed),
                 source: Some(source),
@@ -845,7 +910,15 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if app.group != group || app.restore.is_none() {
                 return Err("no restore of that app into that group is under way");
             }
-            app.restore = None;
+            // An undo's restore is done: its restore point is spent. Only an app an
+            // `UndoUpgrade` reverted has one marked undone, so earlier logs replay alike.
+            let source = app.restore.take().and_then(|r| r.source);
+            let spent = app.restore_point.as_ref().is_some_and(|p| {
+                p.undone_at.is_some() && p.file.as_ref().map(|f| &f.source) == source.as_ref()
+            });
+            if spent {
+                app.restore_point = None;
+            }
             Ok(Value::Null)
         }
         SystemCmd::SetAccess {

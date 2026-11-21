@@ -481,6 +481,23 @@ export function createRoutes(api: RouteClient) {
       undelegate: (args: operations['app_undelegate']['parameters']['path'], options?: MethodOptions): Promise<operations['app_undelegate']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"DELETE","path":"/apps/{app}/delegations/{target}","pathParams":["app","target"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_undelegate']['responses'][200]['content']['application/json']>,
       /**
+       * Undo an app's last upgrade.
+       *
+       * `POST /apps/{app}/undo` (`app_undo`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      undo: (args: operations['app_undo']['parameters']['path'] & operations['app_undo']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_undo']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/undo","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_undo']['responses'][200]['content']['application/json']>,
+      /**
+       * The upgrade an app may undo.
+       *
+       * `GET /apps/{app}/undo` (`app_undo_view`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      undoView: (args: operations['app_undo_view']['parameters']['path'], options?: MethodOptions): Promise<operations['app_undo_view']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/undo","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_undo_view']['responses'][200]['content']['application/json']>,
+      /**
        * Detach an app attached to an app.
        *
        * `DELETE /apps/{app}/links/{name}` (`app_unlink`). **Who:** an account holder (a passkey session not bound to an app's frontend).

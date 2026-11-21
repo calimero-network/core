@@ -290,13 +290,10 @@ force and its `source`). Moving an app to another organization drops its own.
 | Field | Default | Effect |
 | --- | --- | --- |
 | `secondApprover` | off | A red (or unclassified) update needs two distinct owners or admins |
-| `autoApply` | `never` | `noDestinations`: a green update of an app whose unit has no destinations before or after it (no data leaves Calimero) applies on its own after the hold (stored only, see below) |
+| `autoApply` | `never` | `noDestinations`: a green update of an app whose unit has no destinations before or after it (no data leaves Calimero) applies on its own after the hold ([Updates that apply on their own](#updates-that-apply-on-their-own)) |
 | `holdHours` | 24 | How long a green update waits before applying on its own: 24 to 168 (`400 BAD_UPGRADE_POLICY`) |
 
-Nothing updates on its own by default, and nothing does in this release:
-`autoApply` and `holdHours` are stored and validated now, so the release that
-adds the hold timer, restore points and waves (C9 in the design) only adds their
-execution.
+Nothing updates on its own by default.
 
 ### A second approver
 
@@ -339,6 +336,120 @@ how many approvals it needs (`approvalsNeeded`) and who approved first
 and admins, its apps with an update available or a first approval waiting, each
 as `GET /apps/{app}/update` answers it, 50 apps a page (`?after=`): what the
 node's updates page shows.
+
+## Updates that apply on their own
+
+Under a `noDestinations` policy, a green update applies without anyone's
+approval once its hold has passed (`Feature::AutoUpdates`, 1.0.0-rc.34). The
+system leader looks every `AUTO_UPDATE_EVERY` (5 s; `node::auto_updates`,
+from `reconcile`) for apps it would move and the releases each could move to,
+newest first (`SystemState::auto_update_candidates`), classifies each move as
+any upgrade does, and runs the first green one of each app through the usual
+path, restore point first (`api::upgrades::auto_upgrade`), at most
+`MAX_AUTO_UPDATES_PER_PASS` (16) apps a pass; an app it skips does not count.
+A pass classifies at most `MAX_AUTO_UPDATE_CLASSES_PER_PASS` (64) moves, and
+passes on a node take turns, so two never move the same app together. Only the
+system leader's pass moves anything: a pass on a node that no longer leads the
+system group (a failover while it ran) stops before its next upgrade.
+The entry is `UpgradeApp { auto: true }` with `actor: "policy:auto-update"`
+(`system::AUTO_UPDATE`, never an account) and no consent: the policy is its
+authority, and apply judges it again from the log alone
+(`SystemState::auto_update_gate`):
+
+- the app's policy says `noDestinations`, and the class is green (and agrees
+  with the log, as [The class at apply](#the-class-at-apply) says);
+- it moves the app along its package to a newer release; never back;
+- the app is no unit's member (a member moves with its unit) and its unit, as
+  the log holds it, has no destination before or after the move;
+- its hold has passed: the upgrade's own `at` is at least `holdHours` after the
+  release was logged, its install (`installedAt`) or, for an instance of a
+  deployment, its deployment's offer of exactly that release (`addedAt`).
+  Judged on logged times, never a node's clock, so every replica agrees;
+- a restore point was taken where the upgrade runs on the app's group.
+
+Refusals: `409 AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`,
+`RESTORE_POINT_REQUIRED`. The leader takes the newest release that may apply:
+a newer red one, whether the log shows it (its destinations or signer) or only
+the leader's classification does (a state version that changed, a new way to
+act as the person), waits for an owner or admin and does not hold back a quiet
+one below it. It never takes one an update to failed or an undo left: an owner
+or admin decides on those. Only the release's own failure counts: the app's
+group ran the upgrade and it failed or refused it (`lastUpgrade.ok: false`),
+and not when another move of the app won meanwhile: an update on its own names
+the release it began from (`UpgradeFailed { fromRelease }`), and apply notes
+nothing when the app runs the target already or no longer runs that release.
+A failure before anything ran (a replica down, no restore point, a runtime not
+ready yet, no leader) leaves no record; the leader tries that move again after
+a backoff it keeps in memory (`AUTO_UPDATE_RETRY_FIRST_SECS`, 60 s, doubling to
+`AUTO_UPDATE_RETRY_MAX_SECS`, 1 hour), and remembers a move it found not green
+for `NOT_GREEN_KEPT_SECS` (1 hour), so the next pass reaches the apps after
+it. Neither is replicated: a new leader starts without them, which only means
+the work is done again. The record says `lastUpgrade.auto: true`. Only the app moves:
+an update that would move its members (an `upgrade-unit`) waits for an owner or
+admin.
+
+### Restore points and undo
+
+Every upgrade that runs on an app's group takes a restore point first
+(`Feature::RestorePoints`, 1.0.0-rc.34): the group's sealed snapshot, brought up
+to what the replica applied, copied with its manifest into that replica's
+`<data>/restore-points/<app>/` exactly as a backup is written
+(`node::restore_points`; on this node when it hosts the app, else the first
+replica that answers `internal/restore-point`). `UpgradeApp { restore_point }`
+names it in the log and the app keeps it as its one undo
+(`AppRecord::restore_point`, `types::RestorePoint`): the release and bundle it
+ran before, the upgrade's time and run, and the file (its node, group, name,
+SHA-256 and log index). A move that runs nothing on the group (the bundle it
+runs already, a compute-only app) records one without a file; an upgrade that
+took none leaves the app with none. A manual upgrade whose restore point
+could not be taken still runs (and logs a warning); an update on its own does
+not.
+
+For `UNDO_WINDOW_SECS` (7 days, judged on the upgrade's and the undo's logged
+times) an owner or admin may undo it: `POST /apps/{app}/undo` with a passkey
+over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from,
+restorePoint } } }` (`SystemCmd::UndoUpgrade`, `SystemState::undo_args`). The
+app goes back to the release it ran and, where the upgrade ran on its group, to
+the restore point's state, in a new group the restore point's node seeds as an
+operator's restore does (`Node::seed_restore`; calls answer `409
+APP_RESTORING` meanwhile). It is the one move to an older release. The
+restore point is the state just before the upgrade, so whatever the app wrote
+since is lost: `GET /apps/{app}/undo` says what would be undone and lost
+before anyone decides (`lostWrites`: the group's entries since the restore
+point, its last write, and whether it wrote after the restore point was
+taken), and the `POST` answers the same. When the restore point's node no
+longer hosts the app (a replica move took it off), those are read from the
+replicas the app is on now: all are asked, a majority must answer, and the
+furthest of them counts (every committed entry is on a majority). Only an
+applied index at or past the restore point's counts entries or says nothing is
+lost; below it, from a release that does not say, or with no majority
+answering, each is `null` (`any: null`, unless a write after the restore point
+was seen: `true`), never `0` or `false`: the undo does not say it loses no
+writes it cannot see. A unit undoes together: an undo of
+the instance reverts each member its unit's upgrade moved in the same run
+(`SystemState::undo_set`); a member that run moved is not undone alone (`409
+UNDO_NOT_AS_NAMED`). Once the restore finishes (`FinishRestore`) the restore
+point is spent; until then the undo may be sent again, which seeds it again.
+Refusals, all before the passkey: `409 NO_RESTORE_POINT`,
+`UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app no longer runs what the upgrade
+moved it to), `RESTORE_POINT_UNAVAILABLE` (its node does not answer or lost
+it). The record says `lastUpgrade.undo: true`.
+
+Storage stays bounded: a node keeps, per app, the file the app's record names
+and those taken in the last hour (an upgrade not logged yet), and sweeps the
+rest every 10 minutes (`RESTORE_POINT_SWEEP_EVERY`), and a file past the undo
+window. A restore point is a copy of the app's state on one replica, counted as
+the app's storage and billed with the rest of its unit (to the developer, for an
+instance of a deployment). If the node that holds it is gone, so is the undo.
+
+### Staged rollouts are not part of core
+
+Core applies a green update on its own to every eligible instance once each one's
+hold has passed; it does not pace a release across customers in waves. Staging a
+release across a fleet (a few instances first, then more, paused on failures) is
+fleet orchestration, outside core: the operator's tooling may do it by choosing
+when to install or offer a release. An instance's own policy (`holdHours`), its
+restore point and the week's undo are what core keeps for each one.
 
 ## Running it
 

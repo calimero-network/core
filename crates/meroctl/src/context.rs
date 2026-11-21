@@ -101,6 +101,19 @@ pub enum ContextCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
+    /// Undo the instance's last upgrade within a week of it (an owner or admin of its
+    /// organization, with a passkey): back to the release it ran and to the state of its
+    /// restore point, taken just before the upgrade; whatever it wrote since is lost.
+    /// Without `--yes`, shows what would be undone and lost.
+    Undo {
+        #[arg(value_name = "INSTANCE")]
+        context: String,
+        /// Undo it; without it, only show the plan.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
     /// Hand the instance to another account (its owner approves with a passkey).
     Transfer {
         #[arg(value_name = "INSTANCE")]
@@ -346,6 +359,21 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
                 .await;
             pk.save()?;
             to_json(&out?)?
+        }
+        ContextCmd::Undo {
+            context,
+            yes,
+            dev_passkey,
+        } => {
+            let app = env.app(&context).await?;
+            if yes {
+                let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+                let out = apps.undo(&app, pk.get()).await;
+                pk.save()?;
+                to_json(&out?)?
+            } else {
+                to_json(&apps.undo_view(&app).await?)?
+            }
         }
         ContextCmd::Transfer {
             context,

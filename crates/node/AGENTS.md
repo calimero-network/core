@@ -1362,8 +1362,7 @@ is its command line.
   `pendingApprovals` shape (`api::upgrades::approval_json`).
   The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
   `autoApply` (`noDestinations`: a green update of an app whose unit has no destinations
-  before or after) and `holdHours` are stored and validated only: the hold, auto-apply,
-  restore points and waves are C9. Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
+  before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
   /apps/{app}/upgrade-policy` (`policy_json`), `GET /apps/{app}/update` adds `policy`,
   `pendingApprovals`, `available.approvalsNeeded`/`approvedBy`
   (`api::upgrades::update_view`), `GET /orgs/{org}/updates?after=` (owners and admins,
@@ -1379,6 +1378,75 @@ is its command line.
   `a_red_update_waits_for_a_second_approver`,
   `a_unit_red_through_a_member_is_approved_first_on_its_page`,
   `a_unit_moves_whole_under_its_instances_policy` (`tests/consent_page.rs`).
+- **Updates on their own, restore points and undo** (C9; `system/updates.rs`,
+  `node/auto_updates.rs`, `node/restore_points.rs`, `api/undo.rs`; docs: protocol
+  upgrades "Updates that apply on their own"). Staged rollouts (waves across a
+  deployment's instances) are not part of core: pacing across customers is fleet
+  orchestration. *On its own* (`Feature::AutoUpdates`, rc.34): the system leader's pass
+  (`Node::auto_update` from `reconcile`, every `AUTO_UPDATE_EVERY`, at most
+  `MAX_AUTO_UPDATES_PER_PASS` apps tried; skipped ones do not count) takes
+  `SystemState::auto_update_candidates(at)`
+  (policy `noDestinations`; per app the releases that may apply, newest first, never one
+  a failed update or an undo left), classifies them newest first (`move_class`, at most
+  `MAX_AUTO_UPDATE_CLASSES_PER_PASS` a pass) and runs each app's first green one through
+  `api::upgrades::auto_upgrade` -> `run_upgrade` (`Upgrader::auto`, `Caller::System`,
+  actor `system::AUTO_UPDATE`): a release red only by its code (state version, delegated
+  methods) never holds back a green one below it. Only the release's own failure is
+  noted (`UpgradeFailed`: the group ran it and it failed or refused it); one before
+  anything ran (refusal, restore point, runtime, no leader) is not, and the leader
+  retries that move after a backoff (`node::auto_updates::AutoUpdateMemory`, in memory:
+  `AUTO_UPDATE_RETRY_FIRST_SECS` doubling to `AUTO_UPDATE_RETRY_MAX_SECS`, and moves found
+  not green for `NOT_GREEN_KEPT_SECS`, each at most `MAX_AUTO_UPDATE_MEMORY`). Passes take
+  turns (`Node::auto_update_turn`): one called while another runs, a test's beside the
+  timed one, waits for it, so two never upgrade the same app together; a pass off the
+  system leader moves nothing and one that loses the leadership stops before its next
+  upgrade (`leads_system`). An automatic `UpgradeFailed` carries `from_release`
+  (`Feature::AutoUpdates`); apply notes nothing when the app runs the target already or
+  no longer runs that release (another move won).
+  `UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that
+  actor); apply judges `SystemState::auto_update_gate`: policy, green class (and
+  `check_class`), newer release of its package, not a unit member, the logged unit with
+  no destination before or after, the hold (`at` >= `installedAt`, or the deployment
+  offer's `addedAt`, + `holdHours`), a restore point
+  (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `RESTORE_POINT_REQUIRED`;
+  `UpgradeRecord::auto`). Every update decision's time is `types::update_now`
+  (`testing::shift_update_clock` moves it in tests). *Restore points*
+  (`Feature::RestorePoints`): `run_upgrade` takes one before an upgrade that runs on the
+  group (`api::upgrades::take_restore_point`: `Node::take_restore_point`, here or a
+  replica's `internal/restore-point { op: take }`; the group's `fresh_snapshot` written
+  with `backup::write` into `<data>/restore-points/<app>/`), `{}` when nothing runs on
+  the group, and `UpgradeApp { restore_point }` makes it `AppRecord::restore_point`
+  (`types::RestorePoint`; replaced by each upgrade, cleared by one without, by
+  `RestoreApp`, spent by `FinishRestore` after its undo). A manual upgrade goes on
+  without one (warn); an automatic one does not. `sweep_restore_points` keeps the named
+  file and those under `RESTORE_POINT_GRACE`. *Undo*: `UndoUpgrade { app_id, apps:
+  { app: replicas } }` (consent `<app> / __undo_upgrade / SystemState::undo_args`; owner
+  or admin; `undo_set`: the app and the members whose restore point is of the same run;
+  `may_undo`: within `UNDO_WINDOW_SECS` of the upgrade's `at`, the app still on its
+  target, or a retry while its restore runs) reverts bundle, compute and release and,
+  with a file, moves the app to a new group with `PendingRestore { seed: the file's
+  node }` as `RestoreApp` does; `POST /apps/{app}/undo` then asks that node to seed it
+  (`Node::seed_undo` -> `seed_undo_here` -> `seed_restore`, in its own task) and waits
+  `UNDO_WAIT`; `GET /apps/{app}/undo` (`lostWrites` from `restore_point_here`: entries
+  since, last write, `any`; `hosted: false` there, the node no longer hosting the app,
+  reads them from the current replicas, `Node::group_progress` over `internal/last-write`'s
+  `appliedIndex`: every replica asked, the furthest of a majority, `furthest_progress`; an
+  index below the restore point's, none, or no majority is `null`, `any` included, never
+  `0`/`false`: `api::undo::lost_writes`; regressions `api::undo::tests`,
+  `node::group_progress_tests`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
+  `UNDO_NOT_AS_NAMED`, `409 RESTORE_POINT_UNAVAILABLE`. Regressions: `system::tests`
+  (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`,
+  `an_upgrade_is_undone_within_a_week_back_to_its_restore_point`,
+  `a_deployment_instances_hold_runs_from_its_offer`,
+  `an_automatic_failure_is_judged_on_the_derived_release_of_an_app_without_one`),
+  `tests/auto_updates.rs`
+  (`a_passing_failure_before_an_automatic_update_is_retried_not_held_against_it`,
+  `a_red_newest_release_does_not_hold_back_a_green_one_below_it`,
+  `an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app`,
+  `passes_take_turns_and_move_an_app_once`, `a_pass_off_the_system_leader_moves_nothing`;
+  `system::tests::an_automatic_failure_that_lost_to_another_move_records_nothing`),
+  `node::auto_updates::tests`, `api::undo::tests`. Not done: an automatic update that
+  moves a unit's members, a restore point kept on more than one node.
 - **Install and update pages** (C10; `consent_page/updates.rs`; docs: protocol consent page
   "Installs, updates and update policies", build "Show updates in your app"): the words
   (`reason_words`, `update_summary`, `policy_words`) shared by the sheets, the updates page

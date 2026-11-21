@@ -825,7 +825,7 @@ fn components() -> Vec<Component> {
         .of::<QuotaSettings>(),
         component(
             "UpgradePolicy",
-            "How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applying on its own after the hold; stored and validated now, carried out by a later release.",
+            "How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.",
             r#"{ autoApply: "never" | "noDestinations", holdHours: uint, secondApprover: bool }"#,
         )
         .of::<crate::types::UpgradePolicy>(),
@@ -848,6 +848,17 @@ fn components() -> Vec<Component> {
             "UpdateReason",
             "Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself.",
             r#"{ code: "signerChanged", member: string | null, from: string, to: string } | { code: "egressAdded", destinations: string[] } | { code: "stateVersionChanged", member: string | null, from: uint | null, to: uint | null } | { code: "memberAdded", member: string, package: string, egress: string[] } | { code: "memberRemoved", member: string, package: string, egress: string[] } | { code: "delegatedMethodsAdded", member: string | null, package: string, methods: string[] }"#,
+        ),
+        component(
+            "RestorePoint",
+            "An app's one undo (`POST /apps/{app}/undo`): the release and bundle its last upgrade moved it from (`fromRelease`, `fromBundle`) and to, when (`at`, the start of the week to undo it) and by whom (`policy:auto-update` for an update that applied on its own), the run it was part of (a unit's members undo with their instance), the app group's snapshot (`file`: the node that holds it, absent where the upgrade ran nothing on the group) and `undoneAt` while an undo's restore is under way.",
+            r#"{ fromBundle: string, fromCompute?: string, fromRelease?: #PackageRef, toBundle: string, toRelease?: #PackageRef, at: uint, by: string, run?: string, file?: { node: uint, group: uint, source: { name: string, sha256: string, index: uint } }, undoneAt?: uint }"#,
+        )
+        .of::<crate::types::RestorePoint>(),
+        component(
+            "UndoPart",
+            "One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade, read from a replica the app is on now when the restore point's node no longer hosts it; each of them `null` when nobody can say, never `false` for writes it cannot see; `lostWrites` itself `null` while the restore point's node does not answer, which `unavailable` then says).",
+            r#"{ app: string, from: #PackageRef | null, to: #PackageRef | null, toBundle: string, upgradedAt: uint, upgradedBy: string, auto: bool, undoUntil: uint, restorePoint: { node: uint, index: uint, sha256: string } | null, undoneAt: uint | null, lostWrites: { entriesSince: uint | null, lastWriteAt: uint | null, any: bool | null } | null, unavailable: { code: string, message: string } | null }"#,
         ),
         component(
             "UsageDay",
@@ -924,8 +935,8 @@ fn components() -> Vec<Component> {
         .of::<crate::types::UpgradeRun>(),
         component(
             "App",
-            "An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.",
-            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, grants: #Grant[], confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string } }"#,
+            "An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`).",
+            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, grants: #Grant[], confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string }, restorePoint?: #RestorePoint }"#,
         )
         .of::<crate::types::AppRecord>(),
         component(
@@ -941,8 +952,8 @@ fn components() -> Vec<Component> {
         .of::<crate::system::PackageRef>(),
         component(
             "Upgrade",
-            "The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second.",
-            r#"{ from: string, to: string, at: uint, by: string, ok: bool, error?: any, run?: string, apiKey?: string, fromRelease?: #PackageRef, toRelease?: #PackageRef, class?: "green" | "red", reasons?: #UpdateReason[], approvedBy?: string }"#,
+            "The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second. `auto`: it applied on its own under the app's update policy (`by` is `policy:auto-update`); `undo`: it undid the upgrade before it (`fromRelease` the release undone).",
+            r#"{ from: string, to: string, at: uint, by: string, ok: bool, error?: any, run?: string, apiKey?: string, fromRelease?: #PackageRef, toRelease?: #PackageRef, class?: "green" | "red", reasons?: #UpdateReason[], approvedBy?: string, auto?: bool, undo?: bool }"#,
         )
         .of::<crate::types::UpgradeRecord>(),
         component(
@@ -1428,6 +1439,16 @@ fn operations() -> Vec<Op> {
             .ok("{ app: string, approval: #PendingApproval }")
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "ONE_APPROVAL"), (409, "APPROVAL_PENDING"), (409, "NOT_INSTALLED"), (409, "OUTSIDE_DEPLOYMENT"), (409, "FEATURE_NOT_ACTIVE"), (409, "CONFLICT")]),
+        get("/apps/{app}/undo", "app_undo_view", AppAccess, "The upgrade an app may undo")
+            .about("For whoever may read the app. `available`: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point's node answering); else `reason` says why. `apps`: the app, and the members its unit's upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.")
+            .ok("{ app: string, available: bool, reason: { code: string, message: string } | null, undoUntil?: uint | null, apps: #UndoPart[] }")
+            .errors(&[(404, "NOT_FOUND")]),
+        post("/apps/{app}/undo", "app_undo", AccountHolder, "Undo an app's last upgrade")
+            .about("An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.")
+            .json::<super::undo::UndoBody>("{ confirm?: #Confirm }")
+            .ok("{ app: string, groups: { [string]: uint | null }, restored: bool, apps: #UndoPart[] }")
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "NO_RESTORE_POINT"), (409, "UNDO_WINDOW_PASSED"), (409, "UNDO_STALE"), (409, "UNDO_NOT_AS_NAMED"), (409, "RESTORE_POINT_UNAVAILABLE"), (409, "FEATURE_NOT_ACTIVE"), (409, "UPGRADE_PENDING")]),
         post("/apps/{app}/upgrade-unit", "app_upgrade_unit", AccountHolder, "Upgrade an app and the apps it created, in one consent")
             .about("An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.")
             .json::<super::upgrades::UnitUpgradeBody>("{ version: string, confirm?: #Confirm }")

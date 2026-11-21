@@ -546,6 +546,11 @@ pub struct AppRecord {
     /// alone. Left out when empty, so a record writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attached: BTreeMap<String, AppId>,
+    /// The restore point of its last upgrade, which its owner or an admin may undo
+    /// for [`UNDO_WINDOW_SECS`] ([`RestorePoint`]). Left out when `None`, so a record
+    /// writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_point: Option<RestorePoint>,
 }
 
 /// The backup a restore takes an app's state from (`crate::backup`): the
@@ -668,6 +673,86 @@ pub struct UpgradeRecord {
     /// through, where the app's policy asks for a second approver.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_by: Option<AccountId>,
+    /// It applied on its own under the app's update policy (`UpgradeApp::auto`), `by`
+    /// naming no person ([`crate::system::AUTO_UPDATE`]). Left out when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
+    /// It undid the upgrade before it (`SystemCmd::UndoUpgrade`): `from_release` is the
+    /// release undone, `to_release` the one restored. Left out when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub undo: bool,
+}
+
+/// How long after an upgrade its owner or an admin may undo it
+/// (`SystemCmd::UndoUpgrade`), judged on the logged times of the upgrade and the undo: a
+/// week. Past it, the restore point is spent.
+pub const UNDO_WINDOW_SECS: u64 = 7 * 24 * 3600;
+
+/// A restore point's file, kept by the replica that took it in its
+/// `<data>/restore-points/<app>/` (`crate::node::restore_points`): the app group's sealed
+/// snapshot as `crate::backup` writes one, taken just before the upgrade it undoes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestorePointFile {
+    /// The node that holds it, and seeds the app's group from it on an undo.
+    pub node: u64,
+    /// The app's group the snapshot was taken of.
+    pub group: u64,
+    /// The file's name, its SHA-256 and the group's log index it holds.
+    pub source: RestoreSource,
+}
+
+/// The restore point an upgrade took before it ran (`UpgradeApp::restore_point`): the
+/// app group's snapshot (`file`), or none for a move that runs nothing on the group (a
+/// release with the app's own bundle, a compute-only app), which an undo reverts in the
+/// directory alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TakenRestorePoint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<RestorePointFile>,
+}
+
+/// The one undo an app keeps (`AppRecord::restore_point`): its last upgrade, which
+/// `SystemCmd::UndoUpgrade` reverts within [`UNDO_WINDOW_SECS`] to the release and the
+/// state it ran before (the one move to an older release). Replaced by every upgrade,
+/// dropped by an undo once its group holds the restored state, and by an upgrade that
+/// took none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestorePoint {
+    /// What the app ran before the upgrade, which an undo restores.
+    pub from_bundle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_compute: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_release: Option<crate::system::PackageRef>,
+    /// What the upgrade moved it to: an undo is refused once the app runs anything else.
+    pub to_bundle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_release: Option<crate::system::PackageRef>,
+    /// The upgrade's logged time: the undo window starts here.
+    pub at: u64,
+    /// Who upgraded it (an account, or [`crate::system::AUTO_UPDATE`]).
+    pub by: String,
+    /// The run it was part of: a unit's members undo with their instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    /// The app group's snapshot; `None` when the upgrade ran nothing on the group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<RestorePointFile>,
+    /// When an undo of it was logged: the app is being restored from `file` (a retry may
+    /// seed it again until the restore finishes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undone_at: Option<u64>,
+}
+
+impl RestorePoint {
+    /// Whether an undo logged at `at` is within [`UNDO_WINDOW_SECS`] of the upgrade.
+    #[must_use]
+    pub const fn open_at(&self, at: u64) -> bool {
+        at <= self.at.saturating_add(UNDO_WINDOW_SECS)
+    }
 }
 
 /// An upgrade of many apps at once, with cascade: every
@@ -1130,10 +1215,9 @@ pub const MAX_CLASS_REASONS: usize = 64;
 /// (`SystemCmd::SetUpgradePolicy`), for one app or every app of the organization. Every
 /// field may be left out (its default); an unknown one is refused.
 ///
-/// Only `second_approver` changes what applies in this release. `auto_apply` and
-/// `hold_hours` are stored and validated now; applying green updates on their own after
-/// the hold (with a restore point and waves) is a later release's, which only adds the
-/// execution.
+/// `second_approver` asks for a second owner's or admin's approval of a red update;
+/// `auto_apply` and `hold_hours` let a green one apply on its own after its hold, with a
+/// restore point (`node::auto_updates`, `SystemState::auto_update_gate`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpgradePolicy {
@@ -1772,6 +1856,22 @@ pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// The time an update decision is logged at (an upgrade's `at`, an undo's, the automatic
+/// pass's): [`now_secs`], moved ahead in tests by
+/// `crate::testing::shift_update_clock` so a hold or the undo window can pass
+/// without waiting for it. Every rule judges the logged time, never a node's clock.
+#[must_use]
+pub fn update_now() -> u64 {
+    #[cfg(feature = "testing")]
+    {
+        now_secs().saturating_add(crate::testing::update_clock_shift())
+    }
+    #[cfg(not(feature = "testing"))]
+    {
+        now_secs()
+    }
 }
 
 /// Milliseconds since the epoch.
