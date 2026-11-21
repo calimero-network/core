@@ -134,8 +134,8 @@ from .app_update_response_200_available_type_0 import AppUpdateResponse200Availa
 from .app_update_response_200_available_type_0_class import (
     AppUpdateResponse200AvailableType0Class,
 )
-from .app_update_response_200_available_type_0_egress import (
-    AppUpdateResponse200AvailableType0Egress,
+from .app_update_response_200_available_type_0_egress_type_0 import (
+    AppUpdateResponse200AvailableType0EgressType0,
 )
 from .app_update_response_200_available_type_0_source import (
     AppUpdateResponse200AvailableType0Source,
@@ -906,7 +906,7 @@ __all__ = (
     "AppUpdateResponse200Approvers",
     "AppUpdateResponse200AvailableType0",
     "AppUpdateResponse200AvailableType0Class",
-    "AppUpdateResponse200AvailableType0Egress",
+    "AppUpdateResponse200AvailableType0EgressType0",
     "AppUpdateResponse200AvailableType0Source",
     "AppUpdateResponse200Policy",
     "AppUpdateResponse200PolicyAutoApply",

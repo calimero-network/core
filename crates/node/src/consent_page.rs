@@ -2153,7 +2153,7 @@ async fn upgrade_request(
         "title": format!("Update {} to version {new}", app.name),
         "points": points,
         "attention": attention,
-        "unit": unit,
+        "unit": unit.as_ref().map(crate::egress::verdict_json),
         "app": { "name": name, "package": package },
         "publisher": {
             "name": author,
@@ -2316,7 +2316,10 @@ async fn unit_upgrade_request(
     let mut model = root.clone();
     if let Some(o) = model.as_object_mut() {
         let _prev = o.insert("kind".into(), json!("upgradeUnit"));
-        let _prev = o.insert("unit".into(), json!(unit));
+        let _prev = o.insert(
+            "unit".into(),
+            json!(unit.as_ref().map(crate::egress::verdict_json)),
+        );
         let _prev = o.insert("update".into(), update);
         let _prev = o.insert(
             "headline".into(),

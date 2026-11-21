@@ -275,8 +275,9 @@ a green class for it and takes a red one, gated as red. The API classifies such 
 move red with an `unclassified` reason for each part the log lacks (`{ code:
 "unclassified", member, package, version }`, `SystemState::unclassified`), and
 shows it the same way wherever it shows the class (`GET /apps/{app}/update`, the
-consent page's sheets and approval step, without destinations, which are
-unknown), and
+consent page's sheets and approval step; what compares the two sides, its
+destinations, signer, state version and methods, is unknown: `null` in the API,
+"Unknown" on the page), and
 apply refuses an `unclassified` reason that names anything else, or one on a
 move the log rebuilds. The class and its reasons are kept on the app's last upgrade
 (`lastUpgrade.class`, `reasons`). An entry without a class (an earlier

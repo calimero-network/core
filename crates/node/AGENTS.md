@@ -1333,8 +1333,10 @@ is its command line.
   release the app or a member runs, or a target, not installed: red is taken as said; the API
   says it with an `unclassified` reason per part the log lacks, `SystemState::unclassified`,
   through `egress::judged_update`, the one verdict `approve_upgrade`, `api::upgrades::class_of`,
-  `GET /apps/{app}/update` and the consent page's sheets and `approval_step` take (no
-  destinations shown: they are unknown), and apply refuses one naming anything else); `UpgradeRecord::class`/`reasons`/`approved_by` keep it
+  `GET /apps/{app}/update` and the consent page's sheets and `approval_step` take; every
+  fact comparing the two sides is unknown, `null` in the API (`egress::verdict_json`:
+  `egress`, `stateVersionChanged`, `newMethods`, `removedMethods`, `signerChanged`) and
+  "Unknown" on the sheet, and apply refuses one naming anything else); `UpgradeRecord::class`/`reasons`/`approved_by` keep it
   (`lastUpgrade`). Policies (`Feature::UpgradePolicies`, rc.34): `SetUpgradePolicy { org,
   app?, policy? }` by an owner or admin (`approves_upgrades`), consent `org:<org> /
   __set_upgrade_policy / system::upgrade_policy_args`, kept on `Org::upgrade_policy` and

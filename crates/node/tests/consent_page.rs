@@ -4209,6 +4209,21 @@ async fn a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified()
     assert_eq!(update["available"]["class"], "red", "{update}");
     assert_eq!(update["available"]["reasons"], unclassified, "{update}");
     assert_eq!(update["available"]["approvalsNeeded"], 2, "{update}");
+    // What depends on the side the log lacks is unknown, never "unchanged".
+    const UNKNOWN: [&str; 5] = [
+        "egress",
+        "stateVersionChanged",
+        "newMethods",
+        "removedMethods",
+        "signerChanged",
+    ];
+    for fact in UNKNOWN {
+        assert_eq!(
+            update["available"].get(fact),
+            Some(&Value::Null),
+            "{fact}: {update}"
+        );
+    }
 
     let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
     let app_origin = format!(
@@ -4238,6 +4253,23 @@ async fn a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified()
         "{model}"
     );
     assert_eq!(model["unit"]["reasons"], unclassified, "{model}");
+    for fact in UNKNOWN {
+        assert_eq!(
+            model["unit"].get(fact),
+            Some(&Value::Null),
+            "{fact}: {model}"
+        );
+    }
+    for fact in ["newMethods", "removedMethods", "destinations"] {
+        assert_eq!(shown.get(fact), Some(&Value::Null), "{fact}: {model}");
+    }
+    for fact in ["signer", "stateVersion", "actsAs"] {
+        let words = shown[fact].as_str().unwrap_or_default();
+        assert!(
+            words.starts_with("Unknown") && !words.contains("Same") && !words.contains("Unchanged"),
+            "{fact}: {model}"
+        );
+    }
 }
 
 /// C8: a unit's run is judged once, under its instance's policy, so it moves whole. A

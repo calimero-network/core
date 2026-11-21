@@ -242,6 +242,26 @@ pub(crate) fn unclassified(c: &Classification) -> bool {
         .any(|r| matches!(r, Reason::Unclassified { .. }))
 }
 
+/// A verdict as the API and the consent page's model answer it: the [`Classification`]'s
+/// fields, with every fact that compares the two sides (`egress`, `stateVersionChanged`,
+/// `newMethods`, `removedMethods`, `signerChanged`) `null` when it is [`unclassified`]:
+/// unknown, not unchanged.
+pub(crate) fn verdict_json(c: &Classification) -> Value {
+    let mut v = json!(c);
+    if unclassified(c) {
+        for fact in [
+            "egress",
+            "stateVersionChanged",
+            "newMethods",
+            "removedMethods",
+            "signerChanged",
+        ] {
+            v[fact] = Value::Null;
+        }
+    }
+    v
+}
+
 /// A unit's egress as the API answers it: `egress` (sorted destinations over the app and
 /// its members; empty: no data leaves Calimero) as `destinations`, and each member by path with
 /// its package, version, own destinations

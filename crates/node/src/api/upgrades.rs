@@ -1784,15 +1784,11 @@ pub(crate) async fn update_view(
         match crate::egress::judged_update(node, &app, &version, !app.links.is_empty()).await {
             Ok(Some(c)) => {
                 let summary = crate::consent_page::update_summary(&c);
-                // Unclassified: where data can go is unknown, not none.
-                let unknown = crate::egress::unclassified(&c);
-                if let (Some(o), Ok(Value::Object(c))) =
-                    (a.as_object_mut(), serde_json::to_value(c))
+                // Unclassified: what compares the two sides is unknown (`null`), not unchanged.
+                if let (Some(o), Value::Object(c)) =
+                    (a.as_object_mut(), crate::egress::verdict_json(&c))
                 {
                     o.extend(c);
-                    if unknown {
-                        let _gone = o.remove("egress");
-                    }
                     let _prev = o.insert("summary".into(), json!(summary));
                 }
             }

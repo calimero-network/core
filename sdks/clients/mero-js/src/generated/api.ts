@@ -10078,11 +10078,11 @@ export interface operations {
                                 after: string[];
                                 added: string[];
                                 removed: string[];
-                            };
-                            stateVersionChanged?: boolean;
-                            newMethods?: string[];
-                            removedMethods?: string[];
-                            signerChanged?: boolean;
+                            } | null;
+                            stateVersionChanged?: boolean | null;
+                            newMethods?: string[] | null;
+                            removedMethods?: string[] | null;
+                            signerChanged?: boolean | null;
                             summary?: string;
                             /** Format: int64 */
                             approvalsNeeded: number;

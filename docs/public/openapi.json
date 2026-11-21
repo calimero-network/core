@@ -9050,7 +9050,10 @@
                           }
                         },
                         "egress": {
-                          "type": "object",
+                          "type": [
+                            "object",
+                            "null"
+                          ],
                           "properties": {
                             "before": {
                               "type": "array",
@@ -9085,22 +9088,34 @@
                           ]
                         },
                         "stateVersionChanged": {
-                          "type": "boolean"
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
                         },
                         "newMethods": {
-                          "type": "array",
+                          "type": [
+                            "array",
+                            "null"
+                          ],
                           "items": {
                             "type": "string"
                           }
                         },
                         "removedMethods": {
-                          "type": "array",
+                          "type": [
+                            "array",
+                            "null"
+                          ],
                           "items": {
                             "type": "string"
                           }
                         },
                         "signerChanged": {
-                          "type": "boolean"
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
                         },
                         "summary": {
                           "type": "string"

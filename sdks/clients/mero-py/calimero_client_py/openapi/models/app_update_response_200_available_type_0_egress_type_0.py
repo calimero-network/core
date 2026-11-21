@@ -8,11 +8,11 @@ from ..types import UNSET, Unset
 
 from typing import cast
 
-T = TypeVar("T", bound="AppUpdateResponse200AvailableType0Egress")
+T = TypeVar("T", bound="AppUpdateResponse200AvailableType0EgressType0")
 
 
 @_attrs_define
-class AppUpdateResponse200AvailableType0Egress:
+class AppUpdateResponse200AvailableType0EgressType0:
     """
     Attributes:
         before (list[str]):
@@ -60,15 +60,15 @@ class AppUpdateResponse200AvailableType0Egress:
 
         removed = cast(list[str], d.pop("removed"))
 
-        app_update_response_200_available_type_0_egress = cls(
+        app_update_response_200_available_type_0_egress_type_0 = cls(
             before=before,
             after=after,
             added=added,
             removed=removed,
         )
 
-        app_update_response_200_available_type_0_egress.additional_properties = d
-        return app_update_response_200_available_type_0_egress
+        app_update_response_200_available_type_0_egress_type_0.additional_properties = d
+        return app_update_response_200_available_type_0_egress_type_0
 
     @property
     def additional_keys(self) -> list[str]:
