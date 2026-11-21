@@ -172,8 +172,8 @@ impl Drop for AutoUpdatePass {
 static UPDATE_CLOCK_SHIFT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Make every update decision logged from now on in this process (an upgrade's `at`, an
-/// undo's, a rollout's, the automatic pass's: `crate::types::update_now`) carry a time
-/// `secs` ahead of the clock, so a test sees a hold, a wave or the undo window pass.
+/// undo's, the automatic pass's: `crate::types::update_now`) carry a time `secs` ahead
+/// of the clock, so a test sees a hold or the undo window pass.
 /// `0` puts it back.
 pub fn shift_update_clock(secs: u64) {
     UPDATE_CLOCK_SHIFT.store(secs, std::sync::atomic::Ordering::SeqCst);

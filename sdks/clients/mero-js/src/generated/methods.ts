@@ -968,32 +968,6 @@ export function createRoutes(api: RouteClient) {
       orgs: (args: operations['deployment_orgs']['parameters']['path'], options?: MethodOptions): Promise<operations['deployment_orgs']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/deployments/{id}/orgs","pathParams":["id"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_orgs']['responses'][200]['content']['application/json']>,
       /**
-       * How a deployment's offers roll out.
-       *
-       * `GET /deployments/{id}/rollout` (`deployment_rollout`). **Who:** signed in (a session or an API key).
-       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
-       */
-      rollout: (args: operations['deployment_rollout']['parameters']['path'], options?: MethodOptions): Promise<operations['deployment_rollout']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"GET","path":"/deployments/{id}/rollout","pathParams":["id"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_rollout']['responses'][200]['content']['application/json']>,
-      /**
-       * Pause a deployment's rollout.
-       *
-       * `POST /deployments/{id}/rollout/{app}/pause` (`rollout_pause`). **Who:** an account holder (a passkey session not bound to an app's frontend).
-       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
-       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
-       */
-      rolloutPause: (args: operations['rollout_pause']['parameters']['path'] & operations['rollout_pause']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['rollout_pause']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"POST","path":"/deployments/{id}/rollout/{app}/pause","pathParams":["id","app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['rollout_pause']['responses'][200]['content']['application/json']>,
-      /**
-       * Resume a deployment's rollout.
-       *
-       * `POST /deployments/{id}/rollout/{app}/resume` (`rollout_resume`). **Who:** an account holder (a passkey session not bound to an app's frontend).
-       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
-       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
-       */
-      rolloutResume: (args: operations['rollout_resume']['parameters']['path'] & operations['rollout_resume']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['rollout_resume']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"POST","path":"/deployments/{id}/rollout/{app}/resume","pathParams":["id","app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['rollout_resume']['responses'][200]['content']['application/json']>,
-      /**
        * Remove a deployment's value of a secret.
        *
        * `DELETE /deployments/{id}/secrets/{name}` (`deployment_secret_clear`). **Who:** an account holder (a passkey session not bound to an app's frontend).

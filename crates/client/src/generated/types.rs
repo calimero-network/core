@@ -852,7 +852,7 @@ impl<'de> Deserialize<'de> for UpgradePolicyAutoApply {
     }
 }
 
-/// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point, and for an instance of a deployment in its rollout's wave.
+/// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UpgradePolicy {
     #[serde(rename = "autoApply")]
@@ -1142,54 +1142,6 @@ pub struct UndoPart {
     #[serde(rename = "lostWrites")]
     pub lost_writes: Option<UndoPartLostWrites>,
     pub unavailable: Option<UndoPartUnavailable>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RolloutWavesItem {
-    pub percent: u64,
-    pub instances: u64,
-    pub open: bool,
-    #[serde(rename = "opensAt")]
-    pub opens_at: Option<u64>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RolloutPaused {
-    pub at: u64,
-    pub by: String,
-    pub failures: u64,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-/// How a deployment's offered release reaches its instances that apply updates on their own: wave `wave` of `waves` (1%, 10%, 50% and every instance, at least one, in an order each release draws afresh) is open; the next opens at `nextWaveAt` (`null` once the last is open or while paused), `waveHours` after the one before. `paused`: by a manager, or by `failures` once the failed upgrades and undos of the release pass `pausesAbovePercent` of the instances that tried it. `instances` run its package; `updated` run the release, `failed` failed to move to it, `undone` undid it.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Rollout {
-    pub app: String,
-    pub package: String,
-    pub version: String,
-    #[serde(rename = "offeredAt")]
-    pub offered_at: u64,
-    #[serde(rename = "waveHours")]
-    pub wave_hours: u64,
-    pub wave: u64,
-    pub waves: Vec<RolloutWavesItem>,
-    #[serde(rename = "nextWaveAt")]
-    pub next_wave_at: Option<u64>,
-    pub paused: Option<RolloutPaused>,
-    pub instances: u64,
-    pub updated: u64,
-    pub failed: u64,
-    pub undone: u64,
-    #[serde(rename = "pausesAbovePercent")]
-    pub pauses_above_percent: u64,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -5655,33 +5607,6 @@ pub struct DeploymentOrgsResponse {
     pub orgs: Vec<DeploymentOrgsResponseOrgsItem>,
     #[serde(rename = "outsideOrgs")]
     pub outside_orgs: u64,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentRolloutResponse {
-    pub deployment: String,
-    pub apps: Vec<Rollout>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RolloutPauseResponse {
-    pub deployment: String,
-    pub apps: Vec<Rollout>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RolloutResumeResponse {
-    pub deployment: String,
-    pub apps: Vec<Rollout>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

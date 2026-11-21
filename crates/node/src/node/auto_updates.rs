@@ -2,10 +2,9 @@
 //! their own"): the system leader's pass, from `reconcile`, at most every
 //! [`AUTO_UPDATE_EVERY`].
 //!
-//! Each pass first pauses the deployments' rollouts whose failures pass their threshold
-//! (`PauseRollout`), then finds the apps an update would apply to on its own now
+//! Each pass finds the apps an update would apply to on its own now
 //! (`SystemState::auto_update_candidates`: a `noDestinations` policy, the newer releases
-//! whose hold passed since they were logged, its deployment's wave, newest first),
+//! whose hold passed since they were logged, newest first),
 //! classifies each move as any upgrade does, newest first, and runs the first green one
 //! of each app (`api::upgrades::auto_upgrade`: a restore point first, then
 //! `UpgradeApp { auto }`, which apply judges again). The pass's time is the one the
@@ -24,7 +23,7 @@ use tracing::{info, warn};
 
 use super::Node;
 use crate::system::cluster_version::{self as cv, Feature};
-use crate::system::{PackageRef, SystemCmd};
+use crate::system::PackageRef;
 
 /// How often the system leader looks for updates to apply on their own.
 pub const AUTO_UPDATE_EVERY: Duration = Duration::from_secs(5);
@@ -152,8 +151,7 @@ impl Node {
         }));
     }
 
-    /// One pass: pause failing rollouts, then apply each green update whose hold and
-    /// wave allow it. Answers how many applied. Nothing before the logged cluster version
+    /// One pass: apply each green update whose hold allows it. Answers how many applied. Nothing before the logged cluster version
     /// brings automatic updates and restore points.
     pub async fn auto_update_once(&self) -> usize {
         // One pass at a time on this node, the timed one ([`Self::auto_update`]) or one
@@ -175,7 +173,6 @@ impl Node {
                     Feature::UpgradeClasses,
                     Feature::AutoUpdates,
                     Feature::RestorePoints,
-                    Feature::Rollouts,
                 ],
             )
             .is_ok()
@@ -184,22 +181,6 @@ impl Node {
             return 0;
         }
         let now = crate::types::update_now();
-        for (deployment, app, version) in self.sys(crate::system::SystemState::failing_rollouts) {
-            let paused = self
-                .sys_write(&SystemCmd::PauseRollout {
-                    deployment: deployment.clone(),
-                    app: app.clone(),
-                    version: version.clone(),
-                    at: now,
-                })
-                .await;
-            match paused {
-                Ok(_) => warn!(%deployment, %app, %version, "a rollout paused on its failures"),
-                Err(e) => {
-                    warn!(%deployment, %app, error = %e.message, "could not pause a failing rollout")
-                }
-            }
-        }
         let candidates = self.sys(|s| s.auto_update_candidates(now));
         self.with_auto_update_memory(|m| {
             let moves: Vec<(String, Vec<PackageRef>)> = candidates

@@ -157,9 +157,6 @@ Generated from core's `docs/public/openapi.json`.
 | `list()` | `GET /deployments` | Deployments |
 | `offer(id, app, package, version, confirm=None)` | `POST /deployments/{id}/apps` | Offer a release in a deployment. **passkey** |
 | `orgs(id)` | `GET /deployments/{id}/orgs` | The organizations a deployment serves |
-| `rollout(id)` | `GET /deployments/{id}/rollout` | How a deployment's offers roll out |
-| `rollout_pause(id, app, wave_hours=…, confirm=None)` | `POST /deployments/{id}/rollout/{app}/pause` | Pause a deployment's rollout. **passkey**. *Refusals:* `400 BAD_ROLLOUT`, `409 FEATURE_NOT_ACTIVE` |
-| `rollout_resume(id, app, wave_hours=…, confirm=None)` | `POST /deployments/{id}/rollout/{app}/resume` | Resume a deployment's rollout. **passkey**. *Refusals:* `400 BAD_ROLLOUT`, `409 FEATURE_NOT_ACTIVE` |
 | `secret_clear(id, name, confirm=None)` | `DELETE /deployments/{id}/secrets/{name}` | Remove a deployment's value of a secret. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
 | `secret_set(id, name, value, confirm=None)` | `PUT /deployments/{id}/secrets/{name}` | Set a deployment's value of a secret. **passkey**. *Refusals:* `400 BAD_SECRET`, `404 UNDECLARED_SECRET`, `409 FEATURE_NOT_ACTIVE`, `429 QUOTA_EXCEEDED` |
 | `secrets(id)` | `GET /deployments/{id}/secrets` | A deployment's secrets |

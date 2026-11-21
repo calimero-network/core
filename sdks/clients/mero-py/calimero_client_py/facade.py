@@ -243,9 +243,6 @@ from .openapi.api.sign_up_and_deployments import deployment_list as _deployment_
 from .openapi.api.sign_up_and_deployments import deployment_offer as _deployment_offer
 from .openapi.api.sign_up_and_deployments import deployment_orgs as _deployment_orgs
 from .openapi.api.sign_up_and_deployments import (
-    deployment_rollout as _deployment_rollout,
-)
-from .openapi.api.sign_up_and_deployments import (
     deployment_secret_clear as _deployment_secret_clear,
 )
 from .openapi.api.sign_up_and_deployments import (
@@ -257,8 +254,6 @@ from .openapi.api.sign_up_and_deployments import (
 from .openapi.api.sign_up_and_deployments import (
     deployment_withdraw as _deployment_withdraw,
 )
-from .openapi.api.sign_up_and_deployments import rollout_pause as _rollout_pause
-from .openapi.api.sign_up_and_deployments import rollout_resume as _rollout_resume
 from .openapi.api.sign_up_and_deployments import (
     sign_up_invite_create as _sign_up_invite_create,
 )
@@ -381,8 +376,6 @@ from .openapi.models import RefreshBody
 from .openapi.models import RegisterBeginBody
 from .openapi.models import RegisterFinishBody
 from .openapi.models import RestoreRecoverHolderBody
-from .openapi.models import RolloutPauseBody
-from .openapi.models import RolloutResumeBody
 from .openapi.models import SignUpInviteCreateBody
 from .openapi.models import SignUpSetBody
 from .openapi.models import TeamCreateBody
@@ -3062,22 +3055,6 @@ _DEPLOYMENT_ORGS = Operation(
     body="none",
     answer="json",
 )
-_DEPLOYMENT_ROLLOUT = Operation(
-    _deployment_rollout,
-    "deployment_rollout",
-    body="none",
-    answer="json",
-)
-_ROLLOUT_PAUSE = Operation(
-    _rollout_pause, "rollout_pause", body=RolloutPauseBody, answer="json", confirm=True
-)
-_ROLLOUT_RESUME = Operation(
-    _rollout_resume,
-    "rollout_resume",
-    body=RolloutResumeBody,
-    answer="json",
-    confirm=True,
-)
 _DEPLOYMENT_SECRET_CLEAR = Operation(
     _deployment_secret_clear,
     "deployment_secret_clear",
@@ -3276,72 +3253,6 @@ class Deployments(Group):
         Returns: DeploymentOrgsResponse200
         """
         return self._run(_DEPLOYMENT_ORGS, (id,), {}, None)
-
-    def rollout(self, *, id):
-        """How a deployment's offers roll out (`GET /deployments/{id}/rollout`, `deployment_rollout`).
-
-        For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner's or admin's own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.
-
-        **Who:** signed in (a session or an API key).
-
-        Args:
-            id: path
-
-        Returns: DeploymentRolloutResponse200
-        """
-        return self._run(_DEPLOYMENT_ROLLOUT, (id,), {}, None)
-
-    def rollout_pause(self, *, id, app, wave_hours=UNSET, confirm=None):
-        """Pause a deployment's rollout (`POST /deployments/{id}/rollout/{app}/pause`, `rollout_pause`).
-
-        A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: true, waveHours }`: no more of its instances move to the offered release on their own; the waves open stay open. `waveHours` (1 to 168, `400 BAD_ROLLOUT`) sets the pause between waves. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
-
-        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
-
-        Args:
-            id: path
-            app: path
-            wave_hours: body `waveHours`
-            confirm: a passkey for the step-up, a ready `confirm`, or False
-
-        Returns: RolloutPauseResponse200
-        """
-        return self._run(
-            _ROLLOUT_PAUSE,
-            (
-                id,
-                app,
-            ),
-            {},
-            {"waveHours": wave_hours},
-            confirm=confirm,
-        )
-
-    def rollout_resume(self, *, id, app, wave_hours=UNSET, confirm=None):
-        """Resume a deployment's rollout (`POST /deployments/{id}/rollout/{app}/resume`, `rollout_resume`).
-
-        A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: false, waveHours }`: it goes on from the wave open at the pause, and the next opens a full `waveHours` later. A rollout paused on its failures resumes the same way.
-
-        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
-
-        Args:
-            id: path
-            app: path
-            wave_hours: body `waveHours`
-            confirm: a passkey for the step-up, a ready `confirm`, or False
-
-        Returns: RolloutResumeResponse200
-        """
-        return self._run(
-            _ROLLOUT_RESUME,
-            (
-                id,
-                app,
-            ),
-            {},
-            {"waveHours": wave_hours},
-            confirm=confirm,
-        )
 
     def secret_clear(self, *, id, name, confirm=None):
         """Remove a deployment's value of a secret (`DELETE /deployments/{id}/secrets/{name}`, `deployment_secret_clear`).

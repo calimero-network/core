@@ -27,7 +27,7 @@ class OrgUpdatesResponse200:
             `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before
             or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its
             own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a
-            restore point, and for an instance of a deployment in its rollout's wave.
+            restore point.
         updates (list[Any]):
         next_ (Union[None, str]):
     """

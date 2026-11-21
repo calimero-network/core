@@ -332,17 +332,6 @@ or `restricted` (only the members added).
 | `org upgrade-policy ORG [--second-approver BOOL] [--auto-apply never|no-destinations] [--hold-hours N] [--clear] [--dev-passkey FILE]` | `GET\|POST /orgs/{org}/upgrade-policy` | The organization's update policy, for its contexts without one of their own; with a flag, set it (the owner or an admin, with a passkey); `--clear` drops it (the defaults: one approval, nothing on its own). |
 | `org updates ORG [--after INSTANCE]` | `GET /orgs/{org}/updates` | The organization's contexts with an update available or a first approval waiting, each with its class, the approvals it needs and the policy in force (its owner and admins; 50 a page). |
 
-## rollout
-
-How a deployment's offered releases reach its instances that apply updates on
-their own, in waves (1%, 10%, 50%, everyone), for its managers.
-
-| Command | Route | What it does |
-| --- | --- | --- |
-| `rollout status DEPLOYMENT` | `GET /deployments/{id}/rollout` | Each offered app's wave, the next one's time, whether it is paused (by a manager, or by its failures), and how many instances run, failed or undid the release. |
-| `rollout pause DEPLOYMENT APP [--wave-hours N] [--dev-passkey FILE]` | `POST /deployments/{id}/rollout/{app}/pause` | No more instances move to the offered release on their own; the waves open stay open. `--wave-hours` (1 to 168) sets the time between waves. |
-| `rollout resume DEPLOYMENT APP [--wave-hours N] [--dev-passkey FILE]` | `POST /deployments/{id}/rollout/{app}/resume` | Go on from the wave open at the pause; the next opens a full pause later. |
-
 ## team
 
 An organization's teams. `ROLE` is `lead`, `member` or

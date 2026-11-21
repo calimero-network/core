@@ -825,7 +825,7 @@ fn components() -> Vec<Component> {
         .of::<QuotaSettings>(),
         component(
             "UpgradePolicy",
-            "How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point, and for an instance of a deployment in its rollout's wave.",
+            "How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.",
             r#"{ autoApply: "never" | "noDestinations", holdHours: uint, secondApprover: bool }"#,
         )
         .of::<crate::types::UpgradePolicy>(),
@@ -859,11 +859,6 @@ fn components() -> Vec<Component> {
             "UndoPart",
             "One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade, read from a replica the app is on now when the restore point's node no longer hosts it; each of them `null` when nobody can say, never `false` for writes it cannot see; `lostWrites` itself `null` while the restore point's node does not answer, which `unavailable` then says).",
             r#"{ app: string, from: #PackageRef | null, to: #PackageRef | null, toBundle: string, upgradedAt: uint, upgradedBy: string, auto: bool, undoUntil: uint, restorePoint: { node: uint, index: uint, sha256: string } | null, undoneAt: uint | null, lostWrites: { entriesSince: uint | null, lastWriteAt: uint | null, any: bool | null } | null, unavailable: { code: string, message: string } | null }"#,
-        ),
-        component(
-            "Rollout",
-            "How a deployment's offered release reaches its instances that apply updates on their own: wave `wave` of `waves` (1%, 10%, 50% and every instance, at least one, in an order each release draws afresh) is open; the next opens at `nextWaveAt` (`null` once the last is open or while paused), `waveHours` after the one before. `paused`: by a manager, or by `failures` once the failed upgrades and undos of the release pass `pausesAbovePercent` of the instances that tried it. `instances` run its package; `updated` run the release, `failed` failed to move to it, `undone` undid it.",
-            r#"{ app: string, package: string, version: string, offeredAt: uint, waveHours: uint, wave: uint, waves: { percent: uint, instances: uint, open: bool, opensAt: uint | null }[], nextWaveAt: uint | null, paused: { at: uint, by: string, failures: uint } | null, instances: uint, updated: uint, failed: uint, undone: uint, pausesAbovePercent: uint }"#,
         ),
         component(
             "UsageDay",
@@ -2164,22 +2159,6 @@ fn operations() -> Vec<Op> {
         get("/deployments/{id}/orgs", "deployment_orgs", SignedIn, "The organizations a deployment serves")
             .about("For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (`outsideOrgs`). Never who the members are.")
             .ok("{ deployment: string, orgs: { orgId: string, name: string | null, memberCount: uint, activeMembers30d: uint, instances: uint, apps: { app: string, version: string }[], firstCreatedAt: string }[], outsideOrgs: uint }"),
-        get("/deployments/{id}/rollout", "deployment_rollout", SignedIn, "How a deployment's offers roll out")
-            .about("For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner's or admin's own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.")
-            .ok("{ deployment: string, apps: #Rollout[] }")
-            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
-        post("/deployments/{id}/rollout/{app}/pause", "rollout_pause", AccountHolder, "Pause a deployment's rollout")
-            .about("A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: true, waveHours }`: no more of its instances move to the offered release on their own; the waves open stay open. `waveHours` (1 to 168, `400 BAD_ROLLOUT`) sets the pause between waves. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.")
-            .json::<super::deployments::RolloutBody>("{ waveHours?: uint, confirm?: #Confirm }")
-            .ok("{ deployment: string, apps: #Rollout[] }")
-            .step_up()
-            .errors(&[(400, "BAD_ROLLOUT"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
-        post("/deployments/{id}/rollout/{app}/resume", "rollout_resume", AccountHolder, "Resume a deployment's rollout")
-            .about("A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: false, waveHours }`: it goes on from the wave open at the pause, and the next opens a full `waveHours` later. A rollout paused on its failures resumes the same way.")
-            .json::<super::deployments::RolloutBody>("{ waveHours?: uint, confirm?: #Confirm }")
-            .ok("{ deployment: string, apps: #Rollout[] }")
-            .step_up()
-            .errors(&[(400, "BAD_ROLLOUT"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         get("/deployments/{id}/secrets", "deployment_secrets", SignedIn, "A deployment's secrets")
             .about("For its managers, on fresh state: every secret a release the deployment offers declares, or a release one of those references (`uses`, for the apps it creates), and every one it holds a value of. Each row names the deployment's apps whose release declares it or references one that does (`apps`, empty when none does any more: the value is kept, unused, until cleared), the releases that declare it (`declaredBy`) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.")
             .ok("{ deployment: string, secrets: { [string]: { apps: string[], declaredBy: { package: string, version: string }[], set: bool, fingerprint?: string, setBy?: string, setAt?: uint } } }")

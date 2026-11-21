@@ -356,8 +356,8 @@ logs a pending approval with their own passkey (`POST
 /apps/{app}/upgrade-approvals`), the second applies it. Nothing updates on its
 own by default; with `autoApply: noDestinations` a green update of an app with no
 destinations (no data leaves Calimero) applies on its own once the hold has
-passed since the release was logged, after a restore point, and a deployment's
-instances follow its rollout's waves. That is the policy's authority, not the
+passed since the release was logged (a deployment's instance: its offer), after
+a restore point. That is the policy's authority, not the
 developer's: it is judged again where it applies, and an owner or admin may undo
 any upgrade for a week, back to its restore point (`POST /apps/{app}/undo`, the
 one move to an older release; [Updates that apply on their

@@ -1,8 +1,7 @@
 //! Updates that apply on their own (C9): a green update of an app that sends no data out
 //! applies after its hold under its organization's policy, with a restore point an owner
-//! or admin may undo for a week; a deployment's offer reaches such instances in waves its
-//! managers pause and resume. Time is moved with `testing::shift_update_clock`: every
-//! rule judges the logged times, so a hold, a wave or the undo window passes at once.
+//! or admin may undo for a week. Time is moved with `testing::shift_update_clock`: every
+//! rule judges the logged times, so a hold or the undo window passes at once.
 //!
 //! Builds the component fixture `apps/fixture-kv` from this checkout (see
 //! `harness/cluster.rs`). Run one at a time (`--test-threads 1`): the clock shift is the
@@ -171,11 +170,6 @@ async fn get_until(
 /// The release `app` runs, as `GET /apps/{app}` answers it.
 async fn running(c: &calimero_client::Client, app: &str) -> Value {
     get(c, &format!("apps/{app}")).await.unwrap()["release"]["version"].clone()
-}
-
-/// How many of `d`'s instances run its offered release.
-async fn updated(dev: &calimero_client::Client, d: &str) -> Value {
-    get(dev, &format!("deployments/{d}/rollout")).await.unwrap()["apps"][0]["updated"].clone()
 }
 
 /// One of the system leader's passes, run now on the leader rather than waited for (one
@@ -407,150 +401,6 @@ async fn a_green_update_applies_after_its_hold_and_is_undone_within_a_week() {
         .unwrap_err();
     assert!(e.to_string().contains("UNDO_WINDOW_PASSED"), "{e}");
     assert_eq!(read(&alice, &app, "k").await, json!("again"));
-    shift_update_clock(0);
-}
-
-/// A deployment's new offer reaches the instances on an automatic policy in waves, each
-/// instance once its wave has been open for its hold: the first wave's one instance, then
-/// nobody new while its managers pause it, then everyone once they resume it and the
-/// later waves open.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_deployments_offer_rolls_out_in_waves_its_managers_pause_and_resume() {
-    shift_update_clock(0);
-    let c = Cluster::start(3).await;
-    let (dev, mut dev_pk) = signed_up(&c, 0, "dev").await;
-    let (carol, mut carol_pk) = signed_up(&c, 1, "carol").await;
-    let publisher = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-    for (version, tag) in [("1.0.0", "v1"), ("1.1.0", "v11")] {
-        let _ = dev
-            .packages()
-            .upload(release(version, &variant(&kv_wasm(), tag), &publisher))
-            .await
-            .unwrap();
-    }
-    let dev_id = dev.auth().me().await.map(wire).unwrap()["accountId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let d = dev
-        .deployments()
-        .create(
-            "acme",
-            typed(json!({ "account": dev_id })),
-            Some(&mut dev_pk),
-        )
-        .await
-        .map(wire)
-        .unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let _ok = dev
-        .deployments()
-        .offer(&d, "notes", PACKAGE, "1.0.0", Some(&mut dev_pk))
-        .await
-        .unwrap();
-    let org = home_org(&carol).await;
-    let mut apps = Vec::new();
-    for i in 0..3 {
-        let id = carol
-            .apps()
-            .create(typed(json!({
-                "name": format!("notes{i}"), "deployment": d, "package": PACKAGE, "org": org,
-            })))
-            .await
-            .map(|a| a.app_id)
-            .unwrap();
-        apps.push(id);
-    }
-    let _set = carol
-        .transport()
-        .confirmed(
-            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
-                .json(json!({ "policy": { "autoApply": "noDestinations" } })),
-            &mut carol_pk,
-        )
-        .await
-        .unwrap();
-    let _ok = dev
-        .deployments()
-        .offer(&d, "notes", PACKAGE, "1.1.0", Some(&mut dev_pk))
-        .await
-        .unwrap();
-    let rollout = get(&dev, &format!("deployments/{d}/rollout"))
-        .await
-        .unwrap();
-    let notes = &rollout["apps"][0];
-    assert_eq!(
-        (notes["version"].clone(), notes["wave"].clone()),
-        (json!("1.1.0"), json!(0)),
-        "{rollout}"
-    );
-    assert_eq!(notes["instances"], 3, "{rollout}");
-    assert!(
-        get(&carol, &format!("deployments/{d}/rollout"))
-            .await
-            .is_err(),
-        "a customer is no manager"
-    );
-
-    // A day on: the hold passed and wave 1 (10%, at least one) is open: one instance.
-    shift_update_clock(DAY + 600);
-    passes_until(
-        &c,
-        || async { updated(&dev, &d).await == 1 },
-        "the first wave never moved",
-    )
-    .await;
-    // Paused by a manager: nobody new, however long it waits.
-    let paused = dev
-        .transport()
-        .confirmed(
-            Request::new(
-                Method::POST,
-                format!("deployments/{d}/rollout/notes/pause").as_str(),
-            )
-            .json(json!({})),
-            &mut dev_pk,
-        )
-        .await
-        .unwrap();
-    assert!(paused["apps"][0]["paused"]["by"].is_string(), "{paused}");
-    shift_update_clock(30 * DAY);
-    assert_eq!(pass(&c).await, 0);
-    assert_eq!(updated(&dev, &d).await, 1);
-    // Resumed with a shorter pause between waves: the later waves open and reach all.
-    let resumed = dev
-        .transport()
-        .confirmed(
-            Request::new(
-                Method::POST,
-                format!("deployments/{d}/rollout/notes/resume").as_str(),
-            )
-            .json(json!({ "waveHours": 1 })),
-            &mut dev_pk,
-        )
-        .await
-        .unwrap();
-    assert!(resumed["apps"][0]["paused"].is_null(), "{resumed}");
-    assert_eq!(resumed["apps"][0]["waveHours"], 1, "{resumed}");
-    // The later waves open an hour apart from the resume, and each instance moves once
-    // its wave has been open for its hold (a day): everyone by the day after.
-    shift_update_clock(31 * DAY);
-    assert!(
-        updated(&dev, &d).await.as_u64() < Some(3),
-        "a wave opened an hour ago is not open for a day yet"
-    );
-    shift_update_clock(32 * DAY);
-    passes_until(
-        &c,
-        || async { updated(&dev, &d).await == 3 },
-        "the rollout never reached everyone",
-    )
-    .await;
-    for app in &apps {
-        assert_eq!(running(&carol, app).await, "1.1.0");
-    }
     shift_update_clock(0);
 }
 

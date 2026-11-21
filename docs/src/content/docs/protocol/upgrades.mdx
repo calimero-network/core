@@ -365,11 +365,9 @@ authority, and apply judges it again from the log alone
   release was logged, its install (`installedAt`) or, for an instance of a
   deployment, its deployment's offer of exactly that release (`addedAt`).
   Judged on logged times, never a node's clock, so every replica agrees;
-- an instance of a deployment is in a wave of its rollout that has been open
-  for its hold ([Waves](#waves));
 - a restore point was taken where the upgrade runs on the app's group.
 
-Refusals: `409 AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `ROLLOUT_WAITS`,
+Refusals: `409 AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`,
 `RESTORE_POINT_REQUIRED`. The leader takes the newest release that may apply:
 a newer red one, whether the log shows it (its destinations or signer) or only
 the leader's classification does (a state version that changed, a new way to
@@ -444,32 +442,14 @@ window. A restore point is a copy of the app's state on one replica, counted as
 the app's storage and billed with the rest of its unit (to the developer, for an
 instance of a deployment). If the node that holds it is gone, so is the undo.
 
-### Waves
+### Staged rollouts are not part of core
 
-A deployment's offer of a new release reaches its instances that apply updates
-on their own in waves (`Feature::Rollouts`, 1.0.0-rc.34; `system::rollouts`):
-1%, 10%, 50% and every instance (at least one each), in an order each release
-draws afresh (`SHA-256(version, app id)`). Wave 0 opens at the offer's logged
-time; each next one `waveHours` later (24 by default, 1 to 168). An instance
-applies once the wave that admits it has been open for its own `holdHours`, so
-with a day's hold and a day between waves the first 1% moves a day after the
-offer, the next 10% a day later, and so on: the hold paces each wave rather than
-running out while the waves pass. Each opened wave keeps when it opened
-(`RolloutState::opened`), across pauses and new paces. An owner's or admin's
-own approval applies whenever they give it: waves only pace the automatic
-updates. `GET /deployments/{id}/rollout` shows, for its managers,
-each offered app's wave, when the next opens, whether it is paused, and how
-many instances run, failed or undid the release. Its managers pause and
-resume it with a passkey (`POST /deployments/{id}/rollout/{app}/pause|resume
-{ waveHours? }`, `SetRollout`, consent `deployment:<id> / __set_rollout / {
-app, paused, waveHours }`); the waves open at the pause stay open, and the next
-opens a full `waveHours` after the resume. The system leader pauses one on its
-own once failed upgrades and undos of the release are more than
-`ROLLOUT_FAILURE_PERCENT` (10%) of the instances that tried it
-(`PauseRollout`, judged again from the state at apply; `paused.by:
-"failures"`); its managers resume it. A newer offer starts at wave 0 again,
-keeping the pace. A publisher's run over its customers' instances is not paced
-in waves.
+Core applies a green update on its own to every eligible instance once each one's
+hold has passed; it does not pace a release across customers in waves. Staging a
+release across a fleet (a few instances first, then more, paused on failures) is
+fleet orchestration, outside core: the operator's tooling may do it by choosing
+when to install or offer a release. An instance's own policy (`holdHours`), its
+restore point and the week's undo are what core keeps for each one.
 
 ## Running it
 

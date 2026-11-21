@@ -34,7 +34,6 @@ mod node;
 mod ops;
 mod pipeline;
 mod proxy;
-mod rollout;
 mod run;
 
 use env::{
@@ -188,10 +187,6 @@ enum Cmd {
     /// Organizations (v1's namespaces): members, invites, teams, metadata, approvals.
     #[command(subcommand, name = "org")]
     Namespace(namespace::NamespaceCmd),
-    /// A deployment's rollouts of the releases it offers: status, pause, resume
-    /// (its managers).
-    #[command(subcommand)]
-    Rollout(rollout::RolloutCmd),
     /// An organization's teams (v1's groups): members, metadata, reparent, upgrades.
     #[command(subcommand, name = "team")]
     Group(group::GroupCmd),
@@ -543,7 +538,6 @@ async fn main() -> eyre::Result<()> {
         }
         Cmd::App(cmd) => app::run(cmd, &env).await?,
         Cmd::Context(cmd) => context::run(cmd, &env).await?,
-        Cmd::Rollout(cmd) => rollout::run(cmd, &env).await?,
         Cmd::Call {
             context,
             method,

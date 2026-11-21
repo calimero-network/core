@@ -65,27 +65,6 @@ pub(super) fn authorize(
             proofs.states(&st, app_id, "__undo_upgrade", &|a| *a == args)?;
             Ok(Some(used))
         }
-        SystemCmd::SetRollout {
-            deployment,
-            app,
-            paused,
-            wave_hours,
-            actor,
-            consent,
-            ..
-        } => {
-            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
-            let args = rollout_args(app, *paused, *wave_hours);
-            proofs.states(
-                &st,
-                &format!("deployment:{deployment}"),
-                "__set_rollout",
-                &|a| *a == args,
-            )?;
-            Ok(Some(used))
-        }
-        // The state is its authority: apply counts the failures again.
-        SystemCmd::PauseRollout { .. } => Ok(None),
         _ => Ok(None),
     }
 }
@@ -292,63 +271,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             Ok(json!({ "groups": groups }))
         }
-        SystemCmd::SetRollout {
-            deployment,
-            app,
-            paused,
-            wave_hours,
-            actor,
-            at,
-            ..
-        } => {
-            let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
-            s.manages_deployment(d, &actor)?;
-            if wave_hours.is_some_and(|h| {
-                !(super::rollouts::MIN_WAVE_HOURS..=super::rollouts::MAX_WAVE_HOURS).contains(&h)
-            }) {
-                return Err(BAD_ROLLOUT);
-            }
-            let (_offer, mut r) = s
-                .rollout_of(&deployment, &app)
-                .ok_or("the deployment offers no such app")?;
-            // The wave open now stays open; the next opens a full pause from here.
-            r.rebase(at);
-            if let Some(h) = wave_hours {
-                r.wave_hours = h;
-            }
-            r.paused = paused.then_some(super::rollouts::RolloutPause {
-                at,
-                by: actor,
-                failures: 0,
-            });
-            s.keep_rollout(&deployment, &app, r);
-            Ok(s.rollout_json(&deployment, at))
-        }
-        SystemCmd::PauseRollout {
-            deployment,
-            app,
-            version,
-            at,
-        } => {
-            let (offer, mut r) = s
-                .rollout_of(&deployment, &app)
-                .ok_or("the deployment offers no such app")?;
-            if offer.version != version || r.paused.is_some() {
-                return Err(ROLLOUT_HEALTHY);
-            }
-            let health = s.rollout_health(&deployment, &offer);
-            if !health.failing() {
-                return Err(ROLLOUT_HEALTHY);
-            }
-            r.rebase(at);
-            r.paused = Some(super::rollouts::RolloutPause {
-                at,
-                by: super::rollouts::PAUSED_BY_FAILURES.to_owned(),
-                failures: health.failed + health.undone,
-            });
-            s.keep_rollout(&deployment, &app, r);
-            Ok(Value::Null)
-        }
         _ => unreachable!("a command of another area reached updates::apply"),
     }
 }
@@ -362,13 +284,6 @@ fn says_at_least(claimed: &Reason, derived: &Reason) -> bool {
         }
         _ => claimed == derived,
     }
-}
-
-/// What a deployment's manager consents to when pausing, resuming or pacing its rollout
-/// of `app` (`deployment:<id> / __set_rollout`).
-#[must_use]
-pub fn rollout_args(app: &str, paused: bool, wave_hours: Option<u32>) -> Value {
-    json!({ "app": app, "paused": paused, "waveHours": wave_hours })
 }
 
 impl SystemState {
@@ -457,12 +372,12 @@ impl SystemState {
     /// a newer release; the app is no unit's member (a member moves with its unit); its
     /// unit, as the log holds it, has no destination before or after; its hold has
     /// passed since the release was logged (its deployment's offer of exactly it for an
-    /// instance of a deployment, else its install); an instance's rollout reaches it;
-    /// and a restore point was taken where the upgrade runs on the app's group.
+    /// instance of a deployment, else its install); and a restore point was taken where
+    /// the upgrade runs on the app's group.
     ///
     /// # Errors
-    /// [`AUTO_UPDATE_REFUSED`], [`HOLD_NOT_OVER`], [`ROLLOUT_WAITS`],
-    /// [`RESTORE_POINT_REQUIRED`], or the class's own ([`Self::check_class`]).
+    /// [`AUTO_UPDATE_REFUSED`], [`HOLD_NOT_OVER`], [`RESTORE_POINT_REQUIRED`], or the
+    /// class's own ([`Self::check_class`]).
     pub fn auto_update_gate(
         &self,
         app: &AppRecord,
@@ -544,22 +459,6 @@ impl SystemState {
             .collect()
     }
 
-    /// The rollouts not paused yet whose failures pass their threshold, as
-    /// `(deployment, app, version)`: what the leader pauses (`PauseRollout`).
-    #[must_use]
-    pub fn failing_rollouts(&self) -> Vec<(String, String, String)> {
-        self.deployments
-            .values()
-            .flat_map(|d| {
-                d.apps.keys().filter_map(|name| {
-                    let (offer, r) = self.rollout_of(&d.id, name)?;
-                    (r.paused.is_none() && self.rollout_health(&d.id, &offer).failing())
-                        .then(|| (d.id.clone(), name.clone(), offer.version))
-                })
-            })
-            .collect()
-    }
-
     /// [`Self::auto_update_gate`] but for its restore point: what the leader asks before
     /// it takes one.
     ///
@@ -621,9 +520,6 @@ impl SystemState {
         };
         if at < since.saturating_add(u64::from(policy.hold_hours) * 3600) {
             return Err(HOLD_NOT_OVER);
-        }
-        if app.deployment.is_some() && !self.rollout_admits(app, at) {
-            return Err(ROLLOUT_WAITS);
         }
         Ok(())
     }

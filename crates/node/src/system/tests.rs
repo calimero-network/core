@@ -12109,7 +12109,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
     assert!(m.state.orgs["cust"].pending_upgrades.is_empty());
 }
 
-// ------------------------------------------------- updates on their own, undo, waves
+// ------------------------------------------------------- updates on their own, undo
 
 /// C9's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
 /// member) with `inst` on `p@1.0.0` (bundle `b1`), and nodes 1 and 2. No release sends
@@ -12545,16 +12545,12 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     assert!(shown.get("restorePoint").is_none(), "{shown}");
 }
 
-/// A deployment's offer reaches the instances on an automatic policy in waves (1%, 10%,
-/// 50%, everyone), each `waveHours` after the last, judged on the offer's logged time
-/// and the upgrade's own; an instance moves once its wave has been open for its hold. Its managers pause and resume it (with their passkey), and it
-/// pauses on its own once failed upgrades and undos pass the threshold, judged again at
-/// apply from the state.
+/// An instance of a deployment applies its offer on its own once its hold has passed
+/// since the offer of exactly that release was logged (`addedAt`), not since its install;
+/// the leader finds it only then, and only the release its deployment offers.
 #[test]
-fn a_deployments_offer_reaches_its_instances_in_waves_and_pauses_on_failures() {
-    use super::cluster_version::Feature;
-    use super::rollouts::{admitted, RolloutHealth};
-    use super::{Deployer, BAD_ROLLOUT, ROLLOUT_HEALTHY, ROLLOUT_WAITS};
+fn a_deployment_instances_hold_runs_from_its_offer() {
+    use super::{Deployer, HOLD_NOT_OVER};
     let mut m = auto_fixture();
     automatic(&mut m, 24);
     let _ok = m
@@ -12564,178 +12560,35 @@ fn a_deployments_offer_reaches_its_instances_in_waves_and_pauses_on_failures() {
             "pam",
         ))
         .unwrap();
+    // 1.0.1 was installed at 1000; the deployment offers it at 2000.
     let mut offer = offer_app("d", "notes", "1.0.1", "pam");
     if let SystemCmd::OfferApp { at, .. } = &mut offer {
         *at = 2000;
     }
     let _ok = m.run_unproven(offer).unwrap();
-    // Twenty instances of it: wave 0 reaches one, wave 1 two, wave 2 ten.
-    for i in 0..20 {
-        let id = format!("i{i:02}");
-        instance_of(
-            &mut m,
-            &id,
-            "b1",
-            json!({ "package": "p", "version": "1.0.0" }),
-        );
-        if let Some(a) = m.state.apps.get_mut(&id) {
-            a.deployment = Some("d".into());
-        }
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        a.deployment = Some("d".into());
     }
-    let _gone = m.state.apps.remove("inst");
     let day = 24 * 3600;
-    let hold_over = 2000 + day;
-    let (offered, r) = m.state.rollout_of("d", "notes").unwrap();
-    let order: Vec<String> = m
-        .state
-        .rollout_order("d", &offered)
-        .iter()
-        .map(|a| a.app_id.clone())
-        .collect();
-    assert_eq!((order.len(), r.wave_at(hold_over)), (20, 1));
-    assert_eq!(
-        (admitted(20, 0), admitted(20, 1), admitted(20, 2)),
-        (1, 2, 10)
-    );
-    let first = &order[0];
-    let third = &order[2];
-    let admits =
-        |m: &SystemMachine, id: &str, at: u64| m.state.rollout_admits(&m.state.apps[id], at);
-    // Each instance moves once its wave has been open for its hold (a day here).
-    assert!(!admits(&m, first, 2000) && admits(&m, first, hold_over));
-    assert!(!admits(&m, &order[1], hold_over) && admits(&m, &order[1], 2000 + 2 * day));
-    assert!(!admits(&m, third, 2000 + 3 * day - 1) && admits(&m, third, 2000 + 3 * day));
-    // An instance's own update waits for its wave, as the leader's pass does.
-    let up = |id: &str, at: u64| {
+    let up = |at: u64| {
         let mut cmd = auto_upgrade("1.0.1", "b3", Some(green()), at, Some(taken_on(1, 4)));
-        if let SystemCmd::UpgradeApp {
-            app_id,
-            in_deployment,
-            ..
-        } = &mut cmd
-        {
-            *app_id = id.into();
+        if let SystemCmd::UpgradeApp { in_deployment, .. } = &mut cmd {
             *in_deployment = true;
         }
         cmd
     };
-    assert_eq!(m.run(up(third, hold_over)), Err(ROLLOUT_WAITS.to_owned()));
-    let found: Vec<String> = m
-        .state
-        .auto_update_candidates(hold_over)
-        .into_iter()
-        .map(|(a, _)| a.app_id)
-        .collect();
+    // A day after the install, but not after the offer: it waits.
+    assert!(m.state.auto_update_candidates(1000 + day).is_empty());
+    assert_eq!(m.run(up(1000 + day)), Err(HOLD_NOT_OVER.to_owned()));
+    // A day after the offer: found, with the offered release alone, and applied.
+    let found = m.state.auto_update_candidates(2000 + day);
+    let versions: Vec<&str> = found[0].1.iter().map(|r| r.version.as_str()).collect();
     assert_eq!(
-        found,
-        [order[0].clone()],
-        "wave 0's, open for a day; wave 1 opened just now"
+        (found[0].0.app_id.as_str(), versions),
+        ("inst", vec!["1.0.1"])
     );
-    let _ok = m.run(up(first, hold_over)).unwrap();
-    // The managers pause it: nobody new, the open waves keep what they did.
-    let set = |actor: &str, paused: bool, hours: Option<u32>, at: u64| SystemCmd::SetRollout {
-        deployment: "d".into(),
-        app: "notes".into(),
-        paused,
-        wave_hours: hours,
-        actor: actor.into(),
-        at,
-        consent: Value::Null,
-    };
-    assert_eq!(set("pam", true, None, 1).features(), [Feature::Rollouts]);
-    assert!(
-        m.run_unproven(set("cora", true, None, hold_over)).is_err(),
-        "not a manager"
-    );
-    assert!(
-        m.run(set("pam", true, None, hold_over)).is_err(),
-        "without the passkey"
-    );
-    for hours in [0, 169] {
-        assert_eq!(
-            m.run_unproven(set("pam", true, Some(hours), hold_over)),
-            Err(BAD_ROLLOUT.to_owned())
-        );
-    }
-    let shown = m
-        .run_unproven(set("pam", true, Some(48), hold_over))
-        .unwrap();
-    assert_eq!(shown["apps"][0]["paused"]["by"], "pam", "{shown}");
-    assert_eq!(shown["apps"][0]["updated"], 1, "{shown}");
-    assert!(!admits(&m, &order[1], hold_over + 30 * day));
-    assert_eq!(
-        m.run(up(&order[1], hold_over + 1)),
-        Err(ROLLOUT_WAITS.to_owned())
-    );
-    // Resumed, from the wave open at the pause (wave 1, open since `hold_over`); the next
-    // opens 48 h later and its instances move a day after that.
-    let _ok = m
-        .run_unproven(set("pam", false, None, hold_over + 10 * day))
-        .unwrap();
-    assert!(admits(&m, &order[1], hold_over + 10 * day));
-    assert!(!admits(&m, third, hold_over + 13 * day - 1));
-    assert!(admits(&m, third, hold_over + 13 * day));
-    // Failures pause it on their own, judged from the state at apply.
-    let pause = SystemCmd::PauseRollout {
-        deployment: "d".into(),
-        app: "notes".into(),
-        version: "1.0.1".into(),
-        at: hold_over + 10 * day,
-    };
-    assert_eq!(pause.features(), [Feature::Rollouts]);
-    assert_eq!(
-        m.run(pause.clone()),
-        Err(ROLLOUT_HEALTHY.to_owned()),
-        "one updated, none failed"
-    );
-    assert!(m.state.failing_rollouts().is_empty());
-    let _ok = m
-        .run_unproven(SystemCmd::UpgradeFailed {
-            app_id: order[1].clone(),
-            bundle: "b3".into(),
-            by: super::AUTO_UPDATE.into(),
-            at: hold_over + 10 * day,
-            error: json!("trap"),
-            run: None,
-            release: Some(PackageRef {
-                package: "p".into(),
-                version: "1.0.1".into(),
-                service: None,
-                compute: false,
-            }),
-            from_release: Some(PackageRef {
-                package: "p".into(),
-                version: "1.0.0".into(),
-                service: None,
-                compute: false,
-            }),
-        })
-        .unwrap();
-    assert_eq!(
-        m.state.rollout_health("d", &offered),
-        RolloutHealth {
-            instances: 20,
-            updated: 1,
-            failed: 1,
-            undone: 0,
-            tried: 2,
-        }
-    );
-    assert_eq!(
-        m.state.failing_rollouts(),
-        [("d".to_owned(), "notes".to_owned(), "1.0.1".to_owned())]
-    );
-    let _ok = m.run(pause).unwrap();
-    let (_, r) = m.state.rollout_of("d", "notes").unwrap();
-    let paused = r.paused.unwrap();
-    assert_eq!((paused.by.as_str(), paused.failures), ("failures", 1));
-    assert!(m.state.failing_rollouts().is_empty(), "paused once");
-    // A newer offer starts at wave 0 again, not paused, keeping its pace.
-    let _ok = m
-        .run_unproven(offer_app("d", "notes", "1.0.2", "pam"))
-        .unwrap();
-    let (_, r) = m.state.rollout_of("d", "notes").unwrap();
-    assert!(r.paused.is_none() && r.base_wave == 0 && r.wave_hours == 48);
+    let _ok = m.run(up(2000 + day)).unwrap();
+    assert_eq!(m.state.apps["inst"].bundle, "b3");
 }
 
 /// A move the log cannot rebuild (the release the app runs, or a member's, no longer
@@ -13072,85 +12925,6 @@ fn only_a_units_run_keeps_member_targets() {
         m.state.orgs["org"].upgrade_runs["r1"].targets.is_empty(),
         "targets no consent stated"
     );
-}
-
-/// A wave paces updates that apply on their own: an instance applies once the wave that
-/// admits it has been open for its hold, so with a day's hold and a day between waves the
-/// first instance moves a day after the offer, the next wave's a day later, and so on; the
-/// hold never lets every wave pass unseen. A pause stops everyone; on resume an opened
-/// wave keeps when it opened, and the next opens a full `waveHours` later.
-#[test]
-fn an_instances_wave_counts_its_hold_from_when_the_wave_opened() {
-    use super::Deployer;
-    let mut m = auto_fixture();
-    automatic(&mut m, 24);
-    let _ok = m
-        .run_unproven(create_deployment(
-            "d",
-            Deployer::Account("pam".into()),
-            "pam",
-        ))
-        .unwrap();
-    let mut offer = offer_app("d", "notes", "1.0.1", "pam");
-    if let SystemCmd::OfferApp { at, .. } = &mut offer {
-        *at = 2000;
-    }
-    let _ok = m.run_unproven(offer).unwrap();
-    for i in 0..20 {
-        let id = format!("i{i:02}");
-        instance_of(
-            &mut m,
-            &id,
-            "b1",
-            json!({ "package": "p", "version": "1.0.0" }),
-        );
-        if let Some(a) = m.state.apps.get_mut(&id) {
-            a.deployment = Some("d".into());
-        }
-    }
-    let _gone = m.state.apps.remove("inst");
-    let day = 24 * 3600;
-    let (offered, _) = m.state.rollout_of("d", "notes").unwrap();
-    let order: Vec<String> = m
-        .state
-        .rollout_order("d", &offered)
-        .iter()
-        .map(|a| a.app_id.clone())
-        .collect();
-    let admits =
-        |m: &SystemMachine, id: &str, at: u64| m.state.rollout_admits(&m.state.apps[id], at);
-    // Wave 0 (one instance) opens with the offer; its hold ends a day later.
-    assert!(!admits(&m, &order[0], 2000 + day - 1));
-    assert!(admits(&m, &order[0], 2000 + day));
-    // Wave 1 opens then, so its instance waits a day of its own.
-    assert!(!admits(&m, &order[1], 2000 + day), "wave 1 opened only now");
-    assert!(!admits(&m, &order[1], 2000 + 2 * day - 1));
-    assert!(admits(&m, &order[1], 2000 + 2 * day));
-    // Wave 2 (instances 2..10) opens two days in, so three days before they move.
-    assert!(!admits(&m, &order[2], 2000 + 3 * day - 1));
-    assert!(admits(&m, &order[9], 2000 + 3 * day));
-    assert!(!admits(&m, &order[10], 2000 + 3 * day));
-    // Paused while wave 1 is open: nobody moves.
-    let set = |paused: bool, at: u64| SystemCmd::SetRollout {
-        deployment: "d".into(),
-        app: "notes".into(),
-        paused,
-        wave_hours: None,
-        actor: "pam".into(),
-        at,
-        consent: Value::Null,
-    };
-    let paused_at = 2000 + day + 10;
-    let _ok = m.run_unproven(set(true, paused_at)).unwrap();
-    assert!(!admits(&m, &order[1], 2000 + 5 * day));
-    // Resumed: wave 1 opened when it did, so its instance moves at once; wave 2 opens a
-    // day after the resume and its instances move a day after that.
-    let resumed = paused_at + 10 * day;
-    let _ok = m.run_unproven(set(false, resumed)).unwrap();
-    assert!(admits(&m, &order[1], resumed));
-    assert!(!admits(&m, &order[2], resumed + day));
-    assert!(!admits(&m, &order[2], resumed + 2 * day - 1));
-    assert!(admits(&m, &order[2], resumed + 2 * day));
 }
 
 /// An update on its own that lost to another move of the same app (the app runs its

@@ -199,14 +199,10 @@ pub enum Feature {
     /// takes, kept on the app, and the undo back to it. An earlier release would keep no
     /// restore point and could not decode the undo.
     RestorePoints,
-    /// `SetRollout` and `PauseRollout`: a deployment's waves, paused on failures. An
-    /// earlier release cannot decode them, and would apply an instance's update on its
-    /// own outside its wave.
-    Rollouts,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 46] = [
+pub const FEATURES: [Feature; 45] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -252,7 +248,6 @@ pub const FEATURES: [Feature; 46] = [
     Feature::UpgradePolicies,
     Feature::AutoUpdates,
     Feature::RestorePoints,
-    Feature::Rollouts,
 ];
 
 impl Feature {
@@ -305,7 +300,6 @@ impl Feature {
             Self::UpgradePolicies => "upgradePolicies",
             Self::AutoUpdates => "autoUpdates",
             Self::RestorePoints => "restorePoints",
-            Self::Rollouts => "rollouts",
         }
     }
 
@@ -355,8 +349,7 @@ impl Feature {
             Self::UpgradeClasses
             | Self::UpgradePolicies
             | Self::AutoUpdates
-            | Self::RestorePoints
-            | Self::Rollouts => "1.0.0-rc.34",
+            | Self::RestorePoints => "1.0.0-rc.34",
         }
     }
 }
@@ -635,7 +628,6 @@ impl SystemCmd {
                 vec![Feature::UpgradePolicies]
             }
             Self::UndoUpgrade { .. } => vec![Feature::RestorePoints],
-            Self::SetRollout { .. } | Self::PauseRollout { .. } => vec![Feature::Rollouts],
             Self::CreateApiKey {
                 owner_approves: true,
                 ..
@@ -1160,8 +1152,6 @@ mod tests {
                 "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true })),
             Feature::RestorePoints => entry(json!({ "op": "undoUpgrade",
                 "app_id": "app", "apps": { "app": [1] }, "actor": "alice", "at": 1 })),
-            Feature::Rollouts => entry(json!({ "op": "pauseRollout",
-                "deployment": "d", "app": "a", "version": "1.0.0", "at": 1 })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1623,8 +1613,7 @@ mod tests {
                 Feature::UpgradeClasses,
                 Feature::UpgradePolicies,
                 Feature::AutoUpdates,
-                Feature::RestorePoints,
-                Feature::Rollouts
+                Feature::RestorePoints
             ]
         );
         for &feature in rc32.iter().chain(&rc33) {

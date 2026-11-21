@@ -314,7 +314,6 @@ from .deployment_record_apps import DeploymentRecordApps
 from .deployment_record_apps_additional_property import (
     DeploymentRecordAppsAdditionalProperty,
 )
-from .deployment_rollout_response_200 import DeploymentRolloutResponse200
 from .deployment_secret_clear_response_200 import DeploymentSecretClearResponse200
 from .deployment_secret_set_body import DeploymentSecretSetBody
 from .deployment_secret_set_response_200 import DeploymentSecretSetResponse200
@@ -685,13 +684,6 @@ from .restore_recover_holder_body_slice import RestoreRecoverHolderBodySlice
 from .restore_recover_holder_response_200 import RestoreRecoverHolderResponse200
 from .retry_after import RetryAfter
 from .rollback_status import RollbackStatus
-from .rollout import Rollout
-from .rollout_pause_body import RolloutPauseBody
-from .rollout_pause_response_200 import RolloutPauseResponse200
-from .rollout_paused_type_0 import RolloutPausedType0
-from .rollout_resume_body import RolloutResumeBody
-from .rollout_resume_response_200 import RolloutResumeResponse200
-from .rollout_waves_item import RolloutWavesItem
 from .run import Run
 from .run_attempts_item import RunAttemptsItem
 from .run_caps import RunCaps
@@ -1053,7 +1045,6 @@ __all__ = (
     "DeploymentRecord",
     "DeploymentRecordApps",
     "DeploymentRecordAppsAdditionalProperty",
-    "DeploymentRolloutResponse200",
     "DeploymentSecretClearResponse200",
     "DeploymentSecretSetBody",
     "DeploymentSecretSetResponse200",
@@ -1366,13 +1357,6 @@ __all__ = (
     "RestoreRecoverHolderResponse200",
     "RetryAfter",
     "RollbackStatus",
-    "Rollout",
-    "RolloutPauseBody",
-    "RolloutPausedType0",
-    "RolloutPauseResponse200",
-    "RolloutResumeBody",
-    "RolloutResumeResponse200",
-    "RolloutWavesItem",
     "Run",
     "RunAttemptsItem",
     "RunCaps",

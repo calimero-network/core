@@ -1378,13 +1378,14 @@ is its command line.
   `a_red_update_waits_for_a_second_approver`,
   `a_unit_red_through_a_member_is_approved_first_on_its_page`,
   `a_unit_moves_whole_under_its_instances_policy` (`tests/consent_page.rs`).
-- **Updates on their own, restore points, undo and waves** (C9; `system/updates.rs`,
-  `system/rollouts.rs`, `node/auto_updates.rs`, `node/restore_points.rs`, `api/undo.rs`,
-  rollout routes in `api/deployments.rs`; docs: protocol upgrades "Updates that apply on
-  their own"). *On its own* (`Feature::AutoUpdates`, rc.34): the system leader's pass
+- **Updates on their own, restore points and undo** (C9; `system/updates.rs`,
+  `node/auto_updates.rs`, `node/restore_points.rs`, `api/undo.rs`; docs: protocol
+  upgrades "Updates that apply on their own"). Staged rollouts (waves across a
+  deployment's instances) are not part of core: pacing across customers is fleet
+  orchestration. *On its own* (`Feature::AutoUpdates`, rc.34): the system leader's pass
   (`Node::auto_update` from `reconcile`, every `AUTO_UPDATE_EVERY`, at most
-  `MAX_AUTO_UPDATES_PER_PASS` apps tried; skipped ones do not count) pauses failing
-  rollouts (`failing_rollouts`), then takes `SystemState::auto_update_candidates(at)`
+  `MAX_AUTO_UPDATES_PER_PASS` apps tried; skipped ones do not count) takes
+  `SystemState::auto_update_candidates(at)`
   (policy `noDestinations`; per app the releases that may apply, newest first, never one
   a failed update or an undo left), classifies them newest first (`move_class`, at most
   `MAX_AUTO_UPDATE_CLASSES_PER_PASS` a pass) and runs each app's first green one through
@@ -1406,8 +1407,8 @@ is its command line.
   actor); apply judges `SystemState::auto_update_gate`: policy, green class (and
   `check_class`), newer release of its package, not a unit member, the logged unit with
   no destination before or after, the hold (`at` >= `installedAt`, or the deployment
-  offer's `addedAt`, + `holdHours`), the rollout's wave open for the hold, a restore point
-  (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `ROLLOUT_WAITS`, `RESTORE_POINT_REQUIRED`;
+  offer's `addedAt`, + `holdHours`), a restore point
+  (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `RESTORE_POINT_REQUIRED`;
   `UpgradeRecord::auto`). Every update decision's time is `types::update_now`
   (`testing::shift_update_clock` moves it in tests). *Restore points*
   (`Feature::RestorePoints`): `run_upgrade` takes one before an upgrade that runs on the
@@ -1433,30 +1434,19 @@ is its command line.
   index below the restore point's, none, or no majority is `null`, `any` included, never
   `0`/`false`: `api::undo::lost_writes`; regressions `api::undo::tests`,
   `node::group_progress_tests`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
-  `UNDO_NOT_AS_NAMED`, `409 RESTORE_POINT_UNAVAILABLE`. *Waves* (`Feature::Rollouts`):
-  `SystemState::rollouts` (deployment -> app -> `rollouts::RolloutState { version,
-  waveHours, baseWave, baseAt, paused }`), `rollout_of` (defaults from the offer's
-  `addedAt`), `rollout_order` (`SHA-256(version, app)`), `admitted` (`WAVES` 1/10/50/100
-  %), `rollout_admits` (the instance's wave open for its `holdHours`: `opened_at`, each
-  opened wave's time kept in `RolloutState::opened` by `rebase` on every pause, resume
-  and new pace), `rollout_health`/`failing` (`ROLLOUT_FAILURE_PERCENT`).
-  `SetRollout` (managers, consent `deployment:<id> / __set_rollout / rollout_args`; `BAD_ROLLOUT`
-  for `waveHours` outside 1..=168), `PauseRollout` (the leader's, `ROLLOUT_HEALTHY` unless
-  the state shows the failures). Routes `GET /deployments/{id}/rollout`, `POST
-  /deployments/{id}/rollout/{app}/pause|resume`. Regressions: `system::tests`
+  `UNDO_NOT_AS_NAMED`, `409 RESTORE_POINT_UNAVAILABLE`. Regressions: `system::tests`
   (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`,
   `an_upgrade_is_undone_within_a_week_back_to_its_restore_point`,
-  `a_deployments_offer_reaches_its_instances_in_waves_and_pauses_on_failures`),
-  `system::rollouts::tests`, `tests/auto_updates.rs`
+  `a_deployment_instances_hold_runs_from_its_offer`,
+  `an_automatic_failure_is_judged_on_the_derived_release_of_an_app_without_one`),
+  `tests/auto_updates.rs`
   (`a_passing_failure_before_an_automatic_update_is_retried_not_held_against_it`,
   `a_red_newest_release_does_not_hold_back_a_green_one_below_it`,
   `an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app`,
   `passes_take_turns_and_move_an_app_once`, `a_pass_off_the_system_leader_moves_nothing`;
-  `system::tests::an_instances_wave_counts_its_hold_from_when_the_wave_opened`,
-  `an_automatic_failure_that_lost_to_another_move_records_nothing`),
+  `system::tests::an_automatic_failure_that_lost_to_another_move_records_nothing`),
   `node::auto_updates::tests`, `api::undo::tests`. Not done: an automatic update that
-  moves a unit's members, waves for a publisher's run, a restore point kept on more than
-  one node.
+  moves a unit's members, a restore point kept on more than one node.
 - **Install and update pages** (C10; `consent_page/updates.rs`; docs: protocol consent page
   "Installs, updates and update policies", build "Show updates in your app"): the words
   (`reason_words`, `update_summary`, `policy_words`) shared by the sheets, the updates page

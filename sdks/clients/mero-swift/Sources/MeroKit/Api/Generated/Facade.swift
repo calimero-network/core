@@ -1532,19 +1532,6 @@ extension CalimeroClient {
             }
         }
 
-        /// How a deployment's offers roll out: `GET /deployments/{id}/rollout` (`deployment_rollout`).
-        ///
-        /// For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner's or admin's own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.
-        ///
-        /// **Who:** signed in (a session or an API key).
-        @discardableResult
-        public func rollout(id: Swift.String) async throws -> Operations.DeploymentRollout.Output.Ok.Body.JsonPayload {
-            let input = Operations.DeploymentRollout.Input(path: .init(id: id))
-            return try await client.perform { api in
-                try await api.deploymentRollout(input).ok.body.json
-            }
-        }
-
         /// Remove a deployment's value of a secret: `DELETE /deployments/{id}/secrets/{name}` (`deployment_secret_clear`).
         ///
         /// Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.
@@ -1592,32 +1579,6 @@ extension CalimeroClient {
             let input = Operations.DeploymentWithdraw.Input(path: .init(id: id, app: app))
             return try await client.perform(passkey: passkey) { api in
                 try await api.deploymentWithdraw(input).ok.body.json
-            }
-        }
-
-        /// Pause a deployment's rollout: `POST /deployments/{id}/rollout/{app}/pause` (`rollout_pause`).
-        ///
-        /// A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: true, waveHours }`: no more of its instances move to the offered release on their own; the waves open stay open. `waveHours` (1 to 168, `400 BAD_ROLLOUT`) sets the pause between waves. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
-        ///
-        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
-        @discardableResult
-        public func rolloutPause(id: Swift.String, app: Swift.String, waveHours: Swift.Int64? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.RolloutPause.Output.Ok.Body.JsonPayload {
-            let input = Operations.RolloutPause.Input(path: .init(id: id, app: app), body: .json(.init(waveHours: waveHours)))
-            return try await client.perform(passkey: passkey) { api in
-                try await api.rolloutPause(input).ok.body.json
-            }
-        }
-
-        /// Resume a deployment's rollout: `POST /deployments/{id}/rollout/{app}/resume` (`rollout_resume`).
-        ///
-        /// A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: false, waveHours }`: it goes on from the wave open at the pause, and the next opens a full `waveHours` later. A rollout paused on its failures resumes the same way.
-        ///
-        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
-        @discardableResult
-        public func rolloutResume(id: Swift.String, app: Swift.String, waveHours: Swift.Int64? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.RolloutResume.Output.Ok.Body.JsonPayload {
-            let input = Operations.RolloutResume.Input(path: .init(id: id, app: app), body: .json(.init(waveHours: waveHours)))
-            return try await client.perform(passkey: passkey) { api in
-                try await api.rolloutResume(input).ok.body.json
             }
         }
 

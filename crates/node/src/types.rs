@@ -1215,10 +1215,9 @@ pub const MAX_CLASS_REASONS: usize = 64;
 /// (`SystemCmd::SetUpgradePolicy`), for one app or every app of the organization. Every
 /// field may be left out (its default); an unknown one is refused.
 ///
-/// Only `second_approver` changes what applies in this release. `auto_apply` and
-/// `hold_hours` are stored and validated now; applying green updates on their own after
-/// the hold (with a restore point and waves) is a later release's, which only adds the
-/// execution.
+/// `second_approver` asks for a second owner's or admin's approval of a red update;
+/// `auto_apply` and `hold_hours` let a green one apply on its own after its hold, with a
+/// restore point (`node::auto_updates`, `SystemState::auto_update_gate`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpgradePolicy {
@@ -1859,9 +1858,9 @@ pub fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// The time an update decision is logged at (an upgrade's `at`, an undo's, a rollout's,
-/// the automatic pass's): [`now_secs`], moved ahead in tests by
-/// `crate::testing::shift_update_clock` so a hold, a wave or the undo window can pass
+/// The time an update decision is logged at (an upgrade's `at`, an undo's, the automatic
+/// pass's): [`now_secs`], moved ahead in tests by
+/// `crate::testing::shift_update_clock` so a hold or the undo window can pass
 /// without waiting for it. Every rule judges the logged time, never a node's clock.
 #[must_use]
 pub fn update_now() -> u64 {

@@ -172,22 +172,6 @@ class DeploymentsFacade internal constructor(
         api(null, null, emptySet()).signUpAndDeployments.deploymentOrgs(id = id)
 
     /**
-     * How a deployment's offers roll out
-     *
-     * For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner's or admin's own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.
-     *
-     * **Who:** signed in (a session or an API key).
-     *
-     * `GET /deployments/{id}/rollout` (`deployment_rollout`).
-     *
-     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
-     */
-    suspend fun rollout(
-        id: kotlin.String,
-    ): DeploymentRollout200Response =
-        api(null, null, emptySet()).signUpAndDeployments.deploymentRollout(id = id)
-
-    /**
      * Remove a deployment's value of a secret
      *
      * Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.
@@ -261,48 +245,6 @@ class DeploymentsFacade internal constructor(
         passkey: PasskeyProvider? = null,
     ): DeploymentOffer200Response =
         api(passkey, null, emptySet()).signUpAndDeployments.deploymentWithdraw(id = id, app = app)
-
-    /**
-     * Pause a deployment's rollout
-     *
-     * A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: true, waveHours }`: no more of its instances move to the offered release on their own; the waves open stay open. `waveHours` (1 to 168, `400 BAD_ROLLOUT`) sets the pause between waves. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
-     *
-     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
-     *
-     * `POST /deployments/{id}/rollout/{app}/pause` (`rollout_pause`).
-     *
-     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
-     *
-     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
-     */
-    suspend fun rolloutPause(
-        id: kotlin.String,
-        app: kotlin.String,
-        waveHours: kotlin.Long? = null,
-        passkey: PasskeyProvider? = null,
-    ): RolloutPause200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.rolloutPause(id = id, app = app, rolloutPauseRequest = RolloutPauseRequest(waveHours = waveHours))
-
-    /**
-     * Resume a deployment's rollout
-     *
-     * A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: false, waveHours }`: it goes on from the wave open at the pause, and the next opens a full `waveHours` later. A rollout paused on its failures resumes the same way.
-     *
-     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
-     *
-     * `POST /deployments/{id}/rollout/{app}/resume` (`rollout_resume`).
-     *
-     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
-     *
-     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
-     */
-    suspend fun rolloutResume(
-        id: kotlin.String,
-        app: kotlin.String,
-        waveHours: kotlin.Long? = null,
-        passkey: PasskeyProvider? = null,
-    ): RolloutPause200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.rolloutResume(id = id, app = app, rolloutResumeRequest = RolloutResumeRequest(waveHours = waveHours))
 
     /**
      * Issue a cluster sign-up invite
