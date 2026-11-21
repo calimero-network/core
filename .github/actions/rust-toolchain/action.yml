@@ -1,7 +1,10 @@
 name: Rust toolchain
 description: >
   Install the toolchain rust-toolchain.toml pins, and make it the default, with
-  any extra components and targets. Never `stable`: cargo runs the pinned
+  every component that file lists plus any extra components and targets. The
+  file's components are installed here, up front: left to cargo, rustup adds
+  them lazily on the first build, which on hosted runners intermittently failed
+  with "detected conflict: 'bin/cargo-clippy'". Never `stable`: cargo runs the pinned
   toolchain anyway, and a second one only changed every rust-cache key each time
   a new stable shipped (2026-10-01 orphaned every Rust cache in the repo).
 
@@ -26,6 +29,8 @@ runs:
     - name: Read the pinned toolchain
       id: pin
       shell: bash
+      env:
+        EXTRA: ${{ inputs.components }}
       run: |
         set -euo pipefail
         channel=$(sed -n 's/^channel *= *"\(.*\)"[[:space:]]*$/\1/p' rust-toolchain.toml)
@@ -35,10 +40,16 @@ runs:
         fi
         echo "channel=$channel" >> "$GITHUB_OUTPUT"
         echo "pinned toolchain: $channel"
+        # The file's own components (`components = ["cargo", "clippy", ...]`),
+        # with the extra ones asked for, deduplicated and comma-separated.
+        pinned=$(sed -n 's/^components *= *\[\(.*\)\][[:space:]]*$/\1/p' rust-toolchain.toml | tr -d '" ')
+        components=$(printf '%s,%s' "$pinned" "$EXTRA" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)
+        echo "components=$components" >> "$GITHUB_OUTPUT"
+        echo "components: $components"
 
     - name: Install it
       uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       with:
         toolchain: ${{ steps.pin.outputs.channel }}
-        components: ${{ inputs.components }}
+        components: ${{ steps.pin.outputs.components }}
         targets: ${{ inputs.targets }}

@@ -19,6 +19,7 @@
     "crates/tee-release",
     "Cargo.toml",
     "rust-toolchain.toml",
+    ".github/actions/rust-toolchain",
     "crates/app-abi/tests/py",
     "crates/app-abi/tests/golden/*.py"
   ],
