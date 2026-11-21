@@ -298,7 +298,10 @@ from .openapi.models import ConsentPageCreateBodyType14
 from .openapi.models import ConsentPageCreateBodyType15
 from .openapi.models import ConsentPageCreateBodyType16
 from .openapi.models import ConsentPageCreateBodyType17
+from .openapi.models import ConsentPageCreateBodyType18
+from .openapi.models import ConsentPageCreateBodyType19
 from .openapi.models import ConsentPageCreateBodyType2
+from .openapi.models import ConsentPageCreateBodyType20
 from .openapi.models import ConsentPageCreateBodyType3
 from .openapi.models import ConsentPageCreateBodyType4
 from .openapi.models import ConsentPageCreateBodyType5
@@ -1967,7 +1970,7 @@ class Apps(Group):
     def update(self, *, app):
         """Whether an update is available for an app (`GET /apps/{app}/update`, `app_update`).
 
-        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
+        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
 
         **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -2902,7 +2905,10 @@ _CONSENT_PAGE_CREATE = Operation(
         ConsentPageCreateBodyType15,
         ConsentPageCreateBodyType16,
         ConsentPageCreateBodyType17,
+        ConsentPageCreateBodyType18,
+        ConsentPageCreateBodyType19,
         ConsentPageCreateBodyType2,
+        ConsentPageCreateBodyType20,
         ConsentPageCreateBodyType3,
         ConsentPageCreateBodyType4,
         ConsentPageCreateBodyType5,
@@ -2927,12 +2933,12 @@ class Consent(Group):
     def page_create(self, *, body):
         """Ask the account's owner to approve (`POST /consent/requests`, `consent_page_create`).
 
-        From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.
+        From an app's frontend: an instance of a release or a deployment's offer (`install`: the install sheet, what gets created, where data can go and that updates wait for an approval; `outcome` names the `appId` and its `links`), an update policy (`updatePolicy`, an owner or admin of the organization), the node's updates page (`updates`, at `/updates/{request}`: the person unlocks it with their passkey, then it lists the updates waiting across the apps they approve and their organizations' policies), a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.
 
         **Who:** a passkey session (an API key is refused).
 
         Args:
-            body: the body, one of ConsentPageCreateBodyType0, ConsentPageCreateBodyType1, ConsentPageCreateBodyType10, ConsentPageCreateBodyType11, ConsentPageCreateBodyType12, ConsentPageCreateBodyType13, ConsentPageCreateBodyType14, ConsentPageCreateBodyType15, ConsentPageCreateBodyType16, ConsentPageCreateBodyType17, ConsentPageCreateBodyType2, ConsentPageCreateBodyType3, ConsentPageCreateBodyType4, ConsentPageCreateBodyType5, ConsentPageCreateBodyType6, ConsentPageCreateBodyType7, ConsentPageCreateBodyType8, ConsentPageCreateBodyType9
+            body: the body, one of ConsentPageCreateBodyType0, ConsentPageCreateBodyType1, ConsentPageCreateBodyType10, ConsentPageCreateBodyType11, ConsentPageCreateBodyType12, ConsentPageCreateBodyType13, ConsentPageCreateBodyType14, ConsentPageCreateBodyType15, ConsentPageCreateBodyType16, ConsentPageCreateBodyType17, ConsentPageCreateBodyType18, ConsentPageCreateBodyType19, ConsentPageCreateBodyType2, ConsentPageCreateBodyType20, ConsentPageCreateBodyType3, ConsentPageCreateBodyType4, ConsentPageCreateBodyType5, ConsentPageCreateBodyType6, ConsentPageCreateBodyType7, ConsentPageCreateBodyType8, ConsentPageCreateBodyType9
 
         Returns: ConsentPageCreateResponse200
         """

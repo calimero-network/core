@@ -31,6 +31,7 @@ class AppUpdateResponse200:
         app (str):
         running (Union['AppUpdateResponse200RunningType0', None]):
         available (Union['AppUpdateResponse200AvailableType0', None]):
+        unit (bool):
         may_approve (bool):
         approvers (AppUpdateResponse200Approvers):
         policy (AppUpdateResponse200Policy):
@@ -40,6 +41,7 @@ class AppUpdateResponse200:
     app: str
     running: Union["AppUpdateResponse200RunningType0", None]
     available: Union["AppUpdateResponse200AvailableType0", None]
+    unit: bool
     may_approve: bool
     approvers: AppUpdateResponse200Approvers
     policy: "AppUpdateResponse200Policy"
@@ -70,6 +72,8 @@ class AppUpdateResponse200:
         else:
             available = self.available
 
+        unit = self.unit
+
         may_approve = self.may_approve
 
         approvers = self.approvers.value
@@ -88,6 +92,7 @@ class AppUpdateResponse200:
                 "app": app,
                 "running": running,
                 "available": available,
+                "unit": unit,
                 "mayApprove": may_approve,
                 "approvers": approvers,
                 "policy": policy,
@@ -145,6 +150,8 @@ class AppUpdateResponse200:
 
         available = _parse_available(d.pop("available"))
 
+        unit = d.pop("unit")
+
         may_approve = d.pop("mayApprove")
 
         approvers = AppUpdateResponse200Approvers(d.pop("approvers"))
@@ -164,6 +171,7 @@ class AppUpdateResponse200:
             app=app,
             running=running,
             available=available,
+            unit=unit,
             may_approve=may_approve,
             approvers=approvers,
             policy=policy,

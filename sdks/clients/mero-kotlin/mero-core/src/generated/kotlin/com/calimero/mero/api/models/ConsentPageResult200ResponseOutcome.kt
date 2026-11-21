@@ -37,6 +37,8 @@ import kotlinx.serialization.Contextual
  * @param org 
  * @param name 
  * @param apps 
+ * @param appId 
+ * @param links 
  */
 @Serializable
 
@@ -58,7 +60,13 @@ data class ConsentPageResult200ResponseOutcome (
     val name: kotlin.String? = null,
 
     @SerialName(value = "apps")
-    val apps: kotlin.collections.List<kotlin.String>? = null
+    val apps: kotlin.collections.List<kotlin.String>? = null,
+
+    @SerialName(value = "appId")
+    val appId: kotlin.String? = null,
+
+    @SerialName(value = "links")
+    val links: kotlin.collections.Map<kotlin.String, kotlin.String>? = null
 
 ) {
 

@@ -184,6 +184,31 @@ re-published release), the node answers `ConsentStale` (`409 CONSENT_STALE`):
 ask again so they see the new facts. A node that cannot fetch a release's
 signed measurements answers `503`.
 
+## Updates of an instance
+
+`client.updates` reads the update waiting for an instance as the node judges
+it and opens the node's own pages for it:
+
+```ts
+const view = await client.updates.get(appId);
+// view.available: { version, class: 'green' | 'red', summary, reasons, ... } | null
+// view.mayApprove: whether this person may approve it (an owner or admin)
+
+// In "Review"'s click handler: the update sheet in a pop-up.
+const opened = await client.updates.openSheet(appId);
+await client.waitForConsent(opened.requestId, { expiresAt: opened.expiresAt });
+```
+
+`summary` is one plain line for a banner ("Nothing changes where your data
+goes", "This update can send data to a new place: api.acme.com"). A red update
+under a policy that asks for a second approver shows "Approve (1 of 2)" to the
+first owner or admin and "Approve and update (2 of 2)" to the next.
+`client.updates.manage()` opens the node's updates page (every update waiting
+across the apps the person approves, after their passkey), `policy.set(target,
+policy)` a policy change and `install(subject)` the install sheet. Each opens a
+pop-up as the call starts, so call it from the click (or pass `window`, or
+`navigate` to use this tab).
+
 ## Organizations from your app
 
 A frontend's package-bound session may not create, join or manage an

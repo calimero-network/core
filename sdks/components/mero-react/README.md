@@ -215,6 +215,18 @@ await consent.wait(started.requestId);
 
 `useConsent()` returns `{ request, open, check, wait, cancel, started, code, result, returned, … }`. `code` is the confirmation code (`XXX-XXX`) the consent page shows for the request under way: show it next to the link or in `open`'s `confirm`, so the person can check they landed on the page their request opened. `open` throws `CONSENT_CODE_MISMATCH` when the node's code does not match the request (mero-js `confirmationCode`). Build requests with mero-js `releaseConsent`, `withdrawConsent` and `upgradeConsent`.
 
+### Updates
+
+`useUpdate(appId?)` reads the update available to an instance as the node judges it (`GET /apps/{app}/update`): `data`, `banner` (`show`, `version`, `class` green or red, `summary`, `mayApprove`, `approvedBy`) and `review()`, which opens the node's update sheet in a pop-up (call it from the click), waits for the decision and reads the update again.
+
+```tsx
+<ConsentPopupReturn>
+  <UpdateBanner />   {/* "Update 1.4.0 is ready · Nothing changes where your data goes"  [Review] */}
+</ConsentPopupReturn>
+```
+
+`<UpdateBanner app? labels? className? onReviewed? />` renders nothing without an update; with one it shows the class and the node's line, and "Review" for an owner or admin of the instance's organization, or "An owner or admin approves updates" for anyone else. The app never approves: the node's page does, with the person's passkey. Guide: core's [Show updates in your app](https://calimero-network.github.io/core/build/guides/updates/).
+
 ### Blobs, presence, account
 
 | Hook | Notes |
@@ -261,6 +273,7 @@ type Failure = {
 ## Components
 
 - `<ConnectButton appName? allowSignUp? initialTab? theme? logoOnly? label? />`. Signed out, it shows "Sign in" and opens `LoginModal`. Signed in, it shows the account, with a menu for Sign out and Sign out everywhere.
+- `<UpdateBanner app? labels? className? onReviewed? />`: an instance's waiting update, its class and one line, and "Review" on the node's page (see [Updates](#updates)).
 - `<LoginModal isOpen onClose onSignedIn? initialTab? allowSignUp? appName? theme? />`. Sign in with a passkey, or create an account, which asks for a name. Off a node-served page it asks first for the node URL or a cluster name.
 
 ### Theming
