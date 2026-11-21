@@ -256,7 +256,8 @@ pub(super) fn update_section(
             || "Same state version: the new code reads your data as it is.".to_owned(),
             reason_words,
         );
-    let destinations = c.map_or(Value::Null, |c| {
+    // Unclassified: where data can go is unknown, not none.
+    let destinations = c.filter(|c| !crate::egress::unclassified(c)).map_or(Value::Null, |c| {
         json!({
             "before": hosts(c.egress.before.iter().map(String::as_str)),
             "after": hosts(c.egress.after.iter().map(String::as_str)),

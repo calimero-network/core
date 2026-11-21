@@ -1331,8 +1331,10 @@ is its command line.
   class that leaves out a reason it derives, red without reasons, green with them, or
   more than `MAX_CLASS_REASONS`, and a green class for a move it cannot rebuild (a
   release the app or a member runs, or a target, not installed: red is taken as said; the API
-  says it with an `unclassified` reason per part the log lacks, `SystemState::unclassified`, in
-  `approve_upgrade` and `api::upgrades::class_of`, and apply refuses one naming anything else); `UpgradeRecord::class`/`reasons`/`approved_by` keep it
+  says it with an `unclassified` reason per part the log lacks, `SystemState::unclassified`,
+  through `egress::judged_update`, the one verdict `approve_upgrade`, `api::upgrades::class_of`,
+  `GET /apps/{app}/update` and the consent page's sheets and `approval_step` take (no
+  destinations shown: they are unknown), and apply refuses one naming anything else); `UpgradeRecord::class`/`reasons`/`approved_by` keep it
   (`lastUpgrade`). Policies (`Feature::UpgradePolicies`, rc.34): `SetUpgradePolicy { org,
   app?, policy? }` by an owner or admin (`approves_upgrades`), consent `org:<org> /
   __set_upgrade_policy / system::upgrade_policy_args`, kept on `Org::upgrade_policy` and
@@ -1381,7 +1383,8 @@ is its command line.
   `a_red_update_waits_for_a_second_approver`,
   `a_unit_red_through_a_member_is_approved_first_on_its_page`,
   `a_unit_moves_whole_under_its_instances_policy`,
-  `a_red_update_from_an_uninstalled_release_is_approved_first_and_applied_second` (`tests/consent_page.rs`).
+  `a_red_update_from_an_uninstalled_release_is_approved_first_and_applied_second`,
+  `a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified` (`tests/consent_page.rs`).
 - **Updates on their own, restore points and undo** (C9; `system/updates.rs`,
   `node/auto_updates.rs`, `node/restore_points.rs`, `api/undo.rs`; docs: protocol
   upgrades "Updates that apply on their own"). Staged rollouts (waves across a

@@ -11,11 +11,13 @@
 //!   capability card): the release and each member release its `uses` would create.
 //! - [`instance_unit`]: what an instance runs now (`GET /apps/{app}/egress`).
 //! - [`update`]: an instance moved to another release of its package, alone or with its
-//!   members (`GET /apps/{app}/update`, the consent page's upgrade sheet), classified.
+//!   members, classified; [`judged_update`] is the verdict shown and logged (`GET
+//!   /apps/{app}/update`, the consent page's upgrade sheets, the upgrade's class), red and
+//!   `unclassified` where the log lacks a part's release.
 
 use std::collections::BTreeMap;
 
-use calimero_bundle::update::{classify, Classification, Release, Unit};
+use calimero_bundle::update::{classify, Classification, EgressDiff, Reason, Release, Unit};
 use serde_json::{json, Value};
 
 use crate::api::apps::{unit_members, MAX_UNIT_DEPTH};
@@ -199,6 +201,45 @@ pub(crate) async fn update(
         return Ok(None);
     };
     Ok(Some(classify(&before.unit, &after.unit)))
+}
+
+/// [`update`] as every place that shows or judges an update takes it (`GET
+/// /apps/{app}/update`, the consent page's sheets and approval step, `approve_upgrade`,
+/// the class an upgrade logs): where the log cannot classify the move, a part's release
+/// no longer installed ([`crate::system::SystemState::unclassified`]), red with those
+/// `unclassified` reasons and no destinations, as apply judges it
+/// (`SystemState::check_class`). [`update`] alone leaves out a part it cannot read, so
+/// a member whose release is gone would not stop it showing green.
+pub(crate) async fn judged_update(
+    node: &Node,
+    app: &AppRecord,
+    version: &str,
+    whole_unit: bool,
+) -> Result<Option<Classification>, ApiError> {
+    let unclassified = node.sys(|s| {
+        let running = s.running(app)?;
+        s.unclassified(app, (&running.package, version), &BTreeMap::new())
+    });
+    if let Some(c) = unclassified {
+        return Ok(Some(Classification {
+            class: c.class,
+            reasons: c.reasons,
+            egress: EgressDiff::default(),
+            state_version_changed: false,
+            new_methods: Vec::new(),
+            removed_methods: Vec::new(),
+            signer_changed: false,
+        }));
+    }
+    update(node, app, version, whole_unit).await
+}
+
+/// Whether `c` could not be classified ([`judged_update`]): its destinations are unknown,
+/// not none.
+pub(crate) fn unclassified(c: &Classification) -> bool {
+    c.reasons
+        .iter()
+        .any(|r| matches!(r, Reason::Unclassified { .. }))
 }
 
 /// A unit's egress as the API answers it: `egress` (sorted destinations over the app and

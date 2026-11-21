@@ -1664,7 +1664,10 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
 /// included, is named like any other, never vouched for. The apps it created are named
 /// only when it has some (`members`).
 fn destinations_point(c: &calimero_bundle::update::Classification, members: bool) -> String {
-    let point = if !c.egress.added.is_empty() {
+    let point = if crate::egress::unclassified(c) {
+        "Where data can go could not be checked: a release it runs is no longer installed."
+            .to_owned()
+    } else if !c.egress.added.is_empty() {
         format!(
             "This update can send data to a new place: {}.",
             phrase(&hosts(c.egress.added.iter().map(String::as_str)))
@@ -2119,7 +2122,7 @@ async fn upgrade_request(
     let unit = if member_of_unit {
         None
     } else {
-        crate::egress::update(node, &app, &target.version, false).await?
+        crate::egress::judged_update(node, &app, &target.version, false).await?
     };
     let mut points = vec![
         json!(format!(
@@ -2264,7 +2267,7 @@ async fn unit_upgrade_request(
         .flat_map(|m| m["notes"].as_array().cloned().unwrap_or_default())
         .collect();
     // The whole unit moves: its egress after is the members' targets', classified once.
-    let unit = crate::egress::update(node, &plan.app, &version, true).await?;
+    let unit = crate::egress::judged_update(node, &plan.app, &version, true).await?;
     if let Some(c) = &unit {
         points.insert(points.len() - 1, json!(destinations_point(c, true)));
     }

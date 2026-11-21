@@ -4141,6 +4141,105 @@ async fn a_unit_red_through_a_member_is_approved_first_on_its_page() {
     assert_eq!(model["update"]["approval"]["needed"], 2, "{model}");
 }
 
+/// A unit whose member runs a release no longer installed (uninstalled while another
+/// release ships its WASM) cannot be classified from the log, so its update is shown as
+/// it is gated and logged: red, with the `unclassified` reason naming the member's
+/// release, in `GET /apps/{app}/update` and on the unit's page, whose step under a
+/// `secondApprover` policy is the first of two. Before, the shown verdict dropped the
+/// member it could not read and said green while the upgrade waited for a second approver.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[47; 32]);
+    let kv = "com.test.c8-kv";
+    // 2.0.0 no longer creates the store, which therefore stays where it is: the move is
+    // green while the log holds the store's release.
+    for (package, version, d) in [
+        (kv, "0.1.0", Declares::default()),
+        (kv, "0.1.1", Declares::default()),
+        (
+            PACKAGE,
+            "1.0.0",
+            Declares {
+                uses: Some(
+                    json!({ "store": { "package": kv, "range": "^0.1", "version": "0.1.0" } }),
+                ),
+                ..Declares::default()
+            },
+        ),
+        (PACKAGE, "2.0.0", Declares::default()),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let org = home_org(&alice).await;
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0", "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let update = get(&alice, &format!("apps/{notes}/update")).await.unwrap();
+    assert_eq!(update["available"]["class"], "green", "{update}");
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "secondApprover": true } })),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    // The store's release goes; 0.1.1 still ships its WASM.
+    let _gone = alice
+        .packages()
+        .version_uninstall(kv, "0.1.0")
+        .await
+        .unwrap();
+    let unclassified =
+        json!([{ "code": "unclassified", "member": "store", "package": kv, "version": "0.1.0" }]);
+    let update = get_until(&alice, &format!("apps/{notes}/update"), |u| {
+        u["policy"]["secondApprover"] == true
+    })
+    .await;
+    assert_eq!(update["available"]["class"], "red", "{update}");
+    assert_eq!(update["available"]["reasons"], unclassified, "{update}");
+    assert_eq!(update["available"]["approvalsNeeded"], 2, "{update}");
+
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(0);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_pk, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let unit = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgradeUnit", "subject": { "app": notes, "toVersion": "2.0.0" },
+                "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap();
+    let model = Page::new(unit["url"].as_str().unwrap()).model().await;
+    let shown = &model["update"];
+    assert_eq!(shown["class"], "red", "{model}");
+    assert_eq!(shown["approval"]["step"], "first", "{model}");
+    assert_eq!(shown["approval"]["needed"], 2, "{model}");
+    assert!(
+        shown["reasons"][0]
+            .as_str()
+            .is_some_and(|r| r.contains("no longer installed")),
+        "{model}"
+    );
+    assert_eq!(model["unit"]["reasons"], unclassified, "{model}");
+}
+
 /// C8: a unit's run is judged once, under its instance's policy, so it moves whole. A
 /// member whose own policy asks for a second approver, in a unit whose instance's does
 /// not, moves with the unit on its one approval (it used to be refused at apply after the

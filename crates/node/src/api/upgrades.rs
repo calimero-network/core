@@ -78,21 +78,15 @@ async fn class_of(
         return None;
     }
     let app = node.sys(|s| s.apps.get(app_id).cloned())?;
-    // A side the log no longer holds (the release it runs uninstalled while another ships
-    // its WASM): red, naming it, as its first approval was (`approve_upgrade`). A unit's
-    // members that move are at installed targets, so the alone form names the same parts.
-    let unclassified = node.sys(|s| {
-        s.running(&app)
-            .filter(|r| r.package == to.package)
-            .and_then(|_| s.unclassified(&app, (&to.package, &to.version), &BTreeMap::new()))
-    });
-    if unclassified.is_some() {
-        return unclassified;
-    }
-    if node.release_of_app(&app)?.at.package != to.package {
+    // The package it runs, named by its record even once its release is uninstalled.
+    let runs = node
+        .release_of_app(&app)
+        .map(|r| r.at)
+        .or_else(|| node.sys(|s| s.running(&app).cloned()))?;
+    if runs.package != to.package {
         return None;
     }
-    match crate::egress::update(node, &app, &to.version, whole_unit).await {
+    match crate::egress::judged_update(node, &app, &to.version, whole_unit).await {
         Ok(c) => c.and_then(upgrade_class),
         Err(e) => {
             warn!(app = %app_id, error = %e.message, "the upgrade was not classified");
@@ -1787,13 +1781,18 @@ pub(crate) async fn update_view(
     let mut available = available;
     if let Some(a) = available.as_mut() {
         let version = a["version"].as_str().unwrap_or_default().to_owned();
-        match crate::egress::update(node, &app, &version, !app.links.is_empty()).await {
+        match crate::egress::judged_update(node, &app, &version, !app.links.is_empty()).await {
             Ok(Some(c)) => {
                 let summary = crate::consent_page::update_summary(&c);
+                // Unclassified: where data can go is unknown, not none.
+                let unknown = crate::egress::unclassified(&c);
                 if let (Some(o), Ok(Value::Object(c))) =
                     (a.as_object_mut(), serde_json::to_value(c))
                 {
                     o.extend(c);
+                    if unknown {
+                        let _gone = o.remove("egress");
+                    }
                     let _prev = o.insert("summary".into(), json!(summary));
                 }
             }

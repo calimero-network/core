@@ -229,15 +229,10 @@ pub(crate) async fn approve_upgrade(
     };
     // A side the log no longer holds cannot be classified: approved as red, the reason
     // naming the release that is gone, as apply takes it (`SystemState::check_class`).
-    let unclassified =
-        node.sys(|s| s.unclassified(app, (&target.package, &target.version), &targets));
-    let class = match unclassified {
-        Some(class) => class,
-        None => crate::egress::update(node, app, &target.version, unit)
-            .await?
-            .and_then(super::upgrades::upgrade_class)
-            .ok_or_else(|| ApiError::conflict("this update could not be classified"))?,
-    };
+    let class = crate::egress::judged_update(node, app, &target.version, unit)
+        .await?
+        .and_then(super::upgrades::upgrade_class)
+        .ok_or_else(|| ApiError::conflict("this update could not be classified"))?;
     if class.is_green() {
         return Err(crate::node::rejected(crate::system::ONE_APPROVAL));
     }

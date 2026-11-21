@@ -274,6 +274,9 @@ ships the same WASM) is never green: the log cannot confirm it, so apply refuses
 a green class for it and takes a red one, gated as red. The API classifies such a
 move red with an `unclassified` reason for each part the log lacks (`{ code:
 "unclassified", member, package, version }`, `SystemState::unclassified`), and
+shows it the same way wherever it shows the class (`GET /apps/{app}/update`, the
+consent page's sheets and approval step, without destinations, which are
+unknown), and
 apply refuses an `unclassified` reason that names anything else, or one on a
 move the log rebuilds. The class and its reasons are kept on the app's last upgrade
 (`lastUpgrade.class`, `reasons`). An entry without a class (an earlier
