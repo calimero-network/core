@@ -25,6 +25,8 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | `org ...` | organizations: members, invites, teams, metadata, capabilities, outbound and release approvals | `/orgs*`, `/invites/*` |
 | `team ...` | teams: members, metadata, reparent, subteams, settings; `team upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
 | `account ...` | the account: devices (passkeys), API keys, usage, approvals | `/auth/*` |
+| (new) `deployment list/get/create/delete/offer/withdraw/secret list\|set\|clear/orgs/usage` | a developer's deployments (`deployment.rs`): a `DEPLOYMENT` argument is an id or the name of one the account manages (`resolve`, a shared name refused with the ids); `offer --package` defaults to the package the app already offers; `secret set` reads the value from stdin or a no-echo prompt (`read_secret`, `NoEcho`), never an argument; `usage --by org [--csv]` is `/orgs`' per-customer counts (the node meters per developer and today only, so `--since` is refused as not supported) | `/deployments*` |
+| (new) `app release [DIR] --version V` | `pack` (its flags, `ReleaseArgs::pack_args`; DIR `.`), `publish` with `--publish`, then install: from the cluster's registry after `--publish`, else an upload; refuses a version not semver or not newer than the cluster's releases of the package (`make::check_newer`) before building. Needs a node | `/packages/{package}`, `/packages`, `/packages/install` |
 | `dev start/watch` | install, create, keep pushing a build | |
 | (new) `app new/build/codegen/abi show\|diff/uses update\|check/signer new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone, plus an `AGENTS.md` for coding agents (`agents_md`) and a `CLAUDE.md` importing it; test `dev_new_starts_a_project_from_an_app_of_the_apps_repo`), `calimero-app-build`'s builder and `abi_tools`, `uses update NAME --from <crate\|.mpk\|.wasm\|abi.json>` (`make/uses.rs`: checks the package, the semver range and the listed methods, then `calimero_app_build::uses::vendor` writes `calimero.lock` and `calimero/abi/NAME.json`) and `uses check` (`uses::check` plus the range), `meroctl-sign`, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), `pack --service NAME=PATH` (or the crate's `services`) writes a multi-service manifest, and `pack` opens what it wrote with `VerifiedBundle` before writing it; the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
 | (new) `local up/down/status/dev/test/compute run` | `merod local` (the release's image by default, `docker_ready` checking Docker first; `--local` or `MEROD`: the binary; `--registry-url`, default the public registry) in the background, state in `--dir`/`meroctl-local.json`, saved as node `local`; `dev` builds, uploads a raw bundle as a fresh deployer, writes `app/.env.development.local`, runs `pnpm dev` on :5173 and rebuilds on save; `compute run` is `mero-compute` (feature `compute`, default on) | `/bundles` |
@@ -47,7 +49,7 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   refreshed when they expire. An instance argument is an alias of the account or
   an id (`Env::app`).
 - What an owner approves (`instance update`, `instance transfer`, `org delete`, approvals,
-  `team upgrade trigger/retry`, `app origins add/remove`) takes `--dev-passkey FILE` on a development
+  `team upgrade trigger/retry`, `app origins add/remove`, a deployment's changes) takes `--dev-passkey FILE` on a development
   cluster: `DevPasskey` loads it, gives it to the generated method as its
   `passkey` (the routes the document marks `x-calimero-step-up`) and saves it
   after; without it the request is sent as is and the node answers `412
@@ -69,7 +71,9 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   (`ops set-quotas`) is refused on a key the body does not name, before it is
   sent. Test: `a_misspelled_quota_is_refused_before_it_is_sent`. Commands that stream (watch, presence
   stream, metrics, downloads) write their own and answer `null`, which is not
-  printed.
+  printed (so does `deployment usage --csv`). Tests: `deployments` in
+  `tests/cli.rs` (release, offer, a secret from stdin, a customer counted,
+  take-down), `deployment_and_release_commands_parse`.
 
 - `main` runs the commands that need no node (`node`, `local`, `cloud` but
   `cloud compute`, `app`'s offline ones: `AppCmd::is_offline`) before it
