@@ -56,11 +56,18 @@ pub enum AppCmd {
     /// organization (`--org`). No node.
     Publish(crate::make::PublishArgs),
     /// What people running the app will see when this release replaces an
-    /// earlier one: green or red and why, Sealed and its destinations, new
+    /// earlier one: green or red and why, where its data goes, new
     /// methods, state version, signer. `--fail-on red|egress` makes it a
     /// release gate (exit 1; 2 when it cannot judge). No node with `--against
     /// FILE.mpk`; `--against VERSION` reads the node's installed release.
     Check(Box<check::CheckArgs>),
+    /// Ship a release in one step: `pack` (build from DIR, default `.`, and
+    /// sign), then install it on the cluster, ready for `meroctl deployment
+    /// offer`: uploaded (development clusters), or with `--publish` pushed
+    /// to the registry (`publish`) and installed from the cluster's registry. Refuses a version
+    /// that is not newer than every release of the package the cluster has
+    /// installed, before building anything.
+    Release(Box<crate::make::ReleaseArgs>),
     /// Install an application: `PACKAGE@VERSION` (or `PACKAGE --version V`)
     /// from the node's registry, or a local file with `--path` (a signed
     /// `.mpk`; on a development cluster also a raw `.wasm`, which uploads a
@@ -266,6 +273,7 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
         }
         AppCmd::Origins(cmd) => origins(cmd, env).await?,
         AppCmd::Check(a) => check::run(*a, Some(env)).await?,
+        AppCmd::Release(a) => release(&a, env).await?,
         AppCmd::New(_)
         | AppCmd::Build(_)
         | AppCmd::Codegen { .. }
@@ -277,6 +285,43 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
         | AppCmd::Inspect { .. }
         | AppCmd::Publish(_) => unreachable!("runs before connecting (main)"),
     })
+}
+
+/// `meroctl app release`: the version checked against the cluster's
+/// releases of the package first, then `pack`, `publish` (with `--publish`)
+/// and the install, in that order; a step that fails stops the rest.
+async fn release(a: &crate::make::ReleaseArgs, env: &Env) -> eyre::Result<Value> {
+    let package = a.package()?;
+    let releases: Vec<String> = match env.client.packages().get(&package).await {
+        Ok(p) => p.versions.into_iter().map(|v| v.version).collect(),
+        Err(calimero_client::Error::Api { status: 404, .. }) => Vec::new(),
+        Err(e) => return Err(e.into()),
+    };
+    crate::make::check_newer(&package, &a.version, releases.iter().map(String::as_str))?;
+    let packed = crate::make::pack(&a.pack_args())?;
+    let mpk = packed["wrote"]
+        .as_str()
+        .map(PathBuf::from)
+        .ok_or_else(|| eyre::eyre!("pack answered no file: {packed}"))?;
+    let published = if a.publish {
+        crate::make::publish(&a.publish_args(mpk.clone())).await?
+    } else {
+        Value::Null
+    };
+    // Published: the cluster installs it from its registry, as production
+    // clusters only do. Otherwise uploaded, which development clusters take.
+    let installed = if a.publish {
+        to_json(&env.client.packages().install(&package, &a.version).await?)?
+    } else {
+        to_json(&env.client.packages().upload(read_file(&mpk)?).await?)?
+    };
+    Ok(json!({
+        "package": package,
+        "version": a.version,
+        "mpk": mpk,
+        "published": published,
+        "installed": installed,
+    }))
 }
 
 /// `meroctl app origins`. A change goes out with the manager's passkey
