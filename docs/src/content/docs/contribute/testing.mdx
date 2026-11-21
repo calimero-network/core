@@ -409,13 +409,6 @@ later core release without losing data. `crates/node/tests/fault/upgrade_path.py
 proves it for the release pinned in [`.github/upgrade-from`](https://github.com/calimero-network/core/blob/master/.github/upgrade-from),
 the latest published one, against this tree:
 
-:::note[The pin today]
-`.github/upgrade-from` holds `hard-cutover: 5194` (1.0.0-rc.33: an instance's
-access is its list of grants, and access written before is not read), so the job
-reports the cutover and runs nothing until the PR that moves the pin to the first
-published release after it.
-:::
-
 <Steps>
 
 1. **The old cluster.** Three `merod run --dev` nodes and a job node start on
@@ -594,7 +587,7 @@ a case is never skipped.
 | Apps | `xcall` | two apps of an organization; writes relayed from one to the other (xcall), one refused by the callee, one dead-lettered | the relayed writes, what `onXcallFailed` recorded, the xcall list and its dead letters on every replica; a relay lands in the mixed cluster (across releases while the two apps sit on different ones) and on the new release | yes (since 1.0.0-rc.15) |
 | Apps | `full-text-search` | notes in an app's full-text index (title and body), one dropped | each search answers the same notes through every node (each rebuilds its index); a note added on the new release is found | yes (since 1.0.0-rc.15) |
 | Apps | `presence` | presence published in an app (ephemeral: it expires by design, so nothing is carried) | presence publishes and reads back through every node, in the mixed cluster and after | yes (since 1.0.0-rc.15) |
-| Apps | `app-transfer-move` | an app handed to another account (transfer); an app moved to another organization with its members | the owner and organization of each, their data; the former owner refused; the moved app's members reach it in its new organization; handed back on the new release | yes (since 1.0.0-rc.15) |
+| Apps | `app-transfer-move` | an app handed to another member of its organization (transfer); an app moved to another organization with its members | the owner and organization of each, their data; the moved app's members reach it in its new organization; handed back on the new release | yes (since 1.0.0-rc.15) |
 | Metering | `usage-and-storage` | an organization's app with writes; the account's and the organization's usage | the app's per-day usage history (earlier days unchanged, today's figures only grow), the account's usage counts and the organization's usage | yes (since 1.0.0-rc.15) |
 | Blobs and files | `sealed-files-sessions` | files an app wrote itself, an upload session begun with one of its parts sent, a plain blob deleted (the representative set uploads files of several segments) | each app-written file's size and SHA-256 as the app reads it; the half-done session expects its next part while its leader (an old node) leads and answers `UPLOAD_UNKNOWN` once the app moved (documented: the client begins again); a session begun on the new release completes with the right digest; the deleted blob stays gone | yes (since 1.0.0-rc.15) |
 | Governance | `outbound-approvals` | an organization's outbound approval for a package and an account's own | each approval as its holder reads it (or the same refusal, where governance gives it to the operator); every release the cluster approved stays approved after the roll | yes (since 1.0.0-rc.15) |

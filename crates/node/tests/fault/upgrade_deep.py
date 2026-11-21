@@ -240,6 +240,10 @@ NOT_COVERED = [
 class DeepCase(Case):
     area = ""
     since = "1.0.0-rc.15"
+    # The first release that no longer has what the case seeds (a release from it on
+    # cannot make that data, so a roll from it carries none): `None` while every
+    # release still makes it. Rolls from a release before it run the case as usual.
+    until = None
     seeds = ""
     verifies = ""
 
@@ -260,9 +264,15 @@ class DeepCase(Case):
     # The harness stops the run when a seed fails, since its representative cases
     # build on each other. Deep cases stand alone: one that fails to seed is
     # reported by each later step (the run goes on and lists every breakage).
+    def _retired(self, w):
+        return self.until is not None and release_key(w.fixtures["from_version"]) >= release_key(self.until)
+
     def seed(self, w):
         self.s = None
         self.seed_error = None
+        if self._retired(w):
+            w.note(f"{self.name}: {w.fixtures['from_version']} no longer makes what it seeds (until {self.until}); skipped")
+            return
         if release_key(w.fixtures["from_version"]) < release_key(self.since):
             w.note(f"{self.name}: {w.fixtures['from_version']} predates it (since {self.since}); seeded after the roll")
             return
@@ -279,14 +289,20 @@ class DeepCase(Case):
         return self.s is not None
 
     def mixed(self, w):
+        if self._retired(w):
+            return
         if self._seeded():
             self.during_mix(w, self.s)
 
     def verify(self, w):
+        if self._retired(w):
+            return
         if self._seeded():
             self.check(w, self.s)
 
     def extend(self, w):
+        if self._retired(w):
+            return
         if not self._seeded():
             self.s = self.populate(w)
             self.check(w, self.s)
