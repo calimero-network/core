@@ -5,9 +5,11 @@
 //! An offer of a new release opens wave 0 at the offer's logged time
 //! (`Offer::added_at`); each wave admits the first [`WAVES`] percent of the instances
 //! running the offered package (ordered by `SHA-256(version, app id)`, so each release
-//! reaches a different first few), and the next opens `wave_hours` later. A paused
+//! reaches a different first few), and the next opens `wave_hours` later. An instance
+//! applies once the wave that admits it has been open for its own hold (`holdHours`), so
+//! the hold paces each wave rather than running out while the waves pass unseen. A paused
 //! rollout admits nobody new; resuming opens the next wave a full `wave_hours` after the
-//! resume. Everything is judged on logged times (the offer's, the upgrade's `at`), never
+//! resume, and a wave opened before keeps when it opened (`RolloutState::opened`). Everything is judged on logged times (the offer's, the upgrade's `at`), never
 //! a node's clock, and only an instance that would apply on its own waits for its wave:
 //! an owner's or admin's approval applies whenever they give it.
 
@@ -45,6 +47,10 @@ pub struct RolloutState {
     /// The wave open at `base_at`; later ones open `wave_hours` apart from there.
     pub base_wave: u8,
     pub base_at: u64,
+    /// When each wave up to `base_wave` opened (index = wave), recorded whenever the base
+    /// moves ([`Self::rebase`]); a later wave opens `wave_hours` apart from `base_at`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opened: Vec<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<RolloutPause>,
 }
@@ -104,6 +110,7 @@ impl RolloutState {
             wave_hours,
             base_wave: 0,
             base_at: offer.added_at,
+            opened: Vec::new(),
             paused: None,
         }
     }
@@ -119,6 +126,40 @@ impl RolloutState {
         let passed = at.saturating_sub(self.base_at) / secs;
         let wave = u64::from(self.base_wave).saturating_add(passed);
         u8::try_from(wave.min(u64::from(last_wave()))).unwrap_or(last_wave())
+    }
+
+    /// When wave `wave` opened, or opens while not paused (`None` for a wave after the
+    /// base while paused): its recorded time, else `wave_hours` apart from `base_at`.
+    #[must_use]
+    pub fn opened_at(&self, wave: u8) -> Option<u64> {
+        if let Some(at) = self.opened.get(usize::from(wave)) {
+            return Some(*at);
+        }
+        if wave < self.base_wave {
+            // Not recorded (a state the base never moved in): no later than the base.
+            return Some(self.base_at);
+        }
+        if self.paused.is_some() && wave > self.base_wave {
+            return None;
+        }
+        let secs = u64::from(self.wave_hours.max(1)) * 3600;
+        Some(
+            self.base_at
+                .saturating_add(u64::from(wave - self.base_wave).saturating_mul(secs)),
+        )
+    }
+
+    /// Move the base to `at` (a pause, a resume, a new pace): the wave open at `at` stays
+    /// open, and each wave opened so far keeps when it opened.
+    pub fn rebase(&mut self, at: u64) {
+        let wave = self.wave_at(at);
+        for w in self.opened.len()..=usize::from(wave) {
+            let w = u8::try_from(w).unwrap_or(last_wave());
+            let opened = self.opened_at(w).unwrap_or(at).min(at);
+            self.opened.push(opened);
+        }
+        self.base_wave = wave;
+        self.base_at = at;
     }
 
     /// When the wave after the one open at `at` opens; `None` once the last is open or
@@ -210,8 +251,17 @@ impl SystemState {
             return false;
         }
         let order = self.rollout_order(&d.id, &offer);
-        let reach = admitted(order.len(), state.wave_at(at));
-        order.iter().take(reach).any(|a| a.app_id == app.app_id)
+        let Some(place) = order.iter().position(|a| a.app_id == app.app_id) else {
+            return false;
+        };
+        // The first wave that reaches it, open for the instance's whole hold.
+        let Some(wave) = (0..=last_wave()).find(|w| admitted(order.len(), *w) > place) else {
+            return false;
+        };
+        let hold = u64::from(self.upgrade_policy_of(app).0.hold_hours) * 3600;
+        state
+            .opened_at(wave)
+            .is_some_and(|opened| at >= opened.saturating_add(hold))
     }
 
     /// How the instances of `deployment`'s `offer` fare with its release.
@@ -342,6 +392,7 @@ mod tests {
             wave_hours: 2,
             base_wave: 0,
             base_at: 100,
+            opened: Vec::new(),
             paused: None,
         };
         assert_eq!(r.wave_at(100), 0);
@@ -358,5 +409,35 @@ mod tests {
         r.base_wave = 1;
         assert_eq!(r.wave_at(u64::MAX), 1);
         assert_eq!(r.next_wave_at(10_000), None);
+    }
+
+    #[test]
+    fn a_wave_keeps_when_it_opened_across_a_pause_and_a_resume() {
+        let mut r = RolloutState {
+            version: "1".into(),
+            wave_hours: 2,
+            base_wave: 0,
+            base_at: 100,
+            opened: Vec::new(),
+            paused: None,
+        };
+        assert_eq!(
+            (r.opened_at(0), r.opened_at(2)),
+            (Some(100), Some(100 + 2 * 7200))
+        );
+        // Paused while wave 1 is open (it opened at 100 + 7200).
+        r.rebase(100 + 7200 + 50);
+        r.paused = Some(RolloutPause {
+            at: 100 + 7200 + 50,
+            by: "m".into(),
+            failures: 0,
+        });
+        assert_eq!(r.opened, [100, 100 + 7200]);
+        assert_eq!(r.opened_at(2), None, "nothing opens while paused");
+        // Resumed much later: wave 1 still opened when it did; wave 2 a pace after.
+        r.rebase(1_000_000);
+        r.paused = None;
+        assert_eq!(r.opened_at(1), Some(100 + 7200));
+        assert_eq!(r.opened_at(2), Some(1_000_000 + 7200));
     }
 }

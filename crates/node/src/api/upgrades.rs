@@ -377,6 +377,7 @@ pub(crate) async fn upgrade_app(
             run: None,
             owner_approves,
             auto: false,
+            from_release: None,
         },
     )
     .await
@@ -399,6 +400,9 @@ struct Upgrader {
     /// An update applying on its own under the app's policy (`UpgradeApp::auto`), the
     /// system leader's (`node::auto_updates`): judged by the policy, not by who may.
     auto: bool,
+    /// For an update on its own, the release the app ran when the pass chose it
+    /// (`UpgradeFailed::from_release`).
+    from_release: Option<PackageRef>,
 }
 
 impl Upgrader {
@@ -656,6 +660,7 @@ pub(crate) async fn auto_upgrade(
             run: None,
             owner_approves: true,
             auto: true,
+            from_release: app.release.clone(),
         },
     )
     .await
@@ -729,6 +734,13 @@ async fn note_failed_upgrade(
     who: &Upgrader,
     error: Value,
 ) {
+    // An update on its own names the release it began from, so apply notes nothing if
+    // another move of the app won meanwhile.
+    let from_release = if who.auto {
+        who.from_release.clone()
+    } else {
+        None
+    };
     let _r = node
         .sys_write(&SystemCmd::UpgradeFailed {
             app_id: app_id.to_owned(),
@@ -738,6 +750,7 @@ async fn note_failed_upgrade(
             error,
             run: who.run.clone(),
             release: release.cloned(),
+            from_release,
         })
         .await;
 }
@@ -1048,6 +1061,7 @@ async fn org_upgrade(
         run: None,
         owner_approves,
         auto: false,
+        from_release: None,
     };
     start_run(node, org, body, apps, who, false).await
 }
@@ -1133,6 +1147,7 @@ async fn publisher_upgrade(
         run: None,
         owner_approves,
         auto: false,
+        from_release: None,
     };
     let run = OrgUpgradeBody {
         package,
@@ -1184,6 +1199,7 @@ async fn ops_org_upgrade(
         run: None,
         owner_approves: false,
         auto: false,
+        from_release: None,
     };
     start_run(node, org, body, apps, who, false).await
 }
@@ -1250,6 +1266,7 @@ async fn org_upgrade_retry(
             run: None,
             owner_approves: false,
             auto: false,
+            from_release: None,
         };
         return start_run(node, org, retry, failed, who, false).await;
     }
@@ -1277,6 +1294,7 @@ async fn org_upgrade_retry(
         run: None,
         owner_approves,
         auto: false,
+        from_release: None,
     };
     start_run(node, org, retry, failed, who, false).await
 }
@@ -1399,6 +1417,7 @@ async fn ops_upgrade(
             run: None,
             owner_approves: false,
             auto: false,
+            from_release: None,
         },
     )
     .await
@@ -1566,6 +1585,7 @@ pub(crate) async fn upgrade_unit(
         run: None,
         owner_approves: plan.owner_approves,
         auto: false,
+        from_release: None,
     };
     let run = OrgUpgradeBody {
         package: plan.target.package,

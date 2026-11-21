@@ -312,8 +312,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .rollout_of(&deployment, &app)
                 .ok_or("the deployment offers no such app")?;
             // The wave open now stays open; the next opens a full pause from here.
-            r.base_wave = r.wave_at(at);
-            r.base_at = at;
+            r.rebase(at);
             if let Some(h) = wave_hours {
                 r.wave_hours = h;
             }
@@ -341,8 +340,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !health.failing() {
                 return Err(ROLLOUT_HEALTHY);
             }
-            r.base_wave = r.wave_at(at);
-            r.base_at = at;
+            r.rebase(at);
             r.paused = Some(super::rollouts::RolloutPause {
                 at,
                 by: super::rollouts::PAUSED_BY_FAILURES.to_owned(),

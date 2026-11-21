@@ -1397,12 +1397,16 @@ is its command line.
   `AUTO_UPDATE_RETRY_FIRST_SECS` doubling to `AUTO_UPDATE_RETRY_MAX_SECS`, and moves found
   not green for `NOT_GREEN_KEPT_SECS`, each at most `MAX_AUTO_UPDATE_MEMORY`). Passes take
   turns (`Node::auto_update_turn`): one called while another runs, a test's beside the
-  timed one, waits for it, so two never upgrade the same app together.
+  timed one, waits for it, so two never upgrade the same app together; a pass off the
+  system leader moves nothing and one that loses the leadership stops before its next
+  upgrade (`leads_system`). An automatic `UpgradeFailed` carries `from_release`
+  (`Feature::AutoUpdates`); apply notes nothing when the app runs the target already or
+  no longer runs that release (another move won).
   `UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that
   actor); apply judges `SystemState::auto_update_gate`: policy, green class (and
   `check_class`), newer release of its package, not a unit member, the logged unit with
   no destination before or after, the hold (`at` >= `installedAt`, or the deployment
-  offer's `addedAt`, + `holdHours`), the rollout's wave, a restore point
+  offer's `addedAt`, + `holdHours`), the rollout's wave open for the hold, a restore point
   (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `ROLLOUT_WAITS`, `RESTORE_POINT_REQUIRED`;
   `UpgradeRecord::auto`). Every update decision's time is `types::update_now`
   (`testing::shift_update_clock` moves it in tests). *Restore points*
@@ -1433,7 +1437,9 @@ is its command line.
   `SystemState::rollouts` (deployment -> app -> `rollouts::RolloutState { version,
   waveHours, baseWave, baseAt, paused }`), `rollout_of` (defaults from the offer's
   `addedAt`), `rollout_order` (`SHA-256(version, app)`), `admitted` (`WAVES` 1/10/50/100
-  %), `rollout_admits`, `rollout_health`/`failing` (`ROLLOUT_FAILURE_PERCENT`).
+  %), `rollout_admits` (the instance's wave open for its `holdHours`: `opened_at`, each
+  opened wave's time kept in `RolloutState::opened` by `rebase` on every pause, resume
+  and new pace), `rollout_health`/`failing` (`ROLLOUT_FAILURE_PERCENT`).
   `SetRollout` (managers, consent `deployment:<id> / __set_rollout / rollout_args`; `BAD_ROLLOUT`
   for `waveHours` outside 1..=168), `PauseRollout` (the leader's, `ROLLOUT_HEALTHY` unless
   the state shows the failures). Routes `GET /deployments/{id}/rollout`, `POST
@@ -1445,7 +1451,9 @@ is its command line.
   (`a_passing_failure_before_an_automatic_update_is_retried_not_held_against_it`,
   `a_red_newest_release_does_not_hold_back_a_green_one_below_it`,
   `an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app`,
-  `passes_take_turns_and_move_an_app_once`),
+  `passes_take_turns_and_move_an_app_once`, `a_pass_off_the_system_leader_moves_nothing`;
+  `system::tests::an_instances_wave_counts_its_hold_from_when_the_wave_opened`,
+  `an_automatic_failure_that_lost_to_another_move_records_nothing`),
   `node::auto_updates::tests`, `api::undo::tests`. Not done: an automatic update that
   moves a unit's members, waves for a publisher's run, a restore point kept on more than
   one node.

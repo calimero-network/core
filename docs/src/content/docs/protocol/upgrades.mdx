@@ -348,7 +348,9 @@ any upgrade does, and runs the first green one of each app through the usual
 path, restore point first (`api::upgrades::auto_upgrade`), at most
 `MAX_AUTO_UPDATES_PER_PASS` (16) apps a pass; an app it skips does not count.
 A pass classifies at most `MAX_AUTO_UPDATE_CLASSES_PER_PASS` (64) moves, and
-passes on a node take turns, so two never move the same app together.
+passes on a node take turns, so two never move the same app together. Only the
+system leader's pass moves anything: a pass on a node that no longer leads the
+system group (a failover while it ran) stops before its next upgrade.
 The entry is `UpgradeApp { auto: true }` with `actor: "policy:auto-update"`
 (`system::AUTO_UPDATE`, never an account) and no consent: the policy is its
 authority, and apply judges it again from the log alone
@@ -363,8 +365,8 @@ authority, and apply judges it again from the log alone
   release was logged, its install (`installedAt`) or, for an instance of a
   deployment, its deployment's offer of exactly that release (`addedAt`).
   Judged on logged times, never a node's clock, so every replica agrees;
-- an instance of a deployment is in an open wave of its rollout
-  ([Waves](#waves));
+- an instance of a deployment is in a wave of its rollout that has been open
+  for its hold ([Waves](#waves));
 - a restore point was taken where the upgrade runs on the app's group.
 
 Refusals: `409 AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `ROLLOUT_WAITS`,
@@ -374,7 +376,10 @@ the leader's classification does (a state version that changed, a new way to
 act as the person), waits for an owner or admin and does not hold back a quiet
 one below it. It never takes one an update to failed or an undo left: an owner
 or admin decides on those. Only the release's own failure counts: the app's
-group ran the upgrade and it failed or refused it (`lastUpgrade.ok: false`).
+group ran the upgrade and it failed or refused it (`lastUpgrade.ok: false`),
+and not when another move of the app won meanwhile: an update on its own names
+the release it began from (`UpgradeFailed { fromRelease }`), and apply notes
+nothing when the app runs the target already or no longer runs that release.
 A failure before anything ran (a replica down, no restore point, a runtime not
 ready yet, no leader) leaves no record; the leader tries that move again after
 a backoff it keeps in memory (`AUTO_UPDATE_RETRY_FIRST_SECS`, 60 s, doubling to
@@ -445,9 +450,14 @@ A deployment's offer of a new release reaches its instances that apply updates
 on their own in waves (`Feature::Rollouts`, 1.0.0-rc.34; `system::rollouts`):
 1%, 10%, 50% and every instance (at least one each), in an order each release
 draws afresh (`SHA-256(version, app id)`). Wave 0 opens at the offer's logged
-time; each next one `waveHours` later (24 by default, 1 to 168). An owner's or
-admin's own approval applies whenever they give it: waves only pace the
-automatic updates. `GET /deployments/{id}/rollout` shows, for its managers,
+time; each next one `waveHours` later (24 by default, 1 to 168). An instance
+applies once the wave that admits it has been open for its own `holdHours`, so
+with a day's hold and a day between waves the first 1% moves a day after the
+offer, the next 10% a day later, and so on: the hold paces each wave rather than
+running out while the waves pass. Each opened wave keeps when it opened
+(`RolloutState::opened`), across pauses and new paces. An owner's or admin's
+own approval applies whenever they give it: waves only pace the automatic
+updates. `GET /deployments/{id}/rollout` shows, for its managers,
 each offered app's wave, when the next opens, whether it is paused, and how
 many instances run, failed or undid the release. Its managers pause and
 resume it with a passkey (`POST /deployments/{id}/rollout/{app}/pause|resume

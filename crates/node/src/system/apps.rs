@@ -590,8 +590,23 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             error,
             run,
             release,
+            from_release,
         } => {
             let a = s.apps.get_mut(&app_id).ok_or("no such app")?;
+            // An update on its own that lost to another move of the app (a pass on another
+            // node after a failover, a person's upgrade) is not the release's failure: the
+            // app runs the target already, or no longer runs what the update began from.
+            // Such entries exist only from the version that brings `Feature::AutoUpdates`,
+            // so every replica judges them by this rule.
+            if by == super::AUTO_UPDATE {
+                let done = a.bundle == bundle || (release.is_some() && a.release == release);
+                let moved = from_release
+                    .as_ref()
+                    .is_some_and(|f| a.release.as_ref() != Some(f));
+                if done || moved {
+                    return Ok(json!({ "stale": true }));
+                }
+            }
             a.last_upgrade = Some(crate::types::UpgradeRecord {
                 from_release: a.release.clone(),
                 to_release: release,

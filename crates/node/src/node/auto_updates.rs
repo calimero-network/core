@@ -163,6 +163,11 @@ impl Node {
         let _turn = self.auto_update_turn.lock().await;
         #[cfg(feature = "testing")]
         let _counted = crate::testing::AutoUpdatePass::start();
+        // Only the system leader's pass moves anything: a node that lost the leadership
+        // (a failover while its pass waited or ran) would race the new leader's pass.
+        if !self.leads_system() {
+            return 0;
+        }
         let on = self.sys(|s| {
             cv::check(
                 s.cluster_version.as_deref(),
@@ -237,6 +242,11 @@ impl Node {
                     // next pass.
                     None => continue,
                 }
+                // Each upgrade takes a while: stop as soon as this node no longer leads.
+                if !self.leads_system() {
+                    warn!("no longer the system leader: the pass stops");
+                    break 'apps;
+                }
                 tried += 1;
                 match crate::api::upgrades::auto_upgrade(self, &app, &to).await {
                     Ok(_) => {
@@ -255,6 +265,11 @@ impl Node {
             }
         }
         applied
+    }
+
+    /// Whether this node leads the system group now.
+    fn leads_system(&self) -> bool {
+        self.system.status().is_leader
     }
 
     /// Run `f` on the leader's [`AutoUpdateMemory`]; `None` if its lock was poisoned.

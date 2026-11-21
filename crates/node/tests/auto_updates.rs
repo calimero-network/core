@@ -411,8 +411,9 @@ async fn a_green_update_applies_after_its_hold_and_is_undone_within_a_week() {
 }
 
 /// A deployment's new offer reaches the instances on an automatic policy in waves, each
-/// after its hold: the first wave's one instance, then nobody new while its managers
-/// pause it, then everyone once they resume it and the later waves open.
+/// instance once its wave has been open for its hold: the first wave's one instance, then
+/// nobody new while its managers pause it, then everyone once they resume it and the
+/// later waves open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_deployments_offer_rolls_out_in_waves_its_managers_pause_and_resume() {
     shift_update_clock(0);
@@ -533,7 +534,14 @@ async fn a_deployments_offer_rolls_out_in_waves_its_managers_pause_and_resume() 
         .unwrap();
     assert!(resumed["apps"][0]["paused"].is_null(), "{resumed}");
     assert_eq!(resumed["apps"][0]["waveHours"], 1, "{resumed}");
+    // The later waves open an hour apart from the resume, and each instance moves once
+    // its wave has been open for its hold (a day): everyone by the day after.
     shift_update_clock(31 * DAY);
+    assert!(
+        updated(&dev, &d).await.as_u64() < Some(3),
+        "a wave opened an hour ago is not open for a day yet"
+    );
+    shift_update_clock(32 * DAY);
     passes_until(
         &c,
         || async { updated(&dev, &d).await == 3 },
@@ -819,6 +827,40 @@ async fn passes_take_turns_and_move_an_app_once() {
         calimero_node::testing::most_auto_update_passes_at_once(),
         1,
         "two passes ran at once"
+    );
+    shift_update_clock(0);
+}
+
+/// Only the system leader's pass moves anything: a pass on a node that does not lead the
+/// system group (one that lost the leadership mid-pass, as after a failover) upgrades
+/// nothing, so it never races the new leader's pass on the same apps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_pass_off_the_system_leader_moves_nothing() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[47; 32]);
+    let app = auto_app(&alice, &mut alice_pk, &publisher).await;
+    let _ = alice
+        .packages()
+        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .await
+        .unwrap();
+    let _ = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
+        u["available"]["class"] == "green"
+    })
+    .await;
+    shift_update_clock(DAY + 600);
+    let follower = c
+        .nodes
+        .iter()
+        .flatten()
+        .find(|r| !r.node.system.status().is_leader)
+        .expect("a follower");
+    assert_eq!(
+        follower.node.auto_update_once().await,
+        0,
+        "a node that does not lead the system group upgraded an app"
     );
     shift_update_clock(0);
 }

@@ -6421,6 +6421,12 @@ pub enum SystemCmd {
         /// The release the upgrade was to, when it named one.
         #[serde(default)]
         release: Option<PackageRef>,
+        /// The release the app ran when an update on its own began (`by` is
+        /// [`AUTO_UPDATE`]; `None` for any other, so their entries read as before):
+        /// apply notes nothing when the app has moved since or already runs the target,
+        /// as another move won (`Feature::AutoUpdates`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_release: Option<PackageRef>,
     },
     StartUpgradeRun {
         org: OrgId,

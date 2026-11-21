@@ -627,6 +627,10 @@ impl SystemCmd {
                 }
                 f
             }
+            Self::UpgradeFailed {
+                from_release: Some(_),
+                ..
+            } => vec![Feature::AutoUpdates],
             Self::SetUpgradePolicy { .. } | Self::ApproveUpgrade { .. } => {
                 vec![Feature::UpgradePolicies]
             }
