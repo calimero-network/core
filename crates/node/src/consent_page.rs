@@ -1171,7 +1171,8 @@ pub async fn create(
         }
         CreateBody::Upgrade { subject, return_to } => {
             let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
-            let (action, model) = upgrade_request(&node, &p, &account, subject, false).await?;
+            let (action, model) =
+                upgrade_request(&node, &p, &account, subject, Part::Alone).await?;
             (action, model, to)
         }
         CreateBody::UpgradeUnit { subject, return_to } => {
@@ -1959,13 +1960,23 @@ fn withdrawal_model(
     })
 }
 
+/// Which part of an upgrade a sheet shows: an app upgraded alone, a unit's instance or one
+/// of its members (both judged as one unit by [`unit_upgrade_request`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Alone,
+    Instance,
+    Member,
+}
+
 async fn upgrade_request(
     node: &Node,
     p: &Principal,
     account: &str,
     subject: UpgradeSubject,
-    member_of_unit: bool,
+    part: Part,
 ) -> Result<(Action, Value), ApiError> {
+    let member_of_unit = part == Part::Member;
     owner_holds(node, |g| g.app_upgrades, "app upgrades")?;
     let app_id = node.canonical_app_id(&subject.app);
     let app = node.app(&app_id).await?;
@@ -2013,15 +2024,16 @@ async fn upgrade_request(
     // Where the approval stands under the app's policy: a red update whose policy asks for
     // a second approver is approved first here ("Approve (1 of 2)") unless another owner's
     // or admin's first approval waits, which this one then applies; the person's own first
-    // approval waiting is refused before a page exists.
-    let step = if member_of_unit {
-        updates::ApprovalStep::Only
-    } else {
+    // approval waiting is refused before a page exists. A unit's page is judged on the
+    // whole unit instead (`unit_upgrade_request`).
+    let step = if part == Part::Alone {
         let class = crate::api::move_class(node, &app_id, Some(&to_release)).await;
         let green = class
             .as_ref()
             .is_some_and(crate::types::UpgradeClass::is_green);
-        updates::approval_step(node, &app, &to_release, green, account)?
+        updates::approval_step(node, &app, &to_release, &BTreeMap::new(), green, account)?
+    } else {
+        updates::ApprovalStep::Only
     };
     node.require_runtime(
         &app.replicas,
@@ -2196,7 +2208,7 @@ async fn unit_upgrade_request(
             app: app_id.clone(),
             to_version: subject.to_version.clone(),
         },
-        false,
+        Part::Instance,
     )
     .await?;
     let version = root["upgrade"]["to"]["version"]
@@ -2218,7 +2230,7 @@ async fn unit_upgrade_request(
                 app: member.app_id.clone(),
                 to_version: Some(t.version.clone()),
             },
-            true,
+            Part::Member,
         )
         .await?;
         let _prev = from.insert(member.app_id.clone(), member.bundle.clone());
@@ -2275,7 +2287,9 @@ async fn unit_upgrade_request(
         service: running.service.clone(),
         compute: false,
     };
-    let step = updates::approval_step(node, &plan.app, &to_release, green, account)?;
+    // The approval of the whole unit's move, of exactly its targets (as `upgrade-unit` and
+    // apply judge it), so a unit red only through a member is approved first here too.
+    let step = updates::approval_step(node, &plan.app, &to_release, &plan.targets, green, account)?;
     let moves: Vec<String> = pages
         .iter()
         .skip(1)

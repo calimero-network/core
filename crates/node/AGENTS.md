@@ -1329,7 +1329,8 @@ is its command line.
   `outbound` and secret hosts; `SystemState::check_class`, the unit
   through `links` as deep as `MAX_UNIT_DEPTH`) and refuses `UPGRADE_CLASS_MISMATCH` a
   class that leaves out a reason it derives, red without reasons, green with them, or
-  more than `MAX_CLASS_REASONS`; `UpgradeRecord::class`/`reasons`/`approved_by` keep it
+  more than `MAX_CLASS_REASONS`, and a green class for a move it cannot rebuild (a
+  release the app or a member runs, or a target, not installed: red is taken as said); `UpgradeRecord::class`/`reasons`/`approved_by` keep it
   (`lastUpgrade`). Policies (`Feature::UpgradePolicies`, rc.34): `SetUpgradePolicy { org,
   app?, policy? }` by an owner or admin (`approves_upgrades`), consent `org:<org> /
   __set_upgrade_policy / system::upgrade_policy_args`, kept on `Org::upgrade_policy` and
@@ -1341,11 +1342,24 @@ is its command line.
   logs a `types::PendingApproval` in `Org::pending_upgrades` (one per app; `targets` for a
   unit; `ONE_APPROVAL` without the policy or for a green class, `APPROVAL_PENDING` for
   another's live one of the same move); `SystemState::update_gate` (apply of every
-  non-operator `UpgradeApp`, and `run_upgrade`/`upgrade_app`/`upgrade_unit` before the
-  passkey) lets a red or unclassified move through only with another approver's live
-  approval covering it (`approval_for`, `approval_live`: within `MAX_APPROVAL_AGE_SECS`
-  of the upgrade's `at`, approver still an owner or admin, not every covered app at its
-  target), else `SECOND_APPROVAL_REQUIRED`; `drop_spent_approvals` after each upgrade.
+  non-operator `UpgradeApp` through `run_update_gate`, and `run_upgrade`/`upgrade_app`
+  before the passkey) lets a red or unclassified move through only with another
+  approver's live approval covering it (`approval_for`, `approval_live`: within
+  `MAX_APPROVAL_AGE_SECS` of the upgrade's `at`, approver still an owner or admin, not
+  every covered app at its target), else `SECOND_APPROVAL_REQUIRED`;
+  `drop_spent_approvals` after each upgrade. A unit's run is judged once, under its
+  instance's policy (`run_update_gate`, `api::unit_gate` for `upgrade_unit` before the
+  passkey; the consent page's `upgradeUnit` asks `approval_step` over the unit's class and
+  targets, so a unit red only through a member is approved first there): the instance's
+  `UpgradeApp` carries the unit's class (`api::upgrades::run_class`) judged over the
+  run's targets, its approval must have the same `targets` (`approval_for` looks at
+  every live approval, so a parent unit's covering one never hides it), and each member the run
+  moves takes the instance's judgement once the instance is `done` in that run (its own
+  class still checked), so a member's own policy (which governs it alone) never stops
+  a unit half way. Only a `__upgrade_unit` consent keeps `targets` on a run
+  (`StartUpgradeRun` drops any other run's, whatever the entry lists), and its members are
+  the instance's `links` (`upgrade_run_apps`). `POST /apps/{app}/upgrade-approvals` answers `approval` in the
+  `pendingApprovals` shape (`api::upgrades::approval_json`).
   The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
   `autoApply` (`noDestinations`: a green update of an app whose unit has no destinations
   before or after) and `holdHours` are stored and validated only: the hold, auto-apply,
@@ -1357,8 +1371,14 @@ is its command line.
   org upgrade-policy|updates`, `meroctl instance upgrade-policy|approve-update`.
   Regressions: `system::tests` (`an_updates_class_is_judged_against_the_log_and_recorded`,
   `an_update_policy_is_an_owners_or_admins_and_bounded`,
-  `a_red_update_needs_a_second_approver_where_the_policy_asks`),
-  `a_red_update_waits_for_a_second_approver` (`tests/consent_page.rs`).
+  `a_red_update_needs_a_second_approver_where_the_policy_asks`,
+  `a_move_the_log_cannot_rebuild_is_never_applied_as_green`,
+  `a_units_run_is_judged_once_under_its_instances_policy`,
+  `a_units_own_approval_is_found_past_a_parent_units`,
+  `only_a_units_run_keeps_member_targets`),
+  `a_red_update_waits_for_a_second_approver`,
+  `a_unit_red_through_a_member_is_approved_first_on_its_page`,
+  `a_unit_moves_whole_under_its_instances_policy` (`tests/consent_page.rs`).
 - **Install and update pages** (C10; `consent_page/updates.rs`; docs: protocol consent page
   "Installs, updates and update policies", build "Show updates in your app"): the words
   (`reason_words`, `update_summary`, `policy_words`) shared by the sheets, the updates page

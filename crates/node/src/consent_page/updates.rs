@@ -184,6 +184,7 @@ pub(super) fn approval_step(
     node: &Node,
     app: &AppRecord,
     to: &PackageRef,
+    targets: &BTreeMap<String, crate::types::RunTarget>,
     green: bool,
     account: &str,
 ) -> Result<ApprovalStep, ApiError> {
@@ -192,7 +193,7 @@ pub(super) fn approval_step(
         if !s.upgrade_policy_of(app).0.second_approver || green {
             return Ok(ApprovalStep::Only);
         }
-        if let Some(p) = s.approval_for(app, &to.package, &to.version, account, now) {
+        if let Some(p) = s.approval_for(app, &to.package, &to.version, targets, account, now) {
             return Ok(ApprovalStep::Second { by: p.by.clone() });
         }
         let own = s.orgs.get(&app.org).is_some_and(|o| {
@@ -862,7 +863,7 @@ pub(super) async fn open(
     let p = super::page_principal(node, account, sys_index);
     let (action, model) = match body {
         OpenBody::Upgrade { subject } => {
-            super::upgrade_request(node, &p, account, subject, false).await?
+            super::upgrade_request(node, &p, account, subject, super::Part::Alone).await?
         }
         OpenBody::UpgradeUnit { subject } => {
             super::unit_upgrade_request(node, &p, account, subject).await?

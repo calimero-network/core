@@ -234,9 +234,19 @@ pub(crate) async fn approve_upgrade(
         return Err(crate::node::rejected(crate::system::ONE_APPROVAL));
     }
     let now = now_secs();
+    // Another's live approval of this very move waits for its second, as `ApproveUpgrade`
+    // refuses it where it applies.
     let pending = node.sys(|s| {
-        s.approval_for(app, &target.package, &target.version, &actor, now)
-            .is_some_and(|p| p.targets == targets)
+        s.orgs
+            .get(&app.org)
+            .and_then(|o| o.pending_upgrades.get(&app.app_id))
+            .is_some_and(|p| {
+                p.by != actor
+                    && p.package == target.package
+                    && p.version == target.version
+                    && p.targets == targets
+                    && s.approval_live(&app.org, &app.app_id, p, now)
+            })
     });
     if pending {
         return Err(crate::node::rejected(crate::system::APPROVAL_PENDING));
@@ -244,7 +254,7 @@ pub(crate) async fn approve_upgrade(
     let args =
         crate::system::approve_upgrade_args(&target.package, &target.version, &targets, &class);
     let consent = consent(node, p, &app.app_id, "__approve_upgrade", &args, confirm).await?;
-    let approval = node
+    let logged = node
         .sys_write(&SystemCmd::ApproveUpgrade {
             app_id: app.app_id.clone(),
             package: target.package,
@@ -256,7 +266,14 @@ pub(crate) async fn approve_upgrade(
             consent,
         })
         .await?;
-    Ok(Json(json!({ "app": app.app_id, "approval": approval })))
+    // Answered as `pendingApprovals` lists it (the `PendingApproval` schema), not as the
+    // log keeps it.
+    let logged: crate::types::PendingApproval = serde_json::from_value(logged)
+        .map_err(|e| ApiError::internal(&format!("the approval logged unread: {e}")))?;
+    Ok(Json(json!({
+        "app": app.app_id,
+        "approval": super::upgrades::approval_json(&app.app_id, &logged),
+    })))
 }
 
 /// `GET /orgs/{org}/updates?after=`: for the organization's owner and admins, its apps

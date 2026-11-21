@@ -3529,18 +3529,40 @@ async fn a_red_update_waits_for_a_second_approver() {
     assert_eq!(available["approvalsNeeded"], 2, "{update}");
     assert_eq!(update["pendingApprovals"], json!([]), "{update}");
 
-    // The owner approves first, with their own passkey; the update shows it waiting.
+    // The owner approves first, with their own passkey; the update shows it waiting. The
+    // answer is the shape `pendingApprovals` lists, read through the typed client.
     let approvals = format!("apps/{notes}/upgrade-approvals");
     let first = alice
-        .transport()
-        .confirmed(
-            Request::new(Method::POST, approvals.as_str()).json(json!({ "version": "2.0.0" })),
-            &mut alice_pk,
-        )
+        .apps()
+        .approve_upgrade(&notes, "2.0.0", None, Some(&mut alice_pk))
         .await
         .unwrap();
-    assert_eq!(first["approval"]["by"], json!(alice_id), "{first}");
-    assert_eq!(first["approval"]["class"]["class"], "red", "{first}");
+    let approval = &first.approval;
+    assert_eq!(
+        (approval.app.as_str(), approval.by.as_str()),
+        (notes.as_str(), alice_id.as_str()),
+        "{first:?}"
+    );
+    assert_eq!(
+        approval.class,
+        calimero_client::types::PendingApprovalClass::Red,
+        "{first:?}"
+    );
+    assert_eq!(
+        approval.reasons.len(),
+        1,
+        "the destination it adds: {first:?}"
+    );
+    assert!(approval.targets.is_empty(), "{first:?}");
+    assert_eq!(
+        approval.expires_at,
+        approval.at + calimero_node::types::MAX_APPROVAL_AGE_SECS,
+        "{first:?}"
+    );
+    assert!(
+        approval.extra.is_empty(),
+        "nothing the schema leaves out: {first:?}"
+    );
     // The owner alone: refused before any passkey, here and on the app's page.
     let e = alice
         .apps()
@@ -4018,4 +4040,158 @@ async fn an_update_shows_its_class_and_takes_two_approvers_on_the_pages() {
     // The updates page outlived the sheet it opened, and has nothing left to show.
     let after = hub.model().await;
     assert_eq!(after["updates"]["pending"], json!([]), "{after}");
+}
+
+/// C8's unit fixture: alice's organization holds `notes` on `PACKAGE@1.0.0`, which
+/// created `store` on `com.test.c8-kv@0.1.0`. `PACKAGE@2.0.0` ships the same WASM and
+/// destinations (its own move is green) but takes the store to `0.1.1`, which adds a
+/// telemetry host: the unit's update is red only through its member. Answers the
+/// organization, `notes` and `store`.
+async fn unit_red_through_its_member(
+    alice: &calimero_client::Client,
+    seed: u8,
+) -> (String, String, String) {
+    const TELEMETRY: &str = "https://telemetry.example/";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let kv = "com.test.c8-kv";
+    let uses = |kv_version: &str| Declares {
+        uses: Some(json!({ "store": { "package": kv, "range": "^0.1", "version": kv_version } })),
+        ..Declares::default()
+    };
+    for (package, version, d) in [
+        (kv, "0.1.0", Declares::default()),
+        (
+            kv,
+            "0.1.1",
+            Declares {
+                outbound: &[TELEMETRY],
+                ..Declares::default()
+            },
+        ),
+        (PACKAGE, "1.0.0", uses("0.1.0")),
+        (PACKAGE, "2.0.0", uses("0.1.1")),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let org = home_org(alice).await;
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0", "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let store = made["links"]["store"].as_str().unwrap().to_owned();
+    let update = get(alice, &format!("apps/{notes}/update")).await.unwrap();
+    assert_eq!(update["available"]["class"], "red", "{update}");
+    (org, notes, store)
+}
+
+/// C8 and C10: a unit's page is judged on the unit, not its instance alone. A unit red
+/// only because a member adds a destination, in an organization whose policy asks for a
+/// second approver, gets a page whose step is the first of two approvals, as `upgrade-unit`
+/// needs one; the instance's own (green) move needs one approval.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_red_through_a_member_is_approved_first_on_its_page() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (org, notes, _store) = unit_red_through_its_member(&alice, 37).await;
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "secondApprover": true } })),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    let _seen = get_until(&alice, &format!("apps/{notes}/update"), |u| {
+        u["policy"]["secondApprover"] == true
+    })
+    .await;
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(0);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_pk, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let ask = |kind: &str| {
+        json!({ "kind": kind, "subject": { "app": notes, "toVersion": "2.0.0" },
+                "returnTo": format!("{app_origin}/1.0.0/") })
+    };
+    // The instance alone: green, one approval, a page.
+    let alone = post(&in_app, "consent/requests", ask("upgrade"))
+        .await
+        .unwrap();
+    let model = Page::new(alone["url"].as_str().unwrap()).model().await;
+    assert_eq!(model["unit"]["class"], "green", "{model}");
+    assert_eq!(model["update"]["approval"]["step"], "only", "{model}");
+    // The unit: red through its member, so its page asks for the first of two approvals.
+    let unit = post(&in_app, "consent/requests", ask("upgradeUnit"))
+        .await
+        .unwrap();
+    let model = Page::new(unit["url"].as_str().unwrap()).model().await;
+    assert_eq!(model["update"]["class"], "red", "{model}");
+    assert_eq!(model["update"]["approval"]["step"], "first", "{model}");
+    assert_eq!(model["update"]["approval"]["needed"], 2, "{model}");
+}
+
+/// C8: a unit's run is judged once, under its instance's policy, so it moves whole. A
+/// member whose own policy asks for a second approver, in a unit whose instance's does
+/// not, moves with the unit on its one approval (it used to be refused at apply after the
+/// instance had moved, leaving the unit half upgraded); upgraded alone, the member's own
+/// policy still holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_moves_whole_under_its_instances_policy() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (_org, notes, store) = unit_red_through_its_member(&alice, 43).await;
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(
+                Method::POST,
+                format!("apps/{store}/upgrade-policy").as_str(),
+            )
+            .json(json!({ "policy": { "secondApprover": true } })),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    let _seen = get_until(&alice, &format!("apps/{store}/update"), |u| {
+        u["policy"]["secondApprover"] == true
+    })
+    .await;
+    // Alone, the member waits for a second approver.
+    let e = alice
+        .apps()
+        .upgrade(
+            &store,
+            typed(json!({ "version": "0.1.1" })),
+            Some(&mut alice_pk),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("SECOND_APPROVAL_REQUIRED"), "{e}");
+    // With its unit, it moves under the instance's policy: the whole unit or nothing.
+    let _run = alice
+        .apps()
+        .upgrade_unit(&notes, "2.0.0", Some(&mut alice_pk))
+        .await
+        .unwrap();
+    let member = get_until(&alice, &format!("apps/{store}"), |a| {
+        a["lastUpgrade"].is_object()
+    })
+    .await;
+    assert_eq!(member["lastUpgrade"]["ok"], true, "{member}");
+    assert_eq!(member["release"]["version"], "0.1.1", "{member}");
+    let instance = get(&alice, &format!("apps/{notes}")).await.unwrap();
+    assert_eq!(instance["release"]["version"], "2.0.0", "{instance}");
+    // The instance's record carries the unit's class: red, the member's destination.
+    assert_eq!(instance["lastUpgrade"]["class"], "red", "{instance}");
 }
