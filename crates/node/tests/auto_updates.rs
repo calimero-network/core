@@ -777,3 +777,40 @@ async fn an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app()
         "{plan}"
     );
 }
+
+/// Passes take turns: one called while the leader's own timed pass runs, or two called
+/// together, never overlap, so a green update is moved once and no pass races another
+/// on the same app (whose loser would note the winner's move as a failed upgrade).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn passes_take_turns_and_move_an_app_once() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[46; 32]);
+    let app = auto_app(&alice, &mut alice_pk, &publisher).await;
+    let _ = alice
+        .packages()
+        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .await
+        .unwrap();
+    let _ = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
+        u["available"]["class"] == "green"
+    })
+    .await;
+
+    shift_update_clock(DAY + 600);
+    let (a, b) = tokio::join!(pass(&c), pass(&c));
+    assert_eq!(
+        calimero_node::testing::most_auto_update_passes_at_once(),
+        1,
+        "two passes ran at once"
+    );
+    assert_eq!(a + b, 1, "the app moved once");
+    let moved = get_until(&alice, &format!("apps/{app}"), 15, |a| {
+        a["release"]["version"] == "1.1.0"
+    })
+    .await;
+    assert_eq!(moved["lastUpgrade"]["ok"], true, "{moved}");
+    assert_eq!(moved["lastUpgrade"]["auto"], true, "{moved}");
+    shift_update_clock(0);
+}

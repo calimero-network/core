@@ -648,6 +648,9 @@ pub struct Node {
     /// What the system leader's passes remember between them: backoffs and verdicts
     /// (in memory only, [`auto_updates::AutoUpdateMemory`]).
     auto_update_memory: Mutex<auto_updates::AutoUpdateMemory>,
+    /// Held by each automatic-update pass while it runs ([`Node::auto_update_once`]), so
+    /// passes on this node never overlap.
+    auto_update_turn: tokio::sync::Mutex<()>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
     /// Full-text search over the apps hosted here (spec section 7).
@@ -1129,6 +1132,7 @@ impl Node {
             auto_update_due: Mutex::default(),
             auto_updating: std::sync::atomic::AtomicBool::new(false),
             auto_update_memory: Mutex::default(),
+            auto_update_turn: tokio::sync::Mutex::new(()),
             peer_releases: Mutex::new(HashMap::new()),
             peer_runtimes: Mutex::default(),
             callers: Mutex::new(HashMap::new()),

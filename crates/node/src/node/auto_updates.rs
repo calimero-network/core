@@ -156,6 +156,13 @@ impl Node {
     /// wave allow it. Answers how many applied. Nothing before the logged cluster version
     /// brings automatic updates and restore points.
     pub async fn auto_update_once(&self) -> usize {
+        // One pass at a time on this node, the timed one ([`Self::auto_update`]) or one
+        // called beside it: two at once would classify and upgrade the same app together,
+        // and the one that lost would note the other's move as a failed upgrade. A pass
+        // called while another runs waits for it, then judges the state it left.
+        let _turn = self.auto_update_turn.lock().await;
+        #[cfg(feature = "testing")]
+        let _counted = crate::testing::AutoUpdatePass::start();
         let on = self.sys(|s| {
             cv::check(
                 s.cluster_version.as_deref(),

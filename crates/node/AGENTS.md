@@ -1394,7 +1394,9 @@ is its command line.
   anything ran (refusal, restore point, runtime, no leader) is not, and the leader
   retries that move after a backoff (`node::auto_updates::AutoUpdateMemory`, in memory:
   `AUTO_UPDATE_RETRY_FIRST_SECS` doubling to `AUTO_UPDATE_RETRY_MAX_SECS`, and moves found
-  not green for `NOT_GREEN_KEPT_SECS`, each at most `MAX_AUTO_UPDATE_MEMORY`).
+  not green for `NOT_GREEN_KEPT_SECS`, each at most `MAX_AUTO_UPDATE_MEMORY`). Passes take
+  turns (`Node::auto_update_turn`): one called while another runs, a test's beside the
+  timed one, waits for it, so two never upgrade the same app together.
   `UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that
   actor); apply judges `SystemState::auto_update_gate`: policy, green class (and
   `check_class`), newer release of its package, not a unit member, the logged unit with
@@ -1441,7 +1443,8 @@ is its command line.
   `system::rollouts::tests`, `tests/auto_updates.rs`
   (`a_passing_failure_before_an_automatic_update_is_retried_not_held_against_it`,
   `a_red_newest_release_does_not_hold_back_a_green_one_below_it`,
-  `an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app`),
+  `an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app`,
+  `passes_take_turns_and_move_an_app_once`),
   `node::auto_updates::tests`, `api::undo::tests`. Not done: an automatic update that
   moves a unit's members, waves for a publisher's run, a restore point kept on more than
   one node.

@@ -347,7 +347,8 @@ newest first (`SystemState::auto_update_candidates`), classifies each move as
 any upgrade does, and runs the first green one of each app through the usual
 path, restore point first (`api::upgrades::auto_upgrade`), at most
 `MAX_AUTO_UPDATES_PER_PASS` (16) apps a pass; an app it skips does not count.
-A pass classifies at most `MAX_AUTO_UPDATE_CLASSES_PER_PASS` (64) moves.
+A pass classifies at most `MAX_AUTO_UPDATE_CLASSES_PER_PASS` (64) moves, and
+passes on a node take turns, so two never move the same app together.
 The entry is `UpgradeApp { auto: true }` with `actor: "policy:auto-update"`
 (`system::AUTO_UPDATE`, never an account) and no consent: the policy is its
 authority, and apply judges it again from the log alone

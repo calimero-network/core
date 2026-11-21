@@ -136,6 +136,38 @@ pub(crate) fn restore_points_fail() -> bool {
     FAIL_RESTORE_POINTS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// How many of the automatic-update passes in this process run now, and the most that
+/// ever ran at once ([`most_auto_update_passes_at_once`]).
+static AUTO_UPDATE_PASSES: Mutex<(usize, usize)> = Mutex::new((0, 0));
+
+/// The most automatic-update passes (`Node::auto_update_once`) that ran at once in this
+/// process, so a test sees whether a pass ever overlaps another.
+#[must_use]
+pub fn most_auto_update_passes_at_once() -> usize {
+    AUTO_UPDATE_PASSES.lock().map_or(0, |p| p.1)
+}
+
+/// Counts an automatic-update pass from its start until it is dropped.
+pub(crate) struct AutoUpdatePass;
+
+impl AutoUpdatePass {
+    pub(crate) fn start() -> Self {
+        if let Ok(mut p) = AUTO_UPDATE_PASSES.lock() {
+            p.0 += 1;
+            p.1 = p.1.max(p.0);
+        }
+        Self
+    }
+}
+
+impl Drop for AutoUpdatePass {
+    fn drop(&mut self) {
+        if let Ok(mut p) = AUTO_UPDATE_PASSES.lock() {
+            p.0 = p.0.saturating_sub(1);
+        }
+    }
+}
+
 /// How far update decisions' times run ahead of the clock ([`shift_update_clock`]).
 static UPDATE_CLOCK_SHIFT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
