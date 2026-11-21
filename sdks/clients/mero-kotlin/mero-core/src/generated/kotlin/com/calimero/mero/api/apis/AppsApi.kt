@@ -37,6 +37,7 @@ import com.calimero.mero.api.models.AppDelegate200Response
 import com.calimero.mero.api.models.AppDelegateRequest
 import com.calimero.mero.api.models.AppDelegations200Response
 import com.calimero.mero.api.models.AppDelete200Response
+import com.calimero.mero.api.models.AppEgress200Response
 import com.calimero.mero.api.models.AppInviteCreate200Response
 import com.calimero.mero.api.models.AppInviteCreateRequest
 import com.calimero.mero.api.models.AppInviteList200Response
@@ -652,6 +653,79 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.DELETE,
             path = "/apps/{app}".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /apps/{app}/egress
+     * Where an app&#39;s unit may send data
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule). &#x60;destinations&#x60;: every destination (&#x60;outbound&#x60; prefix, and a declared secret&#39;s host no prefix names) of the release the instance runs and of each app it created with it (&#x60;links&#x60;, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). &#x60;members&#x60;: each member by its path (&#x60;&lt;name&gt;&#x60;, a member&#39;s own &#x60;&lt;name&gt;/&lt;name&gt;&#x60;) with its app id, release, signer and own destinations. A development bundle declares none.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @return AppEgress200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appEgress(app: kotlin.String) : AppEgress200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appEgressWithHttpInfo(app = app)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppEgress200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/egress
+     * Where an app&#39;s unit may send data
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule). &#x60;destinations&#x60;: every destination (&#x60;outbound&#x60; prefix, and a declared secret&#39;s host no prefix names) of the release the instance runs and of each app it created with it (&#x60;links&#x60;, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). &#x60;members&#x60;: each member by its path (&#x60;&lt;name&gt;&#x60;, a member&#39;s own &#x60;&lt;name&gt;/&lt;name&gt;&#x60;) with its app id, release, signer and own destinations. A development bundle declares none.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * @param app 
+     * @return ApiResponse<AppEgress200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appEgressWithHttpInfo(app: kotlin.String) : ApiResponse<AppEgress200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appEgressRequestConfig(app = app)
+
+        return@withContext request<Unit, AppEgress200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appEgress
+     *
+     * @param app 
+     * @return RequestConfig
+     */
+    fun appEgressRequestConfig(app: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/egress".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,
@@ -2285,7 +2359,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/update
      * Whether an update is available for an app
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60;: the unit&#39;s destinations &#x60;before&#x60; and &#x60;after&#x60; (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return AppUpdate200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -2317,7 +2391,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/update
      * Whether an update is available for an app
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60;: the unit&#39;s destinations &#x60;before&#x60; and &#x60;after&#x60; (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s).  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<AppUpdate200Response?>
      * @throws IllegalStateException If the request is not correctly configured

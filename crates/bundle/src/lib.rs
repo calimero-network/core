@@ -3,6 +3,7 @@ mod frontend;
 #[cfg(feature = "html")]
 mod html;
 mod signature;
+pub mod update;
 
 pub use archive::{
     extract_bundle_manifest, is_bundle_blob, validate_artifact_path, validate_path_component,

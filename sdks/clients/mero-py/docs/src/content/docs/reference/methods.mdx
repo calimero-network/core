@@ -42,6 +42,7 @@ Generated from core's `docs/public/openapi.json`.
 | `delegate(app, target, confirm=None)` | `PUT /apps/{app}/delegations/{target}` | Let an app call another as you. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NOTHING_TO_DELEGATE` |
 | `delegations(app)` | `GET /apps/{app}/delegations` | What you let an app do as you |
 | `delete(app)` | `DELETE /apps/{app}` | Delete an app. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 UNIT_MEMBER` |
+| `egress(app)` | `GET /apps/{app}/egress` | Where an app's unit may send data |
 | `exports_export(app, id, recipient)` | `POST /apps/{app}/files/{id}/export` | Export a sealed file's key. *Refusals:* `400 BAD_RECIPIENT`, `429 TOO_MANY_EXPORTS` |
 | `exports_segment(app, id, k)` | `GET /apps/{app}/files/{id}/segments/{k}` | One segment of a sealed file. *Refusals:* `404 NO_SUCH_SEGMENT` |
 | `file_info(app, id)` | `GET /apps/{app}/files/{id}` | One sealed file |

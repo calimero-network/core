@@ -132,6 +132,14 @@ export function createRoutes(api: RouteClient) {
       delete: (args: operations['app_delete']['parameters']['path'], options?: MethodOptions): Promise<operations['app_delete']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"DELETE","path":"/apps/{app}","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_delete']['responses'][200]['content']['application/json']>,
       /**
+       * Where an app's unit may send data.
+       *
+       * `GET /apps/{app}/egress` (`app_egress`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      egress: (args: operations['app_egress']['parameters']['path'], options?: MethodOptions): Promise<operations['app_egress']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/egress","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_egress']['responses'][200]['content']['application/json']>,
+      /**
        * Export a sealed file's key.
        *
        * `POST /apps/{app}/files/{id}/export` (`exports_export`). **Who:** signed in (a session or an API key).

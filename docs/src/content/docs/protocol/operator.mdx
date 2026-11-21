@@ -103,6 +103,11 @@ any app may reach, and the secrets requests may carry), the registry releases
 are installed from, the domain app frontends are served under, and the
 measurement policy for peers.
 
+Allowing a host does not vouch for it: an app's destinations are every host it
+and the apps it created declare, listed to the people who use it, and the
+operator has no list of trusted external endpoints, a TEE included
+([Where an update may send data](/protocol/upgrades/#where-an-update-may-send-data)).
+
 ## What runs where
 
 `GET /ops/apps` is how the operator follows a rollout: per app, its id, group

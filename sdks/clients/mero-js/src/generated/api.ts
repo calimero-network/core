@@ -274,6 +274,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/apps/{app}/egress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where an app's unit may send data
+         * @description For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+         *
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+         */
+        get: operations["app_egress"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/apps/{app}/events": {
         parameters: {
             query?: never;
@@ -1131,7 +1153,7 @@ export interface paths {
         };
         /**
          * Whether an update is available for an app
-         * @description For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+         * @description For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
          *
          *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
@@ -3947,7 +3969,7 @@ export interface paths {
         };
         /**
          * A release's capabilities
-         * @description What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+         * @description What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -4527,6 +4549,52 @@ export interface components {
             orgs: {
                 [key: string]: components["schemas"]["OrgQuotas"];
             };
+        };
+        /** @description An app of a unit, by its path from the instance: its app id (absent on a release's card, where no app exists), the release it runs or would run, that release's signer, and the destinations it alone may send data to. */
+        UnitMember: {
+            app?: string;
+            package: string;
+            version: string;
+            signer: string;
+            destinations: string[];
+        };
+        /** @description Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. */
+        UpdateReason: {
+            /** @enum {string} */
+            code: "signerChanged";
+            member: string | null;
+            from: string;
+            to: string;
+        } | {
+            /** @enum {string} */
+            code: "egressAdded";
+            destinations: string[];
+        } | {
+            /** @enum {string} */
+            code: "stateVersionChanged";
+            member: string | null;
+            /** Format: int64 */
+            from: number | null;
+            /** Format: int64 */
+            to: number | null;
+        } | {
+            /** @enum {string} */
+            code: "memberAdded";
+            member: string;
+            package: string;
+            egress: string[];
+        } | {
+            /** @enum {string} */
+            code: "memberRemoved";
+            member: string;
+            package: string;
+            egress: string[];
+        } | {
+            /** @enum {string} */
+            code: "delegatedMethodsAdded";
+            member: string | null;
+            package: string;
+            methods: string[];
         };
         /** @description What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only. */
         UsageDay: {
@@ -6128,6 +6196,61 @@ export interface operations {
             };
             /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    app_egress: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        app: string;
+                        destinations: string[];
+                        members: {
+                            [key: string]: components["schemas"]["UnitMember"];
+                        };
+                    };
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9525,6 +9648,19 @@ export interface operations {
                             version: string;
                             /** @enum {string} */
                             source: "deployment" | "release";
+                            /** @enum {string} */
+                            class?: "green" | "red";
+                            reasons?: components["schemas"]["UpdateReason"][];
+                            egress?: {
+                                before: string[];
+                                after: string[];
+                                added: string[];
+                                removed: string[];
+                            };
+                            stateVersionChanged?: boolean;
+                            newMethods?: string[];
+                            removedMethods?: string[];
+                            signerChanged?: boolean;
                         } | null;
                         mayApprove: boolean;
                         /** @enum {string} */
@@ -19764,7 +19900,15 @@ export interface operations {
                         author: string | null;
                         outbound: string[];
                         /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                        secrets: unknown;
+                        /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                        uses: unknown;
+                        /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
                         abi: unknown;
+                        destinations: string[] | null;
+                        members: {
+                            [key: string]: components["schemas"]["UnitMember"];
+                        } | null;
                     };
                 };
             };

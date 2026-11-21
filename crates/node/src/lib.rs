@@ -20,6 +20,7 @@ pub mod backup;
 pub mod cluster_key;
 pub mod component;
 pub mod consent_page;
+mod egress;
 pub mod error;
 pub mod files;
 pub mod idempotency;

@@ -157,6 +157,15 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `DELETE /apps/{app}/delegations/{target}`.
     /// - Remark: Generated from `#/paths//apps/{app}/delegations/{target}/delete(app_undelegate)`.
     func appUndelegate(_ input: Operations.AppUndelegate.Input) async throws -> Operations.AppUndelegate.Output
+    /// Where an app's unit may send data
+    ///
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/egress`.
+    /// - Remark: Generated from `#/paths//apps/{app}/egress/get(app_egress)`.
+    func appEgress(_ input: Operations.AppEgress.Input) async throws -> Operations.AppEgress.Output
     /// An app's events as server-sent events
     ///
     /// Committed events from index `from`, then live ones, each to its audience.
@@ -547,7 +556,7 @@ public protocol APIProtocol: Sendable {
     func appTransfer(_ input: Operations.AppTransfer.Input) async throws -> Operations.AppTransfer.Output
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -1504,7 +1513,7 @@ public protocol APIProtocol: Sendable {
     func packageVersionUninstall(_ input: Operations.PackageVersionUninstall.Input) async throws -> Operations.PackageVersionUninstall.Output
     /// A release's capabilities
     ///
-    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -1877,6 +1886,23 @@ extension APIProtocol {
         headers: Operations.AppUndelegate.Input.Headers = .init()
     ) async throws -> Operations.AppUndelegate.Output {
         try await appUndelegate(Operations.AppUndelegate.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Where an app's unit may send data
+    ///
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/egress`.
+    /// - Remark: Generated from `#/paths//apps/{app}/egress/get(app_egress)`.
+    public func appEgress(
+        path: Operations.AppEgress.Input.Path,
+        headers: Operations.AppEgress.Input.Headers = .init()
+    ) async throws -> Operations.AppEgress.Output {
+        try await appEgress(Operations.AppEgress.Input(
             path: path,
             headers: headers
         ))
@@ -2671,7 +2697,7 @@ extension APIProtocol {
     }
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -4536,7 +4562,7 @@ extension APIProtocol {
     }
     /// A release's capabilities
     ///
-    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -5534,6 +5560,348 @@ public enum Components {
                 case maxConcurrentRunsPerOrg
                 case computeFuelPerOrg
                 case maxFuelPerDeveloperPerDay
+            }
+        }
+        /// An app of a unit, by its path from the instance: its app id (absent on a release's card, where no app exists), the release it runs or would run, that release's signer, and the destinations it alone may send data to.
+        ///
+        /// - Remark: Generated from `#/components/schemas/UnitMember`.
+        public struct UnitMember: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/UnitMember/app`.
+            public var app: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/UnitMember/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/UnitMember/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/UnitMember/signer`.
+            public var signer: Swift.String
+            /// - Remark: Generated from `#/components/schemas/UnitMember/destinations`.
+            public var destinations: [Swift.String]
+            /// Creates a new `UnitMember`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - package:
+            ///   - version:
+            ///   - signer:
+            ///   - destinations:
+            public init(
+                app: Swift.String? = nil,
+                package: Swift.String,
+                version: Swift.String,
+                signer: Swift.String,
+                destinations: [Swift.String]
+            ) {
+                self.app = app
+                self.package = package
+                self.version = version
+                self.signer = signer
+                self.destinations = destinations
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case package
+                case version
+                case signer
+                case destinations
+            }
+        }
+        /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself.
+        ///
+        /// - Remark: Generated from `#/components/schemas/UpdateReason`.
+        @frozen public enum UpdateReason: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case1`.
+            public struct Case1Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case1/code`.
+                @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case signerChanged = "signerChanged"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case1/code`.
+                public var code: Components.Schemas.UpdateReason.Case1Payload.CodePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case1/member`.
+                public var member: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case1/from`.
+                public var from: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case1/to`.
+                public var to: Swift.String
+                /// Creates a new `Case1Payload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - member:
+                ///   - from:
+                ///   - to:
+                public init(
+                    code: Components.Schemas.UpdateReason.Case1Payload.CodePayload,
+                    member: Swift.String? = nil,
+                    from: Swift.String,
+                    to: Swift.String
+                ) {
+                    self.code = code
+                    self.member = member
+                    self.from = from
+                    self.to = to
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case member
+                    case from
+                    case to
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case1`.
+            case case1(Components.Schemas.UpdateReason.Case1Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case2`.
+            public struct Case2Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case2/code`.
+                @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case egressAdded = "egressAdded"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case2/code`.
+                public var code: Components.Schemas.UpdateReason.Case2Payload.CodePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case2/destinations`.
+                public var destinations: [Swift.String]
+                /// Creates a new `Case2Payload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - destinations:
+                public init(
+                    code: Components.Schemas.UpdateReason.Case2Payload.CodePayload,
+                    destinations: [Swift.String]
+                ) {
+                    self.code = code
+                    self.destinations = destinations
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case destinations
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case2`.
+            case case2(Components.Schemas.UpdateReason.Case2Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case3`.
+            public struct Case3Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case3/code`.
+                @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case stateVersionChanged = "stateVersionChanged"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case3/code`.
+                public var code: Components.Schemas.UpdateReason.Case3Payload.CodePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case3/member`.
+                public var member: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case3/from`.
+                public var from: Swift.Int64?
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case3/to`.
+                public var to: Swift.Int64?
+                /// Creates a new `Case3Payload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - member:
+                ///   - from:
+                ///   - to:
+                public init(
+                    code: Components.Schemas.UpdateReason.Case3Payload.CodePayload,
+                    member: Swift.String? = nil,
+                    from: Swift.Int64? = nil,
+                    to: Swift.Int64? = nil
+                ) {
+                    self.code = code
+                    self.member = member
+                    self.from = from
+                    self.to = to
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case member
+                    case from
+                    case to
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case3`.
+            case case3(Components.Schemas.UpdateReason.Case3Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case4`.
+            public struct Case4Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case4/code`.
+                @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case memberAdded = "memberAdded"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case4/code`.
+                public var code: Components.Schemas.UpdateReason.Case4Payload.CodePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case4/member`.
+                public var member: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case4/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case4/egress`.
+                public var egress: [Swift.String]
+                /// Creates a new `Case4Payload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - member:
+                ///   - package:
+                ///   - egress:
+                public init(
+                    code: Components.Schemas.UpdateReason.Case4Payload.CodePayload,
+                    member: Swift.String,
+                    package: Swift.String,
+                    egress: [Swift.String]
+                ) {
+                    self.code = code
+                    self.member = member
+                    self.package = package
+                    self.egress = egress
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case member
+                    case package
+                    case egress
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case4`.
+            case case4(Components.Schemas.UpdateReason.Case4Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case5`.
+            public struct Case5Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case5/code`.
+                @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case memberRemoved = "memberRemoved"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case5/code`.
+                public var code: Components.Schemas.UpdateReason.Case5Payload.CodePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case5/member`.
+                public var member: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case5/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case5/egress`.
+                public var egress: [Swift.String]
+                /// Creates a new `Case5Payload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - member:
+                ///   - package:
+                ///   - egress:
+                public init(
+                    code: Components.Schemas.UpdateReason.Case5Payload.CodePayload,
+                    member: Swift.String,
+                    package: Swift.String,
+                    egress: [Swift.String]
+                ) {
+                    self.code = code
+                    self.member = member
+                    self.package = package
+                    self.egress = egress
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case member
+                    case package
+                    case egress
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case5`.
+            case case5(Components.Schemas.UpdateReason.Case5Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case6`.
+            public struct Case6Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case6/code`.
+                @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case delegatedMethodsAdded = "delegatedMethodsAdded"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case6/code`.
+                public var code: Components.Schemas.UpdateReason.Case6Payload.CodePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case6/member`.
+                public var member: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case6/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case6/methods`.
+                public var methods: [Swift.String]
+                /// Creates a new `Case6Payload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - member:
+                ///   - package:
+                ///   - methods:
+                public init(
+                    code: Components.Schemas.UpdateReason.Case6Payload.CodePayload,
+                    member: Swift.String? = nil,
+                    package: Swift.String,
+                    methods: [Swift.String]
+                ) {
+                    self.code = code
+                    self.member = member
+                    self.package = package
+                    self.methods = methods
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case member
+                    case package
+                    case methods
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case6`.
+            case case6(Components.Schemas.UpdateReason.Case6Payload)
+            public init(from decoder: any Decoder) throws {
+                var errors: [any Error] = []
+                do {
+                    self = .case1(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case2(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case3(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case4(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case5(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                do {
+                    self = .case6(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
+                throw Swift.DecodingError.failedToDecodeOneOfSchema(
+                    type: Self.self,
+                    codingPath: decoder.codingPath,
+                    errors: errors
+                )
+            }
+            public func encode(to encoder: any Encoder) throws {
+                switch self {
+                case let .case1(value):
+                    try value.encode(to: encoder)
+                case let .case2(value):
+                    try value.encode(to: encoder)
+                case let .case3(value):
+                    try value.encode(to: encoder)
+                case let .case4(value):
+                    try value.encode(to: encoder)
+                case let .case5(value):
+                    try value.encode(to: encoder)
+                case let .case6(value):
+                    try value.encode(to: encoder)
+                }
             }
         }
         /// What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.
@@ -13239,6 +13607,185 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.AppUndelegate.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Where an app's unit may send data
+    ///
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/egress`.
+    /// - Remark: Generated from `#/paths//apps/{app}/egress/get(app_egress)`.
+    public enum AppEgress {
+        public static let id: Swift.String = "app_egress"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppEgress.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppEgress.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppEgress.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppEgress.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.AppEgress.Input.Path,
+                headers: Operations.AppEgress.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/app`.
+                        public var app: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/destinations`.
+                        public var destinations: [Swift.String]
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/members`.
+                        public struct MembersPayload: Codable, Hashable, Sendable {
+                            /// A container of undocumented properties.
+                            public var additionalProperties: [String: Components.Schemas.UnitMember]
+                            /// Creates a new `MembersPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - additionalProperties: A container of undocumented properties.
+                            public init(additionalProperties: [String: Components.Schemas.UnitMember] = .init()) {
+                                self.additionalProperties = additionalProperties
+                            }
+                            public init(from decoder: any Decoder) throws {
+                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                            }
+                            public func encode(to encoder: any Encoder) throws {
+                                try encoder.encodeAdditionalProperties(additionalProperties)
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/members`.
+                        public var members: Operations.AppEgress.Output.Ok.Body.JsonPayload.MembersPayload
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - app:
+                        ///   - destinations:
+                        ///   - members:
+                        public init(
+                            app: Swift.String,
+                            destinations: [Swift.String],
+                            members: Operations.AppEgress.Output.Ok.Body.JsonPayload.MembersPayload
+                        ) {
+                            self.app = app
+                            self.destinations = destinations
+                            self.members = members
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case app
+                            case destinations
+                            case members
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/application\/json`.
+                    case json(Operations.AppEgress.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppEgress.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppEgress.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppEgress.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/egress/get(app_egress)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppEgress.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppEgress.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):
@@ -21568,7 +22115,7 @@ public enum Operations {
     }
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -21661,25 +22208,107 @@ public enum Operations {
                             }
                             /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/source`.
                             public var source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.SourcePayload
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/class`.
+                            @frozen public enum ClassPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                                case green = "green"
+                                case red = "red"
+                            }
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/class`.
+                            public var _class: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.ClassPayload?
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/reasons`.
+                            public var reasons: [Components.Schemas.UpdateReason]?
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress`.
+                            public struct EgressPayload: Codable, Hashable, Sendable {
+                                /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress/before`.
+                                public var before: [Swift.String]
+                                /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress/after`.
+                                public var after: [Swift.String]
+                                /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress/added`.
+                                public var added: [Swift.String]
+                                /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress/removed`.
+                                public var removed: [Swift.String]
+                                /// Creates a new `EgressPayload`.
+                                ///
+                                /// - Parameters:
+                                ///   - before:
+                                ///   - after:
+                                ///   - added:
+                                ///   - removed:
+                                public init(
+                                    before: [Swift.String],
+                                    after: [Swift.String],
+                                    added: [Swift.String],
+                                    removed: [Swift.String]
+                                ) {
+                                    self.before = before
+                                    self.after = after
+                                    self.added = added
+                                    self.removed = removed
+                                }
+                                public enum CodingKeys: String, CodingKey {
+                                    case before
+                                    case after
+                                    case added
+                                    case removed
+                                }
+                            }
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/egress`.
+                            public var egress: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.EgressPayload?
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/stateVersionChanged`.
+                            public var stateVersionChanged: Swift.Bool?
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/newMethods`.
+                            public var newMethods: [Swift.String]?
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/removedMethods`.
+                            public var removedMethods: [Swift.String]?
+                            /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available/signerChanged`.
+                            public var signerChanged: Swift.Bool?
                             /// Creates a new `AvailablePayload`.
                             ///
                             /// - Parameters:
                             ///   - package:
                             ///   - version:
                             ///   - source:
+                            ///   - _class:
+                            ///   - reasons:
+                            ///   - egress:
+                            ///   - stateVersionChanged:
+                            ///   - newMethods:
+                            ///   - removedMethods:
+                            ///   - signerChanged:
                             public init(
                                 package: Swift.String,
                                 version: Swift.String,
-                                source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.SourcePayload
+                                source: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.SourcePayload,
+                                _class: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.ClassPayload? = nil,
+                                reasons: [Components.Schemas.UpdateReason]? = nil,
+                                egress: Operations.AppUpdate.Output.Ok.Body.JsonPayload.AvailablePayload.EgressPayload? = nil,
+                                stateVersionChanged: Swift.Bool? = nil,
+                                newMethods: [Swift.String]? = nil,
+                                removedMethods: [Swift.String]? = nil,
+                                signerChanged: Swift.Bool? = nil
                             ) {
                                 self.package = package
                                 self.version = version
                                 self.source = source
+                                self._class = _class
+                                self.reasons = reasons
+                                self.egress = egress
+                                self.stateVersionChanged = stateVersionChanged
+                                self.newMethods = newMethods
+                                self.removedMethods = removedMethods
+                                self.signerChanged = signerChanged
                             }
                             public enum CodingKeys: String, CodingKey {
                                 case package
                                 case version
                                 case source
+                                case _class = "class"
+                                case reasons
+                                case egress
+                                case stateVersionChanged
+                                case newMethods
+                                case removedMethods
+                                case signerChanged
                             }
                         }
                         /// - Remark: Generated from `#/paths/apps/{app}/update/GET/responses/200/content/json/available`.
@@ -41285,7 +41914,7 @@ public enum Operations {
     }
     /// A release's capabilities
     ///
-    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -41383,8 +42012,38 @@ public enum Operations {
                         public var outbound: [Swift.String]
                         /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                         ///
+                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/secrets`.
+                        public var secrets: OpenAPIRuntime.OpenAPIValueContainer
+                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        ///
+                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/uses`.
+                        public var uses: OpenAPIRuntime.OpenAPIValueContainer
+                        /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        ///
                         /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/abi`.
                         public var abi: OpenAPIRuntime.OpenAPIValueContainer
+                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/destinations`.
+                        public var destinations: [Swift.String]?
+                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/members`.
+                        public struct MembersPayload: Codable, Hashable, Sendable {
+                            /// A container of undocumented properties.
+                            public var additionalProperties: [String: Components.Schemas.UnitMember]
+                            /// Creates a new `MembersPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - additionalProperties: A container of undocumented properties.
+                            public init(additionalProperties: [String: Components.Schemas.UnitMember] = .init()) {
+                                self.additionalProperties = additionalProperties
+                            }
+                            public init(from decoder: any Decoder) throws {
+                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                            }
+                            public func encode(to encoder: any Encoder) throws {
+                                try encoder.encodeAdditionalProperties(additionalProperties)
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/members`.
+                        public var members: Operations.PackageCapabilities.Output.Ok.Body.JsonPayload.MembersPayload?
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
@@ -41398,7 +42057,11 @@ public enum Operations {
                         ///   - name:
                         ///   - author:
                         ///   - outbound:
+                        ///   - secrets: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        ///   - uses: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                         ///   - abi: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        ///   - destinations:
+                        ///   - members:
                         public init(
                             package: Swift.String,
                             version: Swift.String,
@@ -41410,7 +42073,11 @@ public enum Operations {
                             name: Swift.String? = nil,
                             author: Swift.String? = nil,
                             outbound: [Swift.String],
-                            abi: OpenAPIRuntime.OpenAPIValueContainer
+                            secrets: OpenAPIRuntime.OpenAPIValueContainer,
+                            uses: OpenAPIRuntime.OpenAPIValueContainer,
+                            abi: OpenAPIRuntime.OpenAPIValueContainer,
+                            destinations: [Swift.String]? = nil,
+                            members: Operations.PackageCapabilities.Output.Ok.Body.JsonPayload.MembersPayload? = nil
                         ) {
                             self.package = package
                             self.version = version
@@ -41422,7 +42089,11 @@ public enum Operations {
                             self.name = name
                             self.author = author
                             self.outbound = outbound
+                            self.secrets = secrets
+                            self.uses = uses
                             self.abi = abi
+                            self.destinations = destinations
+                            self.members = members
                         }
                         public enum CodingKeys: String, CodingKey {
                             case package
@@ -41435,7 +42106,11 @@ public enum Operations {
                             case name
                             case author
                             case outbound
+                            case secrets
+                            case uses
                             case abi
+                            case destinations
+                            case members
                         }
                     }
                     /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/application\/json`.

@@ -814,6 +814,58 @@ pub struct QuotaSettings {
     pub extra: Map<String, Value>,
 }
 
+/// An app of a unit, by its path from the instance: its app id (absent on a release's card, where no app exists), the release it runs or would run, that release's signer, and the destinations it alone may send data to.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UnitMember {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    pub package: String,
+    pub version: String,
+    pub signer: String,
+    pub destinations: Vec<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "code")]
+pub enum UpdateReason {
+    #[serde(rename = "signerChanged")]
+    SignerChanged {
+        to: String,
+        member: Option<String>,
+        from: String,
+    },
+    #[serde(rename = "egressAdded")]
+    EgressAdded { destinations: Vec<String> },
+    #[serde(rename = "stateVersionChanged")]
+    StateVersionChanged {
+        to: Option<u64>,
+        member: Option<String>,
+        from: Option<u64>,
+    },
+    #[serde(rename = "memberAdded")]
+    MemberAdded {
+        egress: Vec<String>,
+        member: String,
+        package: String,
+    },
+    #[serde(rename = "memberRemoved")]
+    MemberRemoved {
+        egress: Vec<String>,
+        member: String,
+        package: String,
+    },
+    #[serde(rename = "delegatedMethodsAdded")]
+    DelegatedMethodsAdded {
+        methods: Vec<String>,
+        member: Option<String>,
+        package: String,
+    },
+}
+
 /// What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageDay {
@@ -2581,6 +2633,16 @@ pub struct AppDelegateResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppEgressResponse {
+    pub app: String,
+    pub destinations: Vec<String>,
+    pub members: BTreeMap<String, UnitMember>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FilesUploadResponse {
     #[serde(rename = "blobId")]
     pub blob_id: String,
@@ -3205,11 +3267,78 @@ impl<'de> Deserialize<'de> for AppUpdateResponseAvailableSource {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppUpdateResponseAvailableClass {
+    /// `green`.
+    Green,
+    /// `red`.
+    Red,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppUpdateResponseAvailableClass {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Green => "green",
+            Self::Red => "red",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppUpdateResponseAvailableClass {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppUpdateResponseAvailableClass {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "green" => Self::Green,
+            "red" => Self::Red,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppUpdateResponseAvailableEgress {
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateResponseAvailable {
     pub package: String,
     pub version: String,
     pub source: AppUpdateResponseAvailableSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<AppUpdateResponseAvailableClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasons: Option<Vec<UpdateReason>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<AppUpdateResponseAvailableEgress>,
+    #[serde(rename = "stateVersionChanged")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_version_changed: Option<bool>,
+    #[serde(rename = "newMethods")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_methods: Option<Vec<String>>,
+    #[serde(rename = "removedMethods")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed_methods: Option<Vec<String>>,
+    #[serde(rename = "signerChanged")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_changed: Option<bool>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -6068,7 +6197,13 @@ pub struct PackageCapabilitiesResponse {
     pub author: Option<String>,
     pub outbound: Vec<String>,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub secrets: Value,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub uses: Value,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub abi: Value,
+    pub destinations: Option<Vec<String>>,
+    pub members: Option<BTreeMap<String, UnitMember>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

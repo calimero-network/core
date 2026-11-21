@@ -1293,7 +1293,33 @@ is its command line.
   `latestReachable`); `mayApprove` is `api::upgrade_refusal` under the rule in force;
   `approvers` is `managers` while `Feature::OwnerApprovedUpgrades` is not.
   Regression: `an_instance_shows_its_update_and_who_may_approve_it`
-  (`tests/deployments.rs`).
+  (`tests/deployments.rs`). `available` also carries the update classifier's verdict
+  (Unit destinations below), over the whole unit when the instance has members.
+- **Unit destinations** (`egress.rs`; the classifier is `calimero_bundle::update`,
+  shared with `meroctl`): a unit's egress is the union of the `outbound` prefixes (and
+  any declared secret host no prefix names) of the release the app runs and of each
+  member's (`links`, transitively; never `attached`). Only those destinations are
+  reported; an empty list means no data leaves Calimero. Any destination outside the
+  cluster is just a destination: the platform keeps no list of trusted endpoints and
+  never vouches for one, a TEE such as private inference included; an app that wants to
+  trust one verifies its attestation in its own code. Reads:
+  the capability card adds `destinations` and `members` (`egress::release_unit`:
+  each member release `unit_members` would create; both `null` while one is not
+  installed here); `GET /apps/{app}/egress` (whoever
+  `GET /apps/{app}` admits; `egress::instance_unit`) answers `{ app, destinations,
+  members }` (each member with its own `destinations`); `GET /apps/{app}/update`'s
+  `available` and the consent page's `upgrade`/`upgradeUnit` model (`unit`; a point
+  "This update can send data to a new place: <hosts>." when it adds any, else "Your
+  data stays in Calimero." or "This app can send data to: <hosts>.", followed by "That
+  includes the apps it created." only when the instance has members; the
+  `newDestinations` attention for destinations a member adds) carry `egress::update`'s
+  `Classification`: `class` red when the signer changes, egress grows, a state version
+  changes, a member with egress joins or leaves, or a release newly calls another app as
+  the person, else green, with `reasons`, the egress diff (`before`, `after`, `added`,
+  `removed`), `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
+  unit's moves its direct members as `unit_plan` does. Nothing applies an update by its
+  class yet (C8). Regressions: `a_units_destinations_are_judged_over_its_members`
+  (`tests/consent_page.rs`), `calimero_bundle::update::tests`.
 - **Upgrades are code-only**: a component upgrade swaps the bundle
   (`componentUpgrade`); a named `migrate` is refused `MigrationsNotSupported`. The
   consent page shows the state version each side's `calimero:abi` declares and flags a

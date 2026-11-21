@@ -227,10 +227,30 @@ async fn package_capabilities(
             (frontend || s.sees_release(v, &account)).then(|| v.clone())
         })
         .ok_or_else(|| ApiError::not_found("no such package version"))?;
-    Ok(Json(
+    let mut card =
         crate::consent_page::release_capabilities(&node, &package, &release, q.service.as_deref())
-            .await?,
-    ))
+            .await?;
+    // Where an instance of it could send data: the release and every app its `uses`
+    // would create with it (empty: no data leaves Calimero).
+    let at = crate::system::PackageRef {
+        package: package.clone(),
+        version: version.clone(),
+        service: card["service"].as_str().map(str::to_owned),
+        compute: false,
+    };
+    // A member release that is not installed here (`409 USES_NOT_INSTALLED` at create)
+    // leaves the unit unknown: `null`, never a card the release alone would mislead with.
+    let described = match crate::egress::release_unit(&node, &at).await {
+        Ok(unit) => crate::egress::describe(&crate::egress::Placed {
+            unit,
+            apps: std::collections::BTreeMap::new(),
+        }),
+        Err(_) => json!({ "destinations": null, "members": null }),
+    };
+    for key in ["destinations", "members"] {
+        card[key] = described[key].clone();
+    }
+    Ok(Json(card))
 }
 
 async fn package_uninstall(

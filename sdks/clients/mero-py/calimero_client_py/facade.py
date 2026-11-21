@@ -54,6 +54,7 @@ from .openapi.api.apps import app_create as _app_create
 from .openapi.api.apps import app_delegate as _app_delegate
 from .openapi.api.apps import app_delegations as _app_delegations
 from .openapi.api.apps import app_delete as _app_delete
+from .openapi.api.apps import app_egress as _app_egress
 from .openapi.api.apps import app_get as _app_get
 from .openapi.api.apps import app_invite_create as _app_invite_create
 from .openapi.api.apps import app_invite_list as _app_invite_list
@@ -450,6 +451,12 @@ _APP_DELEGATIONS = Operation(
 _APP_DELETE = Operation(
     _app_delete,
     "app_delete",
+    body="none",
+    answer="json",
+)
+_APP_EGRESS = Operation(
+    _app_egress,
+    "app_egress",
     body="none",
     answer="json",
 )
@@ -1044,6 +1051,20 @@ class Apps(Group):
         Returns: AppDeleteResponse200
         """
         return self._run(_APP_DELETE, (app,), {}, None)
+
+    def egress(self, *, app):
+        """Where an app's unit may send data (`GET /apps/{app}/egress`, `app_egress`).
+
+        For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+
+        **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+
+        Args:
+            app: path
+
+        Returns: AppEgressResponse200
+        """
+        return self._run(_APP_EGRESS, (app,), {}, None)
 
     def exports_export(self, *, app, id, recipient):
         """Export a sealed file's key (`POST /apps/{app}/files/{id}/export`, `exports_export`).
@@ -1862,7 +1883,7 @@ class Apps(Group):
     def update(self, *, app):
         """Whether an update is available for an app (`GET /apps/{app}/update`, `app_update`).
 
-        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
+        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's).
 
         **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -5594,7 +5615,7 @@ class Packages(Group):
     def capabilities(self, *, package, version, service=UNSET):
         """A release's capabilities (`GET /packages/{package}/{version}/capabilities`, `package_capabilities`).
 
-        What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+        What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
 
         **Who:** signed in (a session or an API key).
 

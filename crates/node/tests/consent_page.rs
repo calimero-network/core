@@ -451,6 +451,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         "points": [
             "notes moves from version 1.0.0 to 2.0.0, for everyone who uses it.",
             "Until you approve, nothing changes: it keeps running 1.0.0.",
+            "This update can send data to a new place: metrics.example.",
         ],
         "attention": [
             {
@@ -464,6 +465,22 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
                 "items": ["https://share.example"],
             },
         ],
+        // Where the app's unit may send data, classified (`calimero_bundle::update`): a new
+        // destination is red; only destinations are reported.
+        "unit": {
+            "class": "red",
+            "reasons": [{ "code": "egressAdded", "destinations": ["https://metrics.example/"] }],
+            "egress": {
+                "before": ["https://api.example/v1/"],
+                "after": ["https://api.example/v1/", "https://metrics.example/"],
+                "added": ["https://metrics.example/"],
+                "removed": [],
+            },
+            "stateVersionChanged": false,
+            "newMethods": [],
+            "removedMethods": [],
+            "signerChanged": false,
+        },
         "app": { "name": "Notes", "package": PACKAGE },
         "publisher": { "name": "Example", "signer": "<redacted>", "keyChanged": false, "org": null },
         "before": "Until you approve, the app keeps running 1.0.0: only that code reads and changes its data.",
@@ -2356,6 +2373,8 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
             "secrets": {},
             "uses": {},
             "abi": abi,
+            "destinations": ["https://api.example/v1/", "https://metrics.example/"],
+            "members": {},
         })
     );
 
@@ -3237,4 +3256,182 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     })
     .await;
     assert_eq!(moved["deployment"], json!(d), "{moved}");
+}
+
+/// C5: where a unit may send data is computed over the app and every app it created, and
+/// only destinations are reported: an empty list means no data leaves Calimero, and an
+/// external endpoint, a TEE (here NEAR AI) included, is a destination like any other. The
+/// capability card, `GET /apps/{app}/egress`, `GET /apps/{app}/update` (with the
+/// classifier's verdict) and the unit's upgrade page all say so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_units_destinations_are_judged_over_its_members() {
+    const AI: &str = "https://inference.near.ai/v1/";
+    const TELEMETRY: &str = "https://telemetry.example/";
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
+    let (kv, ai) = ("com.test.unit-kv", "com.test.unit-ai");
+    let uses = |kv_version: &str| Declares {
+        uses: Some(json!({
+            "store": { "package": kv, "range": "^0.1", "version": kv_version },
+            "ai": { "package": ai, "range": "^1", "version": "1.0.0" },
+        })),
+        ..Declares::default()
+    };
+    // 2.0.0 moves the store to a release that also reports to a telemetry host.
+    for (package, version, d) in [
+        (kv, "0.1.0", Declares::default()),
+        (
+            kv,
+            "0.1.1",
+            Declares {
+                outbound: &[TELEMETRY],
+                ..Declares::default()
+            },
+        ),
+        (
+            ai,
+            "1.0.0",
+            Declares {
+                outbound: &[AI],
+                ..Declares::default()
+            },
+        ),
+        (PACKAGE, "1.0.0", uses("0.1.0")),
+        (PACKAGE, "2.0.0", uses("0.1.1")),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+
+    // A release that declares no destination keeps data in Calimero; NEAR AI is a
+    // destination, of its own release and of the release that creates it.
+    let store_card = get(&alice, &format!("packages/{kv}/0.1.0/capabilities"))
+        .await
+        .unwrap();
+    assert_eq!(store_card["destinations"], json!([]), "{store_card}");
+    assert!(store_card.get("sealed").is_none(), "{store_card}");
+    let ai_card = get(&alice, &format!("packages/{ai}/1.0.0/capabilities"))
+        .await
+        .unwrap();
+    assert_eq!(ai_card["destinations"], json!([AI]), "{ai_card}");
+    let card = get(&alice, &format!("packages/{PACKAGE}/1.0.0/capabilities"))
+        .await
+        .unwrap();
+    assert_eq!(card["outbound"], json!([]), "{card}");
+    assert_eq!(card["destinations"], json!([AI]), "{card}");
+    assert_eq!(card["members"]["ai"]["destinations"], json!([AI]), "{card}");
+    assert_eq!(card["members"]["store"]["version"], "0.1.0", "{card}");
+
+    // An instance and its unit: data can go to NEAR AI, through its AI member.
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let egress = get(&alice, &format!("apps/{notes}/egress")).await.unwrap();
+    assert_eq!(egress["app"], json!(notes), "{egress}");
+    assert_eq!(egress["destinations"], json!([AI]), "{egress}");
+    assert!(egress.get("sealed").is_none(), "{egress}");
+    assert_eq!(
+        egress["members"]["ai"]["app"], made["links"]["ai"],
+        "{egress}"
+    );
+    assert_eq!(
+        egress["members"]["store"]["destinations"],
+        json!([]),
+        "{egress}"
+    );
+    let (stranger, _) = signed_up(&c, 1, "mallory").await;
+    let e = get(&stranger, &format!("apps/{notes}/egress"))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
+
+    // The update moves the store to a release that adds a destination: red.
+    let update = get(&alice, &format!("apps/{notes}/update")).await.unwrap();
+    let available = &update["available"];
+    assert_eq!(available["version"], "2.0.0", "{update}");
+    assert_eq!(available["class"], "red", "{update}");
+    assert_eq!(available["reasons"][0]["code"], "egressAdded", "{update}");
+    assert_eq!(available["egress"]["added"], json!([TELEMETRY]), "{update}");
+    assert_eq!(available["egress"]["before"], json!([AI]), "{update}");
+    assert!(available.get("sealedAfter").is_none(), "{update}");
+    assert_eq!(available["signerChanged"], false, "{update}");
+
+    // A store on its own keeps data in Calimero until its update adds the telemetry host.
+    let store = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "store", "package": kv, "version": "0.1.0" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let store = store["appId"].as_str().unwrap().to_owned();
+    let egress = get(&alice, &format!("apps/{store}/egress")).await.unwrap();
+    assert_eq!(egress["destinations"], json!([]), "{egress}");
+    let update = get(&alice, &format!("apps/{store}/update")).await.unwrap();
+    let available = &update["available"];
+    assert_eq!(available["class"], "red", "{update}");
+    assert_eq!(
+        (
+            &available["egress"]["before"],
+            &available["egress"]["after"]
+        ),
+        (&json!([]), &json!([TELEMETRY])),
+        "{update}"
+    );
+
+    // The unit's page says so, before anything moves, naming the apps it created.
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgradeUnit", "subject": { "app": notes, "toVersion": "2.0.0" },
+                "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    assert_eq!(model["unit"]["class"], "red", "{model}");
+    assert_eq!(
+        model["unit"]["egress"]["added"],
+        json!([TELEMETRY]),
+        "{model}"
+    );
+    let flags: Vec<&str> = model["attention"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["flag"].as_str())
+        .collect();
+    assert!(flags.contains(&"newDestinations"), "{model}");
+    let points: Vec<&str> = model["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        points.contains(
+            &"This update can send data to a new place: telemetry.example. That includes the apps it created."
+        ),
+        "{model}"
+    );
+    assert!(
+        !points.iter().any(|p| p.to_lowercase().contains("sealed")),
+        "{model}"
+    );
 }

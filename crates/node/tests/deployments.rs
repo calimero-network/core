@@ -1938,6 +1938,15 @@ async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 }
 
+/// The release `GET /apps/{app}/update` offers, without the classifier's verdict beside it.
+fn offer_of(u: &Value) -> Value {
+    json!({
+        "package": u["available"]["package"],
+        "version": u["available"]["version"],
+        "source": u["available"]["source"],
+    })
+}
+
 /// `GET /apps/{app}/update`, as `who` reads it.
 async fn update_of(who: &Client, app: &str) -> Value {
     who.transport()
@@ -2030,8 +2039,13 @@ async fn an_instance_shows_its_update_and_who_may_approve_it() {
     for who in [&carol, &bob] {
         let u = update_of(who, &inst).await;
         assert_eq!(
-            u["available"],
+            offer_of(&u),
             json!({ "package": "com.test.notes", "version": "2.0.0", "source": "deployment" }),
+            "{u}"
+        );
+        // With the update classifier's verdict on it (`calimero_bundle::update`).
+        assert!(
+            matches!(u["available"]["class"].as_str(), Some("green" | "red")),
             "{u}"
         );
     }
@@ -2072,7 +2086,7 @@ async fn an_instance_shows_its_update_and_who_may_approve_it() {
         .unwrap();
     let u = update_of(&alice, &own).await;
     assert_eq!(
-        u["available"],
+        offer_of(&u),
         json!({ "package": "com.test.notes", "version": "2.0.0", "source": "release" }),
         "{u}"
     );

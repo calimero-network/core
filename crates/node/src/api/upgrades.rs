@@ -1454,20 +1454,8 @@ async fn app_update(
     headers: HeaderMap,
     Path(app_id): Path<String>,
 ) -> ApiResult {
-    let app_id = node.canonical_app_id(&app_id);
-    let p = principal(&node, &headers).await?;
-    // As `GET /apps/{app}`: an anonymous caller is judged on fresh state too.
-    if p.is_none() {
-        node.sys_fresh().await;
-    }
-    let app = node.app(&app_id).await?;
-    if let Some(p) = &p {
-        p.within(&node, &app)?;
-    }
+    let (app, p) = readable_app(&node, &headers, &app_id).await?;
     let account = p.as_ref().and_then(|p| p.caller.account());
-    if !reaches(&node, &app, account) {
-        return Err(ApiError::not_found("no such app"));
-    }
     let running = node.release_of_app(&app).map(|r| r.at);
     let bound = p.as_ref().and_then(Principal::bound_app);
     let runtimes = node.runtimes(&app.replicas).await;
@@ -1513,6 +1501,25 @@ async fn app_update(
     } else {
         "managers"
     };
+    // The classifier's verdict on the available update: over the whole unit when the
+    // instance has members (they move with it, `upgrade-unit`), else the app alone.
+    let mut available = available;
+    if let Some(a) = available.as_mut() {
+        let version = a["version"].as_str().unwrap_or_default().to_owned();
+        match crate::egress::update(&node, &app, &version, !app.links.is_empty()).await {
+            Ok(Some(c)) => {
+                if let (Some(o), Ok(Value::Object(c))) =
+                    (a.as_object_mut(), serde_json::to_value(c))
+                {
+                    o.extend(c);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(app = %app.app_id, error = %e.message, "the available update was not classified")
+            }
+        }
+    }
     Ok(Json(json!({
         "app": app.app_id,
         "running": running.map(|r| json!({ "package": r.package, "version": r.version })),
@@ -1522,10 +1529,57 @@ async fn app_update(
     })))
 }
 
+/// The app `app_id` for whoever `GET /apps/{app}` admits (`principal`, `within`,
+/// `reaches`; an anonymous caller judged on fresh state), with the caller; `404` for
+/// anyone else.
+async fn readable_app(
+    node: &Node,
+    headers: &HeaderMap,
+    app_id: &str,
+) -> Result<(crate::types::AppRecord, Option<Principal>), ApiError> {
+    let app_id = node.canonical_app_id(app_id);
+    let p = principal(node, headers).await?;
+    // As `GET /apps/{app}`: an anonymous caller is judged on fresh state too.
+    if p.is_none() {
+        node.sys_fresh().await;
+    }
+    let app = node.app(&app_id).await?;
+    if let Some(p) = &p {
+        p.within(node, &app)?;
+    }
+    let account = p.as_ref().and_then(|p| p.caller.account());
+    if !reaches(node, &app, account) {
+        return Err(ApiError::not_found("no such app"));
+    }
+    Ok((app, p))
+}
+
+/// `GET /apps/{app}/egress`: where the instance's unit may send data now, for whoever
+/// `GET /apps/{app}` admits. `destinations` is every destination of the app and its
+/// members (`links`, transitively; never an attached app), empty when no data leaves
+/// Calimero (an external endpoint, a TEE included, is listed like any other), and
+/// `members` each member by path with its app, release and own destinations. A
+/// development bundle declares none: `destinations: []`.
+async fn app_egress(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let (app, _p) = readable_app(&node, &headers, &app_id).await?;
+    let placed = crate::egress::instance_unit(&node, &app).await?;
+    let mut out = placed.as_ref().map_or_else(
+        || json!({ "destinations": [], "members": {} }),
+        crate::egress::describe,
+    );
+    out["app"] = json!(app.app_id);
+    Ok(Json(out))
+}
+
 pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/apps/{app}/upgrade", post(app_upgrade))
         .route("/apps/{app}/update", get(app_update))
+        .route("/apps/{app}/egress", get(app_egress))
         .route("/apps/{app}/upgrade-unit", post(app_upgrade_unit))
         .route("/orgs/{org}/upgrade", post(org_upgrade))
         .route("/orgs/{org}/upgrades/{run}", get(org_upgrade_status))

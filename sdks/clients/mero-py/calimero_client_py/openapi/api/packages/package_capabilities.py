@@ -96,10 +96,13 @@ def sync_detailed(
      What the release is and may do, read from its signed manifest and the ABI its service component
     embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted
     prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds
-    none). `service` names the service whose card to read (default: the release's only one). A session
-    bound to the package reads every release of it. `404` for a release the caller may not see, `400
-    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
-    for an over-long `service`.
+    none). `destinations` is where an instance of it could send data, over the release and every app its
+    `uses` would create with it (`members`, by path, each with its release, signer and own
+    destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
+    create is not installed here. `service` names the service whose card to read (default: the release's
+    only one). A session bound to the package reads every release of it. `404` for a release the caller
+    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
+    `400 BAD_REQUEST` for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 
@@ -141,10 +144,13 @@ def sync(
      What the release is and may do, read from its signed manifest and the ABI its service component
     embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted
     prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds
-    none). `service` names the service whose card to read (default: the release's only one). A session
-    bound to the package reads every release of it. `404` for a release the caller may not see, `400
-    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
-    for an over-long `service`.
+    none). `destinations` is where an instance of it could send data, over the release and every app its
+    `uses` would create with it (`members`, by path, each with its release, signer and own
+    destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
+    create is not installed here. `service` names the service whose card to read (default: the release's
+    only one). A session bound to the package reads every release of it. `404` for a release the caller
+    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
+    `400 BAD_REQUEST` for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 
@@ -181,10 +187,13 @@ async def asyncio_detailed(
      What the release is and may do, read from its signed manifest and the ABI its service component
     embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted
     prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds
-    none). `service` names the service whose card to read (default: the release's only one). A session
-    bound to the package reads every release of it. `404` for a release the caller may not see, `400
-    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
-    for an over-long `service`.
+    none). `destinations` is where an instance of it could send data, over the release and every app its
+    `uses` would create with it (`members`, by path, each with its release, signer and own
+    destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
+    create is not installed here. `service` names the service whose card to read (default: the release's
+    only one). A session bound to the package reads every release of it. `404` for a release the caller
+    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
+    `400 BAD_REQUEST` for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 
@@ -224,10 +233,13 @@ async def asyncio(
      What the release is and may do, read from its signed manifest and the ABI its service component
     embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted
     prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds
-    none). `service` names the service whose card to read (default: the release's only one). A session
-    bound to the package reads every release of it. `404` for a release the caller may not see, `400
-    NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST`
-    for an over-long `service`.
+    none). `destinations` is where an instance of it could send data, over the release and every app its
+    `uses` would create with it (`members`, by path, each with its release, signer and own
+    destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would
+    create is not installed here. `service` names the service whose card to read (default: the release's
+    only one). A session bound to the package reads every release of it. `404` for a release the caller
+    may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several,
+    `400 BAD_REQUEST` for an over-long `service`.
 
     **Who:** signed in (a session or an API key).
 

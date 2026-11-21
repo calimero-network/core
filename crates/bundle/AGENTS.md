@@ -34,6 +34,7 @@ cargo test -p calimero-bundle
 | `extract_bundle_manifest`, `is_bundle_blob`, `validate_artifact_path`, `MAX_ARCHIVE_BYTES` (`archive.rs`) | fn/const | Reading the archive: bounded, no path traversal; `fuzz_api` for `fuzz/fuzz_targets/bundle_open.rs` |
 | `BundleSecret`, `BundleManifest::check_secrets()`, `is_secret_name()`, `outbound_host()`, `SecretsError`, `MAX_SECRETS` | struct/fn | The manifest's `secrets`: name -> `{ hosts, description, required }`, signed. `check_secrets` is what a node enforces at install and `meroctl app pack` checks first: names `A-Z0-9_` starting with a letter, at most `MAX_SECRETS` (16), 1 to `MAX_SECRET_HOSTS` (8) hosts each, every host an `outbound` prefix's host, a description of at most 256 bytes. An older node ignores the field |
 | `BundleUse`, `UseMode`, `BundleManifest::check_uses()`, `is_use_name()`, `UsesError`, `MAX_USES` | struct/enum/fn | The manifest's `uses`: name -> `{ package, range, mode: create\|attach, version?, abi? }`, signed. `check_uses` is what a node enforces at install and `meroctl app pack` checks first: names `a-z0-9_` starting with a letter, at most `MAX_USES` (16), not the release's own package, a semver range, a locked version inside it, an ABI digest `sha256:<64 hex>`. An older node ignores the field |
+| `update::{classify, Release, Unit, Classification, Class, Reason, EgressDiff, covers}` (`update.rs`) | mod | The update classifier the node and `meroctl` share: a unit's releases (`Release::new` from a manifest, its signer and embedded ABI) before and after give `green` or `red` with `reasons` (signer changed, egress added, state version changed, a member with egress added or removed, a new method called as the person), the egress diff (`before`/`after`/`added`/`removed`; an empty list means no data leaves Calimero, and an external endpoint, a TEE included, is just a destination) and new/removed methods. Pure; the rules are in the module docs |
 | `is_outbound_url()` | fn | Whether a URL prefix may be declared under `outbound`: `https://` with a host, no credentials, query or fragment, no whitespace or control characters, at most `MAX_URL` bytes. `calimero-outbound` (`merge_approval`) refuses an approval of any other; `to_metadata_json()` drops it |
 | `BundleArtifact`, `BundleMetadata`, `BundleInterfaces`, `BundleLinks`, `BundleHandlers`, `BundleSignature`, `BundleService` | structs | The manifest's nested shapes |
 | `WasmArtifact` | struct | Borrowed `(name, wasm)` pair, the common type `wasm_artifacts()` returns |
@@ -65,6 +66,7 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 | `src/html.rs` | `check_frontend_html` (feature `html`) |
 | `src/frontend.rs` | `BundleFrontend`, `FrontendError` and the shared frontend rules |
 | `src/signature.rs` | Canonicalization, hashing, Ed25519 sign/verify, `did:key` derivation, and their tests |
+| `src/update.rs` | The update classifier (green/red over a unit's egress, signer, state versions) and its tests |
 
 ## Invariants and Gotchas
 

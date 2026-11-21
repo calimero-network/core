@@ -248,6 +248,14 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Where an app's unit may send data.
+    ///
+    /// `GET /apps/{app}/egress` (`app_egress`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
+    pub async fn egress(self, app: &str) -> Result<AppEgressResponse> {
+        let req = Request::new(Method::GET, format!("apps/{}/egress", route::segment(app)));
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// Export a sealed file's key.
     ///
     /// `POST /apps/{app}/files/{id}/export` (`exports_export`). Who: signed in (a session or an API key).
