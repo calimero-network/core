@@ -349,6 +349,22 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
+    // Restore points no upgrade names any more, or past their undo window.
+    let weak = Arc::downgrade(&node);
+    let stop = shutdown.clone();
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(crate::node::RESTORE_POINT_SWEEP_EVERY) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            if let Err(e) = tokio::task::spawn_blocking(move || node.sweep_restore_points()).await {
+                warn!(error = %e, "restore point sweep failed");
+            }
+        }
+    }));
+
     // Encrypted snapshots to object storage.
     if node.config.backup_dir.is_some() {
         let weak = Arc::downgrade(&node);

@@ -121,6 +121,11 @@ from .app_teams_scope_response_200_mode import AppTeamsScopeResponse200Mode
 from .app_teams_scope_response_200_teams_item import AppTeamsScopeResponse200TeamsItem
 from .app_transfer_body import AppTransferBody
 from .app_undelegate_response_200 import AppUndelegateResponse200
+from .app_undo_body import AppUndoBody
+from .app_undo_response_200 import AppUndoResponse200
+from .app_undo_response_200_groups import AppUndoResponse200Groups
+from .app_undo_view_response_200 import AppUndoViewResponse200
+from .app_undo_view_response_200_reason_type_0 import AppUndoViewResponse200ReasonType0
 from .app_unlink_body import AppUnlinkBody
 from .app_unlink_response_200 import AppUnlinkResponse200
 from .app_update_response_200 import AppUpdateResponse200
@@ -288,6 +293,7 @@ from .deployment_record_apps import DeploymentRecordApps
 from .deployment_record_apps_additional_property import (
     DeploymentRecordAppsAdditionalProperty,
 )
+from .deployment_rollout_response_200 import DeploymentRolloutResponse200
 from .deployment_secret_clear_response_200 import DeploymentSecretClearResponse200
 from .deployment_secret_set_body import DeploymentSecretSetBody
 from .deployment_secret_set_response_200 import DeploymentSecretSetResponse200
@@ -648,6 +654,9 @@ from .report_app_upgrades_held_by import ReportAppUpgradesHeldBy
 from .report_upgrade import ReportUpgrade
 from .report_upgrade_actor_kind import ReportUpgradeActorKind
 from .report_upgrade_class import ReportUpgradeClass
+from .restore_point import RestorePoint
+from .restore_point_file import RestorePointFile
+from .restore_point_file_source import RestorePointFileSource
 from .restore_recover_holder_body import RestoreRecoverHolderBody
 from .restore_recover_holder_body_apps_item import RestoreRecoverHolderBodyAppsItem
 from .restore_recover_holder_body_code_item import RestoreRecoverHolderBodyCodeItem
@@ -655,6 +664,13 @@ from .restore_recover_holder_body_slice import RestoreRecoverHolderBodySlice
 from .restore_recover_holder_response_200 import RestoreRecoverHolderResponse200
 from .retry_after import RetryAfter
 from .rollback_status import RollbackStatus
+from .rollout import Rollout
+from .rollout_pause_body import RolloutPauseBody
+from .rollout_pause_response_200 import RolloutPauseResponse200
+from .rollout_paused_type_0 import RolloutPausedType0
+from .rollout_resume_body import RolloutResumeBody
+from .rollout_resume_response_200 import RolloutResumeResponse200
+from .rollout_waves_item import RolloutWavesItem
 from .run import Run
 from .run_attempts_item import RunAttemptsItem
 from .run_caps import RunCaps
@@ -717,6 +733,10 @@ from .team_view_apps_item import TeamViewAppsItem
 from .team_view_members_item import TeamViewMembersItem
 from .trap import Trap
 from .trap_kind import TrapKind
+from .undo_part import UndoPart
+from .undo_part_lost_writes_type_0 import UndoPartLostWritesType0
+from .undo_part_restore_point_type_0 import UndoPartRestorePointType0
+from .undo_part_unavailable_type_0 import UndoPartUnavailableType0
 from .uninstalled import Uninstalled
 from .unit_member import UnitMember
 from .update_reason_type_0 import UpdateReasonType0
@@ -860,6 +880,11 @@ __all__ = (
     "AppTeamsScopeResponse200TeamsItem",
     "AppTransferBody",
     "AppUndelegateResponse200",
+    "AppUndoBody",
+    "AppUndoResponse200",
+    "AppUndoResponse200Groups",
+    "AppUndoViewResponse200",
+    "AppUndoViewResponse200ReasonType0",
     "AppUnlinkBody",
     "AppUnlinkResponse200",
     "AppUpdateResponse200",
@@ -994,6 +1019,7 @@ __all__ = (
     "DeploymentRecord",
     "DeploymentRecordApps",
     "DeploymentRecordAppsAdditionalProperty",
+    "DeploymentRolloutResponse200",
     "DeploymentSecretClearResponse200",
     "DeploymentSecretSetBody",
     "DeploymentSecretSetResponse200",
@@ -1296,6 +1322,9 @@ __all__ = (
     "ReportUpgrade",
     "ReportUpgradeActorKind",
     "ReportUpgradeClass",
+    "RestorePoint",
+    "RestorePointFile",
+    "RestorePointFileSource",
     "RestoreRecoverHolderBody",
     "RestoreRecoverHolderBodyAppsItem",
     "RestoreRecoverHolderBodyCodeItem",
@@ -1303,6 +1332,13 @@ __all__ = (
     "RestoreRecoverHolderResponse200",
     "RetryAfter",
     "RollbackStatus",
+    "Rollout",
+    "RolloutPauseBody",
+    "RolloutPausedType0",
+    "RolloutPauseResponse200",
+    "RolloutResumeBody",
+    "RolloutResumeResponse200",
+    "RolloutWavesItem",
     "Run",
     "RunAttemptsItem",
     "RunCaps",
@@ -1361,6 +1397,10 @@ __all__ = (
     "TeamViewMembersItem",
     "Trap",
     "TrapKind",
+    "UndoPart",
+    "UndoPartLostWritesType0",
+    "UndoPartRestorePointType0",
+    "UndoPartUnavailableType0",
     "Uninstalled",
     "UnitMember",
     "UpdateReasonType0",

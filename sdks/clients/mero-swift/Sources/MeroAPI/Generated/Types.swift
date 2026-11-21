@@ -554,6 +554,24 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /apps/{app}/transfer`.
     /// - Remark: Generated from `#/paths//apps/{app}/transfer/post(app_transfer)`.
     func appTransfer(_ input: Operations.AppTransfer.Input) async throws -> Operations.AppTransfer.Output
+    /// The upgrade an app may undo
+    ///
+    /// For whoever may read the app. `available`: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point's node answering); else `reason` says why. `apps`: the app, and the members its unit's upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/undo`.
+    /// - Remark: Generated from `#/paths//apps/{app}/undo/get(app_undo_view)`.
+    func appUndoView(_ input: Operations.AppUndoView.Input) async throws -> Operations.AppUndoView.Output
+    /// Undo an app's last upgrade
+    ///
+    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/undo`.
+    /// - Remark: Generated from `#/paths//apps/{app}/undo/post(app_undo)`.
+    func appUndo(_ input: Operations.AppUndo.Input) async throws -> Operations.AppUndo.Output
     /// Whether an update is available for an app
     ///
     /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
@@ -1030,6 +1048,33 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `GET /deployments/{id}/orgs`.
     /// - Remark: Generated from `#/paths//deployments/{id}/orgs/get(deployment_orgs)`.
     func deploymentOrgs(_ input: Operations.DeploymentOrgs.Input) async throws -> Operations.DeploymentOrgs.Output
+    /// How a deployment's offers roll out
+    ///
+    /// For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner's or admin's own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /deployments/{id}/rollout`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/rollout/get(deployment_rollout)`.
+    func deploymentRollout(_ input: Operations.DeploymentRollout.Input) async throws -> Operations.DeploymentRollout.Output
+    /// Pause a deployment's rollout
+    ///
+    /// A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: true, waveHours }`: no more of its instances move to the offered release on their own; the waves open stay open. `waveHours` (1 to 168, `400 BAD_ROLLOUT`) sets the pause between waves. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/rollout/{app}/pause`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/rollout/{app}/pause/post(rollout_pause)`.
+    func rolloutPause(_ input: Operations.RolloutPause.Input) async throws -> Operations.RolloutPause.Output
+    /// Resume a deployment's rollout
+    ///
+    /// A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: false, waveHours }`: it goes on from the wave open at the pause, and the next opens a full `waveHours` later. A rollout paused on its failures resumes the same way.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/rollout/{app}/resume`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/rollout/{app}/resume/post(rollout_resume)`.
+    func rolloutResume(_ input: Operations.RolloutResume.Input) async throws -> Operations.RolloutResume.Output
     /// A deployment's secrets
     ///
     /// For its managers, on fresh state: every secret a release the deployment offers declares, or a release one of those references (`uses`, for the apps it creates), and every one it holds a value of. Each row names the deployment's apps whose release declares it or references one that does (`apps`, empty when none does any more: the value is kept, unused, until cleared), the releases that declare it (`declaredBy`) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
@@ -2749,6 +2794,42 @@ extension APIProtocol {
             body: body
         ))
     }
+    /// The upgrade an app may undo
+    ///
+    /// For whoever may read the app. `available`: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point's node answering); else `reason` says why. `apps`: the app, and the members its unit's upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/undo`.
+    /// - Remark: Generated from `#/paths//apps/{app}/undo/get(app_undo_view)`.
+    public func appUndoView(
+        path: Operations.AppUndoView.Input.Path,
+        headers: Operations.AppUndoView.Input.Headers = .init()
+    ) async throws -> Operations.AppUndoView.Output {
+        try await appUndoView(Operations.AppUndoView.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Undo an app's last upgrade
+    ///
+    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/undo`.
+    /// - Remark: Generated from `#/paths//apps/{app}/undo/post(app_undo)`.
+    public func appUndo(
+        path: Operations.AppUndo.Input.Path,
+        headers: Operations.AppUndo.Input.Headers = .init(),
+        body: Operations.AppUndo.Input.Body
+    ) async throws -> Operations.AppUndo.Output {
+        try await appUndo(Operations.AppUndo.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
     /// Whether an update is available for an app
     ///
     /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
@@ -3631,6 +3712,61 @@ extension APIProtocol {
         try await deploymentOrgs(Operations.DeploymentOrgs.Input(
             path: path,
             headers: headers
+        ))
+    }
+    /// How a deployment's offers roll out
+    ///
+    /// For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner's or admin's own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /deployments/{id}/rollout`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/rollout/get(deployment_rollout)`.
+    public func deploymentRollout(
+        path: Operations.DeploymentRollout.Input.Path,
+        headers: Operations.DeploymentRollout.Input.Headers = .init()
+    ) async throws -> Operations.DeploymentRollout.Output {
+        try await deploymentRollout(Operations.DeploymentRollout.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Pause a deployment's rollout
+    ///
+    /// A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: true, waveHours }`: no more of its instances move to the offered release on their own; the waves open stay open. `waveHours` (1 to 168, `400 BAD_ROLLOUT`) sets the pause between waves. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/rollout/{app}/pause`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/rollout/{app}/pause/post(rollout_pause)`.
+    public func rolloutPause(
+        path: Operations.RolloutPause.Input.Path,
+        headers: Operations.RolloutPause.Input.Headers = .init(),
+        body: Operations.RolloutPause.Input.Body
+    ) async throws -> Operations.RolloutPause.Output {
+        try await rolloutPause(Operations.RolloutPause.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Resume a deployment's rollout
+    ///
+    /// A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: false, waveHours }`: it goes on from the wave open at the pause, and the next opens a full `waveHours` later. A rollout paused on its failures resumes the same way.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/rollout/{app}/resume`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/rollout/{app}/resume/post(rollout_resume)`.
+    public func rolloutResume(
+        path: Operations.RolloutResume.Input.Path,
+        headers: Operations.RolloutResume.Input.Headers = .init(),
+        body: Operations.RolloutResume.Input.Body
+    ) async throws -> Operations.RolloutResume.Output {
+        try await rolloutResume(Operations.RolloutResume.Input(
+            path: path,
+            headers: headers,
+            body: body
         ))
     }
     /// A deployment's secrets
@@ -5726,7 +5862,7 @@ public enum Components {
                 case maxFuelPerDeveloperPerDay
             }
         }
-        /// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applying on its own after the hold; stored and validated now, carried out by a later release.
+        /// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point, and for an instance of a deployment in its rollout's wave.
         ///
         /// - Remark: Generated from `#/components/schemas/UpgradePolicy`.
         public struct UpgradePolicy: Codable, Hashable, Sendable {
@@ -6264,6 +6400,466 @@ public enum Components {
                 case let .case6(value):
                     try value.encode(to: encoder)
                 }
+            }
+        }
+        /// An app's one undo (`POST /apps/{app}/undo`): the release and bundle its last upgrade moved it from (`fromRelease`, `fromBundle`) and to, when (`at`, the start of the week to undo it) and by whom (`policy:auto-update` for an update that applied on its own), the run it was part of (a unit's members undo with their instance), the app group's snapshot (`file`: the node that holds it, absent where the upgrade ran nothing on the group) and `undoneAt` while an undo's restore is under way.
+        ///
+        /// - Remark: Generated from `#/components/schemas/RestorePoint`.
+        public struct RestorePoint: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/RestorePoint/fromBundle`.
+            public var fromBundle: Swift.String
+            /// - Remark: Generated from `#/components/schemas/RestorePoint/fromCompute`.
+            public var fromCompute: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/RestorePoint/fromRelease`.
+            public var fromRelease: Components.Schemas.PackageRef?
+            /// - Remark: Generated from `#/components/schemas/RestorePoint/toBundle`.
+            public var toBundle: Swift.String
+            /// - Remark: Generated from `#/components/schemas/RestorePoint/toRelease`.
+            public var toRelease: Components.Schemas.PackageRef?
+            /// - Remark: Generated from `#/components/schemas/RestorePoint/at`.
+            public var at: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/RestorePoint/by`.
+            public var by: Swift.String
+            /// - Remark: Generated from `#/components/schemas/RestorePoint/run`.
+            public var run: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/RestorePoint/file`.
+            public struct FilePayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/RestorePoint/file/node`.
+                public var node: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/RestorePoint/file/group`.
+                public var group: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/RestorePoint/file/source`.
+                public struct SourcePayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/RestorePoint/file/source/name`.
+                    public var name: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/RestorePoint/file/source/sha256`.
+                    public var sha256: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/RestorePoint/file/source/index`.
+                    public var index: Swift.Int64
+                    /// Creates a new `SourcePayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - name:
+                    ///   - sha256:
+                    ///   - index:
+                    public init(
+                        name: Swift.String,
+                        sha256: Swift.String,
+                        index: Swift.Int64
+                    ) {
+                        self.name = name
+                        self.sha256 = sha256
+                        self.index = index
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case name
+                        case sha256
+                        case index
+                    }
+                }
+                /// - Remark: Generated from `#/components/schemas/RestorePoint/file/source`.
+                public var source: Components.Schemas.RestorePoint.FilePayload.SourcePayload
+                /// Creates a new `FilePayload`.
+                ///
+                /// - Parameters:
+                ///   - node:
+                ///   - group:
+                ///   - source:
+                public init(
+                    node: Swift.Int64,
+                    group: Swift.Int64,
+                    source: Components.Schemas.RestorePoint.FilePayload.SourcePayload
+                ) {
+                    self.node = node
+                    self.group = group
+                    self.source = source
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case node
+                    case group
+                    case source
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/RestorePoint/file`.
+            public var file: Components.Schemas.RestorePoint.FilePayload?
+            /// - Remark: Generated from `#/components/schemas/RestorePoint/undoneAt`.
+            public var undoneAt: Swift.Int64?
+            /// Creates a new `RestorePoint`.
+            ///
+            /// - Parameters:
+            ///   - fromBundle:
+            ///   - fromCompute:
+            ///   - fromRelease:
+            ///   - toBundle:
+            ///   - toRelease:
+            ///   - at:
+            ///   - by:
+            ///   - run:
+            ///   - file:
+            ///   - undoneAt:
+            public init(
+                fromBundle: Swift.String,
+                fromCompute: Swift.String? = nil,
+                fromRelease: Components.Schemas.PackageRef? = nil,
+                toBundle: Swift.String,
+                toRelease: Components.Schemas.PackageRef? = nil,
+                at: Swift.Int64,
+                by: Swift.String,
+                run: Swift.String? = nil,
+                file: Components.Schemas.RestorePoint.FilePayload? = nil,
+                undoneAt: Swift.Int64? = nil
+            ) {
+                self.fromBundle = fromBundle
+                self.fromCompute = fromCompute
+                self.fromRelease = fromRelease
+                self.toBundle = toBundle
+                self.toRelease = toRelease
+                self.at = at
+                self.by = by
+                self.run = run
+                self.file = file
+                self.undoneAt = undoneAt
+            }
+            public enum CodingKeys: String, CodingKey {
+                case fromBundle
+                case fromCompute
+                case fromRelease
+                case toBundle
+                case toRelease
+                case at
+                case by
+                case run
+                case file
+                case undoneAt
+            }
+        }
+        /// One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade; `null` while the restore point's node does not answer, which `unavailable` then says).
+        ///
+        /// - Remark: Generated from `#/components/schemas/UndoPart`.
+        public struct UndoPart: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/UndoPart/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/UndoPart/from`.
+            public var from: Components.Schemas.PackageRef?
+            /// - Remark: Generated from `#/components/schemas/UndoPart/to`.
+            public var to: Components.Schemas.PackageRef?
+            /// - Remark: Generated from `#/components/schemas/UndoPart/toBundle`.
+            public var toBundle: Swift.String
+            /// - Remark: Generated from `#/components/schemas/UndoPart/upgradedAt`.
+            public var upgradedAt: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/UndoPart/upgradedBy`.
+            public var upgradedBy: Swift.String
+            /// - Remark: Generated from `#/components/schemas/UndoPart/auto`.
+            public var auto: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/UndoPart/undoUntil`.
+            public var undoUntil: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/UndoPart/restorePoint`.
+            public struct RestorePointPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UndoPart/restorePoint/node`.
+                public var node: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/UndoPart/restorePoint/index`.
+                public var index: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/UndoPart/restorePoint/sha256`.
+                public var sha256: Swift.String
+                /// Creates a new `RestorePointPayload`.
+                ///
+                /// - Parameters:
+                ///   - node:
+                ///   - index:
+                ///   - sha256:
+                public init(
+                    node: Swift.Int64,
+                    index: Swift.Int64,
+                    sha256: Swift.String
+                ) {
+                    self.node = node
+                    self.index = index
+                    self.sha256 = sha256
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case node
+                    case index
+                    case sha256
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UndoPart/restorePoint`.
+            public var restorePoint: Components.Schemas.UndoPart.RestorePointPayload?
+            /// - Remark: Generated from `#/components/schemas/UndoPart/undoneAt`.
+            public var undoneAt: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/UndoPart/lostWrites`.
+            public struct LostWritesPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UndoPart/lostWrites/entriesSince`.
+                public var entriesSince: Swift.Int64?
+                /// - Remark: Generated from `#/components/schemas/UndoPart/lostWrites/lastWriteAt`.
+                public var lastWriteAt: Swift.Int64?
+                /// - Remark: Generated from `#/components/schemas/UndoPart/lostWrites/any`.
+                public var any: Swift.Bool
+                /// Creates a new `LostWritesPayload`.
+                ///
+                /// - Parameters:
+                ///   - entriesSince:
+                ///   - lastWriteAt:
+                ///   - any:
+                public init(
+                    entriesSince: Swift.Int64? = nil,
+                    lastWriteAt: Swift.Int64? = nil,
+                    any: Swift.Bool
+                ) {
+                    self.entriesSince = entriesSince
+                    self.lastWriteAt = lastWriteAt
+                    self.any = any
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case entriesSince
+                    case lastWriteAt
+                    case any
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UndoPart/lostWrites`.
+            public var lostWrites: Components.Schemas.UndoPart.LostWritesPayload?
+            /// - Remark: Generated from `#/components/schemas/UndoPart/unavailable`.
+            public struct UnavailablePayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UndoPart/unavailable/code`.
+                public var code: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UndoPart/unavailable/message`.
+                public var message: Swift.String
+                /// Creates a new `UnavailablePayload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - message:
+                public init(
+                    code: Swift.String,
+                    message: Swift.String
+                ) {
+                    self.code = code
+                    self.message = message
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case message
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UndoPart/unavailable`.
+            public var unavailable: Components.Schemas.UndoPart.UnavailablePayload?
+            /// Creates a new `UndoPart`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - from:
+            ///   - to:
+            ///   - toBundle:
+            ///   - upgradedAt:
+            ///   - upgradedBy:
+            ///   - auto:
+            ///   - undoUntil:
+            ///   - restorePoint:
+            ///   - undoneAt:
+            ///   - lostWrites:
+            ///   - unavailable:
+            public init(
+                app: Swift.String,
+                from: Components.Schemas.PackageRef? = nil,
+                to: Components.Schemas.PackageRef? = nil,
+                toBundle: Swift.String,
+                upgradedAt: Swift.Int64,
+                upgradedBy: Swift.String,
+                auto: Swift.Bool,
+                undoUntil: Swift.Int64,
+                restorePoint: Components.Schemas.UndoPart.RestorePointPayload? = nil,
+                undoneAt: Swift.Int64? = nil,
+                lostWrites: Components.Schemas.UndoPart.LostWritesPayload? = nil,
+                unavailable: Components.Schemas.UndoPart.UnavailablePayload? = nil
+            ) {
+                self.app = app
+                self.from = from
+                self.to = to
+                self.toBundle = toBundle
+                self.upgradedAt = upgradedAt
+                self.upgradedBy = upgradedBy
+                self.auto = auto
+                self.undoUntil = undoUntil
+                self.restorePoint = restorePoint
+                self.undoneAt = undoneAt
+                self.lostWrites = lostWrites
+                self.unavailable = unavailable
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case from
+                case to
+                case toBundle
+                case upgradedAt
+                case upgradedBy
+                case auto
+                case undoUntil
+                case restorePoint
+                case undoneAt
+                case lostWrites
+                case unavailable
+            }
+        }
+        /// How a deployment's offered release reaches its instances that apply updates on their own: wave `wave` of `waves` (1%, 10%, 50% and every instance, at least one, in an order each release draws afresh) is open; the next opens at `nextWaveAt` (`null` once the last is open or while paused), `waveHours` after the one before. `paused`: by a manager, or by `failures` once the failed upgrades and undos of the release pass `pausesAbovePercent` of the instances that tried it. `instances` run its package; `updated` run the release, `failed` failed to move to it, `undone` undid it.
+        ///
+        /// - Remark: Generated from `#/components/schemas/Rollout`.
+        public struct Rollout: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/Rollout/app`.
+            public var app: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Rollout/package`.
+            public var package: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Rollout/version`.
+            public var version: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Rollout/offeredAt`.
+            public var offeredAt: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/Rollout/waveHours`.
+            public var waveHours: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/Rollout/wave`.
+            public var wave: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/Rollout/WavesPayload`.
+            public struct WavesPayloadPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/Rollout/WavesPayload/percent`.
+                public var percent: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/Rollout/WavesPayload/instances`.
+                public var instances: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/Rollout/WavesPayload/open`.
+                public var open: Swift.Bool
+                /// - Remark: Generated from `#/components/schemas/Rollout/WavesPayload/opensAt`.
+                public var opensAt: Swift.Int64?
+                /// Creates a new `WavesPayloadPayload`.
+                ///
+                /// - Parameters:
+                ///   - percent:
+                ///   - instances:
+                ///   - open:
+                ///   - opensAt:
+                public init(
+                    percent: Swift.Int64,
+                    instances: Swift.Int64,
+                    open: Swift.Bool,
+                    opensAt: Swift.Int64? = nil
+                ) {
+                    self.percent = percent
+                    self.instances = instances
+                    self.open = open
+                    self.opensAt = opensAt
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case percent
+                    case instances
+                    case open
+                    case opensAt
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/Rollout/waves`.
+            public typealias WavesPayload = [Components.Schemas.Rollout.WavesPayloadPayload]
+            /// - Remark: Generated from `#/components/schemas/Rollout/waves`.
+            public var waves: Components.Schemas.Rollout.WavesPayload
+            /// - Remark: Generated from `#/components/schemas/Rollout/nextWaveAt`.
+            public var nextWaveAt: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/Rollout/paused`.
+            public struct PausedPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/Rollout/paused/at`.
+                public var at: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/Rollout/paused/by`.
+                public var by: Swift.String
+                /// - Remark: Generated from `#/components/schemas/Rollout/paused/failures`.
+                public var failures: Swift.Int64
+                /// Creates a new `PausedPayload`.
+                ///
+                /// - Parameters:
+                ///   - at:
+                ///   - by:
+                ///   - failures:
+                public init(
+                    at: Swift.Int64,
+                    by: Swift.String,
+                    failures: Swift.Int64
+                ) {
+                    self.at = at
+                    self.by = by
+                    self.failures = failures
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case at
+                    case by
+                    case failures
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/Rollout/paused`.
+            public var paused: Components.Schemas.Rollout.PausedPayload?
+            /// - Remark: Generated from `#/components/schemas/Rollout/instances`.
+            public var instances: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/Rollout/updated`.
+            public var updated: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/Rollout/failed`.
+            public var failed: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/Rollout/undone`.
+            public var undone: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/Rollout/pausesAbovePercent`.
+            public var pausesAbovePercent: Swift.Int64
+            /// Creates a new `Rollout`.
+            ///
+            /// - Parameters:
+            ///   - app:
+            ///   - package:
+            ///   - version:
+            ///   - offeredAt:
+            ///   - waveHours:
+            ///   - wave:
+            ///   - waves:
+            ///   - nextWaveAt:
+            ///   - paused:
+            ///   - instances:
+            ///   - updated:
+            ///   - failed:
+            ///   - undone:
+            ///   - pausesAbovePercent:
+            public init(
+                app: Swift.String,
+                package: Swift.String,
+                version: Swift.String,
+                offeredAt: Swift.Int64,
+                waveHours: Swift.Int64,
+                wave: Swift.Int64,
+                waves: Components.Schemas.Rollout.WavesPayload,
+                nextWaveAt: Swift.Int64? = nil,
+                paused: Components.Schemas.Rollout.PausedPayload? = nil,
+                instances: Swift.Int64,
+                updated: Swift.Int64,
+                failed: Swift.Int64,
+                undone: Swift.Int64,
+                pausesAbovePercent: Swift.Int64
+            ) {
+                self.app = app
+                self.package = package
+                self.version = version
+                self.offeredAt = offeredAt
+                self.waveHours = waveHours
+                self.wave = wave
+                self.waves = waves
+                self.nextWaveAt = nextWaveAt
+                self.paused = paused
+                self.instances = instances
+                self.updated = updated
+                self.failed = failed
+                self.undone = undone
+                self.pausesAbovePercent = pausesAbovePercent
+            }
+            public enum CodingKeys: String, CodingKey {
+                case app
+                case package
+                case version
+                case offeredAt
+                case waveHours
+                case wave
+                case waves
+                case nextWaveAt
+                case paused
+                case instances
+                case updated
+                case failed
+                case undone
+                case pausesAbovePercent
             }
         }
         /// What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.
@@ -7148,7 +7744,7 @@ public enum Components {
                 case targets
             }
         }
-        /// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.
+        /// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`).
         ///
         /// - Remark: Generated from `#/components/schemas/App`.
         public struct App: Codable, Hashable, Sendable {
@@ -7295,6 +7891,8 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/App/attached`.
             public var attached: Components.Schemas.App.AttachedPayload?
+            /// - Remark: Generated from `#/components/schemas/App/restorePoint`.
+            public var restorePoint: Components.Schemas.RestorePoint?
             /// Creates a new `App`.
             ///
             /// - Parameters:
@@ -7319,6 +7917,7 @@ public enum Components {
             ///   - restore:
             ///   - links:
             ///   - attached:
+            ///   - restorePoint:
             public init(
                 appId: Swift.String,
                 name: Swift.String,
@@ -7340,7 +7939,8 @@ public enum Components {
                 release: Components.Schemas.PackageRef? = nil,
                 restore: Components.Schemas.App.RestorePayload? = nil,
                 links: Components.Schemas.App.LinksPayload? = nil,
-                attached: Components.Schemas.App.AttachedPayload? = nil
+                attached: Components.Schemas.App.AttachedPayload? = nil,
+                restorePoint: Components.Schemas.RestorePoint? = nil
             ) {
                 self.appId = appId
                 self.name = name
@@ -7363,6 +7963,7 @@ public enum Components {
                 self.restore = restore
                 self.links = links
                 self.attached = attached
+                self.restorePoint = restorePoint
             }
             public enum CodingKeys: String, CodingKey {
                 case appId
@@ -7386,6 +7987,7 @@ public enum Components {
                 case restore
                 case links
                 case attached
+                case restorePoint
             }
         }
         /// An app as `GET /apps` lists it: `package` and `version` name the release its bundle came from (`null` for a raw upload), `deployment` the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1).
@@ -7486,7 +8088,7 @@ public enum Components {
                 case compute
             }
         }
-        /// The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second.
+        /// The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second. `auto`: it applied on its own under the app's update policy (`by` is `policy:auto-update`); `undo`: it undid the upgrade before it (`fromRelease` the release undone).
         ///
         /// - Remark: Generated from `#/components/schemas/Upgrade`.
         public struct Upgrade: Codable, Hashable, Sendable {
@@ -7523,6 +8125,10 @@ public enum Components {
             public var reasons: [Components.Schemas.UpdateReason]?
             /// - Remark: Generated from `#/components/schemas/Upgrade/approvedBy`.
             public var approvedBy: Swift.String?
+            /// - Remark: Generated from `#/components/schemas/Upgrade/auto`.
+            public var auto: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/Upgrade/undo`.
+            public var undo: Swift.Bool?
             /// Creates a new `Upgrade`.
             ///
             /// - Parameters:
@@ -7539,6 +8145,8 @@ public enum Components {
             ///   - _class:
             ///   - reasons:
             ///   - approvedBy:
+            ///   - auto:
+            ///   - undo:
             public init(
                 from: Swift.String,
                 to: Swift.String,
@@ -7552,7 +8160,9 @@ public enum Components {
                 toRelease: Components.Schemas.PackageRef? = nil,
                 _class: Components.Schemas.Upgrade.ClassPayload? = nil,
                 reasons: [Components.Schemas.UpdateReason]? = nil,
-                approvedBy: Swift.String? = nil
+                approvedBy: Swift.String? = nil,
+                auto: Swift.Bool? = nil,
+                undo: Swift.Bool? = nil
             ) {
                 self.from = from
                 self.to = to
@@ -7567,6 +8177,8 @@ public enum Components {
                 self._class = _class
                 self.reasons = reasons
                 self.approvedBy = approvedBy
+                self.auto = auto
+                self.undo = undo
             }
             public enum CodingKeys: String, CodingKey {
                 case from
@@ -7582,6 +8194,8 @@ public enum Components {
                 case _class = "class"
                 case reasons
                 case approvedBy
+                case auto
+                case undo
             }
         }
         /// A package and the releases of it the caller may see, oldest first; `latest` is the newest of those.
@@ -22691,6 +23305,421 @@ public enum Operations {
             case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
         }
     }
+    /// The upgrade an app may undo
+    ///
+    /// For whoever may read the app. `available`: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point's node answering); else `reason` says why. `apps`: the app, and the members its unit's upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.
+    ///
+    /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/undo`.
+    /// - Remark: Generated from `#/paths//apps/{app}/undo/get(app_undo_view)`.
+    public enum AppUndoView {
+        public static let id: Swift.String = "app_undo_view"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppUndoView.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUndoView.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUndoView.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppUndoView.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.AppUndoView.Input.Path,
+                headers: Operations.AppUndoView.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/app`.
+                        public var app: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/available`.
+                        public var available: Swift.Bool
+                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/reason`.
+                        public struct ReasonPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/reason/code`.
+                            public var code: Swift.String
+                            /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/reason/message`.
+                            public var message: Swift.String
+                            /// Creates a new `ReasonPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - code:
+                            ///   - message:
+                            public init(
+                                code: Swift.String,
+                                message: Swift.String
+                            ) {
+                                self.code = code
+                                self.message = message
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case code
+                                case message
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/reason`.
+                        public var reason: Operations.AppUndoView.Output.Ok.Body.JsonPayload.ReasonPayload?
+                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/undoUntil`.
+                        public var undoUntil: Swift.Int64?
+                        /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/json/apps`.
+                        public var apps: [Components.Schemas.UndoPart]
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - app:
+                        ///   - available:
+                        ///   - reason:
+                        ///   - undoUntil:
+                        ///   - apps:
+                        public init(
+                            app: Swift.String,
+                            available: Swift.Bool,
+                            reason: Operations.AppUndoView.Output.Ok.Body.JsonPayload.ReasonPayload? = nil,
+                            undoUntil: Swift.Int64? = nil,
+                            apps: [Components.Schemas.UndoPart]
+                        ) {
+                            self.app = app
+                            self.available = available
+                            self.reason = reason
+                            self.undoUntil = undoUntil
+                            self.apps = apps
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case app
+                            case available
+                            case reason
+                            case undoUntil
+                            case apps
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/undo/GET/responses/200/content/application\/json`.
+                    case json(Operations.AppUndoView.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppUndoView.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppUndoView.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppUndoView.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/undo/get(app_undo_view)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppUndoView.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppUndoView.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Undo an app's last upgrade
+    ///
+    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/undo`.
+    /// - Remark: Generated from `#/paths//apps/{app}/undo/post(app_undo)`.
+    public enum AppUndo {
+        public static let id: Swift.String = "app_undo"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppUndo.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUndo.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUndo.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppUndo.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - confirm:
+                    public init(confirm: Components.Schemas.Confirm? = nil) {
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/requestBody/content/application\/json`.
+                case json(Operations.AppUndo.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppUndo.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppUndo.Input.Path,
+                headers: Operations.AppUndo.Input.Headers = .init(),
+                body: Operations.AppUndo.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json/app`.
+                        public var app: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json/groups`.
+                        public struct GroupsPayload: Codable, Hashable, Sendable {
+                            /// A container of undocumented properties.
+                            public var additionalProperties: [String: Swift.Int64?]
+                            /// Creates a new `GroupsPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - additionalProperties: A container of undocumented properties.
+                            public init(additionalProperties: [String: Swift.Int64?] = .init()) {
+                                self.additionalProperties = additionalProperties
+                            }
+                            public init(from decoder: any Decoder) throws {
+                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                            }
+                            public func encode(to encoder: any Encoder) throws {
+                                try encoder.encodeAdditionalProperties(additionalProperties)
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json/groups`.
+                        public var groups: Operations.AppUndo.Output.Ok.Body.JsonPayload.GroupsPayload
+                        /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json/restored`.
+                        public var restored: Swift.Bool
+                        /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/json/apps`.
+                        public var apps: [Components.Schemas.UndoPart]
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - app:
+                        ///   - groups:
+                        ///   - restored:
+                        ///   - apps:
+                        public init(
+                            app: Swift.String,
+                            groups: Operations.AppUndo.Output.Ok.Body.JsonPayload.GroupsPayload,
+                            restored: Swift.Bool,
+                            apps: [Components.Schemas.UndoPart]
+                        ) {
+                            self.app = app
+                            self.groups = groups
+                            self.restored = restored
+                            self.apps = apps
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case app
+                            case groups
+                            case restored
+                            case apps
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/undo/POST/responses/200/content/application\/json`.
+                    case json(Operations.AppUndo.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppUndo.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppUndo.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppUndo.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/undo/post(app_undo)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppUndo.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppUndo.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
     /// Whether an update is available for an app
     ///
     /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
@@ -32566,6 +33595,579 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.DeploymentOrgs.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// How a deployment's offers roll out
+    ///
+    /// For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner's or admin's own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /deployments/{id}/rollout`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/rollout/get(deployment_rollout)`.
+    public enum DeploymentRollout {
+        public static let id: Swift.String = "deployment_rollout"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/deployments/{id}/rollout/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/GET/path/id`.
+                public var id: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - id:
+                public init(id: Swift.String) {
+                    self.id = id
+                }
+            }
+            public var path: Operations.DeploymentRollout.Input.Path
+            /// - Remark: Generated from `#/paths/deployments/{id}/rollout/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentRollout.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentRollout.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.DeploymentRollout.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.DeploymentRollout.Input.Path,
+                headers: Operations.DeploymentRollout.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/rollout/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/deployments/{id}/rollout/GET/responses/200/content/json/deployment`.
+                        public var deployment: Swift.String
+                        /// - Remark: Generated from `#/paths/deployments/{id}/rollout/GET/responses/200/content/json/apps`.
+                        public var apps: [Components.Schemas.Rollout]
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - deployment:
+                        ///   - apps:
+                        public init(
+                            deployment: Swift.String,
+                            apps: [Components.Schemas.Rollout]
+                        ) {
+                            self.deployment = deployment
+                            self.apps = apps
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case deployment
+                            case apps
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/deployments/{id}/rollout/GET/responses/200/content/application\/json`.
+                    case json(Operations.DeploymentRollout.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.DeploymentRollout.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.DeploymentRollout.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.DeploymentRollout.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//deployments/{id}/rollout/get(deployment_rollout)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.DeploymentRollout.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.DeploymentRollout.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Pause a deployment's rollout
+    ///
+    /// A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: true, waveHours }`: no more of its instances move to the offered release on their own; the waves open stay open. `waveHours` (1 to 168, `400 BAD_ROLLOUT`) sets the pause between waves. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/rollout/{app}/pause`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/rollout/{app}/pause/post(rollout_pause)`.
+    public enum RolloutPause {
+        public static let id: Swift.String = "rollout_pause"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/path/id`.
+                public var id: Swift.String
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - id:
+                ///   - app:
+                public init(
+                    id: Swift.String,
+                    app: Swift.String
+                ) {
+                    self.id = id
+                    self.app = app
+                }
+            }
+            public var path: Operations.RolloutPause.Input.Path
+            /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.RolloutPause.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.RolloutPause.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.RolloutPause.Input.Headers
+            /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/requestBody/json/waveHours`.
+                    public var waveHours: Swift.Int64?
+                    /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - waveHours:
+                    ///   - confirm:
+                    public init(
+                        waveHours: Swift.Int64? = nil,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.waveHours = waveHours
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case waveHours
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.waveHours = try container.decodeIfPresent(
+                            Swift.Int64.self,
+                            forKey: .waveHours
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "waveHours",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/requestBody/content/application\/json`.
+                case json(Operations.RolloutPause.Input.Body.JsonPayload)
+            }
+            public var body: Operations.RolloutPause.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.RolloutPause.Input.Path,
+                headers: Operations.RolloutPause.Input.Headers = .init(),
+                body: Operations.RolloutPause.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/responses/200/content/json/deployment`.
+                        public var deployment: Swift.String
+                        /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/responses/200/content/json/apps`.
+                        public var apps: [Components.Schemas.Rollout]
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - deployment:
+                        ///   - apps:
+                        public init(
+                            deployment: Swift.String,
+                            apps: [Components.Schemas.Rollout]
+                        ) {
+                            self.deployment = deployment
+                            self.apps = apps
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case deployment
+                            case apps
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/pause/POST/responses/200/content/application\/json`.
+                    case json(Operations.RolloutPause.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.RolloutPause.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.RolloutPause.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.RolloutPause.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//deployments/{id}/rollout/{app}/pause/post(rollout_pause)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.RolloutPause.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.RolloutPause.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Resume a deployment's rollout
+    ///
+    /// A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: false, waveHours }`: it goes on from the wave open at the pause, and the next opens a full `waveHours` later. A rollout paused on its failures resumes the same way.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/rollout/{app}/resume`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/rollout/{app}/resume/post(rollout_resume)`.
+    public enum RolloutResume {
+        public static let id: Swift.String = "rollout_resume"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/path/id`.
+                public var id: Swift.String
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - id:
+                ///   - app:
+                public init(
+                    id: Swift.String,
+                    app: Swift.String
+                ) {
+                    self.id = id
+                    self.app = app
+                }
+            }
+            public var path: Operations.RolloutResume.Input.Path
+            /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.RolloutResume.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.RolloutResume.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.RolloutResume.Input.Headers
+            /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/requestBody/json/waveHours`.
+                    public var waveHours: Swift.Int64?
+                    /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - waveHours:
+                    ///   - confirm:
+                    public init(
+                        waveHours: Swift.Int64? = nil,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.waveHours = waveHours
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case waveHours
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.waveHours = try container.decodeIfPresent(
+                            Swift.Int64.self,
+                            forKey: .waveHours
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "waveHours",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/requestBody/content/application\/json`.
+                case json(Operations.RolloutResume.Input.Body.JsonPayload)
+            }
+            public var body: Operations.RolloutResume.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.RolloutResume.Input.Path,
+                headers: Operations.RolloutResume.Input.Headers = .init(),
+                body: Operations.RolloutResume.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/responses/200/content/json/deployment`.
+                        public var deployment: Swift.String
+                        /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/responses/200/content/json/apps`.
+                        public var apps: [Components.Schemas.Rollout]
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - deployment:
+                        ///   - apps:
+                        public init(
+                            deployment: Swift.String,
+                            apps: [Components.Schemas.Rollout]
+                        ) {
+                            self.deployment = deployment
+                            self.apps = apps
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case deployment
+                            case apps
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/deployments/{id}/rollout/{app}/resume/POST/responses/200/content/application\/json`.
+                    case json(Operations.RolloutResume.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.RolloutResume.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.RolloutResume.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.RolloutResume.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//deployments/{id}/rollout/{app}/resume/post(rollout_resume)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.RolloutResume.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.RolloutResume.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):

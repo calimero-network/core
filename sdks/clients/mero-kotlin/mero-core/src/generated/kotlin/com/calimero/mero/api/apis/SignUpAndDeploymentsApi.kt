@@ -40,12 +40,16 @@ import com.calimero.mero.api.models.DeploymentList200Response
 import com.calimero.mero.api.models.DeploymentOffer200Response
 import com.calimero.mero.api.models.DeploymentOfferRequest
 import com.calimero.mero.api.models.DeploymentOrgs200Response
+import com.calimero.mero.api.models.DeploymentRollout200Response
 import com.calimero.mero.api.models.DeploymentSecretClear200Response
 import com.calimero.mero.api.models.DeploymentSecretSet200Response
 import com.calimero.mero.api.models.DeploymentSecretSetRequest
 import com.calimero.mero.api.models.DeploymentSecrets200Response
 import com.calimero.mero.api.models.Error
 import com.calimero.mero.api.models.InviteKey
+import com.calimero.mero.api.models.RolloutPause200Response
+import com.calimero.mero.api.models.RolloutPauseRequest
+import com.calimero.mero.api.models.RolloutResumeRequest
 import com.calimero.mero.api.models.SignUpInviteCreate200Response
 import com.calimero.mero.api.models.SignUpInviteCreateRequest
 import com.calimero.mero.api.models.SignUpInviteList200Response
@@ -747,6 +751,79 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
     }
 
     /**
+     * GET /deployments/{id}/rollout
+     * How a deployment&#39;s offers roll out
+     * For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner&#39;s or admin&#39;s own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.  **Who:** signed in (a session or an API key).
+     * @param id 
+     * @return DeploymentRollout200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun deploymentRollout(id: kotlin.String) : DeploymentRollout200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = deploymentRolloutWithHttpInfo(id = id)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentRollout200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /deployments/{id}/rollout
+     * How a deployment&#39;s offers roll out
+     * For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner&#39;s or admin&#39;s own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.  **Who:** signed in (a session or an API key).
+     * @param id 
+     * @return ApiResponse<DeploymentRollout200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun deploymentRolloutWithHttpInfo(id: kotlin.String) : ApiResponse<DeploymentRollout200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = deploymentRolloutRequestConfig(id = id)
+
+        return@withContext request<Unit, DeploymentRollout200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation deploymentRollout
+     *
+     * @param id 
+     * @return RequestConfig
+     */
+    fun deploymentRolloutRequestConfig(id: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/deployments/{id}/rollout".replace("{"+"id"+"}", encodeURIComponent(id.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
      * DELETE /deployments/{id}/secrets/{name}
      * Remove a deployment&#39;s value of a secret
      * Its instances that set no value of their own fall back to the operator&#39;s. A manager, with a step-up over &#x60;deployment:{id} / __clear_secret / { name }&#x60;; &#x60;404&#x60; when the deployment holds no value of it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
@@ -1052,6 +1129,166 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
         return RequestConfig(
             method = RequestMethod.DELETE,
             path = "/deployments/{id}/apps/{app}".replace("{"+"id"+"}", encodeURIComponent(id.toString())).replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /deployments/{id}/rollout/{app}/pause
+     * Pause a deployment&#39;s rollout
+     * A manager, with a step-up over &#x60;deployment:&lt;id&gt; / __set_rollout / { app, paused: true, waveHours }&#x60;: no more of its instances move to the offered release on their own; the waves open stay open. &#x60;waveHours&#x60; (1 to 168, &#x60;400 BAD_ROLLOUT&#x60;) sets the pause between waves. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param app 
+     * @param rolloutPauseRequest 
+     * @return RolloutPause200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun rolloutPause(id: kotlin.String, app: kotlin.String, rolloutPauseRequest: RolloutPauseRequest) : RolloutPause200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = rolloutPauseWithHttpInfo(id = id, app = app, rolloutPauseRequest = rolloutPauseRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as RolloutPause200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /deployments/{id}/rollout/{app}/pause
+     * Pause a deployment&#39;s rollout
+     * A manager, with a step-up over &#x60;deployment:&lt;id&gt; / __set_rollout / { app, paused: true, waveHours }&#x60;: no more of its instances move to the offered release on their own; the waves open stay open. &#x60;waveHours&#x60; (1 to 168, &#x60;400 BAD_ROLLOUT&#x60;) sets the pause between waves. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param app 
+     * @param rolloutPauseRequest 
+     * @return ApiResponse<RolloutPause200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun rolloutPauseWithHttpInfo(id: kotlin.String, app: kotlin.String, rolloutPauseRequest: RolloutPauseRequest) : ApiResponse<RolloutPause200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = rolloutPauseRequestConfig(id = id, app = app, rolloutPauseRequest = rolloutPauseRequest)
+
+        return@withContext request<RolloutPauseRequest, RolloutPause200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation rolloutPause
+     *
+     * @param id 
+     * @param app 
+     * @param rolloutPauseRequest 
+     * @return RequestConfig
+     */
+    fun rolloutPauseRequestConfig(id: kotlin.String, app: kotlin.String, rolloutPauseRequest: RolloutPauseRequest) : RequestConfig<RolloutPauseRequest> {
+        val localVariableBody = rolloutPauseRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/deployments/{id}/rollout/{app}/pause".replace("{"+"id"+"}", encodeURIComponent(id.toString())).replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /deployments/{id}/rollout/{app}/resume
+     * Resume a deployment&#39;s rollout
+     * A manager, with a step-up over &#x60;deployment:&lt;id&gt; / __set_rollout / { app, paused: false, waveHours }&#x60;: it goes on from the wave open at the pause, and the next opens a full &#x60;waveHours&#x60; later. A rollout paused on its failures resumes the same way.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param app 
+     * @param rolloutResumeRequest 
+     * @return RolloutPause200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun rolloutResume(id: kotlin.String, app: kotlin.String, rolloutResumeRequest: RolloutResumeRequest) : RolloutPause200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = rolloutResumeWithHttpInfo(id = id, app = app, rolloutResumeRequest = rolloutResumeRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as RolloutPause200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /deployments/{id}/rollout/{app}/resume
+     * Resume a deployment&#39;s rollout
+     * A manager, with a step-up over &#x60;deployment:&lt;id&gt; / __set_rollout / { app, paused: false, waveHours }&#x60;: it goes on from the wave open at the pause, and the next opens a full &#x60;waveHours&#x60; later. A rollout paused on its failures resumes the same way.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param app 
+     * @param rolloutResumeRequest 
+     * @return ApiResponse<RolloutPause200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun rolloutResumeWithHttpInfo(id: kotlin.String, app: kotlin.String, rolloutResumeRequest: RolloutResumeRequest) : ApiResponse<RolloutPause200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = rolloutResumeRequestConfig(id = id, app = app, rolloutResumeRequest = rolloutResumeRequest)
+
+        return@withContext request<RolloutResumeRequest, RolloutPause200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation rolloutResume
+     *
+     * @param id 
+     * @param app 
+     * @param rolloutResumeRequest 
+     * @return RequestConfig
+     */
+    fun rolloutResumeRequestConfig(id: kotlin.String, app: kotlin.String, rolloutResumeRequest: RolloutResumeRequest) : RequestConfig<RolloutResumeRequest> {
+        val localVariableBody = rolloutResumeRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/deployments/{id}/rollout/{app}/resume".replace("{"+"id"+"}", encodeURIComponent(id.toString())).replace("{"+"app"+"}", encodeURIComponent(app.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

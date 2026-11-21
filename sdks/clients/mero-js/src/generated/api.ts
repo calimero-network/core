@@ -1144,6 +1144,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/apps/{app}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The upgrade an app may undo
+         * @description For whoever may read the app. `available`: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point's node answering); else `reason` says why. `apps`: the app, and the members its unit's upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.
+         *
+         *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+         */
+        get: operations["app_undo_view"];
+        put?: never;
+        /**
+         * Undo an app's last upgrade
+         * @description An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+         *
+         *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+         */
+        post: operations["app_undo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/apps/{app}/update": {
         parameters: {
             query?: never;
@@ -2182,6 +2210,72 @@ export interface paths {
         get: operations["deployment_orgs"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/deployments/{id}/rollout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How a deployment's offers roll out
+         * @description For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner's or admin's own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.
+         *
+         *     **Who:** signed in (a session or an API key).
+         */
+        get: operations["deployment_rollout"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/deployments/{id}/rollout/{app}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause a deployment's rollout
+         * @description A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: true, waveHours }`: no more of its instances move to the offered release on their own; the waves open stay open. `waveHours` (1 to 168, `400 BAD_ROLLOUT`) sets the pause between waves. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+         *
+         *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+         */
+        post: operations["rollout_pause"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/deployments/{id}/rollout/{app}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resume a deployment's rollout
+         * @description A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: false, waveHours }`: it goes on from the wave open at the pause, and the next opens a full `waveHours` later. A rollout paused on its failures resumes the same way.
+         *
+         *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+         */
+        post: operations["rollout_resume"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4650,7 +4744,7 @@ export interface components {
                 [key: string]: components["schemas"]["OrgQuotas"];
             };
         };
-        /** @description How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applying on its own after the hold; stored and validated now, carried out by a later release. */
+        /** @description How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point, and for an instance of a deployment in its rollout's wave. */
         UpgradePolicy: {
             /** @enum {string} */
             autoApply: "never" | "noDestinations";
@@ -4732,6 +4826,105 @@ export interface components {
             member: string | null;
             package: string;
             methods: string[];
+        };
+        /** @description An app's one undo (`POST /apps/{app}/undo`): the release and bundle its last upgrade moved it from (`fromRelease`, `fromBundle`) and to, when (`at`, the start of the week to undo it) and by whom (`policy:auto-update` for an update that applied on its own), the run it was part of (a unit's members undo with their instance), the app group's snapshot (`file`: the node that holds it, absent where the upgrade ran nothing on the group) and `undoneAt` while an undo's restore is under way. */
+        RestorePoint: {
+            fromBundle: string;
+            fromCompute?: string;
+            fromRelease?: components["schemas"]["PackageRef"];
+            toBundle: string;
+            toRelease?: components["schemas"]["PackageRef"];
+            /** Format: int64 */
+            at: number;
+            by: string;
+            run?: string;
+            file?: {
+                /** Format: int64 */
+                node: number;
+                /** Format: int64 */
+                group: number;
+                source: {
+                    name: string;
+                    sha256: string;
+                    /** Format: int64 */
+                    index: number;
+                };
+            };
+            /** Format: int64 */
+            undoneAt?: number;
+        };
+        /** @description One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade; `null` while the restore point's node does not answer, which `unavailable` then says). */
+        UndoPart: {
+            app: string;
+            from: components["schemas"]["PackageRef"] | null;
+            to: components["schemas"]["PackageRef"] | null;
+            toBundle: string;
+            /** Format: int64 */
+            upgradedAt: number;
+            upgradedBy: string;
+            auto: boolean;
+            /** Format: int64 */
+            undoUntil: number;
+            restorePoint: {
+                /** Format: int64 */
+                node: number;
+                /** Format: int64 */
+                index: number;
+                sha256: string;
+            } | null;
+            /** Format: int64 */
+            undoneAt: number | null;
+            lostWrites: {
+                /** Format: int64 */
+                entriesSince: number | null;
+                /** Format: int64 */
+                lastWriteAt: number | null;
+                any: boolean;
+            } | null;
+            unavailable: {
+                code: string;
+                message: string;
+            } | null;
+        };
+        /** @description How a deployment's offered release reaches its instances that apply updates on their own: wave `wave` of `waves` (1%, 10%, 50% and every instance, at least one, in an order each release draws afresh) is open; the next opens at `nextWaveAt` (`null` once the last is open or while paused), `waveHours` after the one before. `paused`: by a manager, or by `failures` once the failed upgrades and undos of the release pass `pausesAbovePercent` of the instances that tried it. `instances` run its package; `updated` run the release, `failed` failed to move to it, `undone` undid it. */
+        Rollout: {
+            app: string;
+            package: string;
+            version: string;
+            /** Format: int64 */
+            offeredAt: number;
+            /** Format: int64 */
+            waveHours: number;
+            /** Format: int64 */
+            wave: number;
+            waves: {
+                /** Format: int64 */
+                percent: number;
+                /** Format: int64 */
+                instances: number;
+                open: boolean;
+                /** Format: int64 */
+                opensAt: number | null;
+            }[];
+            /** Format: int64 */
+            nextWaveAt: number | null;
+            paused: {
+                /** Format: int64 */
+                at: number;
+                by: string;
+                /** Format: int64 */
+                failures: number;
+            } | null;
+            /** Format: int64 */
+            instances: number;
+            /** Format: int64 */
+            updated: number;
+            /** Format: int64 */
+            failed: number;
+            /** Format: int64 */
+            undone: number;
+            /** Format: int64 */
+            pausesAbovePercent: number;
         };
         /** @description What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only. */
         UsageDay: {
@@ -4914,7 +5107,7 @@ export interface components {
                 };
             };
         };
-        /** @description An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way. */
+        /** @description An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`). */
         App: {
             appId: string;
             name: string;
@@ -4956,6 +5149,7 @@ export interface components {
             attached?: {
                 [key: string]: string;
             };
+            restorePoint?: components["schemas"]["RestorePoint"];
         };
         /** @description An app as `GET /apps` lists it: `package` and `version` name the release its bundle came from (`null` for a raw upload), `deployment` the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1). */
         AppEntry: {
@@ -4975,7 +5169,7 @@ export interface components {
             service?: string;
             compute?: boolean;
         };
-        /** @description The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second. */
+        /** @description The last upgrade tried on an app, done or failed: `from` and `to` are bundle hashes, `by` the account (or `operator`), `run` the organization-wide run it was part of, `apiKey` the upgrade key that made it. `class` and `reasons`: what the update classifier said of it, judged again where it applied (absent before cluster version 1.0.0-rc.34, for a raw bundle and a failed upgrade); `approvedBy`: the first approver of a red update whose policy asks for a second. `auto`: it applied on its own under the app's update policy (`by` is `policy:auto-update`); `undo`: it undid the upgrade before it (`fromRelease` the release undone). */
         Upgrade: {
             from: string;
             to: string;
@@ -4993,6 +5187,8 @@ export interface components {
             class?: "green" | "red";
             reasons?: components["schemas"]["UpdateReason"][];
             approvedBy?: string;
+            auto?: boolean;
+            undo?: boolean;
         };
         /** @description A package and the releases of it the caller may see, oldest first; `latest` is the newest of those. */
         Package: {
@@ -9789,6 +9985,163 @@ export interface operations {
             };
         };
     };
+    app_undo_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        app: string;
+                        available: boolean;
+                        reason: {
+                            code: string;
+                            message: string;
+                        } | null;
+                        /** Format: int64 */
+                        undoUntil?: number | null;
+                        apps: components["schemas"]["UndoPart"][];
+                    };
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    app_undo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    confirm?: components["schemas"]["Confirm"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        app: string;
+                        groups: {
+                            [key: string]: number | null;
+                        };
+                        restored: boolean;
+                        apps: components["schemas"]["UndoPart"][];
+                    };
+                };
+            };
+            /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`; `NO_RESTORE_POINT`; `RESTORE_POINT_UNAVAILABLE`; `UNDO_NOT_AS_NAMED`; `UNDO_STALE`; `UNDO_WINDOW_PASSED`; `UPGRADE_PENDING`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`, `UPGRADE_PENDING`: a `UpgradePending`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     app_update: {
         parameters: {
             query?: never;
@@ -13631,6 +13984,261 @@ export interface operations {
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deployment_rollout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        deployment: string;
+                        apps: components["schemas"]["Rollout"][];
+                    };
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    rollout_pause: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: int64 */
+                    waveHours?: number;
+                    confirm?: components["schemas"]["Confirm"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        deployment: string;
+                        apps: components["schemas"]["Rollout"][];
+                    };
+                };
+            };
+            /** @description `BAD_ROLLOUT`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    rollout_resume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: int64 */
+                    waveHours?: number;
+                    confirm?: components["schemas"]["Confirm"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        deployment: string;
+                        apps: components["schemas"]["Rollout"][];
+                    };
+                };
+            };
+            /** @description `BAD_ROLLOUT`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`. */
+            412: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -481,6 +481,23 @@ export function createRoutes(api: RouteClient) {
       undelegate: (args: operations['app_undelegate']['parameters']['path'], options?: MethodOptions): Promise<operations['app_undelegate']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"DELETE","path":"/apps/{app}/delegations/{target}","pathParams":["app","target"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_undelegate']['responses'][200]['content']['application/json']>,
       /**
+       * Undo an app's last upgrade.
+       *
+       * `POST /apps/{app}/undo` (`app_undo`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      undo: (args: operations['app_undo']['parameters']['path'] & operations['app_undo']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_undo']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/undo","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_undo']['responses'][200]['content']['application/json']>,
+      /**
+       * The upgrade an app may undo.
+       *
+       * `GET /apps/{app}/undo` (`app_undo_view`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      undoView: (args: operations['app_undo_view']['parameters']['path'], options?: MethodOptions): Promise<operations['app_undo_view']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/undo","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_undo_view']['responses'][200]['content']['application/json']>,
+      /**
        * Detach an app attached to an app.
        *
        * `DELETE /apps/{app}/links/{name}` (`app_unlink`). **Who:** an account holder (a passkey session not bound to an app's frontend).
@@ -950,6 +967,32 @@ export function createRoutes(api: RouteClient) {
        */
       orgs: (args: operations['deployment_orgs']['parameters']['path'], options?: MethodOptions): Promise<operations['deployment_orgs']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/deployments/{id}/orgs","pathParams":["id"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_orgs']['responses'][200]['content']['application/json']>,
+      /**
+       * How a deployment's offers roll out.
+       *
+       * `GET /deployments/{id}/rollout` (`deployment_rollout`). **Who:** signed in (a session or an API key).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      rollout: (args: operations['deployment_rollout']['parameters']['path'], options?: MethodOptions): Promise<operations['deployment_rollout']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/deployments/{id}/rollout","pathParams":["id"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_rollout']['responses'][200]['content']['application/json']>,
+      /**
+       * Pause a deployment's rollout.
+       *
+       * `POST /deployments/{id}/rollout/{app}/pause` (`rollout_pause`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      rolloutPause: (args: operations['rollout_pause']['parameters']['path'] & operations['rollout_pause']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['rollout_pause']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/deployments/{id}/rollout/{app}/pause","pathParams":["id","app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['rollout_pause']['responses'][200]['content']['application/json']>,
+      /**
+       * Resume a deployment's rollout.
+       *
+       * `POST /deployments/{id}/rollout/{app}/resume` (`rollout_resume`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      rolloutResume: (args: operations['rollout_resume']['parameters']['path'] & operations['rollout_resume']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['rollout_resume']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/deployments/{id}/rollout/{app}/resume","pathParams":["id","app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['rollout_resume']['responses'][200]['content']['application/json']>,
       /**
        * Remove a deployment's value of a secret.
        *

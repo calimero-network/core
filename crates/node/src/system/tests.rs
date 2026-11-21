@@ -373,6 +373,8 @@ fn manage_application_lets_a_member_upgrade_and_approve_outbound() {
         in_deployment: false,
         owner_approves: false,
         class: None,
+        auto: false,
+        restore_point: None,
     };
     for (app, actor, may) in [
         ("in-org", "bob", true),
@@ -483,6 +485,8 @@ fn check(g: &Governance) {
         in_deployment: false,
         owner_approves: false,
         class: None,
+        auto: false,
+        restore_point: None,
     };
     let by_operator = m.run_authorized(upgrade(true, "")).is_ok();
     let by_owner = m.run_authorized(upgrade(false, "alice")).is_ok();
@@ -752,6 +756,8 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
         in_deployment: false,
         owner_approves: false,
         class: None,
+        auto: false,
+        restore_point: None,
     };
     let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
     assert!(e.contains("compute component"), "{e}");
@@ -1033,6 +1039,8 @@ fn an_upgrade_names_its_consent_or_its_run() {
         in_deployment: false,
         owner_approves: false,
         class: None,
+        auto: false,
+        restore_point: None,
     };
     assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, None)).is_err());
     let c = consent(
@@ -1156,6 +1164,8 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
         in_deployment: false,
         owner_approves: false,
         class: None,
+        auto: false,
+        restore_point: None,
     };
 
     // Logged before the mark: kept as the entry says, as it was.
@@ -6643,6 +6653,8 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
         in_deployment: false,
         owner_approves: false,
         class: None,
+        auto: false,
+        restore_point: None,
     };
     let install = |by: &str, version: &str, at: u64| SystemCmd::InstallPackage {
         package: "p".into(),
@@ -7104,6 +7116,8 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
             in_deployment: false,
             owner_approves: false,
             class: None,
+            auto: false,
+            restore_point: None,
         }
     };
     let e = m.run(upgrade("b2", 10, "cal_other")).unwrap_err();
@@ -7207,6 +7221,8 @@ fn a_package_says_whether_its_publisher_or_each_owner_upgrades_it() {
         in_deployment: false,
         owner_approves: false,
         class: None,
+        auto: false,
+        restore_point: None,
     };
     assert!(
         m.run_unproven(upgrade("cora", "b2")).is_err(),
@@ -7281,6 +7297,8 @@ fn upgrade_to(app: &str, actor: &str, bundle: &str, release: Option<(&str, &str)
         in_deployment: false,
         owner_approves: false,
         class: None,
+        auto: false,
+        restore_point: None,
     }
 }
 
@@ -12089,6 +12107,620 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
         ("eve", Some("cora"))
     );
     assert!(m.state.orgs["cust"].pending_upgrades.is_empty());
+}
+
+// ------------------------------------------------- updates on their own, undo, waves
+
+/// C9's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
+/// member) with `inst` on `p@1.0.0` (bundle `b1`), and nodes 1 and 2. No release sends
+/// data out but `1.1.0`: `1.0.1` (`b3`, installed at 1000) and `1.0.2` (`b3` again) are
+/// green, `1.1.0` (`b2`) adds a telemetry host.
+fn auto_fixture() -> SystemMachine {
+    let (_key, signer) = publisher_key(43);
+    let mut m = publishing(&signer, "owner");
+    let _ok = m.run_unproven(account("eve")).unwrap();
+    if let Some(o) = m.state.orgs.get_mut("cust") {
+        let _prev = o.members.insert("eve".into(), crate::types::OrgRole::Admin);
+    }
+    register(&mut m, 1, "replica");
+    register(&mut m, 2, "replica");
+    let _prev = m.state.bundles.insert(
+        "b3".into(),
+        serde_json::from_value(json!({
+            "hash": "b3", "size": 1, "uploadedBy": "pam",
+            "package": { "package": "p", "version": "1.0.1" }
+        }))
+        .unwrap(),
+    );
+
+    if let Some(p) = m.state.packages.get_mut("p") {
+        for (version, mpk, bundle, at, outbound) in [
+            ("1.0.0", "00", "b1", 0, json!([])),
+            ("1.0.1", "02", "b3", 1000, json!([])),
+            ("1.0.2", "03", "b3", 1000, json!([])),
+            (
+                "1.1.0",
+                "01",
+                "b2",
+                1000,
+                json!(["https://telemetry.example/"]),
+            ),
+        ] {
+            let _prev = p.versions.insert(
+                version.into(),
+                serde_json::from_value(json!({
+                    "version": version, "mpk": mpk, "mpkSize": 1, "source": "upload",
+                    "services": { "": bundle }, "installedBy": "pam", "installedAt": at,
+                    "outbound": outbound
+                }))
+                .unwrap(),
+            );
+        }
+    }
+    instance_of(
+        &mut m,
+        "inst",
+        "b1",
+        json!({ "package": "p", "version": "1.0.0" }),
+    );
+    m
+}
+
+/// The restore point node `node` took of group 3 at index `index`.
+fn taken_on(node: u64, index: u64) -> crate::types::TakenRestorePoint {
+    crate::types::TakenRestorePoint {
+        file: Some(crate::types::RestorePointFile {
+            node,
+            group: 3,
+            source: crate::types::RestoreSource {
+                name: format!("{index}.3.s.snap"),
+                sha256: "ab".repeat(32),
+                index,
+            },
+        }),
+    }
+}
+
+/// `inst`'s update to `version` (its bundle) applying on its own at `at`.
+fn auto_upgrade(
+    version: &str,
+    bundle: &str,
+    class: Option<crate::types::UpgradeClass>,
+    at: u64,
+    taken: Option<crate::types::TakenRestorePoint>,
+) -> SystemCmd {
+    let mut cmd = upgrade_to("inst", super::AUTO_UPDATE, bundle, Some(("p", version)));
+    if let SystemCmd::UpgradeApp {
+        class: c,
+        owner_approves,
+        at: when,
+        auto,
+        restore_point,
+        ..
+    } = &mut cmd
+    {
+        *c = class;
+        *owner_approves = true;
+        *when = at;
+        *auto = true;
+        *restore_point = taken;
+    }
+    cmd
+}
+
+/// The policy `cust` sets for every app: green updates of apps that send no data out
+/// apply on their own after `hold` hours.
+fn automatic(m: &mut SystemMachine, hold: u32) {
+    let _ok = m
+        .run_unproven(SystemCmd::SetUpgradePolicy {
+            org: "cust".into(),
+            app: None,
+            policy: Some(crate::types::UpgradePolicy {
+                auto_apply: crate::types::AutoApply::NoDestinations,
+                hold_hours: hold,
+                second_approver: false,
+            }),
+            actor: "eve".into(),
+            consent: Value::Null,
+        })
+        .unwrap();
+}
+
+/// A green update applies on its own only under a `noDestinations` policy, once its hold
+/// has passed since the release was logged (judged on the upgrade's own `at`), with a
+/// restore point, to a newer release, for an app whose unit sends no data out before or
+/// after. It needs no person's consent; it is recorded as the policy's, and its restore
+/// point becomes the app's one undo. A red update, a destination, an older release, a
+/// member alone or an update proposed as anyone else never applies this way.
+#[test]
+fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
+    use super::cluster_version::Feature;
+    use super::{AUTO_UPDATE, AUTO_UPDATE_REFUSED, HOLD_NOT_OVER, RESTORE_POINT_REQUIRED};
+    let hold_over = 1000 + 24 * 3600;
+    let mut m = auto_fixture();
+    let cmd = auto_upgrade(
+        "1.0.1",
+        "b3",
+        Some(green()),
+        hold_over,
+        Some(taken_on(1, 7)),
+    );
+    assert_eq!(
+        cmd.features(),
+        [
+            Feature::OwnerApprovedUpgrades,
+            Feature::UpgradeClasses,
+            Feature::AutoUpdates,
+            Feature::RestorePoints
+        ]
+    );
+    // No policy: never on its own.
+    assert_eq!(m.run(cmd.clone()), Err(AUTO_UPDATE_REFUSED.to_owned()));
+    assert!(m.state.auto_update_candidates(hold_over).is_empty());
+    automatic(&mut m, 24);
+    // Not before the hold, judged on the logged times.
+    assert_eq!(
+        m.run(auto_upgrade(
+            "1.0.1",
+            "b3",
+            Some(green()),
+            hold_over - 1,
+            Some(taken_on(1, 7))
+        )),
+        Err(HOLD_NOT_OVER.to_owned())
+    );
+    assert!(m.state.auto_update_candidates(hold_over - 1).is_empty());
+    // Not without a restore point of the group it runs on.
+    for taken in [None, Some(crate::types::TakenRestorePoint::default())] {
+        assert_eq!(
+            m.run(auto_upgrade("1.0.1", "b3", Some(green()), hold_over, taken)),
+            Err(RESTORE_POINT_REQUIRED.to_owned())
+        );
+    }
+    // Not red or unclassified, not with a destination, not back to an older release.
+    for (version, bundle, class) in [
+        ("1.0.1", "b3", None),
+        ("1.0.1", "b3", Some(red(&["https://x.example/"]))),
+        ("1.1.0", "b2", Some(red(&["https://telemetry.example/"]))),
+        ("1.0.0", "b1", Some(green())),
+    ] {
+        assert!(
+            m.run(auto_upgrade(
+                version,
+                bundle,
+                class.clone(),
+                hold_over,
+                Some(taken_on(1, 7))
+            ))
+            .is_err(),
+            "{version} {class:?}"
+        );
+    }
+    // Not proposed as a person, nor as the policy without the marker.
+    let mut as_cora = cmd.clone();
+    if let SystemCmd::UpgradeApp { actor, .. } = &mut as_cora {
+        *actor = "cora".into();
+    }
+    assert_eq!(m.run(as_cora), Err(AUTO_UPDATE_REFUSED.to_owned()));
+    let mut unmarked = cmd.clone();
+    if let SystemCmd::UpgradeApp { auto, .. } = &mut unmarked {
+        *auto = false;
+    }
+    assert!(
+        m.run(unmarked).is_err(),
+        "the policy's actor has no passkey"
+    );
+    assert_eq!(m.state.apps["inst"].bundle, "b1", "a refusal moves nothing");
+    // The leader finds it once the hold passed: the newest release, green and quiet.
+    let found = m.state.auto_update_candidates(hold_over);
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        (found[0].0.app_id.as_str(), found[0].1.version.as_str()),
+        ("inst", "1.0.2"),
+        "the newest release of its package"
+    );
+    let _ok = m.run(cmd).unwrap();
+    let a = &m.state.apps["inst"];
+    assert_eq!(
+        (
+            a.bundle.as_str(),
+            a.release.as_ref().unwrap().version.as_str()
+        ),
+        ("b3", "1.0.1")
+    );
+    let rec = a.last_upgrade.clone().unwrap();
+    assert!(rec.auto && rec.by == AUTO_UPDATE && rec.ok);
+    let shown = serde_json::to_value(&rec).unwrap();
+    assert_eq!(shown["auto"], true, "{shown}");
+    let p = a.restore_point.clone().unwrap();
+    assert_eq!(
+        (p.from_bundle.as_str(), p.to_bundle.as_str(), p.at),
+        ("b1", "b3", hold_over)
+    );
+    assert_eq!(p.from_release.unwrap().version, "1.0.0");
+    assert_eq!(p.file, taken_on(1, 7).file);
+    // A unit's member never moves alone on its own.
+    let mut parent = m.state.apps["inst"].clone();
+    parent.app_id = "parent".into();
+    let _prev = parent.links.insert("store".into(), "inst".into());
+    let _prev = m.state.apps.insert("parent".into(), parent);
+    assert_eq!(
+        m.run(auto_upgrade(
+            "1.0.2",
+            "b3",
+            Some(green()),
+            hold_over,
+            Some(crate::types::TakenRestorePoint::default())
+        )),
+        Err(AUTO_UPDATE_REFUSED.to_owned())
+    );
+}
+
+/// For a week after an upgrade, an owner or admin undoes it with their passkey: the app
+/// goes back to the release it ran, into a new group the restore point's node seeds
+/// (whatever it wrote since is lost), the one move to an older release; the restore
+/// point is spent once that restore finishes. A member, a stale or late undo, other apps
+/// or other seeds than the restore points name are refused; an upgrade without a
+/// restore point leaves none, and an update an undo left never applies on its own again.
+#[test]
+fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
+    use super::{
+        NOT_AN_UPGRADE_APPROVER, NO_RESTORE_POINT, UNDO_NOT_AS_NAMED, UNDO_STALE,
+        UNDO_WINDOW_PASSED,
+    };
+    use crate::types::UNDO_WINDOW_SECS;
+    let hold_over = 1000 + 24 * 3600;
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    let _ok = m
+        .run(auto_upgrade(
+            "1.0.1",
+            "b3",
+            Some(green()),
+            hold_over,
+            Some(taken_on(2, 7)),
+        ))
+        .unwrap();
+    let undo = |actor: &str, apps: Value, at: u64| SystemCmd::UndoUpgrade {
+        app_id: "inst".into(),
+        apps: serde_json::from_value(apps).unwrap(),
+        actor: actor.into(),
+        at,
+        consent: Value::Null,
+    };
+    let within = hold_over + UNDO_WINDOW_SECS;
+    assert_eq!(
+        undo("cora", json!({ "inst": [2, 1] }), within).features(),
+        [super::cluster_version::Feature::RestorePoints]
+    );
+    assert_eq!(
+        m.run_unproven(undo("dan", json!({ "inst": [2, 1] }), within)),
+        Err(NOT_AN_UPGRADE_APPROVER.to_owned()),
+        "a member"
+    );
+    for (apps, why) in [
+        (json!({}), "no app"),
+        (
+            json!({ "inst": [1, 2] }),
+            "seeded by a node without the restore point",
+        ),
+        (json!({ "inst": [] }), "no new group"),
+        (json!({ "inst": [2, 2] }), "a node twice"),
+        (json!({ "inst": [2, 9] }), "an unregistered node"),
+        (json!({ "inst": [2], "rawapp": [] }), "another app"),
+    ] {
+        assert_eq!(
+            m.run_unproven(undo("cora", apps, within)),
+            Err(UNDO_NOT_AS_NAMED.to_owned()),
+            "{why}"
+        );
+    }
+    assert_eq!(
+        m.run_unproven(undo("cora", json!({ "inst": [2, 1] }), within + 1)),
+        Err(UNDO_WINDOW_PASSED.to_owned())
+    );
+    assert!(
+        m.run(undo("cora", json!({ "inst": [2, 1] }), within))
+            .is_err(),
+        "without the owner's passkey"
+    );
+    let args = m.state.undo_args(["inst".to_owned()].iter());
+    assert_eq!(args["apps"]["inst"]["to"]["version"], "1.0.0", "{args}");
+    assert_eq!(args["apps"]["inst"]["from"]["version"], "1.0.1", "{args}");
+    assert_eq!(
+        args["apps"]["inst"]["restorePoint"],
+        "ab".repeat(32),
+        "{args}"
+    );
+    let before = m.state.apps["inst"].group;
+    let out = m
+        .run_unproven(undo("eve", json!({ "inst": [2, 1] }), within))
+        .unwrap();
+    let a = m.state.apps["inst"].clone();
+    assert_eq!(out["groups"]["inst"], a.group, "{out}");
+    assert_ne!(a.group, before, "a new group");
+    assert_eq!(
+        (
+            a.bundle.as_str(),
+            a.release.as_ref().unwrap().version.as_str()
+        ),
+        ("b1", "1.0.0"),
+        "the one move to an older release"
+    );
+    assert_eq!(a.replicas, [2, 1]);
+    let restore = a.restore.clone().unwrap();
+    assert_eq!(restore.seed, Some(2));
+    assert_eq!(restore.source, taken_on(2, 7).file.map(|f| f.source));
+    let rec = a.last_upgrade.clone().unwrap();
+    assert!(rec.undo && rec.by == "eve");
+    assert_eq!(rec.from_release.unwrap().version, "1.0.1");
+    assert_eq!(rec.to_release.unwrap().version, "1.0.0");
+    // A seed that stopped may be sent again until the restore finishes.
+    let again = m
+        .run_unproven(undo("cora", json!({ "inst": [2, 1] }), within + 100))
+        .unwrap();
+    let group = m.state.apps["inst"].group;
+    assert_eq!(again["groups"]["inst"], group);
+    let _ok = m
+        .run_unproven(SystemCmd::FinishRestore {
+            app_id: "inst".into(),
+            group,
+        })
+        .unwrap();
+    assert!(m.state.apps["inst"].restore_point.is_none(), "spent");
+    assert_eq!(
+        m.run_unproven(undo("cora", json!({ "inst": [2, 1] }), within)),
+        Err(NO_RESTORE_POINT.to_owned())
+    );
+    // The release it undid never applies on its own again; a newer one may.
+    let later = hold_over + 10;
+    let found = m.state.auto_update_candidates(later);
+    assert_eq!(found[0].1.version, "1.0.2");
+    if let Some(p) = m.state.packages.get_mut("p") {
+        let _gone = p.versions.remove("1.0.2");
+    }
+    assert!(m.state.auto_update_candidates(later).is_empty());
+
+    // An upgrade that runs nothing on the group is undone in the directory alone.
+    let mut m = auto_fixture();
+    let manual = |version: &str, taken| {
+        let mut cmd = classified_upgrade("cora", version, Some(green()), 50);
+        if let SystemCmd::UpgradeApp {
+            bundle,
+            restore_point,
+            ..
+        } = &mut cmd
+        {
+            *bundle = "b3".into();
+            *restore_point = taken;
+        }
+        cmd
+    };
+    let _ok = m
+        .run_unproven(manual("1.0.1", Some(taken_on(1, 3))))
+        .unwrap();
+    let _ok = m
+        .run_unproven(manual(
+            "1.0.2",
+            Some(crate::types::TakenRestorePoint::default()),
+        ))
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(undo("cora", json!({ "inst": [1] }), 60)),
+        Err(UNDO_NOT_AS_NAMED.to_owned())
+    );
+    let group = m.state.apps["inst"].group;
+    let _ok = m
+        .run_unproven(undo("cora", json!({ "inst": [] }), 60))
+        .unwrap();
+    let a = &m.state.apps["inst"];
+    assert_eq!(
+        (a.group, a.release.as_ref().unwrap().version.as_str()),
+        (group, "1.0.1")
+    );
+    assert!(a.restore.is_none() && a.restore_point.is_none());
+    // Once the app moved on, an older restore point is stale; without one, none is kept.
+    let mut m = auto_fixture();
+    let _ok = m
+        .run_unproven(manual("1.0.1", Some(taken_on(1, 3))))
+        .unwrap();
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        a.bundle = "b2".into();
+    }
+    assert_eq!(
+        m.run_unproven(undo("cora", json!({ "inst": [1] }), 60)),
+        Err(UNDO_STALE.to_owned())
+    );
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        a.bundle = "b3".into();
+    }
+    let _ok = m.run_unproven(manual("1.0.2", None)).unwrap();
+    assert!(m.state.apps["inst"].restore_point.is_none());
+    // A state from before restore points reads with none and writes as it did.
+    let shown = serde_json::to_value(&m.state.apps["rawapp"]).unwrap();
+    assert!(shown.get("restorePoint").is_none(), "{shown}");
+}
+
+/// A deployment's offer reaches the instances on an automatic policy in waves (1%, 10%,
+/// 50%, everyone), each `waveHours` after the last, judged on the offer's logged time
+/// and the upgrade's own. Its managers pause and resume it (with their passkey), and it
+/// pauses on its own once failed upgrades and undos pass the threshold, judged again at
+/// apply from the state.
+#[test]
+fn a_deployments_offer_reaches_its_instances_in_waves_and_pauses_on_failures() {
+    use super::cluster_version::Feature;
+    use super::rollouts::{admitted, RolloutHealth};
+    use super::{Deployer, BAD_ROLLOUT, ROLLOUT_HEALTHY, ROLLOUT_WAITS};
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    let _ok = m
+        .run_unproven(create_deployment(
+            "d",
+            Deployer::Account("pam".into()),
+            "pam",
+        ))
+        .unwrap();
+    let mut offer = offer_app("d", "notes", "1.0.1", "pam");
+    if let SystemCmd::OfferApp { at, .. } = &mut offer {
+        *at = 2000;
+    }
+    let _ok = m.run_unproven(offer).unwrap();
+    // Twenty instances of it: wave 0 reaches one, wave 1 two, wave 2 ten.
+    for i in 0..20 {
+        let id = format!("i{i:02}");
+        instance_of(
+            &mut m,
+            &id,
+            "b1",
+            json!({ "package": "p", "version": "1.0.0" }),
+        );
+        if let Some(a) = m.state.apps.get_mut(&id) {
+            a.deployment = Some("d".into());
+        }
+    }
+    let _gone = m.state.apps.remove("inst");
+    let day = 24 * 3600;
+    let hold_over = 2000 + day;
+    let (offered, r) = m.state.rollout_of("d", "notes").unwrap();
+    let order: Vec<String> = m
+        .state
+        .rollout_order("d", &offered)
+        .iter()
+        .map(|a| a.app_id.clone())
+        .collect();
+    assert_eq!((order.len(), r.wave_at(hold_over)), (20, 1));
+    assert_eq!(
+        (admitted(20, 0), admitted(20, 1), admitted(20, 2)),
+        (1, 2, 10)
+    );
+    let first = &order[0];
+    let third = &order[2];
+    let admits =
+        |m: &SystemMachine, id: &str, at: u64| m.state.rollout_admits(&m.state.apps[id], at);
+    assert!(admits(&m, first, 2000) && !admits(&m, &order[1], 2000));
+    assert!(!admits(&m, third, hold_over) && admits(&m, third, 2000 + 2 * day));
+    // An instance's own update waits for its wave, as the leader's pass does.
+    let up = |id: &str, at: u64| {
+        let mut cmd = auto_upgrade("1.0.1", "b3", Some(green()), at, Some(taken_on(1, 4)));
+        if let SystemCmd::UpgradeApp {
+            app_id,
+            in_deployment,
+            ..
+        } = &mut cmd
+        {
+            *app_id = id.into();
+            *in_deployment = true;
+        }
+        cmd
+    };
+    assert_eq!(m.run(up(third, hold_over)), Err(ROLLOUT_WAITS.to_owned()));
+    let found: Vec<String> = m
+        .state
+        .auto_update_candidates(hold_over)
+        .into_iter()
+        .map(|(a, _)| a.app_id)
+        .collect();
+    let mut wave1 = vec![order[0].clone(), order[1].clone()];
+    wave1.sort();
+    assert_eq!(found, wave1, "wave 1: the first two");
+    let _ok = m.run(up(first, hold_over)).unwrap();
+    // The managers pause it: nobody new, the open waves keep what they did.
+    let set = |actor: &str, paused: bool, hours: Option<u32>, at: u64| SystemCmd::SetRollout {
+        deployment: "d".into(),
+        app: "notes".into(),
+        paused,
+        wave_hours: hours,
+        actor: actor.into(),
+        at,
+        consent: Value::Null,
+    };
+    assert_eq!(set("pam", true, None, 1).features(), [Feature::Rollouts]);
+    assert!(
+        m.run_unproven(set("cora", true, None, hold_over)).is_err(),
+        "not a manager"
+    );
+    assert!(
+        m.run(set("pam", true, None, hold_over)).is_err(),
+        "without the passkey"
+    );
+    for hours in [0, 169] {
+        assert_eq!(
+            m.run_unproven(set("pam", true, Some(hours), hold_over)),
+            Err(BAD_ROLLOUT.to_owned())
+        );
+    }
+    let shown = m
+        .run_unproven(set("pam", true, Some(48), hold_over))
+        .unwrap();
+    assert_eq!(shown["apps"][0]["paused"]["by"], "pam", "{shown}");
+    assert_eq!(shown["apps"][0]["updated"], 1, "{shown}");
+    assert!(!admits(&m, &order[1], hold_over + 30 * day));
+    assert_eq!(
+        m.run(up(&order[1], hold_over + 1)),
+        Err(ROLLOUT_WAITS.to_owned())
+    );
+    // Resumed, from the wave open at the pause; the next opens 48 h later.
+    let _ok = m
+        .run_unproven(set("pam", false, None, hold_over + 10 * day))
+        .unwrap();
+    assert!(admits(&m, &order[1], hold_over + 10 * day));
+    assert!(!admits(&m, third, hold_over + 11 * day));
+    assert!(admits(&m, third, hold_over + 12 * day));
+    // Failures pause it on their own, judged from the state at apply.
+    let pause = SystemCmd::PauseRollout {
+        deployment: "d".into(),
+        app: "notes".into(),
+        version: "1.0.1".into(),
+        at: hold_over + 10 * day,
+    };
+    assert_eq!(pause.features(), [Feature::Rollouts]);
+    assert_eq!(
+        m.run(pause.clone()),
+        Err(ROLLOUT_HEALTHY.to_owned()),
+        "one updated, none failed"
+    );
+    assert!(m.state.failing_rollouts().is_empty());
+    let _ok = m
+        .run_unproven(SystemCmd::UpgradeFailed {
+            app_id: order[1].clone(),
+            bundle: "b3".into(),
+            by: super::AUTO_UPDATE.into(),
+            at: hold_over + 10 * day,
+            error: json!("trap"),
+            run: None,
+            release: Some(PackageRef {
+                package: "p".into(),
+                version: "1.0.1".into(),
+                service: None,
+                compute: false,
+            }),
+        })
+        .unwrap();
+    assert_eq!(
+        m.state.rollout_health("d", &offered),
+        RolloutHealth {
+            instances: 20,
+            updated: 1,
+            failed: 1,
+            undone: 0,
+            tried: 2,
+        }
+    );
+    assert_eq!(
+        m.state.failing_rollouts(),
+        [("d".to_owned(), "notes".to_owned(), "1.0.1".to_owned())]
+    );
+    let _ok = m.run(pause).unwrap();
+    let (_, r) = m.state.rollout_of("d", "notes").unwrap();
+    let paused = r.paused.unwrap();
+    assert_eq!((paused.by.as_str(), paused.failures), ("failures", 1));
+    assert!(m.state.failing_rollouts().is_empty(), "paused once");
+    // A newer offer starts at wave 0 again, not paused, keeping its pace.
+    let _ok = m
+        .run_unproven(offer_app("d", "notes", "1.0.2", "pam"))
+        .unwrap();
+    let (_, r) = m.state.rollout_of("d", "notes").unwrap();
+    assert!(r.paused.is_none() && r.base_wave == 0 && r.wave_hours == 48);
 }
 
 /// A move the log cannot rebuild (the release the app runs, or a member's, no longer

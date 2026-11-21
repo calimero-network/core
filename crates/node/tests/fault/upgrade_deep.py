@@ -120,6 +120,18 @@ NOT_COVERED = [
      "`system::tests` (`an_updates_class_is_judged_against_the_log_and_recorded`, "
      "`a_red_update_needs_a_second_approver_where_the_policy_asks`) and `a_red_update_waits_for_a_second_approver` "
      "(`consent_page.rs`) cover them on one build"),
+    ("Apps", "A green update applying on its own after its hold (`UpgradeApp::auto`, `lastUpgrade.auto`), "
+     "the restore point an upgrade takes and its undo (`AppRecord::restore_point`, `UndoUpgrade`, "
+     "`POST /apps/{app}/undo`) and a deployment's waves (`SystemState::rollouts`, `SetRollout`, `PauseRollout`)",
+     "each shape is written only once every node runs this release (`Feature::AutoUpdates`, "
+     "`Feature::RestorePoints`, `Feature::Rollouts`), so the old release cannot seed one; the hold is a day of "
+     "logged time a deep run cannot wait (the tests move the update clock with a testing hook a release `merod` "
+     "lacks), and a restore point is a file on one node's disk, which a roll that replaces the node takes with "
+     "it. An app record, an upgrade entry and a state without them read and replay as before. "
+     "`system::tests` (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`, "
+     "`an_upgrade_is_undone_within_a_week_back_to_its_restore_point`, "
+     "`a_deployments_offer_reaches_its_instances_in_waves_and_pauses_on_failures`) and `tests/auto_updates.rs` "
+     "cover them on one build"),
     ("Packages", "A release that declares its secrets (`secrets` in the signed manifest, `PackageVersion::secrets`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `secrets`, and a release that "
      "declares them installs only once every node runs this release (`Feature::DeclaredSecrets`); "

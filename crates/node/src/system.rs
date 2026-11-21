@@ -31,9 +31,11 @@ mod fleet;
 mod orgs;
 mod packages;
 mod recovery;
+pub mod rollouts;
 mod routing;
 mod sign_up;
 mod updates;
+pub use updates::rollout_args;
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,13 +191,61 @@ pub const ONE_APPROVAL: &str =
 /// The apply error for a first approval of an update another owner or admin approved
 /// first: that one waits for its second, which is an upgrade.
 pub const APPROVAL_PENDING: &str = "APPROVAL_PENDING: another owner or admin approved this update already: apply it (POST /apps/{app}/upgrade)";
+/// Who an update that applied on its own names as its actor (`UpgradeApp::auto`): its
+/// app's update policy, never an account (no account id has this shape).
+pub const AUTO_UPDATE: &str = "policy:auto-update";
+/// The apply error for an update proposed to apply on its own that the app's policy does
+/// not let through: no `noDestinations` policy, a class other than green, a unit with a
+/// destination before or after, an older release, a unit's member alone, or another
+/// release than its deployment offers.
+pub const AUTO_UPDATE_REFUSED: &str = "AUTO_UPDATE_REFUSED: the app's update policy does not apply this update on its own; an owner or admin approves it";
+/// The apply error for an update proposed to apply on its own before its hold passed,
+/// judged on the release's logged install or offer time and the upgrade's own `at`.
+pub const HOLD_NOT_OVER: &str =
+    "HOLD_NOT_OVER: the update's hold has not passed since the release was logged";
+/// The apply error for an instance's update proposed to apply on its own while its
+/// deployment's rollout is paused or its wave has not opened.
+pub const ROLLOUT_WAITS: &str =
+    "ROLLOUT_WAITS: the deployment's rollout has not reached this instance, or is paused";
+/// The apply error for an update proposed to apply on its own without a restore point.
+pub const RESTORE_POINT_REQUIRED: &str =
+    "RESTORE_POINT_REQUIRED: an update applies on its own only after a restore point";
+/// The apply error for an undo of an app whose last upgrade left no restore point.
+pub const NO_RESTORE_POINT: &str = "NO_RESTORE_POINT: this app has no upgrade to undo";
+/// The apply error for an undo logged more than `UNDO_WINDOW_SECS` after its upgrade.
+pub const UNDO_WINDOW_PASSED: &str =
+    "UNDO_WINDOW_PASSED: an upgrade is undone within 7 days of it, and this one is older";
+/// The apply error for an undo of an app that no longer runs what its upgrade moved it
+/// to, or is being restored from another backup.
+pub const UNDO_STALE: &str =
+    "UNDO_STALE: the app no longer runs the release its last upgrade moved it to";
+/// The apply error for an undo whose apps or new groups are not those its instance's
+/// restore points name (the instance and the members its unit's upgrade moved).
+pub const UNDO_NOT_AS_NAMED: &str =
+    "UNDO_NOT_AS_NAMED: an undo reverts the instance and the members its upgrade moved, each seeded by the node that holds its restore point";
+/// The apply error for a rollout's pause between waves outside
+/// `MIN_WAVE_HOURS..=MAX_WAVE_HOURS`.
+pub const BAD_ROLLOUT: &str = "BAD_ROLLOUT: waveHours is 1 to 168";
+/// The apply error for a pause on failures the state does not show.
+pub const ROLLOUT_HEALTHY: &str =
+    "ROLLOUT_HEALTHY: the rollout's failures do not pass its threshold";
 /// The apply errors a code prefixes (`CODE: why`), with the status the API answers.
-pub const UPDATE_REFUSALS: [(&str, u16); 5] = [
+pub const UPDATE_REFUSALS: [(&str, u16); 15] = [
     (BAD_UPGRADE_POLICY, 400),
     (SECOND_APPROVAL_REQUIRED, 409),
     (UPGRADE_CLASS_MISMATCH, 409),
     (ONE_APPROVAL, 409),
     (APPROVAL_PENDING, 409),
+    (AUTO_UPDATE_REFUSED, 409),
+    (HOLD_NOT_OVER, 409),
+    (ROLLOUT_WAITS, 409),
+    (RESTORE_POINT_REQUIRED, 409),
+    (NO_RESTORE_POINT, 409),
+    (UNDO_WINDOW_PASSED, 409),
+    (UNDO_STALE, 409),
+    (UNDO_NOT_AS_NAMED, 409),
+    (BAD_ROLLOUT, 400),
+    (ROLLOUT_HEALTHY, 409),
 ];
 /// The apply error for a price table whose version is not the current one plus one.
 pub const PRICE_VERSION: &str = "PRICE_VERSION: the version must be the current one plus one";
@@ -793,6 +843,11 @@ pub struct SystemState {
     /// before reads and writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub deployment_secrets: BTreeMap<String, crate::component::InstanceSecrets>,
+    /// Deployments' rollouts of the releases they offer, as their managers left them
+    /// (`SetRollout`, `PauseRollout`; [`rollouts::RolloutState`]), by deployment, then
+    /// offered app. Left out when empty, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rollouts: rollouts::Rollouts,
     /// Web origins packages' managers registered for their frontends
     /// (`AddPackageOrigin`), by origin: a passkey ceremony there opens a
     /// session bound to the package ([`crate::origins`]). Left out when
@@ -4788,6 +4843,9 @@ impl SystemCmd {
             Self::UpgradeApp { .. } => Area::Apps,
             Self::SetUpgradePolicy { .. } => Area::Updates,
             Self::ApproveUpgrade { .. } => Area::Updates,
+            Self::UndoUpgrade { .. } => Area::Updates,
+            Self::SetRollout { .. } => Area::Updates,
+            Self::PauseRollout { .. } => Area::Updates,
             Self::TransferApp { .. } => Area::Apps,
             Self::MoveApp { .. } => Area::Apps,
             Self::SetDelegation { .. } => Area::Apps,
@@ -5416,6 +5474,20 @@ pub enum SystemCmd {
         /// which every rule then takes as red.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         class: Option<crate::types::UpgradeClass>,
+        /// It applies on its own under the app's update policy, proposed by the system
+        /// leader (`node::auto_updates`) with no person's consent: `actor` is
+        /// [`AUTO_UPDATE`], and apply judges the policy, the class, the hold, the
+        /// destinations and the deployment's rollout again from the log
+        /// ([`SystemState::auto_update_gate`]). [`cluster_version::Feature::AutoUpdates`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        auto: bool,
+        /// The restore point taken just before the upgrade ran
+        /// ([`crate::types::TakenRestorePoint`]): recorded as the app's
+        /// `restore_point`, which its owner or an admin may undo for
+        /// [`crate::types::UNDO_WINDOW_SECS`]. Absent: the app keeps no restore point
+        /// after it. [`cluster_version::Feature::RestorePoints`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        restore_point: Option<crate::types::TakenRestorePoint>,
     },
     /// Set the update policy of an organization (`app` absent) or of one of its apps, or
     /// drop it (`policy` absent: an app then follows its organization's, an organization
@@ -5453,6 +5525,50 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+    },
+    /// Undo `app_id`'s last upgrade within [`crate::types::UNDO_WINDOW_SECS`] of it
+    /// (judged at `at`): an owner or admin of its organization, with passkey consent
+    /// over `<app> / __undo_upgrade / ` [`SystemState::undo_args`]. Every app in `apps`
+    /// (the instance, and the members its unit's upgrade moved in the same run) goes back
+    /// to the release it ran before and, where the upgrade ran on its group, into a new
+    /// group seeded from its restore point by the node that holds it (`apps[id][0]`),
+    /// as `RestoreApp` does: whatever it wrote since is gone. The one move to an older
+    /// release. [`cluster_version::Feature::RestorePoints`].
+    UndoUpgrade {
+        app_id: AppId,
+        /// Each app it reverts, with its new group's replicas (the restore point's
+        /// holder first), or none for an app whose upgrade ran nothing on its group.
+        apps: BTreeMap<AppId, Vec<u64>>,
+        actor: AccountId,
+        /// When (Unix seconds), from the proposing node's clock.
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// A deployment's managers pause or resume its rollout of an offered app, or set the
+    /// pause between its waves ([`rollouts::RolloutState`]), with passkey consent over
+    /// `deployment:<id> / __set_rollout / { app, paused, waveHours }`.
+    /// [`cluster_version::Feature::Rollouts`].
+    SetRollout {
+        deployment: String,
+        app: String,
+        paused: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wave_hours: Option<u32>,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// The system leader pauses a rollout whose failed upgrades and undos of the offered
+    /// `version` pass [`rollouts::ROLLOUT_FAILURE_PERCENT`]: apply counts them again
+    /// from the state ([`SystemState::rollout_health`]) and refuses otherwise.
+    /// [`cluster_version::Feature::Rollouts`].
+    PauseRollout {
+        deployment: String,
+        app: String,
+        version: String,
+        at: u64,
     },
     TransferApp {
         app_id: AppId,

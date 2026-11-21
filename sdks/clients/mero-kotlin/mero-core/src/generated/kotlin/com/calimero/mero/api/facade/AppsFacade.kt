@@ -587,6 +587,41 @@ class AppsFacade internal constructor(
         api(null, null, emptySet()).apps.appUndelegate(app = app, target = target)
 
     /**
+     * Undo an app's last upgrade
+     *
+     * An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /apps/{app}/undo` (`app_undo`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun undo(
+        app: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): AppUndo200Response =
+        api(passkey, null, emptySet()).apps.appUndo(app = app, appUndoRequest = AppUndoRequest())
+
+    /**
+     * The upgrade an app may undo
+     *
+     * For whoever may read the app. `available`: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point's node answering); else `reason` says why. `apps`: the app, and the members its unit's upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.
+     *
+     * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+     *
+     * `GET /apps/{app}/undo` (`app_undo_view`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun undoView(
+        app: kotlin.String,
+    ): AppUndoView200Response =
+        api(null, null, emptySet()).apps.appUndoView(app = app)
+
+    /**
      * Detach an app attached to an app
      *
      * Whoever manages the app. A member made with the instance is never detached.

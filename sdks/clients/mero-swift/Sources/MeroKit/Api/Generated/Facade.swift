@@ -418,6 +418,32 @@ extension CalimeroClient {
             }
         }
 
+        /// Undo an app's last upgrade: `POST /apps/{app}/undo` (`app_undo`).
+        ///
+        /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func undo(app: Swift.String, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.AppUndo.Output.Ok.Body.JsonPayload {
+            let input = Operations.AppUndo.Input(path: .init(app: app), body: .json(.init()))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.appUndo(input).ok.body.json
+            }
+        }
+
+        /// The upgrade an app may undo: `GET /apps/{app}/undo` (`app_undo_view`).
+        ///
+        /// For whoever may read the app. `available`: whether an owner or admin may undo its last upgrade now (within a week of it, while it runs what the upgrade moved it to, its restore point's node answering); else `reason` says why. `apps`: the app, and the members its unit's upgrade moved with it, each with what the undo loses: the restore point is the state just before the upgrade, so whatever the app wrote since is gone.
+        ///
+        /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
+        @discardableResult
+        public func undoView(app: Swift.String) async throws -> Operations.AppUndoView.Output.Ok.Body.JsonPayload {
+            let input = Operations.AppUndoView.Input(path: .init(app: app))
+            return try await client.perform { api in
+                try await api.appUndoView(input).ok.body.json
+            }
+        }
+
         /// Detach an app attached to an app: `DELETE /apps/{app}/links/{name}` (`app_unlink`).
         ///
         /// Whoever manages the app. A member made with the instance is never detached.
@@ -1506,6 +1532,19 @@ extension CalimeroClient {
             }
         }
 
+        /// How a deployment's offers roll out: `GET /deployments/{id}/rollout` (`deployment_rollout`).
+        ///
+        /// For its managers: for each app it offers, how the offered release reaches the instances that apply updates on their own (an owner's or admin's own approval applies whenever they give it): its waves, whether it is paused and how its instances fare with it.
+        ///
+        /// **Who:** signed in (a session or an API key).
+        @discardableResult
+        public func rollout(id: Swift.String) async throws -> Operations.DeploymentRollout.Output.Ok.Body.JsonPayload {
+            let input = Operations.DeploymentRollout.Input(path: .init(id: id))
+            return try await client.perform { api in
+                try await api.deploymentRollout(input).ok.body.json
+            }
+        }
+
         /// Remove a deployment's value of a secret: `DELETE /deployments/{id}/secrets/{name}` (`deployment_secret_clear`).
         ///
         /// Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.
@@ -1553,6 +1592,32 @@ extension CalimeroClient {
             let input = Operations.DeploymentWithdraw.Input(path: .init(id: id, app: app))
             return try await client.perform(passkey: passkey) { api in
                 try await api.deploymentWithdraw(input).ok.body.json
+            }
+        }
+
+        /// Pause a deployment's rollout: `POST /deployments/{id}/rollout/{app}/pause` (`rollout_pause`).
+        ///
+        /// A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: true, waveHours }`: no more of its instances move to the offered release on their own; the waves open stay open. `waveHours` (1 to 168, `400 BAD_ROLLOUT`) sets the pause between waves. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func rolloutPause(id: Swift.String, app: Swift.String, waveHours: Swift.Int64? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.RolloutPause.Output.Ok.Body.JsonPayload {
+            let input = Operations.RolloutPause.Input(path: .init(id: id, app: app), body: .json(.init(waveHours: waveHours)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.rolloutPause(input).ok.body.json
+            }
+        }
+
+        /// Resume a deployment's rollout: `POST /deployments/{id}/rollout/{app}/resume` (`rollout_resume`).
+        ///
+        /// A manager, with a step-up over `deployment:<id> / __set_rollout / { app, paused: false, waveHours }`: it goes on from the wave open at the pause, and the next opens a full `waveHours` later. A rollout paused on its failures resumes the same way.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func rolloutResume(id: Swift.String, app: Swift.String, waveHours: Swift.Int64? = nil, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.RolloutResume.Output.Ok.Body.JsonPayload {
+            let input = Operations.RolloutResume.Input(path: .init(id: id, app: app), body: .json(.init(waveHours: waveHours)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.rolloutResume(input).ok.body.json
             }
         }
 

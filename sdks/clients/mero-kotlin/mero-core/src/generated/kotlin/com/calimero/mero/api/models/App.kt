@@ -25,6 +25,7 @@ package com.calimero.mero.api.models
 
 import com.calimero.mero.api.models.AppRestore
 import com.calimero.mero.api.models.PackageRef
+import com.calimero.mero.api.models.RestorePoint
 import com.calimero.mero.api.models.Upgrade
 
 import kotlinx.serialization.Serializable
@@ -32,7 +33,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.
+ * An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`).
  *
  * @param appId 
  * @param name 
@@ -55,6 +56,7 @@ import kotlinx.serialization.Contextual
  * @param restore 
  * @param links 
  * @param attached 
+ * @param restorePoint 
  */
 @Serializable
 
@@ -123,7 +125,10 @@ data class App (
     val links: kotlin.collections.Map<kotlin.String, kotlin.String>? = null,
 
     @SerialName(value = "attached")
-    val attached: kotlin.collections.Map<kotlin.String, kotlin.String>? = null
+    val attached: kotlin.collections.Map<kotlin.String, kotlin.String>? = null,
+
+    @SerialName(value = "restorePoint")
+    val restorePoint: RestorePoint? = null
 
 ) {
 
