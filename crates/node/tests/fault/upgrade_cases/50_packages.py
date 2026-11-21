@@ -132,6 +132,10 @@ class Migrations(DeepCase):
         _, v2 = install(uli, w, "notes-2.0.0.mpk")
         org = new_org(uli, "Upgrade Org")
         join(uli, org, ula)
+        # The apps upgraded one by one live in an organization of their own: since organizations
+        # are ordinary (1.0.0-rc.32), an instance naming none goes to its creator's only
+        # organization, which would put them in the run's.
+        own = new_org(uli, "Own Org")
 
         def app(name, org=None):
             body = {"name": name, "package": p, "version": v1, **({"org": org} if org else {})}
@@ -140,7 +144,7 @@ class Migrations(DeepCase):
             return a
 
         s = {"package": p, "v1": v1, "v2": v2, "org": org, "notes": {}}
-        s["up"], s["stay"] = app("up"), app("stay")
+        s["up"], s["stay"] = app("up", own), app("stay", own)
         run_apps = [app(f"org-{i}", org) for i in range(2)]
         uli.raw("post", f"apps/{s['up']}/upgrade", {"version": v2})
         s["run"] = _run_id(uli.raw("post", f"orgs/{org}/upgrade", {"package": p, "version": v2, "cascade": False}))

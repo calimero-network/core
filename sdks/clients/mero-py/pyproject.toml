@@ -9,6 +9,11 @@ dynamic = ["version"]
 description = "Python client for Calimero 1.0"
 authors = [{name = "Calimero Network", email = "support@calimero.network"}]
 readme = "README.md"
+# maturin builds the sdist from the repository root, so the package's own LICENSE
+# lands under sdks/clients/mero-py/ while PKG-INFO names `LICENSE` at the root, and
+# PyPI refuses the upload (400 "License-File LICENSE does not exist"). Naming it here
+# copies it to the root of the sdist.
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 # The generated client (calimero_client_py/openapi): openapi-python-client
 # 0.26.2's own requirements for the code it writes.
