@@ -1,0 +1,101 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-update-path">
+<svg viewBox="0 0 760 540" role="img" aria-label="An update's path. A newer release is installed, or offered by the instance's deployment. The classifier judges the move over the whole unit. Green has no reason. Red has one or more: signerChanged, egressAdded, stateVersionChanged, memberAdded or memberRemoved, delegatedMethodsAdded. Unclassified is red: a release the log can no longer rebuild, its facts null in the API and Unknown on the consent page, from 1.0.0-rc.35. A green update whose policy says autoApply noDestinations, whose unit has no destinations before or after, and which is no unit's member, waits holdHours after the release was logged, then the system leader's pass upgrades it with UpgradeApp auto true; otherwise one owner or admin approves it. A red or unclassified update needs one owner or admin, or, where the policy asks for a second approver, a first approval and then another owner or admin's upgrade. Every upgrade takes a restore point first and its class is checked again at apply, refused 409 UPGRADE_CLASS_MISMATCH when it hides a reason the log shows. For seven days an owner or admin may undo it, back to the release before and the restore point's state, after GET shows which writes would be lost." xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="up-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="540" rx="10" fill="#0f0f16"/>
+  <text x="380" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">An update's path: class, policy, approval, restore point, undo</text>
+
+  <!-- source and classifier -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="30" y="42" width="250" height="44" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="155" y="60" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">a newer release</text>
+    <text x="155" y="75" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">installed, or the deployment's offer</text>
+    <rect x="330" y="42" width="400" height="44" rx="5" fill="#161b22" stroke="#58a6ff"/>
+    <text x="530" y="60" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">the classifier, over the whole unit</text>
+    <text x="530" y="75" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">calimero_bundle::update · GET /apps/&#123;app&#125;/update · meroctl app check</text>
+    <line x1="280" y1="64" x2="326" y2="64" stroke="#8b949e" stroke-width="1.2" marker-end="url(#up-arrow)"/>
+  </g>
+
+  <!-- three classes -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="420" y1="86" x2="140" y2="108" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <line x1="530" y1="86" x2="380" y2="108" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <line x1="640" y1="86" x2="620" y2="108" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <rect x="30" y="112" width="220" height="80" rx="5" fill="#10210f" stroke="#3fb950"/>
+    <text x="140" y="132" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">green</text>
+    <text x="140" y="150" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">no reason</text>
+    <text x="140" y="166" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">new or removed methods</text>
+    <text x="140" y="178" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">are reported, not red</text>
+    <rect x="270" y="112" width="220" height="80" rx="5" fill="#13160f" stroke="#a5ff11"/>
+    <text x="380" y="132" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">red</text>
+    <text x="380" y="148" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">signerChanged · egressAdded</text>
+    <text x="380" y="161" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">stateVersionChanged</text>
+    <text x="380" y="174" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">memberAdded · memberRemoved</text>
+    <text x="380" y="187" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">delegatedMethodsAdded</text>
+    <rect x="510" y="112" width="220" height="80" rx="5" fill="#231708" stroke="#e3b341"/>
+    <text x="620" y="132" text-anchor="middle" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">unclassified (red)</text>
+    <text x="620" y="150" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">a release the log cannot rebuild</text>
+    <text x="620" y="166" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">facts null in the API,</text>
+    <text x="620" y="178" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">"Unknown" on the page (rc.35)</text>
+  </g>
+
+  <!-- green: policy -->
+  <g class="seq-step" style="--step-i:2">
+    <line x1="140" y1="192" x2="140" y2="214" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <rect x="30" y="218" width="220" height="56" rx="5" fill="#10151c" stroke="#3fb950" stroke-dasharray="4 3"/>
+    <text x="140" y="236" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">autoApply: noDestinations?</text>
+    <text x="140" y="250" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">no destination before or after,</text>
+    <text x="140" y="263" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">and no unit's member</text>
+    <line x1="140" y1="274" x2="140" y2="304" stroke="#3fb950" stroke-width="1.2" marker-end="url(#up-arrow)"/>
+    <text x="148" y="293" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="8">yes</text>
+    <rect x="30" y="308" width="220" height="40" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="140" y="325" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">waits holdHours (24 to 168)</text>
+    <text x="140" y="339" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">after it was logged or offered</text>
+    <line x1="140" y1="348" x2="140" y2="368" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <rect x="30" y="372" width="220" height="40" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="140" y="389" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">the system leader's pass</text>
+    <text x="140" y="403" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">UpgradeApp &#123; auto: true &#125;</text>
+  </g>
+
+  <!-- red: second approver -->
+  <g class="seq-step" style="--step-i:3">
+    <line x1="380" y1="192" x2="440" y2="214" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <line x1="620" y1="192" x2="560" y2="214" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <rect x="300" y="218" width="430" height="34" rx="5" fill="#10151c" stroke="#a5ff11" stroke-dasharray="4 3"/>
+    <text x="515" y="239" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">the policy asks for a second approver?</text>
+    <line x1="400" y1="252" x2="400" y2="304" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <text x="408" y="280" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">no</text>
+    <line x1="630" y1="252" x2="630" y2="304" stroke="#a5ff11" stroke-width="1.2" marker-end="url(#up-arrow)"/>
+    <text x="638" y="280" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8">yes</text>
+    <line x1="250" y1="250" x2="330" y2="304" stroke="#8b949e" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#up-arrow)"/>
+    <text x="262" y="292" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">no</text>
+    <rect x="300" y="308" width="200" height="50" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="400" y="327" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">one owner or admin</text>
+    <text x="400" y="341" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">approves with a passkey</text>
+    <rect x="520" y="308" width="210" height="50" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="625" y="324" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">a first approval, then</text>
+    <text x="625" y="337" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">another owner or admin</text>
+    <text x="625" y="350" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">upgrade-approvals · a week</text>
+  </g>
+
+  <!-- apply -->
+  <g class="seq-step" style="--step-i:4">
+    <line x1="140" y1="412" x2="200" y2="432" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <line x1="400" y1="358" x2="400" y2="432" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <line x1="625" y1="358" x2="600" y2="432" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <rect x="30" y="436" width="700" height="38" rx="5" fill="#161b22" stroke="#58a6ff"/>
+    <text x="380" y="452" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">UpgradeApp: restore point first, then the class is checked again at apply</text>
+    <text x="380" y="466" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">a class that hides a reason the log shows: 409 UPGRADE_CLASS_MISMATCH</text>
+  </g>
+
+  <!-- undo -->
+  <g class="seq-step" style="--step-i:5">
+    <line x1="380" y1="474" x2="380" y2="490" stroke="#8b949e" stroke-width="1" marker-end="url(#up-arrow)"/>
+    <rect x="30" y="494" width="700" height="34" rx="5" fill="#10151c" stroke="#e3b341" stroke-dasharray="4 3"/>
+    <text x="380" y="509" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">7 days: POST /apps/&#123;app&#125;/undo, back to the release before and the restore point's state</text>
+    <text x="380" y="521" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">GET /apps/&#123;app&#125;/undo says first which writes would be lost (lostWrites)</text>
+  </g>
+</svg>
+</Figure>
