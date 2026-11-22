@@ -1,0 +1,126 @@
+---
+title: Installation
+description: Install mero-py from PyPI (prebuilt wheels for Linux, macOS and Windows) or from source.
+sidebar:
+  order: 1
+---
+
+import { Steps, Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+`mero-py` is the Python client for Calimero 1.0, backed by a native Rust core, built
+with [PyO3](https://pyo3.rs/) and [maturin](https://www.maturin.rs/). Two
+importable modules are installed:
+
+- **`calimero_client_py`** — the client: `Client`, its generated methods
+  (documented in [using the client](/clients/mero-py/reference/client/) and the
+  [method reference](/clients/mero-py/reference/methods/)) and the compiled extension
+  (`calimero_client_py._native`) they send through.
+- **`calimero`** — a thin Python package that re-exports the same names.
+
+Its Python dependencies are `httpx` and `attrs`, which pip installs with it.
+
+## Requirements
+
+- **Python 3.9 or newer** (CPython).
+
+PyPI carries one prebuilt wheel per platform, built against Python's stable ABI
+(`abi3`), so it installs on every CPython from 3.9 on without compiling:
+
+| Platform | Wheel |
+| --- | --- |
+| Linux x86_64 | `manylinux2014_x86_64` (glibc 2.17+) |
+| Linux aarch64 | `manylinux2014_aarch64` (glibc 2.17+) |
+| macOS Apple silicon | `macosx_11_0_arm64` |
+| macOS Intel | `macosx_10_12_x86_64` |
+| Windows x86_64 | `win_amd64` |
+
+:::note[Other platforms build from source]
+Anywhere else (musl Linux, 32-bit, PyPy) pip falls back to the source
+distribution and compiles the Rust extension, which needs a stable Rust
+toolchain and a C compiler on `PATH`. Install Rust with
+[rustup](https://rustup.rs/):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+:::
+
+## Install from PyPI
+
+<Tabs>
+  <TabItem label="pip">
+
+```bash
+pip install --pre mero-py
+```
+
+  </TabItem>
+  <TabItem label="pipx">
+
+```bash
+pipx install --pip-args=--pre mero-py
+```
+
+  </TabItem>
+</Tabs>
+
+This installs the client for Calimero 1.0's node, on core's version
+(1.0.0rc30 and on). Up to then the distribution was `calimero-client-py`; the
+import names (`calimero`, `calimero_client_py`) did not change. The client for
+v1's node is `pip install calimero-client-py==0.9.0`.
+
+## Verify
+
+```bash
+python -c "import calimero_client_py; print(calimero_client_py.VERSION)"
+```
+
+That prints the installed version.
+
+## Install from source
+
+Clone the repository and build with maturin. `maturin develop` compiles the
+extension and installs it into the active virtual environment in one step.
+
+<Steps>
+
+1. Clone and enter the repository:
+
+   ```bash
+   git clone https://github.com/calimero-network/core.git
+   cd core/sdks/clients/mero-py
+   ```
+
+2. Install maturin and build in development mode:
+
+   ```bash
+   pip install maturin
+   maturin develop --release
+   ```
+
+3. Confirm the import works:
+
+   ```bash
+   python -c "import calimero_client_py; print('ok', calimero_client_py.VERSION)"
+   ```
+
+</Steps>
+
+:::note
+The Rust core depends on `calimero-client`, `calimero-identity` and
+`calimero-sealed` from `github.com/calimero-network/core` (the tag `Cargo.toml`
+names), so the first build fetches and compiles those too. A network connection is required for the initial build.
+:::
+
+## Next steps
+
+<CardGrid>
+  <LinkCard
+    title="Quickstart"
+    href="/clients/mero-py/get-started/quickstart/"
+    description="Sign up, deploy an app and make your first call." />
+  <LinkCard
+    title="Concepts"
+    href="/clients/mero-py/get-started/concepts/"
+    description="Attestation, the sealed channel, accounts, apps, organizations and teams." />
+</CardGrid>

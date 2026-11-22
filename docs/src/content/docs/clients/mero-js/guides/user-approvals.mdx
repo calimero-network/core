@@ -1,0 +1,303 @@
+---
+title: Ask your users to approve node images and app upgrades
+description: Some decisions about your users' apps are theirs alone. Your app shows what waits, then sends them to the node's own consent page to approve it with their passkey; it never runs the approval itself.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Why the approval is not in your app
+
+Some decisions belong to the account holder, wherever the cluster leaves them
+to the owner side (the default):
+
+- **A new node image.** A mero-tee release is the image a node boots: kernel,
+  firmware and `merod`. Nodes on a new release get none of an app's data until
+  its approver approves that release.
+- **A new app version.** An upgrade switches the app to other code, which then
+  reads its data.
+- **Outbound hosts.** A new destination the app may send data to.
+- **Organizations.** Creating one, inviting to it and joining it, and managing
+  it: members, their roles, teams and capabilities, invites, its name, and
+  deleting it ([below](#organizations-from-your-app)).
+
+Each is a passkey step-up over that exact change, logged as consent. A passkey
+prompt is blind, though: the authenticator shows a site name, never what it
+signs. If your frontend ran the ceremony, it could show "update to 1.2.1" and
+have the passkey sign something else. So the node refuses every approval
+route to a session opened on an app's frontend (`403`), and serves a
+**consent page** of its own, on its own origin, that shows the person what
+they approve from the node's state and the signed manifests: for an upgrade,
+the versions, the publisher and a capability sheet of what changes.
+
+Your app does three things: read what waits, ask the node for a consent
+request, and send the user to its page.
+
+## Read what waits
+
+```ts
+const pending = await client.pendingApprovals();      // the account's own apps
+const forOrg = await client.pendingApprovals(orgId);   // an organization's (any member)
+if (pending.actionable) showApprovalsBanner(pending);
+```
+
+It reads `GET /auth/apps` (or `/orgs/{org}/apps`, every page) and the public
+`GET /releases`, and answers:
+
+- `releases`: mero-tee releases the cluster's nodes run that the scope has not
+  approved, newest first, each with `nodes`, `releaseNotesUrl`, `verifyUrl`
+  (the public verifier's page for its signed measurements) and `deadline`;
+- `upgrades`: apps with newer releases of their package (`from`, `to`, and
+  every one it may see in `available`). `to` is the newest an upgrade would
+  take now (the report's `latestReachable`); `reachable: false` when none
+  would, and `blocked` says why the newest is out of reach (`runtime`: a
+  node holding the app runs an older runtime than the release needs;
+  `authority`: it would give the owner's upgrades to the publisher);
+- `approvedReleases` and `governance`;
+- `stalledBy`: when set, a release's deadline has passed and the scope has
+  not approved it or a newer one, so the node refuses new apps, installs and
+  upgrades (`ReleaseDeadlineError`); running apps keep running.
+
+Where the cluster gives a decision to its operator, its items are not
+`actionable`: show them as information or not at all. For the raw report
+(per app: its release, publisher, replicas and last upgrade) use
+`appsReport(org | null, { after, limit })`.
+
+## Send them to the consent page
+
+```ts
+import { releaseConsent, upgradeConsent } from '@calimero-network/mero-js';
+
+const returnTo = `${location.origin}/settings`;
+
+// "Approve" on a release:
+await client.openConsentPage(releaseConsent(pending.scope, release.version, returnTo));
+
+// "Upgrade" on an app:
+await client.openConsentPage(upgradeConsent(upgrade.app, upgrade.to, returnTo));
+```
+
+`openConsentPage` posts `POST /consent/requests` (any passkey session of the
+account, your frontend's included) and navigates to the page's `url`. The
+person approves there with their passkey, or declines, and the page sends
+them back to `returnTo?request_id=…&result=approved|declined`. Treat that as
+a hint and confirm it:
+
+```ts
+const decision = await client.resumeConsent(); // null when the URL carries no request_id
+if (decision?.status === 'approved') refresh();
+```
+
+`openConsentPage` keeps the request's id in `sessionStorage` before it
+navigates; `resumeConsent` reads `request_id` from the URL, reads the decision
+on this page's own request from the node (`GET /consent/{id}/result`, over the
+sealed channel), removes `request_id` and `result` with
+`history.replaceState`, and answers `{ requestId, kind, status, decidedAt,
+outcome? }`. The URL's `result` is never trusted, and it throws
+`CalimeroError` rather than answer a return it cannot vouch for:
+
+- `CONSENT_NOT_STARTED`: the URL names a request, and this page started none;
+- `CONSENT_REQUEST_MISMATCH`: the URL names another request than this page's;
+- `CONSENT_NOT_DECIDED`: this page's request is still pending although the
+  person was sent back. That is the sign of a page that was not the node's
+  approving some other request: do not act on it.
+- `CONSENT_REPLACED`: the node answers `404` for this page's request. An
+  account has one undecided consent request per node, and a newer one
+  replaces the older; this page's was replaced, possibly on a page that was
+  not the node's. Do not act on it either; ask again if the person still wants it.
+
+Without `sessionStorage`, keep `started.requestId` yourself and pass it:
+`resumeConsent({ requestId })`. To read a URL other than the current one, pass
+`href` (history is then left alone). `consentReturn(href)` still reads the
+raw parameters, as a hint only.
+
+### Show the confirmation code first
+
+The node's answer carries `code`, a short confirmation code such as
+`R02-9P2` that the consent page also shows. Show it to the person before you
+send them to `url`, and tell them to check the page shows the same code: that
+is how they know the page is the one your request opened. The code is not a
+secret. `openConsentPage` takes an options object whose `confirm` runs before
+it navigates; answer `false` and it does not open the page:
+
+```ts
+await client.openConsentPage(request, {
+  confirm: async ({ code }) =>
+    code === undefined || window.confirm(`You will be asked to approve on a page showing ${code}. Continue?`),
+});
+```
+
+`openConsentPage` checks the node's `code` against `confirmationCode(requestId)`
+(the first 30 bits of SHA-256 of the request id, as `XXX-XXX` in Crockford
+base32) and throws `CalimeroError` with code `CONSENT_CODE_MISMATCH`, without
+navigating, when they differ. With `requestConsent` you send the person
+yourself; check the code the same way:
+
+```ts
+import { confirmationCode } from '@calimero-network/mero-js';
+
+const started = await client.consent.pageCreate({ body: request });
+if (started.code !== undefined && started.code !== (await confirmationCode(started.requestId))) {
+  throw new Error('the node answered a code that is not its request');
+}
+showCode(started.code); // then send them to started.url
+```
+
+Nodes older than the code leave `code` out.
+
+To keep your page open, pass a navigator that opens a window and poll:
+
+```ts
+const started = await client.openConsentPage(request, {
+  navigate: (url) => window.open(url, '_blank'),
+  confirm: (started) => {
+    showCode(started.code); // keep it on screen while they approve
+    return true;
+  },
+});
+const { status } = await client.waitForConsent(started.requestId, { expiresAt: started.expiresAt });
+```
+
+To take a release approval back, send them to the page the same way:
+
+```ts
+import { withdrawConsent } from '@calimero-network/mero-js';
+
+await client.openConsentPage(withdrawConsent(pending.scope, '2.3.110', returnTo));
+// the same as releaseConsent(scope, version, returnTo, { withdraw: true })
+```
+
+The page says what withdrawing does: the nodes that hold the data send nodes
+on that release nothing more, and no app is placed on them; nothing already
+there is deleted or moved. It fetches no measurements, so a withdrawal never
+waits on the network. The scope's last approved release cannot be withdrawn:
+the page warns first, the node refuses it (`400 REJECTED`, "the last approved
+release cannot be withdrawn") and the request stays pending, so approve
+another release before withdrawing it.
+
+`returnTo` must be your package's frontend origin, or one your package's
+signed manifest names (`links.frontend`, `frontendAliases`); anything else is
+`400 RETURN_TO_NOT_ALLOWED`. A request lives 10 minutes and is decided once.
+If what the page showed changes before the person approves (a new bundle, a
+re-published release), the node answers `ConsentStale` (`409 CONSENT_STALE`):
+ask again so they see the new facts. A node that cannot fetch a release's
+signed measurements answers `503`.
+
+## Updates of an instance
+
+`client.updates` reads the update waiting for an instance as the node judges
+it and opens the node's own pages for it:
+
+```ts
+const view = await client.updates.get(appId);
+// view.available: { version, class: 'green' | 'red', summary, reasons, ... } | null
+// view.mayApprove: whether this person may approve it (an owner or admin)
+
+// In "Review"'s click handler: the update sheet in a pop-up.
+const opened = await client.updates.openSheet(appId);
+await client.waitForConsent(opened.requestId, { expiresAt: opened.expiresAt });
+```
+
+`summary` is one plain line for a banner ("Nothing changes where your data
+goes", "This update can send data to a new place: api.acme.com"). A red update
+under a policy that asks for a second approver shows "Approve (1 of 2)" to the
+first owner or admin and "Approve and update (2 of 2)" to the next.
+`client.updates.manage()` opens the node's updates page (every update waiting
+across the apps the person approves, after their passkey), `policy.set(target,
+policy)` a policy change and `install(subject)` the install sheet. Each opens a
+pop-up as the call starts, so call it from the click (or pass `window`, or
+`navigate` to use this tab).
+
+## Organizations from your app
+
+A frontend's package-bound session may not create, join or manage an
+organization by itself: each of these goes through the consent page too,
+which checks who may make the change when it is asked and again when it is
+approved.
+
+| Request | `subject` | `outcome` once approved |
+| --- | --- | --- |
+| `createOrgConsent(name, returnTo)` | `{ name }` | `{ orgId }` |
+| `createInviteConsent({ org, role, teams?, ttlSecs?, uses?, allApps? }, returnTo)` | the same | `{ token }` |
+| `acceptInviteConsent(token, returnTo)` | `{ token }` | `{ org }` |
+| `leaveOrgConsent(org, returnTo)` | `{ org }` | none |
+| `removeMemberConsent(org, account, returnTo)` | `{ org, account }` | none |
+| `setMemberRoleConsent(org, account, role, returnTo)` | `{ org, account, role }` | none |
+| `setMemberTeamsConsent(org, account, teams, returnTo)` | `{ org, account, teams: [{ team, role?, capabilities? }] }` | none |
+| `removeMemberTeamsConsent(org, account, teams, returnTo)` | `{ org, account, teams }` | none |
+| `revokeInviteConsent(org, inviteKey, returnTo)` | `{ org, inviteKey }` | none |
+| `renameOrgConsent(org, name, returnTo)` | `{ org, name }` | `{ orgId, name }` |
+| `deleteOrgConsent(org, returnTo)` | `{ org }` | `{ apps }`, the apps deleted |
+| `setCapabilitiesConsent({ org, account?, team?, capabilities }, returnTo)` | the same | none |
+| `setAllAppsConsent(org, account, allApps, returnTo)` | `{ org, account, allApps }` | none |
+
+`role` is an organization role (`guest`, `member`, `admin`, `owner`) for
+`setMemberRole`, and a team role (`lead`, `member`, `readOnly`) in a
+`setMemberTeams` row. `setCapabilities` sets a member's bits with `account`
+(organization-wide, or in `team`), and without it a default (the
+organization's, or `team`'s).
+
+```ts
+import { createInviteConsent } from '@calimero-network/mero-js';
+
+await client.openConsentPage(createInviteConsent({ org, role: 'member' }, returnTo));
+
+// back on returnTo:
+const decision = await client.resumeConsent();
+if (decision?.status === 'approved' && decision.kind === 'createInvite') {
+  shareInvite(decision.outcome?.token); // narrowed by `kind`
+}
+```
+
+`outcome` is only in the node's sealed answer, never in the redirect. An
+invite token is a credential: keep it out of your logs (the client logs
+nothing and puts it in no error).
+
+<Aside type="note">
+  These kinds need a node with core's organization consent kinds:
+  `createOrg`, `createInvite` and `acceptInvite` since
+  calimero-network/core#5014, the others since calimero-network/core#5018.
+</Aside>
+
+## Who approves
+
+- **Releases** are the app's publisher's: the organization its package's
+  signing key is bound to, by its members holding `APPROVE_RELEASES`. For an
+  unbound package, the app's own organization or, for an app outside one, its
+  owner account.
+- **Upgrades** are whoever the package's signed manifest names (`upgrades`):
+  `owner` (the default) means each instance's owner, or its organization's
+  `MANAGE_APPLICATION` holders; `publisher` means the publisher's
+  `MANAGE_APPLICATION` holders, for every instance
+  ([publishers](/clients/mero-js/guides/organizations/#approvals)).
+
+The node checks the caller could make the approval when the request is made,
+and again when it is approved.
+
+## What happens before they approve
+
+Nothing breaks. The nodes that already hold the app's data keep it and keep
+serving it. A node on a release the approver has not approved can join the
+cluster, but it is sent none of the app's data and no new replica is placed on
+it. Until an upgrade is approved, the app keeps running the version it has.
+
+### Deadlines
+
+The operator can give a release a deadline (`releaseRules()` lists them, and
+each pending release carries its own). Before it, approving is up to the user;
+say "Approve by 12 March". After it, a scope that has not approved the release
+(or a newer one) creates no apps, installs nothing and upgrades nothing, while
+its running apps keep working; approving lifts it at once.
+
+<Aside type="note">
+  `approveRelease`, `upgradeApp` and `approveOutbound` with a passkey remain
+  for pages on the cluster's own origin, such as a console. From your app's
+  frontend, they are refused.
+</Aside>
+
+## Further reading
+
+- [The consent page](/protocol/consent-page/)
+  and [Governance](/protocol/governance/)
+  in core's protocol docs.

@@ -34,9 +34,9 @@ name.
 ## Documentation
 
 Full documentation is published at
-**<https://calimero-network.github.io/calimero-client-py/>** — installation,
-quickstart, concepts, and the complete Python API reference. The source lives
-under [`docs/`](docs/).
+**<https://calimero-network.github.io/core/clients/mero-py/>** — installation,
+quickstart, concepts, and the complete Python API reference. The source is part of
+core's docs site, under [`docs/src/content/docs/clients/mero-py/`](../../../docs/src/content/docs/clients/mero-py/).
 
 ## Installation
 
@@ -48,7 +48,7 @@ PyPI carries a prebuilt `abi3` wheel (any CPython 3.9+) for Linux x86_64 and
 aarch64 (manylinux2014), macOS arm64 and x86_64, and Windows x86_64, so nothing
 compiles. Elsewhere pip builds the source distribution, which needs a Rust
 toolchain on `PATH` ([rustup](https://rustup.rs/)). See the
-[installation guide](https://calimero-network.github.io/calimero-client-py/get-started/installation/)
+[installation guide](https://calimero-network.github.io/core/clients/mero-py/get-started/installation/)
 for details.
 
 ## The generated client
@@ -226,7 +226,7 @@ rest: the layout, the generator, CI and releases.
 
 ## Support
 
-- Documentation: <https://calimero-network.github.io/calimero-client-py/>
+- Documentation: <https://calimero-network.github.io/core/clients/mero-py/>
 - Issues: <https://github.com/calimero-network/core/issues>
 - Contact: team@calimero.network
 

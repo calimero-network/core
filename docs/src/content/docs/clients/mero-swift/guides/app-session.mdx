@@ -1,0 +1,58 @@
+---
+title: The app layer
+description: MeroAppSession, MeroAppBackend and ContextContract on Calimero 1.0 — the layer native apps build on, and how its names map to orgs, teams and app instances.
+sidebar:
+  order: 2
+---
+
+`MeroAppSession` (MeroKitUI) is an app's signed-in account. Its `backend`
+(`any MeroAppBackend`, a `CalimeroAppBackend` when signed in) is what screens
+use; tests hand view models `InMemoryAppBackend` instead.
+
+```swift
+@StateObject var session = MeroAppSession(
+    packageName: "com.calimero.chat", callback: .scheme("merochat", path: "consent"),
+    config: MeroProviderConfig(nodeURL: "https://node.example"))
+```
+
+| Member | |
+| --- | --- |
+| `restore()`, `signIn()`, `signUp(name:)`, `signOut()`, `connect(nodeURL:allowMock:)` | sign-in |
+| `backend`, `revision`, `isSignedIn`, `account`, `applicationId`, `contract` | state |
+| `handle(url)`, `pendingInvitation`, `pendingOrgInvitation`, `redeemPendingInvitation()`, `dismissPendingInvitation()`, `createInvitationLink(namespaceId:)` | invitations |
+| `pendingApprovals(org:)`, `requestConsent(_:)` (`ConsentLauncher.decide`), `consentResult` | approvals ([the consent page](/clients/mero-swift/guides/consent/)) |
+
+## Names
+
+The backend keeps the names it had before 1.0; each is one 1.0 concept:
+
+| App layer | Calimero 1.0 |
+| --- | --- |
+| namespace | organization (founded with metadata `{name, package}`) |
+| subgroup (`groupId`) | team: `"{orgId}/{teamId}"` (`teamGroupId`, `GroupRef.parse`); an org id is the org itself |
+| context | app instance (its app id) |
+| application | package |
+| `query` / `execute` | `POST /apps/{app}/views` / `intents` |
+| invitation (`OrgInvitation(namespaceId, token, contextId?, name?)`, alias `SignedGroupOpenInvitation`) | invite token `inv_…` |
+| `hasRelay`, `canSubscribe` | always `true` once signed in |
+
+`createServiceContext(groupId:applicationId:service:name:initArgs:)` creates one
+service of a multi-service package (`package#service`). Signed out, the
+contract is `SignedOutContextContract`, which throws `SignedOutError`.
+`CalimeroAppBackend.client` is the full `CalimeroClient`.
+
+## Invitation links
+
+`https://links.calimero.network/<package>/join?invitation=<base58(deflate(json))>`,
+the JSON being an `OrgInvitation` (0.x payloads are refused):
+
+```json
+{"invitation":"inv_…","namespaceId":"<orgId>","contextId":"<appId, optional>","name":"<org name, optional>"}
+```
+
+## Tests
+
+`MeroKitTestSupport` has `InMemoryAppBackend` and `RecordingContextContract`
+for view models, and `FakeCloudNode` + `FakeCloud` for the whole stack: a node
+that runs the real sealed channel and mock attestation, and an in-memory
+cluster behind it.

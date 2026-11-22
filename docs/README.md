@@ -24,6 +24,6 @@ npm run check    # astro build + internal link check (what CI runs)
 ## Layout
 
 Pages live in `src/content/docs/`, split by audience track — **Cloud** (overview,
-quickstart and writing apps), **Build**, **Operate**, **Protocol Reference**, and
-**Contribute**. The sidebar is listed by hand in `astro.config.mjs`. See
+quickstart and writing apps), **Build**, **Clients** (the client SDKs under `sdks/clients/`),
+**Operate**, **Protocol Reference**, and **Contribute**. The sidebar is listed by hand in `astro.config.mjs`. See
 `src/content/docs/contribute/docs.mdx` for the authoring guide.
