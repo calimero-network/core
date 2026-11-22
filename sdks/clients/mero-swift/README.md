@@ -24,7 +24,7 @@ the same methods, the same typed errors, the same retry and failover rules.
 - A Calimero 1.0 cluster (core `1.0.0-rc.25` or later; developed against
   `1.0.0-rc.30`, [`ci/core-version`](ci/core-version)),
   or `merod local` for development.
-- Docs: <https://calimero-network.github.io/swift-sdk/>
+- Docs: <https://calimero-network.github.io/core/clients/mero-swift/>
 
 ```swift
 .package(url: "https://github.com/calimero-network/core", exact: "1.0.0-rc.34"),
@@ -149,7 +149,7 @@ sign-in ceremonies, the event streams and the escape hatches (`post`,
   `joinedOrg`). `confirmConsentReturn` (or `resumeConsent`, from the request
   id `openConsentPage` kept) refuses a return from the page that did not
   decide the request the app started. See
-  [the consent page guide](docs/src/content/docs/guides/consent.mdx).
+  [the consent page guide](https://calimero-network.github.io/core/clients/mero-swift/guides/consent/).
 
 ## The app layer (SwiftUI)
 
@@ -168,7 +168,7 @@ import MeroKitUI
 one: namespace → organization, subgroup → team (`"{orgId}/{teamId}"`),
 context → app instance, application → package, invitation → invite token
 (`OrgInvitation`). See
-[the app layer guide](docs/src/content/docs/guides/app-session.mdx).
+[the app layer guide](https://calimero-network.github.io/core/clients/mero-swift/guides/app-session/).
 
 ## The sample app
 

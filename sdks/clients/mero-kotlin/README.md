@@ -18,7 +18,7 @@ tests. It is the Android twin of [`calimero-network/swift-sdk`](https://github.c
 
 > **Calimero 1.0 only.** The 0.x API (`/admin-api`, `/jsonrpc`, `/ws`, `/sse`, `/auth/token`,
 > relays, delegated execution, `/api/cloud/*`) is gone from core, and from this SDK. See
-> [Migrating from 0.x](https://calimero-network.github.io/kotlin-sdk/reference/migrating-from-0x/).
+> [Migrating from 0.x](https://calimero-network.github.io/core/clients/mero-kotlin/reference/migrating-from-0x/).
 
 > **Lives in core.** This SDK is `sdks/clients/mero-kotlin` in
 > [calimero-network/core](https://github.com/calimero-network/core) (it was
@@ -132,7 +132,7 @@ session.backend.collect { backend -> /* MeroAppBackend: orgs, teams, app instanc
 
 `MeroAppBackend` keeps the 0.x method names apps were written against (`listNamespaces`,
 `createSubgroup`, `createContext`, `joinNamespace`, …), mapped onto organizations, teams and app
-instances; see the [App session guide](https://calimero-network.github.io/kotlin-sdk/guides/app-session/).
+instances; see the [App session guide](https://calimero-network.github.io/core/clients/mero-kotlin/guides/app-session/).
 
 ### Consent: what an app's session may not do itself
 
@@ -156,7 +156,7 @@ after the process was killed still resumes it.
 
 `ConsentOutcome` is typed per kind (`OrgCreated`, `InviteCreated`, `InviteAccepted`, …); an
 invitation's token never appears in `toString`. See the
-[User approvals guide](https://calimero-network.github.io/kotlin-sdk/guides/user-approvals/).
+[User approvals guide](https://calimero-network.github.io/core/clients/mero-kotlin/guides/user-approvals/).
 
 ## Build & test
 
@@ -172,7 +172,7 @@ channel and a mock attestation: retries with one idempotency key, single-flight 
 failover on `421 WRONG_NODE`, `412` confirmations, sealed SSE, the consent request, and the app
 backend's org/team/app mapping. See [TESTING.md](TESTING.md).
 
-Docs: <https://calimero-network.github.io/kotlin-sdk/> (sources in `docs/`).
+Docs: <https://calimero-network.github.io/core/clients/mero-kotlin/> (part of core's docs site, under `docs/src/content/docs/clients/mero-kotlin/`).
 
 ## Related repositories
 

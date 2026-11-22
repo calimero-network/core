@@ -43,6 +43,12 @@ sdks/
   (`python3 scripts/sdks.py generate [name]`). Never edit generated files by
   hand; change the server (or the generator) and regenerate. The hand-written,
   ergonomic layer is everything else.
+- **Docs**: a client's guides and reference are pages of core's docs site,
+  `docs/src/content/docs/clients/<name>/` (the Clients section), built and
+  link-checked with the rest of `docs/`; no SDK keeps a docs site of its own.
+  A generated page (mero-py's method reference) is listed in `generated` by
+  its path from the SDK's directory (`../../../docs/...`). A change to a
+  client's API updates its pages there in the same pull request.
 - **Examples** live in each SDK's own `examples/` and are built by its CI job.
 - **Tests run only when they can be affected**: `scripts/sdks.py scope` maps a
   change to the SDKs it reaches (own directory, a dependency, an `inputs` file,

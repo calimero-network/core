@@ -9,8 +9,8 @@ scripts/generate_facade.py's from the document and that output. Both are
 formatted with black and checked in, and nothing in them is edited by hand:
 change the document (core's server), these scripts or openapi/generator.yaml,
 and run this again (core's `python3 scripts/sdks.py generate mero-py` does). CI
-runs it with `--check`. It also writes the docs site's
-method reference (docs/src/content/docs/reference/methods.mdx, by
+runs it with `--check`. It also writes the method
+reference on core's docs site (docs/src/content/docs/clients/mero-py/reference/methods.mdx, by
 scripts/generate_api_docs.py from the new facade and the document).
 
     pip install openapi-python-client==0.26.2 black==26.10.1
@@ -37,7 +37,18 @@ DOCUMENT = ROOT.parents[2] / "docs" / "public" / "openapi.json"
 CONFIG = ROOT / "openapi" / "generator.yaml"
 GENERATED = ROOT / "calimero_client_py" / "openapi"
 FACADE = ROOT / "calimero_client_py" / "facade.py"
-METHODS_DOC = ROOT / "docs" / "src" / "content" / "docs" / "reference" / "methods.mdx"
+# The method reference is a page of core's docs site (docs/, three directories up).
+METHODS_DOC = (
+    ROOT.parents[2]
+    / "docs"
+    / "src"
+    / "content"
+    / "docs"
+    / "clients"
+    / "mero-py"
+    / "reference"
+    / "methods.mdx"
+)
 
 # Exact: the output is checked in, so a generator release that changes it is
 # a change to review. 0.26.2 is the last release whose code supports Python
@@ -177,7 +188,7 @@ def main() -> int:
             shutil.copyfile(methods_doc, METHODS_DOC)
             print(
                 f"generated {GENERATED.relative_to(ROOT)}, {FACADE.relative_to(ROOT)} "
-                f"and {METHODS_DOC.relative_to(ROOT)}"
+                f"and {os.path.relpath(METHODS_DOC, ROOT)}"
             )
             return 0
         if (
@@ -188,7 +199,7 @@ def main() -> int:
         ):
             print(
                 f"{GENERATED.relative_to(ROOT)}, {FACADE.relative_to(ROOT)} or "
-                f"{METHODS_DOC.relative_to(ROOT)} is not "
+                f"{os.path.relpath(METHODS_DOC, ROOT)} is not "
                 "what core's docs/public/openapi.json generates: run "
                 "scripts/generate_openapi_client.py",
                 file=sys.stderr,
@@ -196,7 +207,7 @@ def main() -> int:
             return 1
     print(
         f"{GENERATED.relative_to(ROOT)}, {FACADE.relative_to(ROOT)} and "
-        f"{METHODS_DOC.relative_to(ROOT)} are up to date"
+        f"{os.path.relpath(METHODS_DOC, ROOT)} are up to date"
     )
     return 0
 
