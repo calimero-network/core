@@ -424,8 +424,7 @@ class Guests(DeepCase):
             check(s["decisions"][want] == "ok", f"{want}: {s['decisions'][want]}")
         for want in ("gina reads", "anonymous reads", "gwen reads the organization"):
             check(s["decisions"][want] != "ok", f"{want} was allowed")
-        eq([i.get("usesLeft") for i in gale.get(f"apps/{app}/invites").get("invites") or []], [1],
-           "the instance invite's uses left")
+        eq(s["invites_left"], [1], "the instance invite's uses left")
         return s
 
     def _record(self, w, s):
@@ -434,11 +433,16 @@ class Guests(DeepCase):
         accounts = [g for g in s["grants"] if g.get("kind") == "account"]
         eq(sorted(g["account"] for g in accounts), sorted([gwen.id, gabe.id]), "the guests' grants")
         s["decisions"] = self._decide(w, s)
+        s["invites_left"] = self._invites_left(w, s)
         if s["guests_on"]:
             s["scopes"] = {p.name: p.result(s["app"], "grantScope") for p in (gwen, gabe)}
             s["own"] = {p.name: p.get(f"apps/{s['app']}").get("grants") for p in (gwen, gabe)}
             for p in (gwen, gabe):
                 eq([g.get("account") for g in s["own"][p.name]], [p.id], f"{p.name} sees only their own grant")
+
+    def _invites_left(self, w, s):
+        """The uses each pending instance invite has left, as the owner lists them."""
+        return [i.get("usesLeft") for i in person(w, "gale").get(f"apps/{s['app']}/invites").get("invites") or []]
 
     def _decide(self, w, s):
         app, out = s["app"], {}
@@ -456,6 +460,7 @@ class Guests(DeepCase):
         eq(gale.get(f"apps/{s['app']}").get("grants"), s["grants"], "the grants as the owner reads them")
         eq(gale.get(f"orgs/{s['org']}").get("allowGuests"), s["guests_on"], "the organization's guests switch")
         same_decisions(self._decide(w, s), s["decisions"], "guests of an instance")
+        eq(self._invites_left(w, s), s["invites_left"], "the instance invite's uses left")
         if s["guests_on"]:
             for name, scope in s["scopes"].items():
                 p = person(w, name)
@@ -469,6 +474,6 @@ class Guests(DeepCase):
         until("a guest is refused once guests are off", lambda: refused(
             ("NOT_FOUND", "FORBIDDEN"), lambda: gwen.view(s["app"], "get", {"key": "k"}), "gwen reads"))
         self._record(w, s)
-        for want in ("gwen reads", "gabe reads"):
+        for want in ("gwen reads", "gabe reads", "gwen writes", "gabe writes"):
             check(s["decisions"][want] != "ok", f"{want} with guests off")
         check(s["decisions"]["gert reads"] == "ok", f"a member with guests off: {s['decisions']['gert reads']}")

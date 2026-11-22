@@ -58,10 +58,17 @@ pack "$DEEP/notes-v2.wasm" com.calimero.upgrade.notes 2.0.0 notes-2.0.0.mpk
 # outbound requests name (`secrets`); and a kv unit: kv-unit's release `uses` kv-secret with
 # `mode = "create"`. Each declared in a crate's metadata as an app's author would (no lock:
 # kv-unit is packed unpinned, so the newest installed release in range is created), by a
-# release whose meroctl writes them (1.0.0-rc.31 on; `--guests` from 1.0.0-rc.33).
+# release whose meroctl writes them (secrets and `uses` from 1.0.0-rc.31; `--guests` from
+# 1.0.0-rc.33). Each is packed when the pinned meroctl can; a case whose package is missing
+# then fails to seed, so a pin that cannot pack one says so here.
 if "$PACK" --help 2>/dev/null | grep -q -- '--guests'; then
   "$PACK" --wasm "$DEEP/kv-guest.wasm" --package com.calimero.upgrade.kv-guest --app-version 1.0.0 \
     --guests allowed --out "$DEEP/kv-guest-1.0.0.mpk"
+else
+  echo "note: this meroctl has no --guests (before 1.0.0-rc.33): kv-guest is not packed" >&2
+fi
+if (
+  set -e
   secret_dir="$DEEP/kv-secret-crate"
   rm -rf "$secret_dir" && mkdir -p "$secret_dir"
   cat >"$secret_dir/Cargo.toml" <<'TOML'
@@ -95,6 +102,8 @@ package = "com.calimero.upgrade.kv-unit"
 member = { package = "com.calimero.upgrade.kv-secret", range = "^1", mode = "create" }
 TOML
   "$PACK" "$unit_dir" --wasm "$DEEP/kv-unit.wasm" --app-version 1.0.0 --out "$DEEP/kv-unit-1.0.0.mpk"
+); then :; else
+  echo "note: this meroctl cannot pack a release's secrets or uses (before 1.0.0-rc.31): kv-secret and kv-unit are not packed" >&2
 fi
 
 # The units examples (a release from 1.0.0-rc.31 on ships them): calendar, planner (its
