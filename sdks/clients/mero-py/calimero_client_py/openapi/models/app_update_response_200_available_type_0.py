@@ -18,10 +18,11 @@ from typing import cast, Union
 from typing import Union
 
 if TYPE_CHECKING:
-    from ..models.app_update_response_200_available_type_0_egress import (
-        AppUpdateResponse200AvailableType0Egress,
-    )
+    from ..models.update_reason_type_6 import UpdateReasonType6
     from ..models.update_reason_type_4 import UpdateReasonType4
+    from ..models.app_update_response_200_available_type_0_egress_type_0 import (
+        AppUpdateResponse200AvailableType0EgressType0,
+    )
     from ..models.update_reason_type_3 import UpdateReasonType3
     from ..models.update_reason_type_0 import UpdateReasonType0
     from ..models.update_reason_type_5 import UpdateReasonType5
@@ -42,12 +43,12 @@ class AppUpdateResponse200AvailableType0:
         approvals_needed (int):
         class_ (Union[Unset, AppUpdateResponse200AvailableType0Class]):
         reasons (Union[Unset, list[Union['UpdateReasonType0', 'UpdateReasonType1', 'UpdateReasonType2',
-            'UpdateReasonType3', 'UpdateReasonType4', 'UpdateReasonType5']]]):
-        egress (Union[Unset, AppUpdateResponse200AvailableType0Egress]):
-        state_version_changed (Union[Unset, bool]):
-        new_methods (Union[Unset, list[str]]):
-        removed_methods (Union[Unset, list[str]]):
-        signer_changed (Union[Unset, bool]):
+            'UpdateReasonType3', 'UpdateReasonType4', 'UpdateReasonType5', 'UpdateReasonType6']]]):
+        egress (Union['AppUpdateResponse200AvailableType0EgressType0', None, Unset]):
+        state_version_changed (Union[None, Unset, bool]):
+        new_methods (Union[None, Unset, list[str]]):
+        removed_methods (Union[None, Unset, list[str]]):
+        signer_changed (Union[None, Unset, bool]):
         summary (Union[Unset, str]):
         approved_by (Union[Unset, str]):
     """
@@ -67,23 +68,25 @@ class AppUpdateResponse200AvailableType0:
                 "UpdateReasonType3",
                 "UpdateReasonType4",
                 "UpdateReasonType5",
+                "UpdateReasonType6",
             ]
         ],
     ] = UNSET
-    egress: Union[Unset, "AppUpdateResponse200AvailableType0Egress"] = UNSET
-    state_version_changed: Union[Unset, bool] = UNSET
-    new_methods: Union[Unset, list[str]] = UNSET
-    removed_methods: Union[Unset, list[str]] = UNSET
-    signer_changed: Union[Unset, bool] = UNSET
+    egress: Union["AppUpdateResponse200AvailableType0EgressType0", None, Unset] = UNSET
+    state_version_changed: Union[None, Unset, bool] = UNSET
+    new_methods: Union[None, Unset, list[str]] = UNSET
+    removed_methods: Union[None, Unset, list[str]] = UNSET
+    signer_changed: Union[None, Unset, bool] = UNSET
     summary: Union[Unset, str] = UNSET
     approved_by: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.app_update_response_200_available_type_0_egress import (
-            AppUpdateResponse200AvailableType0Egress,
-        )
+        from ..models.update_reason_type_6 import UpdateReasonType6
         from ..models.update_reason_type_4 import UpdateReasonType4
+        from ..models.app_update_response_200_available_type_0_egress_type_0 import (
+            AppUpdateResponse200AvailableType0EgressType0,
+        )
         from ..models.update_reason_type_3 import UpdateReasonType3
         from ..models.update_reason_type_0 import UpdateReasonType0
         from ..models.update_reason_type_5 import UpdateReasonType5
@@ -117,26 +120,50 @@ class AppUpdateResponse200AvailableType0:
                     reasons_item = reasons_item_data.to_dict()
                 elif isinstance(reasons_item_data, UpdateReasonType4):
                     reasons_item = reasons_item_data.to_dict()
+                elif isinstance(reasons_item_data, UpdateReasonType5):
+                    reasons_item = reasons_item_data.to_dict()
                 else:
                     reasons_item = reasons_item_data.to_dict()
 
                 reasons.append(reasons_item)
 
-        egress: Union[Unset, dict[str, Any]] = UNSET
-        if not isinstance(self.egress, Unset):
+        egress: Union[None, Unset, dict[str, Any]]
+        if isinstance(self.egress, Unset):
+            egress = UNSET
+        elif isinstance(self.egress, AppUpdateResponse200AvailableType0EgressType0):
             egress = self.egress.to_dict()
+        else:
+            egress = self.egress
 
-        state_version_changed = self.state_version_changed
+        state_version_changed: Union[None, Unset, bool]
+        if isinstance(self.state_version_changed, Unset):
+            state_version_changed = UNSET
+        else:
+            state_version_changed = self.state_version_changed
 
-        new_methods: Union[Unset, list[str]] = UNSET
-        if not isinstance(self.new_methods, Unset):
+        new_methods: Union[None, Unset, list[str]]
+        if isinstance(self.new_methods, Unset):
+            new_methods = UNSET
+        elif isinstance(self.new_methods, list):
             new_methods = self.new_methods
 
-        removed_methods: Union[Unset, list[str]] = UNSET
-        if not isinstance(self.removed_methods, Unset):
+        else:
+            new_methods = self.new_methods
+
+        removed_methods: Union[None, Unset, list[str]]
+        if isinstance(self.removed_methods, Unset):
+            removed_methods = UNSET
+        elif isinstance(self.removed_methods, list):
             removed_methods = self.removed_methods
 
-        signer_changed = self.signer_changed
+        else:
+            removed_methods = self.removed_methods
+
+        signer_changed: Union[None, Unset, bool]
+        if isinstance(self.signer_changed, Unset):
+            signer_changed = UNSET
+        else:
+            signer_changed = self.signer_changed
 
         summary = self.summary
 
@@ -175,10 +202,11 @@ class AppUpdateResponse200AvailableType0:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.app_update_response_200_available_type_0_egress import (
-            AppUpdateResponse200AvailableType0Egress,
-        )
+        from ..models.update_reason_type_6 import UpdateReasonType6
         from ..models.update_reason_type_4 import UpdateReasonType4
+        from ..models.app_update_response_200_available_type_0_egress_type_0 import (
+            AppUpdateResponse200AvailableType0EgressType0,
+        )
         from ..models.update_reason_type_3 import UpdateReasonType3
         from ..models.update_reason_type_0 import UpdateReasonType0
         from ..models.update_reason_type_5 import UpdateReasonType5
@@ -214,6 +242,7 @@ class AppUpdateResponse200AvailableType0:
                 "UpdateReasonType3",
                 "UpdateReasonType4",
                 "UpdateReasonType5",
+                "UpdateReasonType6",
             ]:
                 try:
                     if not isinstance(data, dict):
@@ -265,32 +294,105 @@ class AppUpdateResponse200AvailableType0:
                     return componentsschemas_update_reason_type_4
                 except:  # noqa: E722
                     pass
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    componentsschemas_update_reason_type_5 = (
+                        UpdateReasonType5.from_dict(data)
+                    )
+
+                    return componentsschemas_update_reason_type_5
+                except:  # noqa: E722
+                    pass
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_update_reason_type_5 = UpdateReasonType5.from_dict(
+                componentsschemas_update_reason_type_6 = UpdateReasonType6.from_dict(
                     data
                 )
 
-                return componentsschemas_update_reason_type_5
+                return componentsschemas_update_reason_type_6
 
             reasons_item = _parse_reasons_item(reasons_item_data)
 
             reasons.append(reasons_item)
 
-        _egress = d.pop("egress", UNSET)
-        egress: Union[Unset, AppUpdateResponse200AvailableType0Egress]
-        if isinstance(_egress, Unset):
-            egress = UNSET
-        else:
-            egress = AppUpdateResponse200AvailableType0Egress.from_dict(_egress)
+        def _parse_egress(
+            data: object,
+        ) -> Union["AppUpdateResponse200AvailableType0EgressType0", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                egress_type_0 = AppUpdateResponse200AvailableType0EgressType0.from_dict(
+                    data
+                )
 
-        state_version_changed = d.pop("stateVersionChanged", UNSET)
+                return egress_type_0
+            except:  # noqa: E722
+                pass
+            return cast(
+                Union["AppUpdateResponse200AvailableType0EgressType0", None, Unset],
+                data,
+            )
 
-        new_methods = cast(list[str], d.pop("newMethods", UNSET))
+        egress = _parse_egress(d.pop("egress", UNSET))
 
-        removed_methods = cast(list[str], d.pop("removedMethods", UNSET))
+        def _parse_state_version_changed(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
 
-        signer_changed = d.pop("signerChanged", UNSET)
+        state_version_changed = _parse_state_version_changed(
+            d.pop("stateVersionChanged", UNSET)
+        )
+
+        def _parse_new_methods(data: object) -> Union[None, Unset, list[str]]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                new_methods_type_0 = cast(list[str], data)
+
+                return new_methods_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, Unset, list[str]], data)
+
+        new_methods = _parse_new_methods(d.pop("newMethods", UNSET))
+
+        def _parse_removed_methods(data: object) -> Union[None, Unset, list[str]]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                removed_methods_type_0 = cast(list[str], data)
+
+                return removed_methods_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, Unset, list[str]], data)
+
+        removed_methods = _parse_removed_methods(d.pop("removedMethods", UNSET))
+
+        def _parse_signer_changed(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        signer_changed = _parse_signer_changed(d.pop("signerChanged", UNSET))
 
         summary = d.pop("summary", UNSET)
 

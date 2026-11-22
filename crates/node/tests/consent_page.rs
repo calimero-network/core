@@ -4141,6 +4141,277 @@ async fn a_unit_red_through_a_member_is_approved_first_on_its_page() {
     assert_eq!(model["update"]["approval"]["needed"], 2, "{model}");
 }
 
+/// A unit whose member's release is uninstalled, under a `secondApprover` policy: alice's
+/// organization holds `notes` on `PACKAGE@1.0.0`, which created `store` on
+/// `com.test.c8-kv@0.1.0`; `PACKAGE@2.0.0` no longer creates it, so the store stays where it
+/// is and the move is green while the log holds its release. Then `0.1.0` is uninstalled
+/// (`0.1.1` still ships its WASM), and the move cannot be classified. Answers the
+/// organization and `notes`.
+async fn unit_with_an_uninstalled_member(
+    alice: &calimero_client::Client,
+    alice_pk: &mut SoftAuthenticator,
+    seed: u8,
+) -> (String, String) {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let kv = "com.test.c8-kv";
+    // 2.0.0 no longer creates the store, which therefore stays where it is: the move is
+    // green while the log holds the store's release.
+    for (package, version, d) in [
+        (kv, "0.1.0", Declares::default()),
+        (kv, "0.1.1", Declares::default()),
+        (
+            PACKAGE,
+            "1.0.0",
+            Declares {
+                uses: Some(
+                    json!({ "store": { "package": kv, "range": "^0.1", "version": "0.1.0" } }),
+                ),
+                ..Declares::default()
+            },
+        ),
+        (PACKAGE, "2.0.0", Declares::default()),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let org = home_org(alice).await;
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0", "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let update = get(alice, &format!("apps/{notes}/update")).await.unwrap();
+    assert_eq!(update["available"]["class"], "green", "{update}");
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "secondApprover": true } })),
+            alice_pk,
+        )
+        .await
+        .unwrap();
+    // The store's release goes; 0.1.1 still ships its WASM.
+    let _gone = alice
+        .packages()
+        .version_uninstall(kv, "0.1.0")
+        .await
+        .unwrap();
+    (org, notes)
+}
+
+/// A unit whose member runs a release no longer installed (uninstalled while another
+/// release ships its WASM) cannot be classified from the log, so its update is shown as
+/// it is gated and logged: red, with the `unclassified` reason naming the member's
+/// release, in `GET /apps/{app}/update` and on the unit's page, whose step under a
+/// `secondApprover` policy is the first of two. Before, the shown verdict dropped the
+/// member it could not read and said green while the upgrade waited for a second approver.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (_org, notes) = unit_with_an_uninstalled_member(&alice, &mut alice_pk, 47).await;
+    let kv = "com.test.c8-kv";
+    let unclassified =
+        json!([{ "code": "unclassified", "member": "store", "package": kv, "version": "0.1.0" }]);
+    let update = get_until(&alice, &format!("apps/{notes}/update"), |u| {
+        u["policy"]["secondApprover"] == true
+    })
+    .await;
+    assert_eq!(update["available"]["class"], "red", "{update}");
+    assert_eq!(update["available"]["reasons"], unclassified, "{update}");
+    assert_eq!(update["available"]["approvalsNeeded"], 2, "{update}");
+    // What depends on the side the log lacks is unknown, never "unchanged".
+    const UNKNOWN: [&str; 5] = [
+        "egress",
+        "stateVersionChanged",
+        "newMethods",
+        "removedMethods",
+        "signerChanged",
+    ];
+    for fact in UNKNOWN {
+        assert_eq!(
+            update["available"].get(fact),
+            Some(&Value::Null),
+            "{fact}: {update}"
+        );
+    }
+
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(0);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_pk, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let unit = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgradeUnit", "subject": { "app": notes, "toVersion": "2.0.0" },
+                "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap();
+    let model = Page::new(unit["url"].as_str().unwrap()).model().await;
+    let shown = &model["update"];
+    assert_eq!(shown["class"], "red", "{model}");
+    assert_eq!(shown["approval"]["step"], "first", "{model}");
+    assert_eq!(shown["approval"]["needed"], 2, "{model}");
+    assert!(
+        shown["reasons"][0]
+            .as_str()
+            .is_some_and(|r| r.contains("no longer installed")),
+        "{model}"
+    );
+    assert_eq!(model["unit"]["reasons"], unclassified, "{model}");
+    for fact in UNKNOWN {
+        assert_eq!(
+            model["unit"].get(fact),
+            Some(&Value::Null),
+            "{fact}: {model}"
+        );
+    }
+    for fact in ["newMethods", "removedMethods", "destinations"] {
+        assert_eq!(shown.get(fact), Some(&Value::Null), "{fact}: {model}");
+    }
+    for fact in ["signer", "stateVersion", "actsAs"] {
+        let words = shown[fact].as_str().unwrap_or_default();
+        assert!(
+            words.starts_with("Unknown") && !words.contains("Same") && !words.contains("Unchanged"),
+            "{fact}: {model}"
+        );
+    }
+}
+
+/// An update the log cannot classify is approved and logged with its `unclassified`
+/// reason only from `Feature::UnclassifiedUpdates` (1.0.0-rc.35): a node on rc.34 cannot
+/// decode it and would stop its system group on it. While one node still advertises
+/// rc.34, its first approval, its upgrade and its consent page are refused `409
+/// FEATURE_NOT_ACTIVE` before any passkey (the client sent none), saying every node must
+/// run rc.35 first; the update itself still shows red. Once every node runs rc.35 the
+/// same approval and upgrade go through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_unclassified_update_waits_for_every_node_on_the_release_that_decodes_it() {
+    const RC34: &str = "1.0.0-rc.34";
+    const RC35: &str = "1.0.0-rc.35";
+    // Node 3 advertises rc.34, as a node not yet rolled onto this release does.
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.apps_domain = Some("localhost".into());
+        if cfg.node_id == 3 {
+            calimero_node::testing::advertise_cluster_version(&cfg.public_url, Some(RC34));
+        }
+    })
+    .await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let (org, notes) = unit_with_an_uninstalled_member(&alice, &mut alice_pk, 53).await;
+    let token = alice
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "admin" })), Some(&mut alice_pk))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = bob.orgs().invite_redeem(&token).await.unwrap();
+    let update = get_until(&bob, &format!("apps/{notes}/update"), |u| {
+        u["policy"]["secondApprover"] == true
+    })
+    .await;
+    assert_eq!(update["available"]["class"], "red", "{update}");
+    assert_eq!(
+        update["available"]["reasons"][0]["code"], "unclassified",
+        "shown red while it cannot be approved yet: {update}"
+    );
+
+    // Below rc.35: refused before any passkey (none is sent, so a step-up would answer 412).
+    let not_active = |e: &calimero_client::Error, what: &str| {
+        assert_eq!(e.code(), Some("FEATURE_NOT_ACTIVE"), "{what}: {e}");
+        let d = e.details().unwrap();
+        assert_eq!(d["feature"], "unclassifiedUpdates", "{what}: {e}");
+        assert_eq!(d["needs"], RC35, "{what}: {e}");
+        assert!(
+            e.to_string()
+                .contains(&format!("every node must run {RC35} or newer first")),
+            "{what}: {e}"
+        );
+    };
+    let e = alice
+        .apps()
+        .approve_upgrade(&notes, "2.0.0", None, None)
+        .await
+        .unwrap_err();
+    not_active(&e, "the first approval");
+    let e = bob
+        .apps()
+        .upgrade(&notes, typed(json!({ "version": "2.0.0" })), None)
+        .await
+        .unwrap_err();
+    not_active(&e, "the upgrade");
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(0);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_pk, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let e = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgrade", "subject": { "app": notes, "toVersion": "2.0.0" },
+                "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status(&e), 409, "the consent page: {e}");
+    assert!(e.to_string().contains("FEATURE_NOT_ACTIVE"), "{e}");
+    let logged = c.nodes[0]
+        .as_ref()
+        .unwrap()
+        .node
+        .sys(|s| s.cluster_version.clone());
+    assert_eq!(logged.as_deref(), Some(RC34), "held below rc.35");
+
+    // Node 3 runs rc.35 now: the same approval and upgrade go through, logged red.
+    calimero_node::testing::advertise_cluster_version(&c.urls[2], None);
+    let mut alice_key = SoftAuthenticator::with_key(&alice_in_app, "localhost", ORIGIN);
+    let first = alice
+        .apps()
+        .approve_upgrade(&notes, "2.0.0", None, Some(&mut alice_key))
+        .await
+        .unwrap();
+    assert_eq!(
+        wire(&first.approval.reasons)[0]["code"],
+        "unclassified",
+        "{first:?}"
+    );
+    let _done = bob
+        .apps()
+        .upgrade(
+            &notes,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut bob_pk),
+        )
+        .await
+        .unwrap();
+    let moved = get_until(&alice, &format!("apps/{notes}"), |a| {
+        a["release"]["version"] == "2.0.0"
+    })
+    .await;
+    assert_eq!(moved["lastUpgrade"]["class"], "red", "{moved}");
+    assert_eq!(
+        moved["lastUpgrade"]["reasons"][0]["code"], "unclassified",
+        "{moved}"
+    );
+}
+
 /// C8: a unit's run is judged once, under its instance's policy, so it moves whole. A
 /// member whose own policy asks for a second approver, in a unit whose instance's does
 /// not, moves with the unit on its one approval (it used to be refused at apply after the
@@ -4194,4 +4465,245 @@ async fn a_unit_moves_whole_under_its_instances_policy() {
     assert_eq!(instance["release"]["version"], "2.0.0", "{instance}");
     // The instance's record carries the unit's class: red, the member's destination.
     assert_eq!(instance["lastUpgrade"]["class"], "red", "{instance}");
+}
+
+/// The step-up right after a sign-in on an app's own origin (a frontend served at
+/// `<label>.<apps_domain>`, its passkey asserting there): the `412 CONFIRM_REQUIRED` a
+/// confirm method answers, then its retry with the assertion, wherever each lands. The
+/// challenge lives on the node that began it (`{node}.{random}`) and any node takes it
+/// from there, so the retry is never `UNKNOWN_CHALLENGE`: on the node the session was made
+/// on, on the node that asked, or on another; through the typed client in one go; and an
+/// upgrade approved on the consent page the frontend opens through another node. (The
+/// reported `UNKNOWN_CHALLENGE` did not reproduce on 1, 3 or 5 nodes; this is its coverage.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let n = c.urls.len();
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    for version in ["1.0.0", "2.0.0"] {
+        let (mpk, _) = release(version, &kv_wasm(), &publisher, &Declares::default());
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let app_origin = |i: usize| {
+        let port = url::Url::parse(&c.urls[i]).unwrap().port().unwrap();
+        format!(
+            "http://{}.localhost:{port}",
+            calimero_node::app_host::label(PACKAGE)
+        )
+    };
+    let clear = || {
+        Request::new(Method::POST, format!("apps/{app}/intents"))
+            .json(json!({ "method": "clear", "args": {} }))
+    };
+    // One passkey throughout, so its signature counter only moves forward.
+    let mut key = alice_key;
+    for signed_in_at in 0..n {
+        let mut in_app_pk =
+            SoftAuthenticator::with_key(&key, "localhost", &app_origin(signed_in_at));
+        let in_app = c.client(signed_in_at);
+        let session = in_app.sign_in(&mut in_app_pk).await.unwrap();
+        // The very next step-up, through the typed client: the 412, then its retry.
+        let done = in_app
+            .apps()
+            .call(&app, "clear", Some(json!({})), None, Some(&mut in_app_pk))
+            .await;
+        assert!(
+            done.is_ok(),
+            "signed in on node {signed_in_at}: {:?}",
+            done.err()
+        );
+        // Asked on one node, answered on each, the same session on both.
+        for asked_at in 0..n {
+            for answered_at in 0..n {
+                let asking = c.client(asked_at);
+                asking.use_session(session.clone()).await;
+                let e = asking.transport().json(clear()).await.unwrap_err();
+                assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+                let d = e.details().unwrap().clone();
+                let challenge =
+                    calimero_identity::from_b64url(d["challenge"].as_str().unwrap()).unwrap();
+                let answering = c.client(answered_at);
+                answering.use_session(session.clone()).await;
+                let mut retry = clear();
+                if let calimero_client::Body::Json(Value::Object(b)) = &mut retry.body {
+                    let _prev = b.insert(
+                        "confirm".into(),
+                        json!({
+                            "challengeId": d["challengeId"],
+                            "assertion": in_app_pk.assert(&challenge),
+                        }),
+                    );
+                }
+                let r = answering.transport().json(retry).await;
+                assert!(
+                    r.is_ok(),
+                    "signed in on node {signed_in_at}, asked on {asked_at}, answered on \
+                     {answered_at}: {:?}",
+                    r.err()
+                );
+            }
+        }
+        key = in_app_pk;
+    }
+
+    // The consent page the frontend opens: asked with the app-origin session, approved
+    // with the same passkey on the node's own origin.
+    // Signed in on the first node, asked on the last.
+    let last = n - 1;
+    let mut in_app_pk = SoftAuthenticator::with_key(&key, "localhost", &app_origin(0));
+    let session = c.client(0).sign_in(&mut in_app_pk).await.unwrap();
+    let in_app = c.client(last);
+    in_app.use_session(session).await;
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgrade", "subject": { "app": app, "toVersion": "2.0.0" },
+                "returnTo": format!("{}/1.0.0/", app_origin(0)) }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let mut page_key = SoftAuthenticator::with_key(&in_app_pk, "localhost", &origin(&url));
+    let ((code, done), _) = page.approve(&c, &mut page_key).await;
+    assert_eq!(code, 200, "{done}");
+}
+
+/// A red update of an app whose running release was uninstalled (allowed while another
+/// release still ships its WASM) cannot be classified: the log no longer holds the side it
+/// moves from. Under a `secondApprover` policy it still gets its first approval, recorded
+/// red with the reason (`unclassified`, naming the release that is gone), and another
+/// owner or admin applies it with that approval, the upgrade recorded red too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_red_update_from_an_uninstalled_release_is_approved_first_and_applied_second() {
+    const TELEMETRY: &str = "https://telemetry.example/";
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+    for (version, outbound) in [("1.0.0", &[][..]), ("2.0.0", &[TELEMETRY][..])] {
+        let d = Declares {
+            outbound,
+            ..Declares::default()
+        };
+        let (mpk, _) = release(version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let org = home_org(&alice).await;
+    let token = alice
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "admin" })), Some(&mut alice_pk))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = bob.orgs().invite_redeem(&token).await.unwrap();
+    let notes = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0", "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let alice_id = account_of(&alice).await;
+    let bob_id = account_of(&bob).await;
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy"))
+                .json(json!({ "policy": { "secondApprover": true } })),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    // 2.0.0 ships the same WASM, so the release the app runs may go.
+    let _gone = alice
+        .packages()
+        .version_uninstall(PACKAGE, "1.0.0")
+        .await
+        .unwrap();
+    let _ = get_until(&bob, &format!("apps/{notes}/upgrade-policy"), |p| {
+        p["policy"]["secondApprover"] == true
+    })
+    .await;
+
+    // The first approval: red, the reason naming the release that is gone.
+    let first = alice
+        .apps()
+        .approve_upgrade(&notes, "2.0.0", None, Some(&mut alice_pk))
+        .await
+        .unwrap();
+    let approval = &first.approval;
+    assert_eq!(approval.by, alice_id, "{first:?}");
+    assert_eq!(
+        approval.class,
+        calimero_client::types::PendingApprovalClass::Red,
+        "{first:?}"
+    );
+    assert_eq!(
+        wire(&approval.reasons),
+        json!([{ "code": "unclassified", "member": null, "package": PACKAGE, "version": "1.0.0" }]),
+        "{first:?}"
+    );
+    // Alone, still the second approver's to apply.
+    let e = alice
+        .apps()
+        .upgrade(
+            &notes,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut alice_pk),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("SECOND_APPROVAL_REQUIRED"), "{e}");
+
+    // The admin applies it: the update shows the approval waiting, and the upgrade takes
+    // it as the approval of this move.
+    let update = get_until(&bob, &format!("apps/{notes}/update"), |u| {
+        u["pendingApprovals"]
+            .as_array()
+            .is_some_and(|p| !p.is_empty())
+    })
+    .await;
+    assert_eq!(
+        update["pendingApprovals"][0]["by"],
+        json!(alice_id),
+        "{update}"
+    );
+    let _done = bob
+        .apps()
+        .upgrade(
+            &notes,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut bob_pk),
+        )
+        .await
+        .unwrap();
+    let moved = get_until(&alice, &format!("apps/{notes}"), |a| {
+        a["release"]["version"] == "2.0.0"
+    })
+    .await;
+    let last = &moved["lastUpgrade"];
+    assert_eq!(last["class"], "red", "{moved}");
+    assert_eq!(last["by"], json!(bob_id), "{moved}");
+    assert_eq!(last["approvedBy"], json!(alice_id), "{moved}");
+    assert_eq!(last["reasons"][0]["code"], "unclassified", "{moved}");
 }

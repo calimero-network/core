@@ -199,10 +199,15 @@ pub enum Feature {
     /// takes, kept on the app, and the undo back to it. An earlier release would keep no
     /// restore point and could not decode the undo.
     RestorePoints,
+    /// `ApproveUpgrade` and `UpgradeApp` whose class carries an `unclassified` reason
+    /// (`calimero_bundle::update::Reason::Unclassified`): a move the log cannot classify,
+    /// a part's release no longer installed, approved first and applied as red. rc.34
+    /// cannot decode the reason, and a node stops a group on an entry it cannot decode.
+    UnclassifiedUpdates,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 45] = [
+pub const FEATURES: [Feature; 46] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -248,6 +253,7 @@ pub const FEATURES: [Feature; 45] = [
     Feature::UpgradePolicies,
     Feature::AutoUpdates,
     Feature::RestorePoints,
+    Feature::UnclassifiedUpdates,
 ];
 
 impl Feature {
@@ -300,6 +306,7 @@ impl Feature {
             Self::UpgradePolicies => "upgradePolicies",
             Self::AutoUpdates => "autoUpdates",
             Self::RestorePoints => "restorePoints",
+            Self::UnclassifiedUpdates => "unclassifiedUpdates",
         }
     }
 
@@ -350,6 +357,7 @@ impl Feature {
             | Self::UpgradePolicies
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
+            Self::UnclassifiedUpdates => "1.0.0-rc.35",
         }
     }
 }
@@ -564,6 +572,14 @@ pub(super) fn apply(
     Ok(json!({ "clusterVersion": version }))
 }
 
+/// Whether `class` carries an `unclassified` reason ([`Feature::UnclassifiedUpdates`]).
+fn unclassified(class: &crate::types::UpgradeClass) -> bool {
+    class
+        .reasons
+        .iter()
+        .any(|r| matches!(r, calimero_bundle::update::Reason::Unclassified { .. }))
+}
+
 impl SystemCmd {
     /// The features this entry uses: none for a shape every 1.0 release
     /// applies alike. Every command is listed, so a new one decides here.
@@ -612,6 +628,9 @@ impl SystemCmd {
                 if class.is_some() {
                     f.push(Feature::UpgradeClasses);
                 }
+                if class.as_ref().is_some_and(unclassified) {
+                    f.push(Feature::UnclassifiedUpdates);
+                }
                 if *auto {
                     f.push(Feature::AutoUpdates);
                 }
@@ -624,6 +643,9 @@ impl SystemCmd {
                 from_release: Some(_),
                 ..
             } => vec![Feature::AutoUpdates],
+            Self::ApproveUpgrade { class, .. } if unclassified(class) => {
+                vec![Feature::UpgradePolicies, Feature::UnclassifiedUpdates]
+            }
             Self::SetUpgradePolicy { .. } | Self::ApproveUpgrade { .. } => {
                 vec![Feature::UpgradePolicies]
             }
@@ -909,6 +931,7 @@ mod tests {
     const RC32: &str = "1.0.0-rc.32";
     const RC33: &str = "1.0.0-rc.33";
     const RC34: &str = "1.0.0-rc.34";
+    const RC35: &str = "1.0.0-rc.35";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1152,6 +1175,10 @@ mod tests {
                 "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true })),
             Feature::RestorePoints => entry(json!({ "op": "undoUpgrade",
                 "app_id": "app", "apps": { "app": [1] }, "actor": "alice", "at": 1 })),
+            Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
+                "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
+                "class": { "class": "red", "reasons": [{ "code": "unclassified",
+                    "member": null, "package": "p", "version": "1.0.0" }] } })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1439,7 +1466,7 @@ mod tests {
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES.iter().partition(|f| {
-            ![RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34].contains(&f.since())
+            ![RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35].contains(&f.since())
         });
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
@@ -1488,12 +1515,18 @@ mod tests {
         for &feature in &after {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.22's wait for every node on rc.22.
+        // rc.22's wait for every node on rc.22 (an entry naming several is refused for the
+        // first it needs: an unclassified approval for `upgradePolicies`).
         for &feature in &last {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            let first = if feature == Feature::UnclassifiedUpdates {
+                Feature::UpgradePolicies
+            } else {
+                feature
+            };
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
-                (feature, Some(RC20))
+                (first, Some(RC20))
             );
         }
         for n in &mut nodes {
@@ -1515,8 +1548,10 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC31);
         let (rc32, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC32);
-        let (rc33, rc34): (Vec<Feature>, Vec<Feature>) =
+        let (rc33, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC33);
+        let (rc34, rc35): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC34);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -1682,6 +1717,28 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc34 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.35's (an update the log cannot classify, approved and applied as red) for
+        // every node on rc.35: an rc.34 node cannot decode the `unclassified` reason.
+        assert_eq!(rc35, [Feature::UnclassifiedUpdates]);
+        for &feature in &rc35 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC34))
+            );
+            assert!(refused.message().contains(RC35), "{}", refused.message());
+        }
+        for n in &mut nodes {
+            n.release = RC35;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC35.into(),
+            nodes: (1..=3).map(|id| (id, RC35.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc35 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

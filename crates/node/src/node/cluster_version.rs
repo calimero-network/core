@@ -32,12 +32,23 @@ pub(super) struct Raising {
 }
 
 impl Node {
+    /// The newest cluster version this node supports, as its `/health` advertises it:
+    /// this build's ([`cv::supported`]), or in a test the older one
+    /// `testing::advertise_cluster_version` set.
+    pub(crate) fn advertises(&self) -> String {
+        #[cfg(feature = "testing")]
+        if let Some(v) = crate::testing::advertised_cluster_version(&self.config.public_url) {
+            return v;
+        }
+        cv::supported().to_owned()
+    }
+
     /// The cluster version node `id` supports, as its `/health` says over its
     /// sealed channel (this node's own for itself), waiting at most
     /// [`PLACEMENT_RELEASE_WAIT`]. `None` when it does not answer.
     async fn advertised_version(&self, id: NodeId) -> Option<String> {
         if id == self.config.node_id {
-            return Some(cv::supported().to_owned());
+            return Some(self.advertises());
         }
         let addr = self.sys(|s| s.nodes.get(&id).map(|n| n.addr.clone()))?;
         self.advertised_at(&addr).await

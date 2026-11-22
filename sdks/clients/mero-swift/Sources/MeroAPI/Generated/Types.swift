@@ -583,7 +583,7 @@ public protocol APIProtocol: Sendable {
     func appUpdate(_ input: Operations.AppUpdate.Input) async throws -> Operations.AppUpdate.Output
     /// Upgrade an app instance
     ///
-    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
+    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -592,7 +592,7 @@ public protocol APIProtocol: Sendable {
     func appUpgrade(_ input: Operations.AppUpgrade.Input) async throws -> Operations.AppUpgrade.Output
     /// Approve a red update first, for a second approver to apply
     ///
-    /// Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    /// Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34, and for an update the log cannot classify (a part's release no longer installed: class `red` with `unclassified` reasons) below 1.0.0-rc.35, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -2822,7 +2822,7 @@ extension APIProtocol {
     }
     /// Upgrade an app instance
     ///
-    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
+    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -2841,7 +2841,7 @@ extension APIProtocol {
     }
     /// Approve a red update first, for a second approver to apply
     ///
-    /// Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    /// Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34, and for an update the log cannot classify (a part's release no longer installed: class `red` with `unclassified` reasons) below 1.0.0-rc.35, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -6021,7 +6021,7 @@ public enum Components {
                 case destinations
             }
         }
-        /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself.
+        /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
         ///
         /// - Remark: Generated from `#/components/schemas/UpdateReason`.
         @frozen public enum UpdateReason: Codable, Hashable, Sendable {
@@ -6259,6 +6259,47 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/UpdateReason/case6`.
             case case6(Components.Schemas.UpdateReason.Case6Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case7`.
+            public struct Case7Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/code`.
+                @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case unclassified = "unclassified"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/code`.
+                public var code: Components.Schemas.UpdateReason.Case7Payload.CodePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/member`.
+                public var member: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/version`.
+                public var version: Swift.String
+                /// Creates a new `Case7Payload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - member:
+                ///   - package:
+                ///   - version:
+                public init(
+                    code: Components.Schemas.UpdateReason.Case7Payload.CodePayload,
+                    member: Swift.String? = nil,
+                    package: Swift.String,
+                    version: Swift.String
+                ) {
+                    self.code = code
+                    self.member = member
+                    self.package = package
+                    self.version = version
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case member
+                    case package
+                    case version
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case7`.
+            case case7(Components.Schemas.UpdateReason.Case7Payload)
             public init(from decoder: any Decoder) throws {
                 var errors: [any Error] = []
                 do {
@@ -6297,6 +6338,12 @@ public enum Components {
                 } catch {
                     errors.append(error)
                 }
+                do {
+                    self = .case7(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
                 throw Swift.DecodingError.failedToDecodeOneOfSchema(
                     type: Self.self,
                     codingPath: decoder.codingPath,
@@ -6316,6 +6363,8 @@ public enum Components {
                 case let .case5(value):
                     try value.encode(to: encoder)
                 case let .case6(value):
+                    try value.encode(to: encoder)
+                case let .case7(value):
                     try value.encode(to: encoder)
                 }
             }
@@ -24184,7 +24233,7 @@ public enum Operations {
     }
     /// Upgrade an app instance
     ///
-    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up.
+    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -24409,7 +24458,7 @@ public enum Operations {
     }
     /// Approve a red update first, for a second approver to apply
     ///
-    /// Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    /// Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green update), a red update needs two distinct owners or admins of its organization: this logs the first approval, its own consent over `<app> / __approve_upgrade / { package, version, targets, class }` (the class the classifier gives now, over the unit with `unit`). Another owner or admin then applies it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34, and for an update the log cannot classify (a part's release no longer installed: class `red` with `unclassified` reasons) below 1.0.0-rc.35, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///

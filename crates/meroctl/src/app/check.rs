@@ -480,6 +480,14 @@ fn say(r: &Reason) -> String {
             who(member.as_ref()),
             list(methods)
         ),
+        Reason::Unclassified {
+            member,
+            package,
+            version,
+        } => format!(
+            "{} was not classified: {package}@{version} is no longer installed",
+            who(member.as_ref())
+        ),
     }
 }
 

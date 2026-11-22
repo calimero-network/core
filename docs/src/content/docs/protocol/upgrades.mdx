@@ -271,7 +271,21 @@ log cannot show (a state version, a method called as the person) is the
 proposer's to say. A move the log cannot rebuild (a release the app or a member
 runs, or a target, no longer installed, which is allowed while another release
 ships the same WASM) is never green: the log cannot confirm it, so apply refuses
-a green class for it and takes a red one, gated as red. The class and its reasons are kept on the app's last upgrade
+a green class for it and takes a red one, gated as red. The API classifies such a
+move red with an `unclassified` reason for each part the log lacks (`{ code:
+"unclassified", member, package, version }`, `SystemState::unclassified`), and
+shows it the same way wherever it shows the class (`GET /apps/{app}/update`, the
+consent page's sheets and approval step; what compares the two sides, its
+destinations, signer, state version and methods, is unknown: `null` in the API,
+"Unknown" on the page), and
+apply refuses an `unclassified` reason that names anything else, or one on a
+move the log rebuilds. An entry carrying that reason needs cluster version
+1.0.0-rc.35 (`Feature::UnclassifiedUpdates`), as rc.34 cannot decode it: below
+it, under a `secondApprover` policy, the first approval, the upgrade and the
+consent page of such a move are refused `409 FEATURE_NOT_ACTIVE` before the
+passkey (every node must run 1.0.0-rc.35 first), and without that policy the
+upgrade is logged without a class, as rc.34 logs it; the update still shows red.
+The class and its reasons are kept on the app's last upgrade
 (`lastUpgrade.class`, `reasons`). An entry without a class (an earlier
 release's, a raw bundle's, or a release the classifier could not read) is taken
 as red by every rule below; one logged before the feature replays as it applied.
@@ -314,7 +328,9 @@ every app it covers runs its target. A green update needs one approval whatever
 the policy (`409 ONE_APPROVAL` for a first approval of it), and so does every
 update without the policy. The operator's upgrades (where it holds app upgrades)
 are not judged by policies. A raw bundle carries no class, so under a second
-approver it never applies.
+approver it never applies. An update the log cannot classify (the release the app
+runs uninstalled while another ships its WASM) is approved first like any red
+one: the approval and the upgrade carry the `unclassified` class above.
 
 A unit's upgrade (`/upgrade-unit`, the consent page's `upgradeUnit`) is judged
 once, as a whole, under its instance's policy, so it moves whole or not at all:

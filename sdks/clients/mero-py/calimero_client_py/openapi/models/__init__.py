@@ -134,8 +134,8 @@ from .app_update_response_200_available_type_0 import AppUpdateResponse200Availa
 from .app_update_response_200_available_type_0_class import (
     AppUpdateResponse200AvailableType0Class,
 )
-from .app_update_response_200_available_type_0_egress import (
-    AppUpdateResponse200AvailableType0Egress,
+from .app_update_response_200_available_type_0_egress_type_0 import (
+    AppUpdateResponse200AvailableType0EgressType0,
 )
 from .app_update_response_200_available_type_0_source import (
     AppUpdateResponse200AvailableType0Source,
@@ -764,6 +764,8 @@ from .update_reason_type_4 import UpdateReasonType4
 from .update_reason_type_4_code import UpdateReasonType4Code
 from .update_reason_type_5 import UpdateReasonType5
 from .update_reason_type_5_code import UpdateReasonType5Code
+from .update_reason_type_6 import UpdateReasonType6
+from .update_reason_type_6_code import UpdateReasonType6Code
 from .upgrade import Upgrade
 from .upgrade_class import UpgradeClass
 from .upgrade_pending import UpgradePending
@@ -904,7 +906,7 @@ __all__ = (
     "AppUpdateResponse200Approvers",
     "AppUpdateResponse200AvailableType0",
     "AppUpdateResponse200AvailableType0Class",
-    "AppUpdateResponse200AvailableType0Egress",
+    "AppUpdateResponse200AvailableType0EgressType0",
     "AppUpdateResponse200AvailableType0Source",
     "AppUpdateResponse200Policy",
     "AppUpdateResponse200PolicyAutoApply",
@@ -1433,6 +1435,8 @@ __all__ = (
     "UpdateReasonType4Code",
     "UpdateReasonType5",
     "UpdateReasonType5Code",
+    "UpdateReasonType6",
+    "UpdateReasonType6Code",
     "Upgrade",
     "UpgradeClass",
     "UpgradePending",

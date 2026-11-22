@@ -268,6 +268,16 @@ pub enum Reason {
         package: String,
         methods: Vec<String>,
     },
+    /// Not classified: `package`@`version`, which the app (or the member) runs or moves to,
+    /// is no longer installed, so what it declared cannot be read. Taken as red. The node
+    /// says it (a release uninstalled while another ships its WASM); [`classify`] never
+    /// does.
+    #[serde(rename_all = "camelCase")]
+    Unclassified {
+        member: Option<String>,
+        package: String,
+        version: String,
+    },
 }
 
 /// The unit's egress before and after, and what changed: `added` are the destinations

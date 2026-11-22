@@ -1664,7 +1664,10 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
 /// included, is named like any other, never vouched for. The apps it created are named
 /// only when it has some (`members`).
 fn destinations_point(c: &calimero_bundle::update::Classification, members: bool) -> String {
-    let point = if !c.egress.added.is_empty() {
+    let point = if crate::egress::unclassified(c) {
+        "Where data can go could not be checked: a release it runs is no longer installed."
+            .to_owned()
+    } else if !c.egress.added.is_empty() {
         format!(
             "This update can send data to a new place: {}.",
             phrase(&hosts(c.egress.added.iter().map(String::as_str)))
@@ -2027,6 +2030,9 @@ async fn upgrade_request(
     // approval waiting is refused before a page exists. A unit's page is judged on the
     // whole unit instead (`unit_upgrade_request`).
     let step = if part == Part::Alone {
+        // An update the log cannot classify is approved only once every node decodes its
+        // reason (`Feature::UnclassifiedUpdates`): refused before a page exists.
+        crate::api::unclassified_gate(node, &app, Some(&to_release)).await?;
         let class = crate::api::move_class(node, &app_id, Some(&to_release)).await;
         let green = class
             .as_ref()
@@ -2119,7 +2125,7 @@ async fn upgrade_request(
     let unit = if member_of_unit {
         None
     } else {
-        crate::egress::update(node, &app, &target.version, false).await?
+        crate::egress::judged_update(node, &app, &target.version, false).await?
     };
     let mut points = vec![
         json!(format!(
@@ -2150,7 +2156,7 @@ async fn upgrade_request(
         "title": format!("Update {} to version {new}", app.name),
         "points": points,
         "attention": attention,
-        "unit": unit,
+        "unit": unit.as_ref().map(crate::egress::verdict_json),
         "app": { "name": name, "package": package },
         "publisher": {
             "name": author,
@@ -2264,7 +2270,7 @@ async fn unit_upgrade_request(
         .flat_map(|m| m["notes"].as_array().cloned().unwrap_or_default())
         .collect();
     // The whole unit moves: its egress after is the members' targets', classified once.
-    let unit = crate::egress::update(node, &plan.app, &version, true).await?;
+    let unit = crate::egress::judged_update(node, &plan.app, &version, true).await?;
     if let Some(c) = &unit {
         points.insert(points.len() - 1, json!(destinations_point(c, true)));
     }
@@ -2289,6 +2295,7 @@ async fn unit_upgrade_request(
     };
     // The approval of the whole unit's move, of exactly its targets (as `upgrade-unit` and
     // apply judge it), so a unit red only through a member is approved first here too.
+    crate::api::unclassified_gate(node, &plan.app, Some(&to_release)).await?;
     let step = updates::approval_step(node, &plan.app, &to_release, &plan.targets, green, account)?;
     let moves: Vec<String> = pages
         .iter()
@@ -2313,7 +2320,10 @@ async fn unit_upgrade_request(
     let mut model = root.clone();
     if let Some(o) = model.as_object_mut() {
         let _prev = o.insert("kind".into(), json!("upgradeUnit"));
-        let _prev = o.insert("unit".into(), json!(unit));
+        let _prev = o.insert(
+            "unit".into(),
+            json!(unit.as_ref().map(crate::egress::verdict_json)),
+        );
         let _prev = o.insert("update".into(), update);
         let _prev = o.insert(
             "headline".into(),
