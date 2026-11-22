@@ -27,14 +27,14 @@ What you can do with it:
 
 > **From version 27 this is the Calimero 1.0 client only.** The v1 SDK for merod 0.x nodes
 > (`MeroJs`, the admin and auth API clients, JSON-RPC, contexts and namespaces)
-> is in 26.x. See [Migrating from v1](https://calimero-network.github.io/mero-js/reference/migrating-from-v1/).
+> is in 26.x. See [Migrating from v1](https://calimero-network.github.io/core/clients/mero-js/reference/migrating-from-v1/).
 
 > **Before committing, titling a pull request, or releasing**, read [RELEASING.md](RELEASING.md): the PR title is the release commit, and the rules are shared by every Calimero repository that ships releases.
 
 ## Documentation
 
-**<https://calimero-network.github.io/mero-js/>**: quickstart, guides, and the
-reference for every method and the route it calls. The source is under [`docs/`](docs/).
+**<https://calimero-network.github.io/core/clients/mero-js/>**: quickstart, guides, and the
+reference for every method and the route it calls. The source is part of core's docs site, under [`docs/src/content/docs/clients/mero-js/`](../../../docs/src/content/docs/clients/mero-js/).
 
 ## Installation
 
@@ -136,7 +136,7 @@ flows and streams a single route cannot be:
 - **Blobs**: `downloadBlob(app, id)`, `downloadBlobGranted(app, id, grant)` (bytes; `client.apps.blobDownload` answers a `Blob` with its type).
 - **Streams**: `events(app, from?, signal?)`, `presenceStream(app, signal?)`.
 - **Updates** (`client.updates`): `get(app)` (the update available, green or red, with a one-line `summary` for a banner), `openSheet(app)` (the node's update sheet in a pop-up opened as the call starts), `approve(app, { version?, unit? })` (the first of two approvals of a red update, for an unbound session), `manage()` (the node's updates page across the apps the person approves), `install(subject)` (the install sheet) and `policy.get(target)` / `policy.set(target, policy)` (the change on the node's page). `updateBanner(view)`, `updateSheetConsent`, `updatePolicyConsent`, `updatesPageConsent` and `installConsent` build the same requests. See core's [Show updates in your app](https://calimero-network.github.io/core/build/guides/updates/).
-- **Approvals from an app**: `pendingApprovals(org?)`, `appsReportAll(org)`, then `openConsentPage(request, …)` to send the user to the node's consent page, and `waitForConsent(requestId)`; back on `returnTo`, `resumeConsent()` reads the decision on the request this page started from the node (never from the URL) and refuses a return for another request, one still pending, or one a newer request replaced (`CONSENT_REPLACED`: an account has one undecided request per node). Besides releases, upgrades and outbound hosts, `createOrgConsent`, `createInviteConsent` and `acceptInviteConsent` ask for a new organization, an invite or joining with one, and `leaveOrgConsent`, `removeMemberConsent`, `setMemberRoleConsent`, `setMemberTeamsConsent`, `removeMemberTeamsConsent`, `revokeInviteConsent`, `renameOrgConsent`, `deleteOrgConsent`, `setCapabilitiesConsent` and `setAllAppsConsent` for managing one; the result's `outcome` (`{ orgId }`, `{ token }`, `{ org }`, a rename's `{ orgId, name }`, a deletion's `{ apps }`) is typed by `kind`. Show the answer's `code` to the user before sending them to `url` (`openConsentPage`'s `confirm` hook); they should see the same code on the page (`confirmationCode(requestId)` checks it). See [Ask your users to approve node images and app upgrades](https://calimero-network.github.io/mero-js/guides/user-approvals/).
+- **Approvals from an app**: `pendingApprovals(org?)`, `appsReportAll(org)`, then `openConsentPage(request, …)` to send the user to the node's consent page, and `waitForConsent(requestId)`; back on `returnTo`, `resumeConsent()` reads the decision on the request this page started from the node (never from the URL) and refuses a return for another request, one still pending, or one a newer request replaced (`CONSENT_REPLACED`: an account has one undecided request per node). Besides releases, upgrades and outbound hosts, `createOrgConsent`, `createInviteConsent` and `acceptInviteConsent` ask for a new organization, an invite or joining with one, and `leaveOrgConsent`, `removeMemberConsent`, `setMemberRoleConsent`, `setMemberTeamsConsent`, `removeMemberTeamsConsent`, `revokeInviteConsent`, `renameOrgConsent`, `deleteOrgConsent`, `setCapabilitiesConsent` and `setAllAppsConsent` for managing one; the result's `outcome` (`{ orgId }`, `{ token }`, `{ org }`, a rename's `{ orgId, name }`, a deletion's `{ apps }`) is typed by `kind`. Show the answer's `code` to the user before sending them to `url` (`openConsentPage`'s `confirm` hook); they should see the same code on the page (`confirmationCode(requestId)` checks it). See [Ask your users to approve node images and app upgrades](https://calimero-network.github.io/core/clients/mero-js/guides/user-approvals/).
 
 Refusals are typed (`LoginRequired`, `PasskeyUnknownHere`, `WrongNode`, `NotFound`, `ConfirmRequired`, `ConfirmCancelled`, `ConfirmPromptBlocked`,
 `ArgsTooLarge`, `IdempotencyMismatch`, `ReleaseDeadlineError`, `RuntimeTooOld`, `ConsentStale`, `AppError`, `TrapError`,
@@ -145,7 +145,7 @@ all extending `CalimeroError` with the node's `status` and `code`. A `401` once
 the node that issued the session is replaced or out of reach is answered by one
 refresh and a repeat; a `421 WRONG_NODE` by moving to the next of the `nodes` the client was
 given. See the
-[error model](https://calimero-network.github.io/mero-js/reference/error-model/).
+[error model](https://calimero-network.github.io/core/clients/mero-js/reference/error-model/).
 
 The pieces it is built from are exported too: the sealed transport
 (`createSealedFetch`), quote and signed-release verification

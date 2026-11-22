@@ -10,8 +10,8 @@
 mero-swift is the native Swift SDK for Calimero 1.0 (Swift 5.9+, iOS 15+ /
 macOS 12+), the Swift port of mero-js's `CalimeroClient`: attestation, the
 sealed channel, passkeys, organizations, teams, app instances and live events.
-See [README.md](README.md), [TESTING.md](TESTING.md) and the docs site, whose
-source is `docs/`.
+See [README.md](README.md), [TESTING.md](TESTING.md) and its guides on core's docs
+site (`docs/src/content/docs/clients/mero-swift/`, built with the rest of `docs/`).
 
 ## Names
 
@@ -37,7 +37,6 @@ module or product: that breaks every app that imports it.
 - `examples/MeroSampleApp/`: the sample app (XcodeGen `project.yml`; the `.xcodeproj` is generated, not committed).
 - `openapi/`: the generator's configuration (`openapi-generator-config.yaml`) and version (`generator`).
 - `scripts/`: the generator, `refresh-receipt-vectors.sh`, and `dev-cluster.sh` (a `merod local` cluster on a Mac, at `ci/core-version`).
-- `docs/`: the Starlight docs site (npm). Its old build and deploy workflows were not ported to core.
 - `CHANGELOG.md`: the history from when this was its own repository. New entries go in core's release notes.
 
 ## Build, test, lint

@@ -1,0 +1,56 @@
+---
+title: Clients
+description: The client SDKs that talk to a Calimero node — mero-js, mero-py, mero-swift and mero-kotlin — and the components built on them, what they share, and where each one's guides are.
+---
+
+import ClientStack from '../../../components/diagrams/ClientStack.astro';
+
+A client SDK is how an app, a script or a service talks to a Calimero node. Each
+one verifies the node's attestation before it sends anything, seals every request
+to the attested key, signs people in with passkeys (or a machine with an API key,
+or a visitor with a public link), and calls your app's methods. They all live in
+core under [`sdks/`](https://github.com/calimero-network/core/tree/master/sdks),
+ship with core at core's version, and are regenerated in the same pull request
+that changes the node's API.
+
+<ClientStack />
+
+| Client | Language and platform | Install | Guides |
+| --- | --- | --- | --- |
+| **mero-js** | TypeScript, the browser and Node 18+ | `npm install @calimero-network/mero-js` | [mero-js](/clients/mero-js/) |
+| **mero-py** | Python 3.9+, synchronous | `pip install --pre mero-py` | [mero-py](/clients/mero-py/) |
+| **mero-swift** (MeroKit) | Swift, iOS and macOS | SwiftPM: `.package(url: "https://github.com/calimero-network/core", exact: "<core version>")` | [mero-swift](/clients/mero-swift/) |
+| **mero-kotlin** | Kotlin, Android and the JVM | `implementation("network.calimero:mero-kotlin:<version>")` | [mero-kotlin](/clients/mero-kotlin/) |
+
+The components build on mero-js. Each one's README is its documentation:
+
+| Component | What it is |
+| --- | --- |
+| [mero-react](https://github.com/calimero-network/core/tree/master/sdks/components/mero-react) | React hooks and components: sign-in, the consent page's return, the update banner |
+| [mero-design](https://github.com/calimero-network/core/tree/master/sdks/components/mero-design) | The design system's React components |
+| [mero-icons](https://github.com/calimero-network/core/tree/master/sdks/components/mero-icons), [mero-tokens](https://github.com/calimero-network/core/tree/master/sdks/components/mero-tokens) | Icons and design tokens |
+| [mero-charts](https://github.com/calimero-network/core/tree/master/sdks/components/mero-charts) | Charts on mero-design |
+
+## What every client shares
+
+- **The same API.** Each client's route layer is generated from the node's API
+  document, [`docs/public/openapi.json`](/operate/api-reference/), so every route
+  is a method with the node's own names. The [Node API](/operate/admin-api/) page
+  is the reference for what each route does; a client's guides cover how to call
+  it from that language.
+- **The same trust.** Each verifies the TDX quote and the node's release as core's
+  Rust client does ([TEE attestation](/protocol/tee-attestation/)), and speaks the
+  sealed wire format of `calimero-sealed`
+  ([Networking](/protocol/networking/)).
+- **The same access rules.** What a caller reaches is decided by the node: an
+  instance's grants, guests and public links
+  ([Organizations, teams & access](/protocol/organizations/#app-access)). Updates,
+  their green or red verdict and who approves them are in
+  [Upgrades](/protocol/upgrades/); an app's frontend shows them with
+  [the update banner](/build/guides/updates/).
+- **One version.** A client's version is core's release; there is no separate
+  release of a client ([Releasing](https://github.com/calimero-network/core/blob/master/RELEASING.md)).
+
+The mero-js, mero-py, Swift and Kotlin clients were separate repositories before
+they moved into core; those repositories are archived, and these pages replace
+their documentation sites.

@@ -149,6 +149,56 @@ export default defineConfig({
           ],
         },
         {
+          // The client SDKs (sdks/clients/*), each in its own group; their docs
+          // were separate sites before they moved into core.
+          label: 'Clients',
+          items: [
+            { label: 'Overview', slug: 'clients' },
+            {
+              label: 'mero-js (TypeScript)',
+              collapsed: true,
+              items: [
+                { label: 'Overview', slug: 'clients/mero-js' },
+                { label: 'Get started', items: ['clients/mero-js/get-started/quickstart', 'clients/mero-js/get-started/authentication'] },
+                { label: 'Understand', items: ['clients/mero-js/understand/system-overview', 'clients/mero-js/understand/glossary'] },
+                { label: 'Guides', items: ['clients/mero-js/guides/apps', 'clients/mero-js/guides/organizations', 'clients/mero-js/guides/user-approvals', 'clients/mero-js/guides/sealed-transport', 'clients/mero-js/guides/bundling-and-runtimes'] },
+                { label: 'Reference', items: ['clients/mero-js/reference/client', 'clients/mero-js/reference/error-model', 'clients/mero-js/reference/migrating-from-v1'] },
+              ],
+            },
+            {
+              label: 'mero-py (Python)',
+              collapsed: true,
+              items: [
+                { label: 'Overview', slug: 'clients/mero-py' },
+                { label: 'Get started', items: ['clients/mero-py/get-started/installation', 'clients/mero-py/get-started/quickstart', 'clients/mero-py/get-started/concepts'] },
+                { label: 'Reference', items: ['clients/mero-py/reference/client', 'clients/mero-py/reference/methods', 'clients/mero-py/reference/errors'] },
+                { label: 'Guides', items: ['clients/mero-py/guides/migration'] },
+              ],
+            },
+            {
+              label: 'mero-swift (Swift)',
+              collapsed: true,
+              items: [
+                { label: 'Overview', slug: 'clients/mero-swift' },
+                { label: 'Get started', items: ['clients/mero-swift/get-started/quickstart', 'clients/mero-swift/get-started/authentication'] },
+                { label: 'Guides', items: ['clients/mero-swift/guides/calls-and-events', 'clients/mero-swift/guides/app-session', 'clients/mero-swift/guides/consent', 'clients/mero-swift/guides/sealed-transport', 'clients/mero-swift/guides/tee-trust', 'clients/mero-swift/guides/agent-gate'] },
+                { label: 'Reference', items: ['clients/mero-swift/reference/calimero-client', 'clients/mero-swift/reference/error-model'] },
+              ],
+            },
+            {
+              label: 'mero-kotlin (Kotlin)',
+              collapsed: true,
+              items: [
+                { label: 'Overview', slug: 'clients/mero-kotlin' },
+                { label: 'Get started', items: ['clients/mero-kotlin/get-started/quickstart', 'clients/mero-kotlin/get-started/authentication'] },
+                { label: 'Understand', items: ['clients/mero-kotlin/understand/system-overview', 'clients/mero-kotlin/understand/glossary'] },
+                { label: 'Guides', items: ['clients/mero-kotlin/guides/apps', 'clients/mero-kotlin/guides/organizations', 'clients/mero-kotlin/guides/user-approvals', 'clients/mero-kotlin/guides/app-session', 'clients/mero-kotlin/guides/sealed-transport', 'clients/mero-kotlin/guides/agent-gate'] },
+                { label: 'Reference', items: ['clients/mero-kotlin/reference/client', 'clients/mero-kotlin/reference/error-model', 'clients/mero-kotlin/reference/migrating-from-0x'] },
+              ],
+            },
+          ],
+        },
+        {
           label: 'Operate',
           items: [
             { label: 'Overview', slug: 'operate' },

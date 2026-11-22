@@ -9,7 +9,7 @@
 `@calimero-network/mero-js` is the JavaScript/TypeScript client for Calimero 1.0
 (browser and Node 18+): `CalimeroClient` verifies a node's TDX attestation, seals
 every request to it, signs people in with passkeys and machines with API keys, and
-calls apps. See [README.md](README.md) and the docs site, whose source is `docs/`.
+calls apps. See [README.md](README.md) and its guides on core's docs site (`docs/src/content/docs/clients/mero-js/`, built with the rest of `docs/`).
 
 ## Layout
 
@@ -21,7 +21,6 @@ calls apps. See [README.md](README.md) and the docs site, whose source is `docs/
 - `src/generated/`: **generated, do not edit** (see below).
 - `tests/cluster/`: the cluster suite (`vitest.cluster.config.ts`); `tests/consumer/` is what `typecheck:consumer` compiles; unit tests sit beside the code as `src/**/*.test.ts`, and `typecheck:tests` (`tsconfig.test.json`) compiles them with `tests/cluster` and `tests/support`.
 - `examples/`: one directory per example (see below).
-- `docs/`: the docs site (Astro/Starlight, its own npm project, not in the workspace).
 - `sdk.json`: how core's CI treats this SDK (`scripts/sdks.py`).
 
 ## Build, test, lint

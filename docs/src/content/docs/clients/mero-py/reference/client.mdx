@@ -1,0 +1,343 @@
+---
+title: Using the client
+description: Client and its generated methods — groups and naming, arguments and explicit nulls, step-ups (confirm=, operator_proof=, use_passkey, use_operator_signer), typed answers and client.json, streams, and the hand-written flows (sign-in, recovery, uploads).
+sidebar:
+  order: 1
+---
+
+The public surface is the `calimero_client_py` module, also re-exported from
+the `calimero` package: `Client` (also `CloudClient`, the name earlier releases
+used), `SoftPasskey`, `CloudError` and its subclasses (see
+[errors](/clients/mero-py/reference/errors/)), and `VERSION`. Every method is
+**synchronous**.
+
+The node's API is generated from core's OpenAPI document. Each route is a
+method of a group on `Client`, and the [method reference](/clients/mero-py/reference/methods/)
+lists them all. What is more than one route is written by hand: the
+attestation and sealed channel, the passkey ceremonies, the account and
+organization recovery flows, and the event streams.
+
+## `Client`
+
+```python
+Client(base_url, allow_mock=False, app_hash=None, tee_profiles=None,
+       min_release=None, allow_debug_profiles=False, nodes=None,
+       ca_bundle=None)
+```
+
+A connection to one node of a cluster. The node is trusted only once its
+attestation verifies (see [concepts](/clients/mero-py/get-started/concepts/)), and nothing is
+sent until the first request.
+
+| Argument | Meaning |
+| --- | --- |
+| `allow_mock` | Accept development (mock) quotes. |
+| `app_hash` | Hex of 32 bytes: the bundle the quote must bind. |
+| `tee_profiles` | Accept real TDX quotes from images a signed mero-tee release lists under one of these profiles. Without it, only mock quotes can be accepted. |
+| `min_release` | The oldest mero-tee release accepted. |
+| `allow_debug_profiles` | Accept a release's debug profiles (whose memory the host can read). |
+| `nodes` | Other nodes of the same cluster, in the order the client moves to them when a node answers `421 WRONG_NODE` or is unavailable (see [failover](#failover)). Each is attested under the same policy. `node_url()` names the node in use, `node_urls()` all of them. |
+| `ca_bundle` | Path of a PEM file whose certificates are trusted as TLS roots on top of the built-in public ones (a private or staging CA), for every node, leader and directory the client reaches. `None` trusts the public roots only. A file that cannot be read raises the `OSError` it stands for (`FileNotFoundError`), one with no usable certificate `ValueError`, at construction. The event streams, `attestation()` and `verify_app_cluster()` still trust the public roots only (they run on core's own client). |
+
+### `Client.connect`
+
+```python
+Client.connect(cluster, *, tee_profiles=None, min_release=None, allow_mock=False,
+               app_hash=None, allow_debug_profiles=False, directory=None, zone=None,
+               ca_bundle=None)
+```
+
+Returns a client for the cluster named `cluster`, using the nodes the Calimero
+Cloud node directory lists for it: `GET {directory}/{cluster}`, with
+`directory` defaulting to
+`https://manager.cloud.calimero.network/api/v2/directory`. The policy
+arguments mean what they do for the constructor, and `ca_bundle` covers the
+directory too.
+
+- Entries that are not an `http(s)` URL with a positive integer `weight` are
+  dropped. An unknown cluster (`404`), a directory that cannot be reached, or a
+  listing with no usable node raises `CloudError` with code `DIRECTORY`.
+- The nodes in `zone` come first, then the rest; within each group the order
+  is weighted random.
+- The directory is not trusted: every node is attested under this client's
+  policy before anything is sent to it.
+- After the listing's `refreshAfterSeconds` have passed, and after the client
+  failed over, the listing is fetched again (best effort).
+
+### Failover
+
+- **Unreachable nodes.** Any request leaves a node that cannot be connected to
+  and moves to the next node.
+- **Retries.** A read, and a call whose node answers `503` or times out, also
+  move to the next node. A call first goes again to the same node for about
+  nine seconds, then to the next node with the same idempotency key. The
+  client makes a key when `call` is given none, and the cluster answers the
+  call once, since the key is recorded in the app's replicated log.
+- **Order.** Each node is tried once per request; after the last, the last
+  error is raised.
+- **Expired sessions.** A request made with a session that the node answers
+  `401 UNAUTHENTICATED` is refreshed once and sent again. Requests refused at
+  the same time share that one refresh.
+- **Wrong node.** `421 WRONG_NODE` moves the client to the next of `nodes`.
+- See [errors](/clients/mero-py/reference/errors/#restarts-and-other-nodes) for both refusals.
+
+## Groups and method names
+
+| Group | What it holds |
+| --- | --- |
+| `client.auth` | The signed-in account: `me`, sessions, passkeys, API keys, aliases, recovery codes, usage, activity, the account's own approvals. |
+| `client.apps` | App instances: `create`, `get`, `list`, `call`, `view`, `upgrade`, `access`, `move`, `transfer`, blobs, sealed files and uploads, presence, runs. |
+| `client.orgs` | Organizations: members and roles, invites, teams, app teams, capabilities, recovery, approvals, upgrade runs. |
+| `client.packages` | Bundles (`bundle_put`), signed packages (`upload`, `install`), and the web origins a package's frontends sign in from. |
+| `client.deployments` | Deployments and deployers, and the cluster's sign-up policy and invites. |
+| `client.consent` | Consent pages. |
+| `client.ops` | The operator's Ops API (with the ops token). |
+| `client.public` | What needs no sign-in: `health`, the public attestation, published releases. |
+
+A method is named after the route's operation id, without the group's name
+(`org_get` is `client.orgs.get`, `apikey_create` is
+`client.auth.apikey_create`). Calls and views are `client.apps.call` and
+`client.apps.view`. Each method's docstring names its route and operation id,
+so `help(client.apps.call)` shows both.
+
+## Arguments
+
+Arguments are **keyword-only**: the route's path parameters, its query
+parameters and the JSON body's fields, in snake case (`readOnly` is
+`read_only`, `minIndex` is `min_index`; a name Python reserves gets a trailing
+underscore, as `hash_` in an answer).
+
+```python
+client.orgs.invite_create(org=org, role="member", teams=[team], ttl_secs=3600)
+```
+
+- **Left out means not sent.** An optional argument you leave out is not in
+  the request at all, and the node uses its default.
+- **`None` is an explicit null.** An argument you pass as `None` is sent as
+  JSON `null`, which for some fields means *clear*:
+  `client.apps.metadata(app=app, metadata=None)` removes the app's metadata.
+- **Enums take their value.** An argument the document types as an enum takes
+  the string (`consistency="stale"`) or the generated enum member.
+- **Raw bodies.** A route that takes bytes takes them as `body=`:
+  `packages.bundle_put(body=wasm)`, `packages.upload(body=mpk)`,
+  `apps.files_upload(app=..., body=data)`. `apps.blob_upload` also takes
+  `content_type=`, the media type the blob is stored and served with
+  (default `application/octet-stream`).
+- **Open bodies.** A body that takes fields the document does not name takes
+  them as further keyword arguments, by their JSON names. The current document
+  has none: `POST /ops/quotas` lists every limit, so `quotas_set` takes each by
+  its Python name, `client.ops.quotas_set(max_apps_per_account=3)`, and refuses
+  any other with `TypeError`.
+
+The generated model checks the body before it is sent: a value the document
+does not allow raises `ValueError` and sends nothing.
+
+## Step-ups: `confirm=` and `operator_proof=`
+
+Some requests need a proof over that exact request. The node answers first, and
+the client answers that and sends the request again:
+
+| The node answers | The client answers with |
+| --- | --- |
+| `412 CONFIRM_REQUIRED` | A passkey assertion over `details.challenge`: deleting an organization, changing a role, making an API key, calling an app's `confirm` method, ... |
+| `428 OPERATOR_SIGNATURE_REQUIRED` | The operator key's signature over the statement the node names: the Ops API's decisions. |
+
+Set the answer once for the client, or give it per call:
+
+```python
+client.use_passkey(passkey)            # every 412 from now on (None forgets it)
+client.orgs.delete(org=org)            # answered with that passkey
+
+client.orgs.delete(org=org, confirm=other_passkey)   # this call only
+client.orgs.delete(org=org, confirm=False)           # raise the 412 as CloudError
+
+ops.use_operator_key(seed_hex)                 # every 428, signed with the seed
+ops.use_operator_signer(lambda details: hsm.proof_for(details))   # or a signer
+ops.ops.set_replicas(app=app, replicas=[1, 2, 4])
+ops.ops.set_replicas(app=app, replicas=[1, 2, 4], operator_proof=seed_hex)
+```
+
+- **`confirm=`** takes a passkey (`SoftPasskey`, or anything with
+  `create(options)` and `get(challenge)`), a ready `confirm` value you made
+  yourself, or `False`. Left out (`None`), the client uses the passkey set
+  with `use_passkey`.
+- **`operator_proof=`** takes an operator seed (hex), a signer (a callable
+  given the node's `details`, `{subject, method, args, nonce, cluster,
+  message}`, that returns the `operatorProof`), a ready `operatorProof`, or
+  `False`. Left out, the client uses `use_operator_signer`'s signer, else
+  `use_operator_key`'s seed.
+- **`Client.operator_public_key(seed)`** returns the verify key the nodes take
+  as `--operator-key`.
+
+The [method reference](/clients/mero-py/reference/methods/) marks each method that asks for
+one. A decision that runs on a group's leader follows a `421 NOT_LEADER` to the
+leader the node names, attested under the same policy, and signs again there.
+
+## Answers: models and `client.json`
+
+A method returns the **generated model** of the route's success answer: an
+`attrs` class with snake-case attributes, `.to_dict()` for the JSON, and
+`.additional_properties` for fields the document does not name.
+
+```python
+r = client.apps.call(app=app, method="set", args={"key": "a"})
+r.index, r.result, r.receipt
+client.orgs.create(name="Acme").org_id
+```
+
+A refusal raises [`CloudError`](/clients/mero-py/reference/errors/).
+
+**`client.json.<group>.<method>(...)`** is the same call, and returns the
+node's JSON as it came (dicts and lists) instead of the model. Use it against
+a node older than the document, whose answers may lack a field the document
+requires, or to pass the JSON on as it is:
+
+```python
+client.json.ops.status()["groups"]
+```
+
+`client.api()` returns the generated `calimero_client_py.openapi` client on the
+same sealed transport, for the generated modules called directly.
+
+## Streams
+
+The event streams are long requests, so they are not generated:
+
+| Method | Returns |
+| --- | --- |
+| `events(app, start=0, limit=100, timeout=5.0)` | Up to `limit` committed events from index `start`, or as many as arrive within `timeout` seconds: `[{"id", "kind", "data"}]`. |
+| `presence_stream(app, limit=100, timeout=5.0)` | The snapshot (`{"kind": "snapshot", "data": [...]}`), then one `{"kind": "presence", "data": {...}}` per change. |
+
+`client.apps.presence_get` reads the presence snapshot once, and
+`client.apps.presence_publish` publishes the caller's.
+
+## Sign-in and sessions
+
+The passkey ceremonies are two routes each, with the passkey in between:
+
+| Method | Returns |
+| --- | --- |
+| `sign_up(passkey, name, origin=None)` | The new account's session. The passkey is asked twice: to register, then to sign the account it creates. `origin`: the web origin the passkey is made from, one that a package registered (`client.packages.origins_add`); without it, the node's own. |
+| `sign_in(passkey, origin=None)` | The session; with `origin`, the session of the app that registered it. |
+| `add_passkey(passkey, approver)` | The added credential's id; approved with `approver`, a passkey the account already has. |
+| `refresh()` | A new session from the refresh token (one at a time with the client's own refreshes). |
+| `use_session(session)` | Authenticates with a session from `sign_up` / `sign_in`. |
+| `use_api_key(key)` | Authenticates every request with a `cal_...` key. |
+| `session()` | The session in use, or `None`. |
+
+Signing out, the account's sessions and its passkeys are routes:
+`client.auth.logout()`, `logout_all()`, `sessions_list()`,
+`session_revoke(session=...)`, `passkey_label(cred=..., label=...)`,
+`passkey_remove(cred=...)`.
+
+### API keys and upgrade keys
+
+```python
+made = client.auth.apikey_create(label="ci", read_only=True, ttl_secs=86400)
+made.key_id, made.key              # the key is shown once
+```
+
+An upgrade key upgrades one app to signed releases of its package without a
+passkey, so a CI job can publish a release and move the app to it:
+
+```python
+made = owner.auth.apikey_create(label="ci", upgrades={"app": app_id},
+                                ttl_secs=90 * 24 * 3600)
+# In CI, with the key alone:
+ci = Client.connect("my-cluster")
+ci.use_api_key(made.key)
+ci.apps.upgrade(app=app_id, version="1.4.0")
+```
+
+The node signs each such upgrade with the Ed25519 key the API key stands for
+(`Client.api_key_public(key)`). The key is refused for anything else
+(`403 UPGRADE_KEY_ONLY`).
+
+## Recovery
+
+### An account
+
+Someone who loses every passkey gets back in with a recovery code made while
+signed in. The code and a new passkey start a recovery that waits 72 hours.
+During that time any passkey the account still has can cancel it; after it,
+the new passkey finishes it.
+
+```python
+code = client.auth.recovery_create().code        # shown once; approved with a passkey
+
+# Later, signed out, on a new device:
+fresh = SoftPasskey()
+started = client.start_account_recovery(code, fresh)   # {accountId, readyAt, ...}
+# ... after readyAt:
+client.finish_account_recovery(fresh)                  # signs in
+```
+
+`client.auth.account_recovery_cancel()` cancels a recovery under way, and
+`client.auth.recovery_remove()` removes the code.
+`Client.normalize_recovery_code(code)` and `Client.recovery_code_key(code)`
+read a code as written down.
+
+### An organization
+
+An owner who loses every passkey gets the organization back with its recovery
+seed. The seed signs in the client and is never sent.
+
+```python
+seed = Client.new_recovery_seed()               # keep it offline
+client.orgs.recovery_set(org=org, public_key=Client.recovery_public_key(seed))
+
+# Later, signed in as the account taking the organization over:
+client.start_recovery(org, seed)                # {startedAt, readyAt}
+# ... after readyAt:
+client.orgs.recovery_finish(org=org)            # approved with that account's passkey
+```
+
+`client.orgs.recovery_cancel(org=org)` is the owner's way to stop it.
+
+## Uploads
+
+| What | How |
+| --- | --- |
+| A bundle | `client.packages.bundle_put(body=wasm).hash_` |
+| A signed package | `client.packages.upload(body=mpk)`, or from the registry: `client.packages.install(package=..., version=...)` |
+| A blob | `client.apps.blob_upload(app=..., body=data, content_type="image/png")` |
+| A sealed file, up to 16 MiB | `client.apps.files_upload(app=..., body=data)` |
+| A larger sealed file | In parts, below |
+
+```python
+begun = client.apps.upload_begin(app=app, size=len(data))
+for k in range(begun.parts):
+    part = data[k * begun.part_bytes:(k + 1) * begun.part_bytes]
+    client.apps.upload_part(app=app, upload=begun.upload_id, k=k, body=part)
+client.apps.upload_complete(app=app, upload=begun.upload_id)
+```
+
+A part sent out of order is refused with the next part expected in
+`details.next`. `upload_status` and `upload_abort` read and drop an upload.
+
+## Any other path
+
+For a route the client's document does not have yet (a newer node):
+
+| Method | Returns |
+| --- | --- |
+| `get(path)`, `post(path, body=None)`, `put(path, body=None)`, `delete(path, body=None)` | The node's JSON. |
+| `get_text(path)` | A text answer. |
+| `post_confirmed(path, body, passkey)`, `delete_confirmed(path, passkey, body=None)` | The same, answering `412 CONFIRM_REQUIRED` with `passkey`. |
+| `post_operator_signed(path, body=None, operator_key=None)`, `delete_operator_signed(path, operator_key=None)` | The same, answering `428 OPERATOR_SIGNATURE_REQUIRED` with the operator key. |
+| `attestation()` | The node's attestation document, unverified, for display. |
+| `verify_app_cluster(app)` | Verifies every replica's quote over a fresh nonce: `{"keys": {node_id: receipt_key_hex}, "governance": {...}}`. Trust a call's or a view's `receipt` only from one of those keys. |
+
+## `SoftPasskey`
+
+```python
+SoftPasskey(rp_id="localhost", origin="http://localhost:3000")
+```
+
+An in-memory ES256 passkey for scripts and tests against development clusters.
+`credential_id` is its credential id. Anything with `create(options)` and
+`get(challenge)` can stand in for it.
+
+## `VERSION`
+
+The package version, as a string.

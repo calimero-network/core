@@ -1,0 +1,63 @@
+---
+title: Calimero Python Client
+description: The Python client for Calimero 1.0 — verify a node's attestation, sign in with a passkey or API key, deploy apps, call and view their methods, and administer organizations and teams.
+hero:
+  tagline: A Python client for Calimero 1.0. Every route of the node's API is a typed method generated from core's OpenAPI document, sent over a sealed channel to a node whose attestation the client verified first — all from synchronous Python.
+  actions:
+    - text: Install it
+      link: /clients/mero-py/get-started/installation/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/calimero-network/core/tree/master/sdks/clients/mero-py
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="Get started" icon="rocket">
+    Install the package, sign up, deploy an app and call it.
+    [Install it →](/clients/mero-py/get-started/installation/)
+  </Card>
+  <Card title="Concepts" icon="open-book">
+    Clusters, attestation, the sealed channel, accounts and passkeys, apps,
+    organizations and teams.
+    [Read the concepts →](/clients/mero-py/get-started/concepts/)
+  </Card>
+  <Card title="Using the client" icon="setting">
+    Groups and methods, step-ups, answers, `client.json`, streams, sign-in,
+    recovery and uploads.
+    [Use the client →](/clients/mero-py/reference/client/)
+  </Card>
+  <Card title="Method reference" icon="list-format">
+    Every operation of the node's API, by group, generated from core's
+    document.
+    [Open the reference →](/clients/mero-py/reference/methods/)
+  </Card>
+  <Card title="Migrating" icon="random">
+    From 0.9 or 1.0.0rc3 to the generated client: every old method and its
+    replacement.
+    [Migrate →](/clients/mero-py/guides/migration/)
+  </Card>
+  <Card title="Errors" icon="warning">
+    `CloudError` and its `(message, status, code, details)` arguments.
+    [Error handling →](/clients/mero-py/reference/errors/)
+  </Card>
+</CardGrid>
+
+The client talks to a [Calimero](/)
+1.0 cluster: each app instance is replicated by its own Raft log across
+attested TDX nodes. The routes are generated from core's OpenAPI document, so
+the client follows the node's API as it changes. Attestation and the sealed
+channel run in core's Rust `calimero-client`, so Python applies the same trust
+check as every other client.
+
+:::note[The v1 client is gone]
+Versions up to 0.9.0 also shipped a client for v1's peer-to-peer node
+(`create_connection`, `create_client`, v1's `Client`, `sign_warrant`, ...).
+Calimero 1.0 deleted that node, and this package deleted its client; see the
+[changelog](https://github.com/calimero-network/core/tree/master/sdks/clients/mero-py/CHANGELOG.md)
+for what replaces each name.
+:::

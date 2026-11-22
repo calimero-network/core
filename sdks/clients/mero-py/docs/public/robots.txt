@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://calimero-network.github.io/calimero-client-py/sitemap-index.xml

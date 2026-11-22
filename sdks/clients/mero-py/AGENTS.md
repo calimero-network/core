@@ -35,7 +35,6 @@ scripts/                     # generate.sh (sdk.json `generate`), the generators
 tests/                       # pytest: unit tests, plus cluster tests against a merod
 examples/                    # example_usage.py (compiled by CI)
 abi-codegen/                 # calimero-abi-codegen: Python clients from an app's ABI
-docs/                        # the docs site's source (Astro; reference/methods.mdx is GENERATED)
 ```
 
 ## Build, test, lint
@@ -86,7 +85,7 @@ tree (`../../../docs/public/openapi.json`). Nothing is vendored or fetched.
 
 - `calimero_client_py/openapi/`: openapi-python-client 0.26.2's output.
 - `calimero_client_py/facade.py`: `scripts/generate_facade.py`, one method per operation.
-- `docs/src/content/docs/reference/methods.mdx`: `scripts/generate_api_docs.py`.
+- `docs/src/content/docs/clients/mero-py/reference/methods.mdx` (core's docs site, three directories up): `scripts/generate_api_docs.py`.
 - `abi-codegen/examples/generated_client/`: `calimero-abi-codegen` on its example schema.
 
 ```bash

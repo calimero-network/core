@@ -7,7 +7,7 @@
   ],
   "version_files": [
     {"path": "README.md", "format": "regex", "pattern": "calimero-network/core\", exact: \"([^\"]+)\""},
-    {"path": "docs/src/content/docs/get-started/quickstart.mdx", "format": "regex", "pattern": "calimero-network/core\", exact: \"([^\"]+)\""}
+    {"path": "../../../docs/src/content/docs/clients/mero-swift/get-started/quickstart.mdx", "format": "regex", "pattern": "calimero-network/core\", exact: \"([^\"]+)\""}
   ],
   "depends_on": [],
   "inputs": ["Package.swift", "docs/public/openapi.json", "crates/client/tests/fixtures/receipt-vectors.json"],
