@@ -2,7 +2,7 @@
 """Write the docs site's method reference from the generated facade.
 
     python scripts/generate_api_docs.py --facade calimero_client_py/facade.py \
-        --document ../../../docs/public/openapi.json --out docs/src/content/docs/reference/methods.mdx
+        --document ../../../docs/public/openapi.json --out ../../../docs/src/content/docs/clients/mero-py/reference/methods.mdx
 
 One table per group (`client.apps`, `client.orgs`, ...): each facade method
 with its keyword arguments, its route, what it does (the operation's summary),
@@ -32,7 +32,7 @@ Every route of the node's API is a method of a group on `Client`:
 `client.<group>.<method>(...)`. Arguments are keyword-only; a method returns
 the generated model of the answer (`client.json.<group>.<method>(...)` returns
 the node's JSON instead). How the arguments, step-ups and answers work is in
-[Using the client](/reference/client/).
+[Using the client](/clients/mero-py/reference/client/).
 
 In the tables, **passkey** marks a method that answers `412 CONFIRM_REQUIRED`
 (with `confirm=`, or the client's `use_passkey`), and **operator** one that
@@ -40,7 +40,7 @@ answers `428 OPERATOR_SIGNATURE_REQUIRED` (with `operator_proof=`, or the
 client's `use_operator_key` / `use_operator_signer`). *Refusals* are the error
 codes the document lists for the method beyond the ones every call can get
 (`UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, ...): see
-[errors](/reference/errors/).
+[errors](/clients/mero-py/reference/errors/).
 
 Generated from core's `docs/public/openapi.json`.
 """

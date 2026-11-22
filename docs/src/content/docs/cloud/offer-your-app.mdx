@@ -7,6 +7,7 @@ sidebar:
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 import DeploymentModel from '../../../components/diagrams/DeploymentModel.astro';
+import ReleaseJourney from '../../../components/diagrams/ReleaseJourney.astro';
 
 You built an app and want other organizations to run their own instances of
 it, each with its own data, without installing anything themselves. A
@@ -285,6 +286,11 @@ total for the developer over every deployment, not per customer organization,
 and no earlier days.
 
 ## Shipping a new version
+
+The whole way, from your signed release to the people who use your customers'
+instances and the updates they take:
+
+<ReleaseJourney />
 
 Offering a newer release (step 3 again) changes what **new** instances get.
 You decide which release your customers' instances run: an instance created

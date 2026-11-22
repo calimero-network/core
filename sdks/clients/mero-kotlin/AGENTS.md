@@ -9,7 +9,7 @@ and ships with core, on core's version.
 Read first: [sdks/AGENTS.md](../../AGENTS.md) (the rules every SDK here follows)
 and core's [RELEASING.md](../../../RELEASING.md). Then [README.md](README.md),
 [TESTING.md](TESTING.md), [PUBLISHING.md](PUBLISHING.md) and
-[codegen/README.md](codegen/README.md). The docs site's source is `docs/`.
+[codegen/README.md](codegen/README.md). Its guides are on core's docs site (`docs/src/content/docs/clients/mero-kotlin/`).
 
 ## Layout
 
@@ -31,8 +31,7 @@ Gradle (Kotlin DSL), `rootProject.name = "mero-kotlin"` (`settings.gradle.kts`):
 
 Also: `codegen/` (a standalone Gradle build that runs the generator),
 `ci/check-registry-parity.sh` (every public `CalimeroClient` method has an SDK-tab entry
-in the sample), `ci/core-version` (the merod image `scripts/dev-cluster.sh` runs), `docs/`
-(the Starlight docs site).
+in the sample), `ci/core-version` (the merod image `scripts/dev-cluster.sh` runs).
 
 ### Names: artifacts renamed, packages and directories not
 

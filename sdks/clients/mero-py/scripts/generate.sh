@@ -5,7 +5,7 @@
 #
 #   ../../../docs/public/openapi.json -> calimero_client_py/openapi/   (openapi-python-client)
 #                                     -> calimero_client_py/facade.py  (scripts/generate_facade.py)
-#                                     -> docs/src/content/docs/reference/methods.mdx
+#                                     -> ../../../docs/src/content/docs/clients/mero-py/reference/methods.mdx
 #   abi-codegen/examples/schemas/example_abi.json -> abi-codegen/examples/generated_client/
 #
 # The generators and Black run, at the versions CI checks with, in their own

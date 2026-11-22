@@ -1,0 +1,97 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-access-grants">
+<svg viewBox="0 0 760 440" role="img" aria-label="An instance's access is a list of grants, each one way in, judged on its own on every request with fresh system state. org admits every member of the instance's organization. team admits the team's members. An account grant naming a member admits that named member; an account grant naming a non-member admits a guest only while the release says guests allowed and the organization's allowGuests is on; either may carry an app-defined scope the app reads with env::grant_scope. anyone admits any signed-in account, never a caller without one. A link grant admits no account: only visitors holding its token, signing each request with their own key, and only for public methods, while the organization allows public links and within the link's rate. No grant means the owner alone. A caller no grant admits gets 404; with no credential, 401." xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ag-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="440" rx="10" fill="#0f0f16"/>
+  <text x="380" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">Who reaches an instance: its grants, each judged on its own</text>
+
+  <text x="110" y="52" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">the caller</text>
+  <text x="380" y="52" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">a grant in the list</text>
+  <text x="640" y="52" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">admitted while</text>
+
+  <!-- the instance's list -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="290" y="62" width="180" height="320" rx="6" fill="#161b22" stroke="#58a6ff" stroke-opacity=".7"/>
+    <text x="380" y="78" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">grants: [ … ]</text>
+  </g>
+
+  <!-- org -->
+  <g class="seq-step" style="--step-i:1">
+    <rect x="20" y="88" width="180" height="34" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="110" y="109" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">a member of the org</text>
+    <rect x="304" y="88" width="152" height="34" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="380" y="109" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">org</text>
+    <line x1="200" y1="105" x2="300" y2="105" stroke="#8b949e" stroke-width="1" marker-end="url(#ag-arrow)"/>
+    <text x="490" y="102" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">they are a member (not beside</text>
+    <text x="490" y="114" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">a team grant, which it covers)</text>
+  </g>
+
+  <!-- team -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="20" y="136" width="180" height="34" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="110" y="157" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">a member of the team</text>
+    <rect x="304" y="136" width="152" height="34" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="380" y="157" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">team &#123; team &#125;</text>
+    <line x1="200" y1="153" x2="300" y2="153" stroke="#8b949e" stroke-width="1" marker-end="url(#ag-arrow)"/>
+    <text x="490" y="150" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">they are in the team (a row,</text>
+    <text x="490" y="162" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">or inherited into an open one)</text>
+  </g>
+
+  <!-- named member -->
+  <g class="seq-step" style="--step-i:3">
+    <rect x="20" y="184" width="180" height="34" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="110" y="205" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">a member, named</text>
+    <rect x="304" y="184" width="152" height="34" rx="5" fill="#10151c" stroke="#a371f7"/>
+    <text x="380" y="200" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">account</text>
+    <text x="380" y="212" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">&#123; account, scope? &#125;</text>
+    <line x1="200" y1="201" x2="300" y2="201" stroke="#8b949e" stroke-width="1" marker-end="url(#ag-arrow)"/>
+    <text x="490" y="198" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">a member (in the package's</text>
+    <text x="490" y="210" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">app team, where it has one)</text>
+  </g>
+
+  <!-- guest -->
+  <g class="seq-step" style="--step-i:4">
+    <rect x="20" y="232" width="180" height="34" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="110" y="249" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">a non-member, named:</text>
+    <text x="110" y="261" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">a guest</text>
+    <rect x="304" y="232" width="152" height="34" rx="5" fill="#10151c" stroke="#a371f7"/>
+    <text x="380" y="248" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">account</text>
+    <text x="380" y="260" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">&#123; account, scope? &#125;</text>
+    <line x1="200" y1="249" x2="300" y2="249" stroke="#8b949e" stroke-width="1" marker-end="url(#ag-arrow)"/>
+    <text x="490" y="246" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">release: guests "allowed"</text>
+    <text x="490" y="258" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">AND org: allowGuests on</text>
+  </g>
+
+  <!-- anyone -->
+  <g class="seq-step" style="--step-i:5">
+    <rect x="20" y="280" width="180" height="34" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="110" y="301" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">any signed-in account</text>
+    <rect x="304" y="280" width="152" height="34" rx="5" fill="#10151c" stroke="#e3b341"/>
+    <text x="380" y="301" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">anyone</text>
+    <line x1="200" y1="297" x2="300" y2="297" stroke="#8b949e" stroke-width="1" marker-end="url(#ag-arrow)"/>
+    <text x="490" y="294" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">they have an account; never a</text>
+    <text x="490" y="306" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">caller without one (401)</text>
+  </g>
+
+  <!-- link -->
+  <g class="seq-step" style="--step-i:6">
+    <rect x="20" y="328" width="180" height="34" rx="5" fill="#10151c" stroke="#444c56" stroke-dasharray="4 3"/>
+    <text x="110" y="345" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">a visitor, no account:</text>
+    <text x="110" y="357" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">Bearer vis1.&lt;token&gt;…</text>
+    <rect x="304" y="328" width="152" height="34" rx="5" fill="#10151c" stroke="#39d0d8"/>
+    <text x="380" y="344" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">link</text>
+    <text x="380" y="356" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">managers see it; public-links</text>
+    <line x1="200" y1="345" x2="300" y2="345" stroke="#8b949e" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#ag-arrow)"/>
+    <text x="490" y="336" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">only #[app::public] methods;</text>
+    <text x="490" y="348" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">org: allowPublicLinks on;</text>
+    <text x="490" y="360" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">within ratePerMinute</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:7">
+    <text x="380" y="404" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">no grant = the owner alone · judged fresh on every request</text>
+    <text x="380" y="422" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">a scope is the app's own: the node stores it, the app reads env::grant_scope() · not admitted: 404</text>
+  </g>
+</svg>
+</Figure>

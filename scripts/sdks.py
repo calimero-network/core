@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import re
 import subprocess
 import sys
@@ -371,7 +372,9 @@ def main(argv: list[str]) -> int:
         elif command == "generated":
             for sdk in pick(sdks, rest):
                 for path in sdk["generated"]:
-                    print(f"{sdk['dir']}/{path}")
+                    # A path may leave the SDK's directory (mero-py's method
+                    # reference is a page of docs/): print it repo-relative.
+                    print(os.path.normpath(f"{sdk['dir']}/{path}"))
         else:
             print(f"unknown command {command!r}\n\n{__doc__}", file=sys.stderr)
             return 2

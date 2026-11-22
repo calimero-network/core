@@ -25,4 +25,4 @@ rules:
   # The consumer checkout keeps its token to push the bump branch.
   artipacked:
     ignore:
-      - fleet-bump.yml:132
+      - fleet-bump.yml:133

@@ -1,0 +1,76 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-client-stack">
+<svg viewBox="0 0 760 360" role="img" aria-label="How a client SDK reaches a node. Your app calls a client SDK: mero-js, mero-py, mero-swift or mero-kotlin, with mero-react on top of mero-js. Each client has a hand-written layer (sign-in with a passkey, an API key or a public link's visitor key; consent and step-ups; calling an app's methods and following its events) and a generated layer of one method per route, generated from core's docs/public/openapi.json in the same pull request that changes the API. Before the first request it fetches the node's attestation and verifies the TDX quote and the release, then opens a Noise channel to the attested transport key; every request and answer travels sealed inside it. On the node, the sealed middleware opens the request, the API judges who the caller is and what they may reach on fresh system state, and the app's call runs on its replicated log." xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="cs-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="360" rx="10" fill="#0f0f16"/>
+  <text x="380" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">A client SDK between your app and a node</text>
+
+  <g class="seq-step" style="--step-i:0">
+    <rect x="20" y="44" width="150" height="270" rx="6" fill="#10151c" stroke="#444c56"/>
+    <text x="95" y="66" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">your app</text>
+    <text x="95" y="88" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">a web frontend,</text>
+    <text x="95" y="101" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">an iOS or Android app,</text>
+    <text x="95" y="114" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">a script, a service,</text>
+    <text x="95" y="127" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">an agent</text>
+    <rect x="34" y="250" width="122" height="48" rx="5" fill="#1a1430" stroke="#a371f7"/>
+    <text x="95" y="270" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">mero-react</text>
+    <text x="95" y="284" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">UI on mero-js</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:1">
+    <line x1="170" y1="150" x2="196" y2="150" stroke="#8b949e" stroke-width="1.2" marker-end="url(#cs-arrow)"/>
+    <rect x="200" y="44" width="260" height="270" rx="6" fill="#161b22" stroke="#58a6ff"/>
+    <text x="330" y="66" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">client SDK</text>
+    <text x="330" y="80" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">mero-js · mero-py · mero-swift · mero-kotlin</text>
+    <rect x="214" y="92" width="232" height="82" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="330" y="110" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">hand-written</text>
+    <text x="330" y="126" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">sign in: passkey · API key · visitor</text>
+    <text x="330" y="140" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">step-ups (412) and the consent page</text>
+    <text x="330" y="154" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">call and view an app, follow events</text>
+    <text x="330" y="166" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">typed errors, retries</text>
+    <rect x="214" y="184" width="232" height="56" rx="5" fill="#10151c" stroke="#444c56" stroke-dasharray="4 3"/>
+    <text x="330" y="202" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">generated: one method per route</text>
+    <text x="330" y="218" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">from docs/public/openapi.json,</text>
+    <text x="330" y="230" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">regenerated with the API change</text>
+    <rect x="214" y="250" width="232" height="52" rx="5" fill="#13160f" stroke="#a5ff11"/>
+    <text x="330" y="268" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">attest, then seal</text>
+    <text x="330" y="282" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">verify the TDX quote and release,</text>
+    <text x="330" y="294" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">Noise to the attested key</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:2">
+    <line x1="460" y1="262" x2="526" y2="262" stroke="#a5ff11" stroke-width="1.2" marker-end="url(#cs-arrow)"/>
+    <text x="493" y="254" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">1 GET</text>
+    <text x="493" y="276" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">/attestation</text>
+    <line x1="460" y1="150" x2="526" y2="150" stroke="#a5ff11" stroke-width="2" marker-end="url(#cs-arrow)"/>
+    <text x="493" y="142" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">2 every request</text>
+    <text x="493" y="164" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">sealed</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:3">
+    <rect x="530" y="44" width="210" height="270" rx="6" fill="#10210f" stroke="#3fb950"/>
+    <text x="635" y="66" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">merod (a TDX node)</text>
+    <rect x="544" y="80" width="182" height="40" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="635" y="98" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">sealed middleware</text>
+    <text x="635" y="111" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">opens the request</text>
+    <line x1="635" y1="120" x2="635" y2="132" stroke="#8b949e" stroke-width="1" marker-end="url(#cs-arrow)"/>
+    <rect x="544" y="136" width="182" height="52" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="635" y="154" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">the node API</text>
+    <text x="635" y="167" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">who the caller is, what</text>
+    <text x="635" y="179" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">their grants reach (fresh)</text>
+    <line x1="635" y1="188" x2="635" y2="200" stroke="#8b949e" stroke-width="1" marker-end="url(#cs-arrow)"/>
+    <rect x="544" y="204" width="182" height="40" rx="5" fill="#10151c" stroke="#444c56"/>
+    <text x="635" y="222" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">the app's Raft log</text>
+    <text x="635" y="235" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">a call runs on its leader</text>
+    <rect x="544" y="254" width="182" height="44" rx="5" fill="#10151c" stroke="#444c56" stroke-dasharray="4 3"/>
+    <text x="635" y="272" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">/attestation</text>
+    <text x="635" y="286" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">quote over the nonce + key</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:4">
+    <text x="380" y="338" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">every client ships with core, at core's version, and is regenerated in the pull request that changes the API</text>
+  </g>
+</svg>
+</Figure>

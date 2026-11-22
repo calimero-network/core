@@ -1,0 +1,92 @@
+---
+title: Quickstart
+description: Install Mero.js, connect to a Calimero 1.0 cluster, create an account with a passkey, deploy an app and call it.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Install
+
+```bash
+npm install @calimero-network/mero-js
+```
+
+The package ships ESM, CommonJS and a browser build with its own TypeScript
+declarations. Its one dependency, `@phala/dcap-qvl`, verifies TDX quotes and
+is loaded only when the client first meets a real one.
+
+## Connect
+
+A client talks to one node of a cluster at a time, and fails over to the
+next when that node stays unavailable. Its `policy` says which nodes it
+trusts; nothing is sent to a node until its attestation passes.
+
+```ts
+import { CalimeroClient, browserPasskey } from '@calimero-network/mero-js';
+
+// A Calimero Cloud cluster by name; its nodes come from the node directory.
+const client = await CalimeroClient.connect({
+  cluster: 'eu-shared-1',
+  // Trust a node that runs a signed mero-tee release, this one or newer.
+  policy: { release: { minReleaseVersion: '2.3.109' } },
+});
+```
+
+The directory only chooses which nodes to try: each one is still attested
+under your `policy`, so a wrong list can only make connecting fail. For a fixed
+list of nodes, or a cluster you run yourself, give them directly:
+`new CalimeroClient({ baseUrl, nodes, policy })`.
+
+For a local development cluster (`meroctl local up`, or `merod run --dev`), whose
+nodes send mock quotes, allow them explicitly:
+
+```ts
+const dev = new CalimeroClient({ baseUrl: 'http://127.0.0.1:2501', policy: { allowMock: true } });
+```
+
+<Aside type="caution">
+  `allowMock` accepts quotes that prove nothing. Never set it from the
+  environment or a query string; the client never reads either.
+</Aside>
+
+## Create an account
+
+A person's account is their passkey. `signUp` creates both and signs in;
+`signIn` uses an existing passkey on any node of the cluster.
+
+```ts
+const session = await client.signUp(browserPasskey(), 'alice');
+// later, or on another device that holds the passkey:
+await client.signIn(browserPasskey());
+```
+
+The node's `--rp-id` and `--origins` decide which pages may run a passkey
+ceremony: `localhost` and `http://localhost:3000` by default.
+
+## Deploy and call an app
+
+An app instance runs a signed package release, on its own replicated log.
+
+```ts
+await client.packages.install({ package: 'com.calimero.kv-store', version: '1.0.0' }); // from the cluster's registry
+const app = await (await client.apps.create({ name: 'notes', package: 'com.calimero.kv-store', version: '1.0.0' })).appId;
+
+await client.apps.call({ app, method: 'set', args: { key: 'a', value: '1' } });
+const { result } = await client.apps.view({ app, method: 'get', args: { key: 'a' } }); // '1'
+
+for await (const event of client.events(app)) {
+  console.log(event.kind, event.data);
+}
+```
+
+`call` carries an idempotency key, so the client can send it again while the
+node is unavailable without running it twice. See [Apps and packages](/clients/mero-js/guides/apps/).
+
+## Next
+
+- [Authentication](/clients/mero-js/get-started/authentication/): sessions, refresh, API keys.
+- [Organizations](/clients/mero-js/guides/organizations/): teams, invites, upgrades and approvals.
+- [Trust and the sealed channel](/clients/mero-js/guides/sealed-transport/): what the policy checks.
+- [Client reference](/clients/mero-js/reference/client/): every method and its route.
