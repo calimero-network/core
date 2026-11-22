@@ -228,7 +228,9 @@ pub(crate) async fn approve_upgrade(
         BTreeMap::new()
     };
     // A side the log no longer holds cannot be classified: approved as red, the reason
-    // naming the release that is gone, as apply takes it (`SystemState::check_class`).
+    // naming the release that is gone, as apply takes it (`SystemState::check_class`),
+    // once every node decodes that reason (`Feature::UnclassifiedUpdates`).
+    super::upgrades::unclassified_gate(node, app, Some(&target)).await?;
     let class = crate::egress::judged_update(node, app, &target.version, unit)
         .await?
         .and_then(super::upgrades::upgrade_class)

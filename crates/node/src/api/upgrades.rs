@@ -87,12 +87,56 @@ async fn class_of(
         return None;
     }
     match crate::egress::judged_update(node, &app, &to.version, whole_unit).await {
+        // Below `Feature::UnclassifiedUpdates` an rc.34 node cannot decode the
+        // `unclassified` reason: the move is logged without a class, as rc.34 logs it
+        // (taken as red by every rule; `unclassified_gate` refuses it where that needs an
+        // approval no node may log yet).
+        Ok(Some(c))
+            if crate::egress::unclassified(&c)
+                && node
+                    .require_features(&[Feature::UnclassifiedUpdates])
+                    .await
+                    .is_err() =>
+        {
+            None
+        }
         Ok(c) => c.and_then(upgrade_class),
         Err(e) => {
             warn!(app = %app_id, error = %e.message, "the upgrade was not classified");
             None
         }
     }
+}
+
+/// A move the log cannot classify (a part's release no longer installed,
+/// `SystemState::unclassified`) is approved first and logged with its `unclassified`
+/// class only from [`Feature::UnclassifiedUpdates`] (rc.35), as an rc.34 node cannot
+/// decode it. Below that version, where `app`'s policy asks for a second approver, such a
+/// move could never be approved: `409 FEATURE_NOT_ACTIVE` (every node must run rc.35
+/// first), asked before any passkey by the approval, the upgrade, the unit's upgrade and
+/// the consent page. Without that policy it moves as rc.34 moved it, logged without a
+/// class.
+///
+/// # Errors
+/// `409 FEATURE_NOT_ACTIVE`, as [`Node::require_features`].
+pub(crate) async fn unclassified_gate(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    to: Option<&PackageRef>,
+) -> Result<(), ApiError> {
+    let Some(to) = to else {
+        return Ok(());
+    };
+    let needs = node.sys(|s| {
+        s.upgrade_policy_of(app).0.second_approver
+            && s.running(app).is_some_and(|r| r.package == to.package)
+            && s.unclassified(app, (&to.package, &to.version), &BTreeMap::new())
+                .is_some()
+    });
+    if !needs {
+        return Ok(());
+    }
+    node.require_features(&[Feature::UnclassifiedUpdates]).await
 }
 
 /// The classifier's verdict as the log keeps it; `None` past `MAX_CLASS_REASONS`.
@@ -333,6 +377,7 @@ pub(crate) async fn upgrade_app(
     .await?;
     // A red update whose policy asks for a second approver waits for another owner's or
     // admin's first approval: refused before the passkey, as `UpgradeApp` refuses it.
+    unclassified_gate(node, &app, release.as_ref()).await?;
     let class = move_class(node, &app_id, release.as_ref()).await;
     if let Err(why) = node.sys(|s| {
         s.update_gate(
@@ -1621,6 +1666,7 @@ pub(crate) async fn upgrade_unit(
 /// very unit (`upgrade-approvals` with `unit`). Asked before the passkey, by the route
 /// and the consent page alike.
 pub(crate) async fn unit_gate(node: &Node, plan: &UnitPlan, account: &str) -> Result<(), ApiError> {
+    unclassified_gate(node, &plan.app, Some(&plan.target)).await?;
     let class = class_of(node, &plan.app.app_id, Some(&plan.target), true).await;
     let now = now_secs();
     node.sys(|s| {
@@ -1732,7 +1778,12 @@ pub(crate) async fn update_view(
     bound: Option<&str>,
 ) -> Value {
     let app = app.clone();
-    let running = node.release_of_app(&app).map(|r| r.at);
+    // The release it runs, named by its record even once uninstalled while another ships
+    // its WASM: its update is then shown, unclassified.
+    let running = node
+        .release_of_app(&app)
+        .map(|r| r.at)
+        .or_else(|| app.release.clone());
     let runtimes = node.runtimes(&app.replicas).await;
     let owner_approves = owner_approves(node).await;
     let by_operator =

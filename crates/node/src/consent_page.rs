@@ -2030,6 +2030,9 @@ async fn upgrade_request(
     // approval waiting is refused before a page exists. A unit's page is judged on the
     // whole unit instead (`unit_upgrade_request`).
     let step = if part == Part::Alone {
+        // An update the log cannot classify is approved only once every node decodes its
+        // reason (`Feature::UnclassifiedUpdates`): refused before a page exists.
+        crate::api::unclassified_gate(node, &app, Some(&to_release)).await?;
         let class = crate::api::move_class(node, &app_id, Some(&to_release)).await;
         let green = class
             .as_ref()
@@ -2292,6 +2295,7 @@ async fn unit_upgrade_request(
     };
     // The approval of the whole unit's move, of exactly its targets (as `upgrade-unit` and
     // apply judge it), so a unit red only through a member is approved first here too.
+    crate::api::unclassified_gate(node, &plan.app, Some(&to_release)).await?;
     let step = updates::approval_step(node, &plan.app, &to_release, &plan.targets, green, account)?;
     let moves: Vec<String> = pages
         .iter()

@@ -279,7 +279,13 @@ consent page's sheets and approval step; what compares the two sides, its
 destinations, signer, state version and methods, is unknown: `null` in the API,
 "Unknown" on the page), and
 apply refuses an `unclassified` reason that names anything else, or one on a
-move the log rebuilds. The class and its reasons are kept on the app's last upgrade
+move the log rebuilds. An entry carrying that reason needs cluster version
+1.0.0-rc.35 (`Feature::UnclassifiedUpdates`), as rc.34 cannot decode it: below
+it, under a `secondApprover` policy, the first approval, the upgrade and the
+consent page of such a move are refused `409 FEATURE_NOT_ACTIVE` before the
+passkey (every node must run 1.0.0-rc.35 first), and without that policy the
+upgrade is logged without a class, as rc.34 logs it; the update still shows red.
+The class and its reasons are kept on the app's last upgrade
 (`lastUpgrade.class`, `reasons`). An entry without a class (an earlier
 release's, a raw bundle's, or a release the classifier could not read) is taken
 as red by every rule below; one logged before the feature replays as it applied.

@@ -105,8 +105,8 @@ pub use pipeline_events::MAX_RUN_SUBSCRIBERS_PER_APP;
 pub(crate) use public_links::VisitorLimits;
 pub(crate) use update_policies::{approve_upgrade, approver_of, set_upgrade_policy};
 pub(crate) use upgrades::{
-    move_class, owner_approves, refuse_stalled, unit_plan, update_view, upgrade_app,
-    upgrade_refusal, upgrade_unit, UpgradeBody,
+    move_class, owner_approves, refuse_stalled, unclassified_gate, unit_plan, update_view,
+    upgrade_app, upgrade_refusal, upgrade_unit, UpgradeBody,
 };
 // The request bodies the OpenAPI registry names as `super::<Body>`.
 #[cfg(test)]
@@ -969,7 +969,7 @@ async fn health(State(node): State<Arc<Node>>) -> Json<Value> {
         "release": node.config.release,
         // The newest cluster version this build supports: what the system
         // leader raises the cluster version by (`system::cluster_version`).
-        "clusterVersion": crate::system::cluster_version::supported(),
+        "clusterVersion": node.advertises(),
         // The cluster's rollback epoch (rollbacks forced so far); absent
         // on a node without a rollback counter.
         "rollbackEpoch": node.checkpoints.as_ref().and_then(|c| c.status()).map(|s| s.epoch),

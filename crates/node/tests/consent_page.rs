@@ -4141,17 +4141,18 @@ async fn a_unit_red_through_a_member_is_approved_first_on_its_page() {
     assert_eq!(model["update"]["approval"]["needed"], 2, "{model}");
 }
 
-/// A unit whose member runs a release no longer installed (uninstalled while another
-/// release ships its WASM) cannot be classified from the log, so its update is shown as
-/// it is gated and logged: red, with the `unclassified` reason naming the member's
-/// release, in `GET /apps/{app}/update` and on the unit's page, whose step under a
-/// `secondApprover` policy is the first of two. Before, the shown verdict dropped the
-/// member it could not read and said green while the upgrade waited for a second approver.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified() {
-    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
-    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
-    let publisher = ed25519_dalek::SigningKey::from_bytes(&[47; 32]);
+/// A unit whose member's release is uninstalled, under a `secondApprover` policy: alice's
+/// organization holds `notes` on `PACKAGE@1.0.0`, which created `store` on
+/// `com.test.c8-kv@0.1.0`; `PACKAGE@2.0.0` no longer creates it, so the store stays where it
+/// is and the move is green while the log holds its release. Then `0.1.0` is uninstalled
+/// (`0.1.1` still ships its WASM), and the move cannot be classified. Answers the
+/// organization and `notes`.
+async fn unit_with_an_uninstalled_member(
+    alice: &calimero_client::Client,
+    alice_pk: &mut SoftAuthenticator,
+    seed: u8,
+) -> (String, String) {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
     let kv = "com.test.c8-kv";
     // 2.0.0 no longer creates the store, which therefore stays where it is: the move is
     // green while the log holds the store's release.
@@ -4173,7 +4174,7 @@ async fn a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified()
         let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
         let _ = alice.packages().upload(mpk).await.unwrap();
     }
-    let org = home_org(&alice).await;
+    let org = home_org(alice).await;
     let made = alice
         .apps()
         .create(typed(
@@ -4183,14 +4184,14 @@ async fn a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified()
         .map(wire)
         .unwrap();
     let notes = made["appId"].as_str().unwrap().to_owned();
-    let update = get(&alice, &format!("apps/{notes}/update")).await.unwrap();
+    let update = get(alice, &format!("apps/{notes}/update")).await.unwrap();
     assert_eq!(update["available"]["class"], "green", "{update}");
     let _set = alice
         .transport()
         .confirmed(
             Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
                 .json(json!({ "policy": { "secondApprover": true } })),
-            &mut alice_pk,
+            alice_pk,
         )
         .await
         .unwrap();
@@ -4200,6 +4201,21 @@ async fn a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified()
         .version_uninstall(kv, "0.1.0")
         .await
         .unwrap();
+    (org, notes)
+}
+
+/// A unit whose member runs a release no longer installed (uninstalled while another
+/// release ships its WASM) cannot be classified from the log, so its update is shown as
+/// it is gated and logged: red, with the `unclassified` reason naming the member's
+/// release, in `GET /apps/{app}/update` and on the unit's page, whose step under a
+/// `secondApprover` policy is the first of two. Before, the shown verdict dropped the
+/// member it could not read and said green while the upgrade waited for a second approver.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (_org, notes) = unit_with_an_uninstalled_member(&alice, &mut alice_pk, 47).await;
+    let kv = "com.test.c8-kv";
     let unclassified =
         json!([{ "code": "unclassified", "member": "store", "package": kv, "version": "0.1.0" }]);
     let update = get_until(&alice, &format!("apps/{notes}/update"), |u| {
@@ -4270,6 +4286,130 @@ async fn a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified()
             "{fact}: {model}"
         );
     }
+}
+
+/// An update the log cannot classify is approved and logged with its `unclassified`
+/// reason only from `Feature::UnclassifiedUpdates` (1.0.0-rc.35): a node on rc.34 cannot
+/// decode it and would stop its system group on it. While one node still advertises
+/// rc.34, its first approval, its upgrade and its consent page are refused `409
+/// FEATURE_NOT_ACTIVE` before any passkey (the client sent none), saying every node must
+/// run rc.35 first; the update itself still shows red. Once every node runs rc.35 the
+/// same approval and upgrade go through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_unclassified_update_waits_for_every_node_on_the_release_that_decodes_it() {
+    const RC34: &str = "1.0.0-rc.34";
+    const RC35: &str = "1.0.0-rc.35";
+    // Node 3 advertises rc.34, as a node not yet rolled onto this release does.
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.apps_domain = Some("localhost".into());
+        if cfg.node_id == 3 {
+            calimero_node::testing::advertise_cluster_version(&cfg.public_url, Some(RC34));
+        }
+    })
+    .await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let (org, notes) = unit_with_an_uninstalled_member(&alice, &mut alice_pk, 53).await;
+    let token = alice
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "admin" })), Some(&mut alice_pk))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = bob.orgs().invite_redeem(&token).await.unwrap();
+    let update = get_until(&bob, &format!("apps/{notes}/update"), |u| {
+        u["policy"]["secondApprover"] == true
+    })
+    .await;
+    assert_eq!(update["available"]["class"], "red", "{update}");
+    assert_eq!(
+        update["available"]["reasons"][0]["code"], "unclassified",
+        "shown red while it cannot be approved yet: {update}"
+    );
+
+    // Below rc.35: refused before any passkey (none is sent, so a step-up would answer 412).
+    let not_active = |e: &calimero_client::Error, what: &str| {
+        assert_eq!(e.code(), Some("FEATURE_NOT_ACTIVE"), "{what}: {e}");
+        let d = e.details().unwrap();
+        assert_eq!(d["feature"], "unclassifiedUpdates", "{what}: {e}");
+        assert_eq!(d["needs"], RC35, "{what}: {e}");
+        assert!(
+            e.to_string()
+                .contains(&format!("every node must run {RC35} or newer first")),
+            "{what}: {e}"
+        );
+    };
+    let e = alice
+        .apps()
+        .approve_upgrade(&notes, "2.0.0", None, None)
+        .await
+        .unwrap_err();
+    not_active(&e, "the first approval");
+    let e = bob
+        .apps()
+        .upgrade(&notes, typed(json!({ "version": "2.0.0" })), None)
+        .await
+        .unwrap_err();
+    not_active(&e, "the upgrade");
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(0);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_pk, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let e = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgrade", "subject": { "app": notes, "toVersion": "2.0.0" },
+                "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status(&e), 409, "the consent page: {e}");
+    assert!(e.to_string().contains("FEATURE_NOT_ACTIVE"), "{e}");
+    let logged = c.nodes[0]
+        .as_ref()
+        .unwrap()
+        .node
+        .sys(|s| s.cluster_version.clone());
+    assert_eq!(logged.as_deref(), Some(RC34), "held below rc.35");
+
+    // Node 3 runs rc.35 now: the same approval and upgrade go through, logged red.
+    calimero_node::testing::advertise_cluster_version(&c.urls[2], None);
+    let mut alice_key = SoftAuthenticator::with_key(&alice_in_app, "localhost", ORIGIN);
+    let first = alice
+        .apps()
+        .approve_upgrade(&notes, "2.0.0", None, Some(&mut alice_key))
+        .await
+        .unwrap();
+    assert_eq!(
+        wire(&first.approval.reasons)[0]["code"],
+        "unclassified",
+        "{first:?}"
+    );
+    let _done = bob
+        .apps()
+        .upgrade(
+            &notes,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut bob_pk),
+        )
+        .await
+        .unwrap();
+    let moved = get_until(&alice, &format!("apps/{notes}"), |a| {
+        a["release"]["version"] == "2.0.0"
+    })
+    .await;
+    assert_eq!(moved["lastUpgrade"]["class"], "red", "{moved}");
+    assert_eq!(
+        moved["lastUpgrade"]["reasons"][0]["code"], "unclassified",
+        "{moved}"
+    );
 }
 
 /// C8: a unit's run is judged once, under its instance's policy, so it moves whole. A

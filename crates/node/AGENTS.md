@@ -228,7 +228,11 @@ is its command line.
   `a_feature_is_proposed_only_once_the_version_that_keeps_older_nodes_out_is_logged`,
   `only_the_cluster_version_itself_is_admitted_before_it_is_logged`,
   `an_entry_this_node_cannot_decode_stops_the_system_group`),
-  `the_cluster_version_rises_to_what_every_node_supports`.
+  `the_cluster_version_rises_to_what_every_node_supports`. A node's `/health` advertises
+  `Node::advertises` (`cv::supported`); a cluster test holds the cluster below a feature this
+  build brings with `testing::advertise_cluster_version`, set in `Cluster::start_with`'s
+  `configure` for one node, as a node not yet rolled onto the release
+  (`an_unclassified_update_waits_for_every_node_on_the_release_that_decodes_it`).
 - **Delegation** (`SystemCmd::SetDelegation`, `SystemState::delegations`,
   `Node::caller_for` and `forwarded` in `node/component.rs`; docs: protocol xcall
   "As the person"): a person lets an app call another as them. The release the
@@ -1336,7 +1340,12 @@ is its command line.
   `GET /apps/{app}/update` and the consent page's sheets and `approval_step` take; every
   fact comparing the two sides is unknown, `null` in the API (`egress::verdict_json`:
   `egress`, `stateVersionChanged`, `newMethods`, `removedMethods`, `signerChanged`) and
-  "Unknown" on the sheet, and apply refuses one naming anything else); `UpgradeRecord::class`/`reasons`/`approved_by` keep it
+  "Unknown" on the sheet, and apply refuses one naming anything else). An `ApproveUpgrade` or
+  `UpgradeApp` whose class carries an `unclassified` reason is `Feature::UnclassifiedUpdates`
+  (rc.35; rc.34 cannot decode the reason): below it `api::upgrades::unclassified_gate` refuses
+  the first approval, the upgrade, the unit's upgrade and the consent page of such a move under
+  a `secondApprover` policy `409 FEATURE_NOT_ACTIVE` before the passkey, and `class_of` logs it
+  without a class otherwise, as rc.34 did (the view still shows it red); `UpgradeRecord::class`/`reasons`/`approved_by` keep it
   (`lastUpgrade`). Policies (`Feature::UpgradePolicies`, rc.34): `SetUpgradePolicy { org,
   app?, policy? }` by an owner or admin (`approves_upgrades`), consent `org:<org> /
   __set_upgrade_policy / system::upgrade_policy_args`, kept on `Org::upgrade_policy` and
@@ -1386,7 +1395,8 @@ is its command line.
   `a_unit_red_through_a_member_is_approved_first_on_its_page`,
   `a_unit_moves_whole_under_its_instances_policy`,
   `a_red_update_from_an_uninstalled_release_is_approved_first_and_applied_second`,
-  `a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified` (`tests/consent_page.rs`).
+  `a_unit_whose_members_release_is_uninstalled_is_shown_red_unclassified`,
+  `an_unclassified_update_waits_for_every_node_on_the_release_that_decodes_it` (`tests/consent_page.rs`).
 - **Updates on their own, restore points and undo** (C9; `system/updates.rs`,
   `node/auto_updates.rs`, `node/restore_points.rs`, `api/undo.rs`; docs: protocol
   upgrades "Updates that apply on their own"). Staged rollouts (waves across a

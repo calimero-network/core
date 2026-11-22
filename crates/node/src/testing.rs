@@ -26,6 +26,33 @@ pub(crate) fn attestation_delay(public_url: &str) -> Option<Duration> {
         .map(|(_, d)| *d)
 }
 
+/// Nodes that advertise an older cluster version than this build's, by public URL.
+static ADVERTISED_VERSION: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// Make the node at `public_url` advertise `version` as the newest cluster version it
+/// supports (its `/health`, and its own count when it raises the logged version), as a
+/// node still on that release does, so a test holds the cluster below a feature this
+/// build brings. `None` lifts it. Set it in `Cluster::start_with`'s `configure`, before
+/// the node starts, so the cluster is never raised past it.
+pub fn advertise_cluster_version(public_url: &str, version: Option<&str>) {
+    if let Ok(mut a) = ADVERTISED_VERSION.lock() {
+        a.retain(|(u, _)| u != public_url);
+        if let Some(v) = version {
+            a.push((public_url.to_owned(), v.to_owned()));
+        }
+    }
+}
+
+/// The version [`advertise_cluster_version`] set for the node at `public_url`.
+pub(crate) fn advertised_cluster_version(public_url: &str) -> Option<String> {
+    ADVERTISED_VERSION
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(u, _)| u == public_url)
+        .map(|(_, v)| v.clone())
+}
+
 /// Nodes whose quotes take long, by public URL.
 static SLOW_QUOTES: Mutex<Vec<(String, Duration)>> = Mutex::new(Vec::new());
 
