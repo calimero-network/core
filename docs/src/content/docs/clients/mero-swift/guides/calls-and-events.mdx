@@ -1,6 +1,6 @@
 ---
 title: Calls, events and orgs
-description: Calling an app instance, reading it, following its events; orgs, teams and invites; blobs and presence.
+description: Calling an app instance, reading it, following its events; orgs, teams and invites; updates and public links; blobs and presence.
 sidebar:
   order: 1
 ---
@@ -62,6 +62,71 @@ _ = try await fresh.orgs.recoveryFinish(org: org, passkey: newPasskey)   // Reco
 
 Rotating the key (`setRecoveryKey`) cancels a recovery under way, and the old
 seed is refused from then on.
+
+## Updates
+
+`apps.update(app:)` says whether a newer release is available and what it
+changes, judged over the app and every app its release created with it
+([Where an update may send data](/protocol/upgrades/#where-an-update-may-send-data)):
+
+```swift
+let u = try await client.apps.update(app: app)              // GET /apps/{app}/update
+if let available = u.available {
+    available._class           // .green or .red (`class` in the JSON)
+    available.reasons          // why it is red: [Components.Schemas.UpdateReason]
+    available.egress           // where data can go after it (before, after, added, removed); nil when unknown
+    available.signerChanged    // nil when unknown
+    available.summary          // one plain line for a banner
+    u.mayApprove               // whether this caller may approve it
+}
+```
+
+An update the node cannot classify (a release the app runs is no longer
+installed) is red with an `unclassified` reason, and what it would compare
+(`egress`, `stateVersionChanged`, `newMethods`, `removedMethods`,
+`signerChanged`) is `nil`: show it as unknown, never as unchanged. A session
+bound to an app's package asks for the upgrade on the
+[consent page](/clients/mero-swift/guides/consent/)
+(`ConsentRequest.upgrade(app:toVersion:returnTo:)`).
+
+The organization's owner and admins decide how updates apply
+([Update policies](/protocol/upgrades/#update-policies)) and may undo one for a
+week ([Restore points and undo](/protocol/upgrades/#restore-points-and-undo)):
+
+```swift
+import MeroAPI
+typealias Policy = Operations.OrgPolicySet.Input.Body.JsonPayload.PolicyPayload
+_ = try await client.orgs.policySet(org: org,
+    policy: Policy(autoApply: .never, holdHours: 24, secondApprover: true), passkey: passkey)
+// or client.apps.policySet(app:policy:passkey:) for one app (Operations.AppPolicySet…PolicyPayload)
+_ = try await client.apps.approveUpgrade(app: app, version: "1.1.0", passkey: passkey)   // the first of two
+_ = try await other.apps.upgrade(app: app, version: "1.1.0", passkey: otherPasskey)      // another owner or admin
+let undo = try await client.apps.undoView(app: app)   // available, reason, apps (what each part loses)
+_ = try await client.apps.undo(app: app, passkey: passkey)
+let waiting = try await client.orgs.updates(org: org) // every app with an update or an approval waiting
+```
+
+When `u.unit` is true the instance's own apps move with it: approve with
+`approveUpgrade(app:version:unit: true, passkey:)` and apply with
+`upgradeUnit(app:version:passkey:)`
+([A second approver](/protocol/upgrades/#a-second-approver)).
+
+## Public links
+
+A public link lets anyone with its token call the app's `#[app::public]`
+methods without an account ([Public links](/protocol/organizations/#public-links)).
+Whoever may change the app's access makes one:
+
+```swift
+let made = try await client.apps.publicLinkCreate(app: app, label: "Feedback",
+    ratePerMinute: 60, passkey: passkey)              // made.token is shown once; made.link is its id
+let links = try await client.apps.publicLinkList(app: app)
+_ = try await client.apps.publicLinkRevoke(app: app, link: made.link, passkey: passkey)
+```
+
+`expiresAt:` (Unix seconds) is optional. MeroKit has no visitor client: a
+visitor signs each request (`Bearer vis1.…`) with its own Ed25519 key, as the
+[protocol page](/protocol/organizations/#public-links) describes.
 
 ## Blobs and presence
 

@@ -1,6 +1,6 @@
 ---
 title: Apps
-description: Create app instances from packages, call intents, read views, stream events, store blobs and publish presence.
+description: Create app instances from packages, review and apply updates, share public links, call intents, read views, stream events, store blobs and publish presence.
 ---
 
 ## Create an instance
@@ -18,6 +18,61 @@ val appId = client.apps.create(
 A raw bundle (`client.packages.bundlePut`, then `apps.create(bundle = hash)`) and `.mpk` uploads
 (`client.packages.upload`) work only on a `--dev` cluster; production installs only from the registry
 (`client.packages.install`).
+
+## Updates
+
+`apps.update` says whether a newer release is available and what it changes, judged over the app
+and every app its release created with it
+([Where an update may send data](/protocol/upgrades/#where-an-update-may-send-data)):
+
+```kotlin
+val u = client.apps.update(app = appId)
+u.available?.let { a ->
+    a.propertyClass        // the JSON `class`: PropertyClass.GREEN or RED
+    a.reasons              // why it is red: [{ code: "egressAdded", … }, …]
+    a.egress               // before, after, added, removed; null when unknown
+    a.signerChanged        // null when unknown
+    a.summary              // the update in one plain line, for a banner
+}
+u.mayApprove               // whether this caller may approve it
+```
+
+An update the node cannot classify (a release the app runs is no longer installed) is red with an
+`unclassified` reason, and what it would compare is `null`: show it as unknown, never as unchanged.
+
+The organization's owner and admins decide how updates apply
+([Update policies](/protocol/upgrades/#update-policies)) and may undo one for a week
+([Restore points and undo](/protocol/upgrades/#restore-points-and-undo)); each change is a passkey
+step-up:
+
+```kotlin
+client.orgs.policySet(org = orgId, policy = Explicit(OrgPolicySetRequestPolicy(
+    secondApprover = true, autoApply = OrgPolicySetRequestPolicy.AutoApply.NEVER, holdHours = 24)))
+// or apps.policySet(app = appId, policy = Explicit(AppPolicySetRequestPolicy(…))) for one app;
+// Explicit(null) drops it
+client.apps.approveUpgrade(app = appId, version = "1.1.0")          // the first of two
+otherAdmin.apps.upgrade(app = appId, version = "1.1.0")             // another owner or admin's client
+client.apps.undoView(app = appId)                                   // what an undo would lose (lostWrites)
+client.apps.undo(app = appId)
+client.orgs.updates(org = orgId)                                    // every app with an update or an approval waiting
+```
+
+## Public links
+
+A public link lets anyone with its token call the app's `#[app::public]` methods without an account
+([Public links](/protocol/organizations/#public-links)). Whoever may change the app's access makes
+one, with a passkey step-up:
+
+```kotlin
+val created = client.apps.publicLinkCreate(app = appId, label = "Feedback", ratePerMinute = 60)
+created.token                                                       // shown once: hand it to visitors
+client.apps.publicLinkList(app = appId).links                       // terms and creator, never a token
+client.apps.publicLinkRevoke(app = appId, link = created.link)
+```
+
+mero-kotlin has no visitor mode: a visitor's client signs each request with its own Ed25519 key
+(`Bearer vis1.…`, [Public links](/protocol/organizations/#public-links)); mero-js's `useVisitor` does
+this in a browser.
 
 ## Calls and views
 

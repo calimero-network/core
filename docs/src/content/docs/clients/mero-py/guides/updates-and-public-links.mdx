@@ -1,0 +1,78 @@
+---
+title: Updates and public links
+description: Reading whether an app has an update and what it changes, update policies, a second approver and undo; and public links, which let visitors without an account call an app's public methods.
+sidebar:
+  order: 2
+---
+
+Both are generated methods of `client.apps` and `client.orgs` (see
+[using the client](/clients/mero-py/reference/client/)). The ones marked with a
+step-up answer `412 CONFIRM_REQUIRED` with a passkey: the one given as
+`confirm=`, else the one set with `client.use_passkey(passkey)`.
+
+## Updates
+
+`apps.update` says whether a newer release is available and what it changes,
+judged over the app and every app its release created with it
+([Where an update may send data](/protocol/upgrades/#where-an-update-may-send-data)):
+
+```python
+u = client.apps.update(app=app)
+if u.available:
+    u.available.class_          # "green" or "red"
+    u.available.reasons         # why it is red, each with a .code ("egressAdded", ...)
+    u.available.egress          # where data can go after it; None when unknown
+    u.available.signer_changed  # None when unknown
+    u.available.summary         # the update in one line, for a banner
+    u.may_approve               # whether this caller may approve it
+```
+
+An update the node cannot classify (a release the app runs is no longer
+installed) is red with an `unclassified` reason, and what it would compare
+(`egress`, `state_version_changed`, `new_methods`, `removed_methods`,
+`signer_changed`) is `None`: show it as unknown, never as unchanged.
+
+The organization's owner and admins decide how updates apply
+([Update policies](/protocol/upgrades/#update-policies)), may ask for
+[a second approver](/protocol/upgrades/#a-second-approver) of a red update, and
+may undo one for a week
+([Restore points and undo](/protocol/upgrades/#restore-points-and-undo)):
+
+```python
+policy = {"autoApply": "never", "holdHours": 24, "secondApprover": True}
+client.orgs.policy_set(org=org, policy=policy, confirm=passkey)
+client.apps.policy_set(app=app, policy=policy, confirm=passkey)  # one app; policy=None drops it
+
+client.apps.approve_upgrade(app=app, version="1.1.0", confirm=passkey)  # the first of two
+other.apps.upgrade(app=app, version="1.1.0", confirm=other_passkey)     # another owner or admin
+
+client.apps.undo_view(app=app).apps[0].lost_writes  # what an undo would lose
+client.apps.undo(app=app, confirm=passkey)
+client.orgs.updates(org=org)  # every app with an update or an approval waiting
+```
+
+- **The policy** is a dict with the JSON field names: `autoApply` (`"never"` or
+  `"noDestinations"`), `holdHours` (24 to 168) and `secondApprover`.
+  `client.orgs.policy(org=org)` and `client.apps.policy(app=app)` read it.
+- **A unit.** An app created with apps of its own (`u.unit`) moves with them:
+  `approve_upgrade` takes `unit=True` for the unit's approval, and
+  `client.apps.upgrade_unit(app=app, version=...)` applies it.
+
+## Public links
+
+A public link lets anyone with its token call the app's `#[app::public]`
+methods without an account ([Public links](/protocol/organizations/#public-links)).
+Whoever may change the app's access makes one:
+
+```python
+made = client.apps.public_link_create(app=app, label="Feedback", rate_per_minute=60,
+                                      confirm=passkey)
+made.link, made.token  # the token is shown once
+client.apps.public_link_list(app=app)
+client.apps.public_link_revoke(app=app, link=made.link, confirm=passkey)
+```
+
+`expires_at` (Unix seconds) is optional. mero-py has no visitor sign-in: a
+visitor signs each request with its own Ed25519 key, as
+[Public links](/protocol/organizations/#public-links) describes, from a client
+that supports it (mero-js's [`useVisitor`](/clients/mero-js/guides/apps/#public-links)).

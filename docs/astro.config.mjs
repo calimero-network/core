@@ -172,7 +172,7 @@ export default defineConfig({
                 { label: 'Overview', slug: 'clients/mero-py' },
                 { label: 'Get started', items: ['clients/mero-py/get-started/installation', 'clients/mero-py/get-started/quickstart', 'clients/mero-py/get-started/concepts'] },
                 { label: 'Reference', items: ['clients/mero-py/reference/client', 'clients/mero-py/reference/methods', 'clients/mero-py/reference/errors'] },
-                { label: 'Guides', items: ['clients/mero-py/guides/migration'] },
+                { label: 'Guides', items: ['clients/mero-py/guides/migration', 'clients/mero-py/guides/updates-and-public-links'] },
               ],
             },
             {
