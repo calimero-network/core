@@ -104,7 +104,8 @@ jobs:
     needs: plan
     if: needs.plan.outputs.targets != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 20 minutes for the bump itself, plus up to 20 waiting for npm (npm surface).
+    timeout-minutes: 40
     strategy:
       # One repository failing must not stop the others from getting their
       # pull request.
@@ -157,6 +158,31 @@ jobs:
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: consumer/package.json
+
+      # The npm bump refreshes each consumer's lockfile, which asks the registry for
+      # the new versions. A release publishes them minutes before this job runs, and
+      # npm may not serve them yet (1.0.0-rc.34's bump failed so and passed on a
+      # re-run). Wait until every SDK version resolves, at most 20 minutes; the
+      # job's timeout leaves the bump its own 20 after that.
+      - name: Wait for npm to serve the release's SDKs
+        if: matrix.surface == 'npm'
+        timeout-minutes: 21
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          deadline=$(( $(date +%s) + 1200 ))
+          for pkg in mero-js mero-react mero-design mero-icons mero-tokens mero-charts; do
+            name="@calimero-network/$pkg@$VERSION"
+            until [ "$(npm view "$name" version 2>/dev/null)" = "$VERSION" ]; do
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::error::npm does not serve $name after 20 minutes"
+                exit 1
+              fi
+              echo "waiting for npm to serve $name"
+              sleep 20
+            done
+            echo "npm serves $name"
+          done
 
       - name: Rewrite the pins
         id: bump

@@ -31,7 +31,7 @@ classifiers = [
 ]
 
 [project.urls]
-Documentation = "https://calimero-network.github.io/calimero-client-py/"
+Documentation = "https://calimero-network.github.io/core/clients/mero-py/"
 Repository = "https://github.com/calimero-network/core/tree/master/sdks/clients/mero-py"
 Changelog = "https://github.com/calimero-network/core/blob/master/sdks/clients/mero-py/CHANGELOG.md"
 

@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import UpdatePath from '../../../components/diagrams/UpdatePath.astro';
 
 An **upgrade** moves an app instance to another bundle, usually another release
 of its package, and keeps its state: the new code reads what the old code
@@ -308,6 +309,10 @@ force and its `source`). Moving an app to another organization drops its own.
 | `holdHours` | 24 | How long a green update waits before applying on its own: 24 to 168 (`400 BAD_UPGRADE_POLICY`) |
 
 Nothing updates on its own by default.
+
+Put together with the class above, an update goes one of these ways:
+
+<UpdatePath />
 
 ### A second approver
 
