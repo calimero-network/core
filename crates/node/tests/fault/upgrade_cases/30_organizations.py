@@ -1,5 +1,5 @@
 """Deep cases: organizations: members and roles, capabilities, invites, ownership,
-deletion and the recovery key."""
+deletion, the recovery key, and guests of an instance."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import uuid
 
 import ed25519_sign
 from rv2 import b64url
-from upgrade_deep import (DeepCase, check, decisions, eq, invite, join, kv_wasm, new_org, people, person,
-                          refused, roles, same_decisions, same_read, snap, team_id, until)
+from upgrade_deep import (DeepCase, anyone, check, decision, decisions, eq, install, invite, join, kv_wasm, new_org,
+                          people, person, refused, roles, same_decisions, same_read, snap, team_id, until)
 from upgrade_path import case
 
 
@@ -389,3 +389,86 @@ class OrgCapabilities(DeepCase):
         token = member.raw("post", f"orgs/{s['org']}/invites", {"role": "member", "capabilities": 1})["token"]
         check(token, "a member mints an invite granting what they hold")
         self.check(w, s)
+
+
+@case
+class Guests(DeepCase):
+    name = "instance-guests"
+    area = "Organizations"
+    since = "1.0.0-rc.33"
+    seeds = ("an organization's instance of a release that admits guests (`guests: allowed`): an outsider named on it "
+             "with an app-defined scope (an `account` grant), and an instance invite with a scope that another "
+             "outsider redeemed")
+    verifies = ("who reads and writes it (the owner, a member, both guests, an outsider never named, no credential); "
+                "the grants with their scopes as the owner reads them, a guest seeing only their own; each guest's "
+                "scope as the app reads it (`env::grant_scope`); a guest reaches nothing of the organization; the "
+                "invite's uses left; on the new release the organization turns guests off (`allowGuests`) and both "
+                "are refused while its members are not")
+
+    def populate(self, w):
+        gale, gert, gwen, gabe, gina = people(w, "gale", "gert", "gwen", "gabe", "gina")
+        del gina  # never named
+        package, version = install(gale, w, "kv-guest-1.0.0.mpk")
+        org = new_org(gale, "Guests Org")
+        join(gale, org, gert)
+        app = gale.raw("post", "apps", {"name": "guests", "package": package, "version": version, "org": org})["appId"]
+        gale.call(app, "set", {"key": "k", "value": "guests"})
+        gale.raw("post", f"apps/{app}/access", {"grants": [
+            {"kind": "org"}, {"kind": "account", "account": gwen.id, "scope": {"desk": "front"}}]})
+        token = gale.raw("post", f"apps/{app}/invites", {"uses": 2, "scope": {"desk": "back"}})["token"]
+        joined = gabe.raw("post", f"invites/{token}/redeem", {})
+        eq((joined.get("app"), joined.get("org")), (app, org), "the instance invite's redemption")
+        s = {"org": org, "app": app, "guests_on": True}
+        self._record(w, s)
+        for want in ("gwen reads", "gabe reads", "gert reads"):
+            check(s["decisions"][want] == "ok", f"{want}: {s['decisions'][want]}")
+        for want in ("gina reads", "anonymous reads", "gwen reads the organization"):
+            check(s["decisions"][want] != "ok", f"{want} was allowed")
+        eq([i.get("usesLeft") for i in gale.get(f"apps/{app}/invites").get("invites") or []], [1],
+           "the instance invite's uses left")
+        return s
+
+    def _record(self, w, s):
+        gale, gwen, gabe = people(w, "gale", "gwen", "gabe")
+        s["grants"] = gale.get(f"apps/{s['app']}").get("grants")
+        accounts = [g for g in s["grants"] if g.get("kind") == "account"]
+        eq(sorted(g["account"] for g in accounts), sorted([gwen.id, gabe.id]), "the guests' grants")
+        s["decisions"] = self._decide(w, s)
+        if s["guests_on"]:
+            s["scopes"] = {p.name: p.result(s["app"], "grantScope") for p in (gwen, gabe)}
+            s["own"] = {p.name: p.get(f"apps/{s['app']}").get("grants") for p in (gwen, gabe)}
+            for p in (gwen, gabe):
+                eq([g.get("account") for g in s["own"][p.name]], [p.id], f"{p.name} sees only their own grant")
+
+    def _decide(self, w, s):
+        app, out = s["app"], {}
+        for who in ("gale", "gert", "gwen", "gabe", "gina"):
+            p = person(w, who)
+            out[f"{who} reads"] = decision(lambda p=p: p.view(app, "get", {"key": "k"}))
+            out[f"{who} writes"] = decision(lambda p=p: p.call(app, "set", {"key": "w", "value": p.name}))
+        out["gwen reads the organization"] = decision(lambda: person(w, "gwen").get(f"orgs/{s['org']}"))
+        out["anonymous reads"] = decision(
+            lambda: anyone(w, "POST", f"apps/{app}/views", {"method": "get", "args": {"key": "k"}}))
+        return out
+
+    def check(self, w, s):
+        gale = person(w, "gale")
+        eq(gale.get(f"apps/{s['app']}").get("grants"), s["grants"], "the grants as the owner reads them")
+        eq(gale.get(f"orgs/{s['org']}").get("allowGuests"), s["guests_on"], "the organization's guests switch")
+        same_decisions(self._decide(w, s), s["decisions"], "guests of an instance")
+        if s["guests_on"]:
+            for name, scope in s["scopes"].items():
+                p = person(w, name)
+                eq(p.result(s["app"], "grantScope"), scope, f"{name}'s scope as the app reads it")
+                eq(p.get(f"apps/{s['app']}").get("grants"), s["own"][name], f"{name}'s own grant")
+
+    def exercise(self, w, s):
+        gale, gwen = people(w, "gale", "gwen")
+        gale.raw("post", f"orgs/{s['org']}/settings", {"allowGuests": False})
+        s["guests_on"] = False
+        until("a guest is refused once guests are off", lambda: refused(
+            ("NOT_FOUND", "FORBIDDEN"), lambda: gwen.view(s["app"], "get", {"key": "k"}), "gwen reads"))
+        self._record(w, s)
+        for want in ("gwen reads", "gabe reads"):
+            check(s["decisions"][want] != "ok", f"{want} with guests off")
+        check(s["decisions"]["gert reads"] == "ok", f"a member with guests off: {s['decisions']['gert reads']}")
