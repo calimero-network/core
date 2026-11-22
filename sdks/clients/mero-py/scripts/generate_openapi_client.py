@@ -38,7 +38,17 @@ CONFIG = ROOT / "openapi" / "generator.yaml"
 GENERATED = ROOT / "calimero_client_py" / "openapi"
 FACADE = ROOT / "calimero_client_py" / "facade.py"
 # The method reference is a page of core's docs site (docs/, three directories up).
-METHODS_DOC = ROOT.parents[2] / "docs" / "src" / "content" / "docs" / "clients" / "mero-py" / "reference" / "methods.mdx"
+METHODS_DOC = (
+    ROOT.parents[2]
+    / "docs"
+    / "src"
+    / "content"
+    / "docs"
+    / "clients"
+    / "mero-py"
+    / "reference"
+    / "methods.mdx"
+)
 
 # Exact: the output is checked in, so a generator release that changes it is
 # a change to review. 0.26.2 is the last release whose code supports Python
