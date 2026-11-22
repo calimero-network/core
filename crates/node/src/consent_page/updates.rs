@@ -101,6 +101,14 @@ pub fn reason_words(r: &Reason) -> String {
             of(member),
             methods.join(", ")
         ),
+        Reason::Unclassified {
+            member,
+            package,
+            version,
+        } => format!(
+            "{}This update could not be checked: {package} {version}, which it runs, is no longer installed. Treat it as red.",
+            of(member)
+        ),
     }
 }
 
@@ -214,6 +222,9 @@ pub(super) fn approval_step(
     })
 }
 
+/// What the sheet says of a fact an unclassified update leaves unread.
+const UNREAD: &str = "this update could not be checked against the version running now";
+
 /// The sheet's `update`: the class and its reasons in words, the destinations before and
 /// after, the state version, the policy and where the approval stands, and which button
 /// leads (`keepByDefault`: an update that adds a destination keeps the current version
@@ -227,6 +238,9 @@ pub(super) fn update_section(
     members: Vec<String>,
 ) -> Value {
     let (policy, source) = node.sys(|s| s.upgrade_policy_of(app));
+    // Not classified (a part's release unreadable, or no verdict at all): every fact
+    // that compares the two sides is unknown, never "unchanged".
+    let unknown = c.is_none_or(crate::egress::unclassified);
     let green = c.is_some_and(|c| c.class == Class::Green);
     let added = c.map(|c| c.egress.added.clone()).unwrap_or_default();
     let reasons: Vec<String> = c
@@ -248,7 +262,8 @@ pub(super) fn update_section(
             || "Same state version: the new code reads your data as it is.".to_owned(),
             reason_words,
         );
-    let destinations = c.map_or(Value::Null, |c| {
+    // Unclassified: where data can go is unknown, not none.
+    let destinations = c.filter(|c| !crate::egress::unclassified(c)).map_or(Value::Null, |c| {
         json!({
             "before": hosts(c.egress.before.iter().map(String::as_str)),
             "after": hosts(c.egress.after.iter().map(String::as_str)),
@@ -300,14 +315,22 @@ pub(super) fn update_section(
         "summary": c.map_or_else(|| "This update could not be checked".to_owned(), update_summary),
         "reasons": reasons,
         "destinations": destinations,
-        "actsAs": if acts_as.is_empty() { json!("Unchanged: none") } else { json!(acts_as) },
-        "newMethods": c.map(|c| c.new_methods.clone()).unwrap_or_default(),
-        "removedMethods": c.map(|c| c.removed_methods.clone()).unwrap_or_default(),
-        "stateVersion": state,
-        "signer": if c.is_some_and(|c| c.signer_changed) {
-            "A different publisher key signs it"
+        "actsAs": if unknown {
+            json!(format!("Unknown: {UNREAD}"))
+        } else if acts_as.is_empty() {
+            json!("Unchanged: none")
         } else {
-            "Same signer as the version running now"
+            json!(acts_as)
+        },
+        "newMethods": c.filter(|_| !unknown).map(|c| c.new_methods.clone()),
+        "removedMethods": c.filter(|_| !unknown).map(|c| c.removed_methods.clone()),
+        "stateVersion": if unknown { format!("Unknown: {UNREAD}") } else { state },
+        "signer": if unknown {
+            format!("Unknown: {UNREAD}")
+        } else if c.is_some_and(|c| c.signer_changed) {
+            "A different publisher key signs it".to_owned()
+        } else {
+            "Same signer as the version running now".to_owned()
         },
         "members": members,
         "policy": policy_view(&policy, source),

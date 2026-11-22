@@ -110,7 +110,9 @@ def sync_detailed(
     it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then
     answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces
     it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34, and for an update the log cannot classify (a
+    part's release no longer installed: class `red` with `unclassified` reasons) below 1.0.0-rc.35,
+    before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -155,7 +157,9 @@ def sync(
     it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then
     answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces
     it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34, and for an update the log cannot classify (a
+    part's release no longer installed: class `red` with `unclassified` reasons) below 1.0.0-rc.35,
+    before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -195,7 +199,9 @@ async def asyncio_detailed(
     it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then
     answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces
     it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34, and for an update the log cannot classify (a
+    part's release no longer installed: class `red` with `unclassified` reasons) below 1.0.0-rc.35,
+    before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -238,7 +244,9 @@ async def asyncio(
     it with `POST /apps/{app}/upgrade` (or `/upgrade-unit` for a unit's approval), which until then
     answers `409 SECOND_APPROVAL_REQUIRED`. One waits per app, for a week at most; a newer one replaces
     it, and another approver's of the same update is `409 APPROVAL_PENDING` (apply it instead). `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34, and for an update the log cannot classify (a
+    part's release no longer installed: class `red` with `unclassified` reasons) below 1.0.0-rc.35,
+    before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

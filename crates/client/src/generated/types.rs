@@ -1001,7 +1001,7 @@ pub struct UnitMember {
     pub extra: Map<String, Value>,
 }
 
-/// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself.
+/// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "code")]
 pub enum UpdateReason {
@@ -1034,6 +1034,12 @@ pub enum UpdateReason {
     #[serde(rename = "delegatedMethodsAdded")]
     DelegatedMethodsAdded {
         methods: Vec<String>,
+        member: Option<String>,
+        package: String,
+    },
+    #[serde(rename = "unclassified")]
+    Unclassified {
+        version: String,
         member: Option<String>,
         package: String,
     },
@@ -3821,20 +3827,40 @@ pub struct AppUpdateResponseAvailable {
     pub class: Option<AppUpdateResponseAvailableClass>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasons: Option<Vec<UpdateReason>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub egress: Option<AppUpdateResponseAvailableEgress>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub egress: Option<Option<AppUpdateResponseAvailableEgress>>,
     #[serde(rename = "stateVersionChanged")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_version_changed: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub state_version_changed: Option<Option<bool>>,
     #[serde(rename = "newMethods")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub new_methods: Option<Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub new_methods: Option<Option<Vec<String>>>,
     #[serde(rename = "removedMethods")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub removed_methods: Option<Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub removed_methods: Option<Option<Vec<String>>>,
     #[serde(rename = "signerChanged")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signer_changed: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub signer_changed: Option<Option<bool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(rename = "approvalsNeeded")]

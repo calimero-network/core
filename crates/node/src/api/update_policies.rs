@@ -195,10 +195,11 @@ pub(crate) async fn approve_upgrade(
     if !node.sys(|s| s.upgrade_policy_of(app).0.second_approver) {
         return Err(crate::node::rejected(crate::system::ONE_APPROVAL));
     }
-    let running = node
-        .release_of_app(app)
-        .ok_or_else(|| ApiError::conflict("this app runs no package release: nothing to approve"))?
-        .at;
+    // The release the log says the app runs, installed or not: one uninstalled while
+    // another ships its WASM still names the package the update moves along.
+    let running = node.sys(|s| s.running(app).cloned()).ok_or_else(|| {
+        ApiError::conflict("this app runs no package release: nothing to approve")
+    })?;
     let target = PackageRef {
         package: running.package.clone(),
         version: version.to_owned(),
@@ -226,7 +227,11 @@ pub(crate) async fn approve_upgrade(
     } else {
         BTreeMap::new()
     };
-    let class = crate::egress::update(node, app, &target.version, unit)
+    // A side the log no longer holds cannot be classified: approved as red, the reason
+    // naming the release that is gone, as apply takes it (`SystemState::check_class`),
+    // once every node decodes that reason (`Feature::UnclassifiedUpdates`).
+    super::upgrades::unclassified_gate(node, app, Some(&target)).await?;
+    let class = crate::egress::judged_update(node, app, &target.version, unit)
         .await?
         .and_then(super::upgrades::upgrade_class)
         .ok_or_else(|| ApiError::conflict("this update could not be classified"))?;
