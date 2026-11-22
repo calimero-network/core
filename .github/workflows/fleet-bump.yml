@@ -158,6 +158,29 @@ jobs:
         with:
           package_json_file: consumer/package.json
 
+      # The npm bump refreshes each consumer's lockfile, which asks the registry for
+      # the new versions. A release publishes them minutes before this job runs, and
+      # npm may not serve them yet (1.0.0-rc.34's bump failed so and passed on a
+      # re-run). Wait until every SDK version resolves, at most 20 minutes.
+      - name: Wait for npm to serve the release's SDKs
+        if: matrix.surface == 'npm'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          deadline=$(( $(date +%s) + 1200 ))
+          for pkg in mero-js mero-react mero-design mero-icons mero-tokens mero-charts; do
+            name="@calimero-network/$pkg@$VERSION"
+            until [ "$(npm view "$name" version 2>/dev/null)" = "$VERSION" ]; do
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::error::npm does not serve $name after 20 minutes"
+                exit 1
+              fi
+              echo "waiting for npm to serve $name"
+              sleep 20
+            done
+            echo "npm serves $name"
+          done
+
       - name: Rewrite the pins
         id: bump
         env:
