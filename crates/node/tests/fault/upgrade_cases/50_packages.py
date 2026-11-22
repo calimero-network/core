@@ -331,7 +331,15 @@ class RestorePoints(DeepCase):
 
     def _undo(self, w, s, app):
         rex = person(w, "rex")
-        rex.raw("post", f"apps/{app}/undo", {})
+        # On 1.0.0-rc.34 the restore point's node may be asked to seed before it applied the
+        # undo and answer `409 CONFLICT` (the race #5221 fixes); until the restore finishes an
+        # undo may be sent again, which seeds it again, so send it again as a person would.
+        deadline = time.time() + 30
+        while (got := decision(lambda: rex.raw("post", f"apps/{app}/undo", {}))) == "CONFLICT":
+            if time.time() >= deadline:
+                break
+            time.sleep(1)
+        eq(got, "ok", f"undoing {app}")
         rec = until("the undo restores the app", lambda: _undone(rex, app, s["v1"]), 90)
         check(rec.get("restorePoint") is None and (rec.get("lastUpgrade") or {}).get("undo") is True,
               f"the undone app's record: {rec}")
