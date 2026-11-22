@@ -8,6 +8,7 @@ sidebar:
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 import OrgStructure from '../../../components/diagrams/OrgStructure.astro';
 import OrgRecoveryTimeline from '../../../components/diagrams/OrgRecoveryTimeline.astro';
+import AccessGrants from '../../../components/diagrams/AccessGrants.astro';
 
 Every app instance is in exactly one **organization**: one its creator is in,
 or one made with it, as its package's manifest says ([Where an instance
@@ -51,6 +52,8 @@ account, `org` beside a team, or a scope over 256 bytes is refused where it
 applies. Grants are written from cluster version 1.0.0-rc.33
 (`Feature::AccessGrants`; `409 FEATURE_NOT_ACTIVE` before). `GET /apps/{app}`
 answers them as `grants`.
+
+<AccessGrants />
 
 Whatever changes an instance's grants keeps the rest: giving an `org` instance
 an app team (`ScopeApps`) replaces its `org` grant with the app team's,
