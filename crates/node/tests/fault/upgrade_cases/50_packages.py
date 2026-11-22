@@ -332,10 +332,11 @@ class RestorePoints(DeepCase):
     def _undo(self, w, s, app):
         rex = person(w, "rex")
         # On 1.0.0-rc.34 the restore point's node may be asked to seed before it applied the
-        # undo and answer `409 CONFLICT` (the race #5221 fixes); until the restore finishes an
-        # undo may be sent again, which seeds it again, so send it again as a person would.
+        # undo (the race #5221 fixes): `409 CONFLICT` when that node took the request, `503
+        # UNAVAILABLE` when another did and its seed call was refused. Until the restore finishes
+        # an undo may be sent again, which seeds it again, so send it again as a person would.
         deadline = time.time() + 30
-        while (got := decision(lambda: rex.raw("post", f"apps/{app}/undo", {}))) == "CONFLICT":
+        while (got := decision(lambda: rex.raw("post", f"apps/{app}/undo", {}))) in ("CONFLICT", "UNAVAILABLE"):
             if time.time() >= deadline:
                 break
             time.sleep(1)
