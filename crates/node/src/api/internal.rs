@@ -614,6 +614,8 @@ async fn internal_restore_point(
         ("take", None, None) => Ok(Json(json!(node.take_restore_point_here(&body.app).await?))),
         ("check", Some(file), None) => Ok(Json(node.restore_point_here(&body.app, &file)?)),
         ("seed", None, Some(group)) => {
+            // The asking node saw the undo committed; this one may not have applied it yet.
+            let _caught_up = node.sys_fresh().await;
             node.seed_undo_here(&body.app, group)?;
             Ok(Json(json!({ "seeding": true })))
         }

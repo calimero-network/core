@@ -280,6 +280,9 @@ impl Node {
         seed: u64,
     ) -> Result<(), ApiError> {
         if seed == self.config.node_id {
+            // The undo was committed through the system leader: this node may not have
+            // applied it yet, and seeds only an undo its own state holds.
+            let _caught_up = self.sys_fresh().await;
             return self.seed_undo_here(app_id, group);
         }
         let addr = self
