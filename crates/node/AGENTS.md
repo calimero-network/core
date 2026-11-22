@@ -1445,7 +1445,9 @@ is its command line.
   target, or a retry while its restore runs) reverts bundle, compute and release and,
   with a file, moves the app to a new group with `PendingRestore { seed: the file's
   node }` as `RestoreApp` does; `POST /apps/{app}/undo` then asks that node to seed it
-  (`Node::seed_undo` -> `seed_undo_here` -> `seed_restore`, in its own task) and waits
+  (`Node::seed_undo` -> `seed_undo_here` -> `seed_restore`, in its own task, once a fresh
+  system read shows it the undo: it may be a follower behind the commit; regression: the
+  `restore-points-undo` upgrade case) and waits
   `UNDO_WAIT`; `GET /apps/{app}/undo` (`lostWrites` from `restore_point_here`: entries
   since, last write, `any`; `hosted: false` there, the node no longer hosting the app,
   reads them from the current replicas, `Node::group_progress` over `internal/last-write`'s

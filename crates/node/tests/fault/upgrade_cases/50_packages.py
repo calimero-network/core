@@ -8,7 +8,7 @@ import time
 
 import ed25519_sign
 from rv2 import b64url
-from upgrade_deep import (DeepCase, Failed, check, eq, install, join, kv_wasm, new_org, people,
+from upgrade_deep import (DeepCase, Failed, check, decision, eq, install, join, kv_wasm, new_org, people,
                           person, same_read, snap, subset, until)
 from upgrade_path import case
 
@@ -189,3 +189,178 @@ class Migrations(DeepCase):
             return again
         s["records"] = until("the apps settle after the run", settled, 60)
         check(s["v2"] in json.dumps(s["records"][late]), f"the run on the new release upgraded {late}: {s['records'][late]}")
+
+
+def _notes(w, owner, org_name):
+    """notes 1.0.0 and 2.0.0 installed by `owner` (2.0.0 changes the state version: a red
+    update) and an organization of theirs: `(package, v1, v2, org)`."""
+    p, v1 = install(owner, w, "notes-1.0.0.mpk")
+    _, v2 = install(owner, w, "notes-2.0.0.mpk")
+    return p, v1, v2, new_org(owner, org_name)
+
+
+def _notes_app(owner, name, package, version, org, text):
+    a = owner.raw("post", "apps", {"name": name, "package": package, "version": version, "org": org})["appId"]
+    owner.call(a, "set", {"id": "n", "text": text})
+    return a
+
+
+def _set_v2(owner, app, text):
+    """A note written on notes 2.0.0, whose `set` is a `confirm` method: with the owner's passkey."""
+    owner.raw("post", f"apps/{app}/intents", {"method": "set", "args": {"id": "n", "title": "n", "text": text}})
+
+
+def _red(update, version):
+    """`GET /apps/{app}/update` once it offers `version` as a red update."""
+    available = update.get("available") or {}
+    if available.get("version") != version or available.get("class") != "red":
+        raise Failed(f"no red update to {version} yet: {json.dumps(update)[:400]}")
+    return update
+
+
+@case
+class UpdateApprovals(DeepCase):
+    name = "update-classes-approvals"
+    area = "Upgrades"
+    since = "1.0.0-rc.34"
+    seeds = ("notes 1.0.0 and 2.0.0 (red: its state version changes) in an organization whose update policy asks "
+             "for a second approver; one app upgraded by an admin on the owner's first approval, one with the "
+             "owner's first approval still waiting (`instance approve-update`)")
+    verifies = ("the upgraded app's `lastUpgrade` (class red, its reasons, the first approver) and the waiting "
+                "approval as the admin reads them on every node; the owner alone is refused "
+                "`SECOND_APPROVAL_REQUIRED`; on the new release the admin applies the update the old release's "
+                "approval covers, recorded red with that approver, and the app keeps its note")
+
+    def populate(self, w):
+        vic, val = people(w, "vic", "val")
+        p, v1, v2, org = _notes(w, vic, "Approval Org")
+        join(vic, org, val, role="admin")
+        vic.raw("post", f"orgs/{org}/upgrade-policy", {"policy": {"secondApprover": True}})
+        s = {"org": org, "package": p, "v1": v1, "v2": v2, "notes": {}}
+        for k in ("approved", "waiting"):
+            s[k] = _notes_app(vic, k, p, v1, org, f"{k} on 1.0.0")
+            s["notes"][s[k]] = f"{k} on 1.0.0"
+        until("the red update is offered", lambda: _red(val.get(f"apps/{s['waiting']}/update"), v2), 30)
+        for a in (s["approved"], s["waiting"]):
+            vic.raw("post", f"apps/{a}/upgrade-approvals", {"version": v2})
+        val.raw("post", f"apps/{s['approved']}/upgrade", {"version": v2})
+        s["records"] = {}
+        self._record(w, s, s["approved"])
+        self._record(w, s, s["waiting"])
+        last = s["records"][s["approved"]]["lastUpgrade"]
+        eq((last.get("ok"), last.get("class"), last.get("approvedBy"), last.get("by")), (True, "red", vic.id, val.id),
+           "the red update's record")
+        check(last.get("reasons"), f"the red update's reasons: {last}")
+        s["pending"] = val.get(f"apps/{s['waiting']}/update")["pendingApprovals"]
+        check(len(s["pending"]) == 1 and s["pending"][0].get("by") == vic.id
+              and s["pending"][0].get("class") == "red", f"the waiting approval: {s['pending']}")
+        return s
+
+    def _record(self, w, s, app):
+        s["records"][app] = snap(person(w, "vic"), f"apps/{app}")
+
+    def check(self, w, s):
+        vic, val = people(w, "vic", "val")
+        for a, rec in s["records"].items():
+            same_read(vic, f"apps/{a}", rec, f"app {a}")
+            eq(vic.result(a, "get", {"id": "n"}), s["notes"][a], f"app {a}'s note")
+        for n in w.members():
+            eq(val.get(f"apps/{s['waiting']}/update", node=n)["pendingApprovals"], s["pending"],
+               f"the waiting approvals on node {n}")
+        if s["pending"]:
+            eq(decision(lambda: vic.raw("post", f"apps/{s['waiting']}/upgrade", {"version": s["v2"]})),
+               "SECOND_APPROVAL_REQUIRED", "the owner alone upgrading the app whose approval waits")
+            listed = val.get(f"orgs/{s['org']}/updates")
+            check(s["waiting"] in json.dumps(listed), f"the organization's updates lack {s['waiting']}: {listed}")
+
+    def exercise(self, w, s):
+        vic, val = people(w, "vic", "val")
+        val.raw("post", f"apps/{s['waiting']}/upgrade", {"version": s["v2"]})
+        self._record(w, s, s["waiting"])
+        last = s["records"][s["waiting"]]["lastUpgrade"]
+        eq((last.get("ok"), last.get("class"), last.get("approvedBy"), last.get("by")), (True, "red", vic.id, val.id),
+           "the update the old release's approval covered, applied on the new release")
+        check(s["v2"] in json.dumps(s["records"][s["waiting"]].get("release")), f"the app runs {s['v2']}: {last}")
+        s["pending"] = []
+        eq(val.get(f"apps/{s['waiting']}/update")["pendingApprovals"], [], "the approval spent")
+
+
+def _undone(p, app, version):
+    """`app`'s record once its undo has restored it onto `version`."""
+    rec = p.get(f"apps/{app}")
+    if (rec.get("release") or {}).get("version") != version or rec.get("restore") is not None:
+        raise Failed(f"{app} is not restored onto {version} yet: {json.dumps(rec)[:400]}")
+    return rec
+
+
+@case
+class RestorePoints(DeepCase):
+    name = "restore-points-undo"
+    area = "Upgrades"
+    since = "1.0.0-rc.34"
+    seeds = ("two notes apps upgraded from 1.0.0 to 2.0.0, each taking a restore point, and written to after; "
+             "one of them undone back to 1.0.0 and its note from before (`instance undo`)")
+    verifies = ("the kept app's restore point and `lastUpgrade` as its owner reads them, its undo offered while "
+                "the restore point's node is in the cluster and refused `RESTORE_POINT_UNAVAILABLE` once the roll "
+                "took that node; the undone app on 1.0.0 with its note from before and nothing left to undo; on "
+                "the new release the undone app is upgraded again, written to and undone back to that note")
+
+    def populate(self, w):
+        rex = person(w, "rex")
+        p, v1, v2, org = _notes(w, rex, "Restore Org")
+        s = {"org": org, "package": p, "v1": v1, "v2": v2, "records": {}, "notes": {}}
+        for k in ("kept", "undone"):
+            s[k] = _notes_app(rex, k, p, v1, org, "before")
+            rex.raw("post", f"apps/{s[k]}/upgrade", {"version": v2})
+            _set_v2(rex, s[k], "after")
+        point = rex.get(f"apps/{s['kept']}").get("restorePoint") or {}
+        eq((point.get("fromRelease") or {}).get("version"), v1, "the kept app's restore point")
+        check(isinstance((point.get("file") or {}).get("node"), int), f"the restore point's file: {point}")
+        s["point_node"] = point["file"]["node"]
+        plan = rex.get(f"apps/{s['kept']}/undo")
+        eq(plan.get("available"), True, f"the kept app's undo: {plan}")
+        part = plan["apps"][0]
+        eq((part["from"]["version"], part["to"]["version"], (part.get("lostWrites") or {}).get("any")),
+           (v2, v1, True), "what the kept app's undo reverts")
+        self._undo(w, s, s["undone"])
+        # 2.0.0 keeps a note as its title and text on two lines.
+        s["notes"] = {s["kept"]: "n\nafter", s["undone"]: "before"}
+        for a in (s["kept"], s["undone"]):
+            s["records"][a] = snap(rex, f"apps/{a}")
+        return s
+
+    def _undo(self, w, s, app):
+        rex = person(w, "rex")
+        rex.raw("post", f"apps/{app}/undo", {})
+        rec = until("the undo restores the app", lambda: _undone(rex, app, s["v1"]), 90)
+        check(rec.get("restorePoint") is None and (rec.get("lastUpgrade") or {}).get("undo") is True,
+              f"the undone app's record: {rec}")
+        eq(rex.result(app, "get", {"id": "n"}), "before", "the undone app's note")
+
+    def check(self, w, s):
+        rex = person(w, "rex")
+        for a, rec in s["records"].items():
+            same_read(rex, f"apps/{a}", rec, f"app {a}")
+            eq(rex.result(a, "get", {"id": "n"}), s["notes"][a], f"app {a}'s note")
+        eq((rex.get(f"apps/{s['undone']}/undo").get("reason") or {}).get("code"), "NO_RESTORE_POINT",
+           "the undone app's undo")
+        plan = rex.get(f"apps/{s['kept']}/undo")
+        if s["point_node"] in w.fleet.members:
+            eq(plan.get("available"), True, f"the kept app's undo while node {s['point_node']} is in: {plan}")
+            eq([(x["from"]["version"], x["to"]["version"]) for x in plan["apps"]], [(s["v2"], s["v1"])],
+               "what the kept app's undo reverts")
+        else:
+            eq((plan.get("available"), (plan.get("reason") or {}).get("code")),
+               (False, "RESTORE_POINT_UNAVAILABLE"), f"the kept app's undo once node {s['point_node']} left")
+            eq(decision(lambda: rex.raw("post", f"apps/{s['kept']}/undo", {})), "RESTORE_POINT_UNAVAILABLE",
+               "undoing the kept app once its restore point's node left")
+
+    def exercise(self, w, s):
+        rex = person(w, "rex")
+        a = s["undone"]
+        rex.raw("post", f"apps/{a}/upgrade", {"version": s["v2"]})
+        _set_v2(rex, a, "after, on the new release")
+        point = rex.get(f"apps/{a}").get("restorePoint") or {}
+        check((point.get("file") or {}).get("node") in w.members(), f"a restore point on a new node: {point}")
+        self._undo(w, s, a)
+        s["records"][a] = snap(rex, f"apps/{a}")

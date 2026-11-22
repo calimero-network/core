@@ -111,15 +111,6 @@ NOT_COVERED = [
      "which the old release's meroctl cannot pack (it writes no `uses`). "
      "`a_units_destinations_are_judged_over_its_members` (`consent_page.rs`) covers them on one build and "
      "`calimero_bundle::update::tests` every rule of the classifier"),
-    ("Apps", "An update's class judged at apply (`UpgradeApp::class`, `lastUpgrade.class`) and a red update's "
-     "first approval waiting for a second approver (`ApproveUpgrade`, `Org::pending_upgrades`)",
-     "needs a release that adds a destination over one an instance runs, which the old release's meroctl packs "
-     "(it writes `outbound`) but which no case seeds as an update yet, and both shapes are written only once every "
-     "node runs this release (`Feature::UpgradeClasses`, `Feature::UpgradePolicies`); an entry without a class "
-     "reads and replays as before. The policy they are judged by is the `upgrade-policies` case's. "
-     "`system::tests` (`an_updates_class_is_judged_against_the_log_and_recorded`, "
-     "`a_red_update_needs_a_second_approver_where_the_policy_asks`) and `a_red_update_waits_for_a_second_approver` "
-     "(`consent_page.rs`) cover them on one build"),
     ("Apps", "An update the log cannot classify (a part's release uninstalled while another ships its WASM), "
      "approved first and applied as red with `unclassified` reasons (`Reason::Unclassified` on `ApproveUpgrade` "
      "and `UpgradeApp`)",
@@ -128,18 +119,14 @@ NOT_COVERED = [
      "replays as before. `system::tests::an_unclassified_move_is_approved_first_as_red_naming_what_the_log_lacks` "
      "and `consent_page.rs` (`a_red_update_from_an_uninstalled_release_is_approved_first_and_applied_second`, "
      "`an_unclassified_update_waits_for_every_node_on_the_release_that_decodes_it`) cover it on one build"),
-    ("Apps", "A green update applying on its own after its hold (`UpgradeApp::auto`, `lastUpgrade.auto`), "
-     "the restore point an upgrade takes and its undo (`AppRecord::restore_point`, `UndoUpgrade`, "
-     "`POST /apps/{app}/undo`)",
-     "each shape is written only once every node runs this release (`Feature::AutoUpdates`, "
-     "`Feature::RestorePoints`), so the old release cannot seed one; the hold is a day of "
-     "logged time a deep run cannot wait (the tests move the update clock with a testing hook a release `merod` "
-     "lacks), and a restore point is a file on one node's disk, which a roll that replaces the node takes with "
-     "it. An app record, an upgrade entry and a state without them read and replay as before. "
+    ("Apps", "A green update applying on its own after its hold (`UpgradeApp::auto`, `lastUpgrade.auto`)",
+     "the hold is at least a day (`MIN_HOLD_HOURS`) of logged time from the release's install, which a deep run "
+     "cannot wait on either release (the tests move the update clock with a testing hook a release `merod` "
+     "lacks), so no automatic update is seeded or made; the policy that asks for one is the "
+     "`upgrade-policies` case's, and the restore point every upgrade takes and its undo are "
+     "`restore-points-undo`'s. An upgrade entry and a record without `auto` read and replay as before. "
      "`system::tests` (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`, "
-     "`an_upgrade_is_undone_within_a_week_back_to_its_restore_point`, "
-     "`a_deployment_instances_hold_runs_from_its_offer`) and `tests/auto_updates.rs` "
-     "cover them on one build"),
+     "`a_deployment_instances_hold_runs_from_its_offer`) and `tests/auto_updates.rs` cover it on one build"),
     ("Packages", "A release that declares its secrets (`secrets` in the signed manifest, `PackageVersion::secrets`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `secrets`, and a release that "
      "declares them installs only once every node runs this release (`Feature::DeclaredSecrets`); "
@@ -251,7 +238,8 @@ NOT_COVERED = [
      "`GET /apps/{app}/update`'s `summary` and `unit`",
      "pages and reads that store nothing of their own: a consent request lives in one node's memory for minutes, "
      "and what the pages approve is logged by the routes they run (`POST /apps`, `SetUpgradePolicy`, "
-     "`ApproveUpgrade`, `UpgradeApp`), whose stored shapes are the `upgrade-policies` case's and those above. "
+     "`ApproveUpgrade`, `UpgradeApp`), whose stored shapes are the `upgrade-policies` and "
+     "`update-classes-approvals` cases'. "
      "`an_install_sheet_shows_what_gets_created_and_where_data_can_go` and "
      "`an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build"),
 ]
