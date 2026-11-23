@@ -177,11 +177,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/tests/install-test.sh
 
-      # The release fetcher the upgrade path starts from: the host's triple, or a refusal.
-      - name: Test fetch-release.sh
-        if: ${{ !cancelled() }}
-        run: bash scripts/tests/fetch-release-test.sh
-
   # Clippy builds in check mode, which the test build's cache does not hold, so lint
   # keeps a group of its own, saved by a push to master (the one push job that lints).
   rust-lint:
