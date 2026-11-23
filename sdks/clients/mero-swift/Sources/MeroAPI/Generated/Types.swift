@@ -993,7 +993,7 @@ public protocol APIProtocol: Sendable {
     func deployerRevoke(_ input: Operations.DeployerRevoke.Input) async throws -> Operations.DeployerRevoke.Output
     /// Deployments
     ///
-    /// The deployments the caller manages.
+    /// The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting for its acceptance (`POST /deployments/{id}/transfer/accept`).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -1075,6 +1075,33 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `DELETE /deployments/{id}/secrets/{name}`.
     /// - Remark: Generated from `#/paths//deployments/{id}/secrets/{name}/delete(deployment_secret_clear)`.
     func deploymentSecretClear(_ input: Operations.DeploymentSecretClear.Input) async throws -> Operations.DeploymentSecretClear.Output
+    /// Offer a deployment to another owner
+    ///
+    /// A manager of the deployment offers it to `to`, another account or organization, with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.36.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/transfer`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/post(deployment_transfer_offer)`.
+    func deploymentTransferOffer(_ input: Operations.DeploymentTransferOffer.Input) async throws -> Operations.DeploymentTransferOffer.Output
+    /// Cancel the offer of a deployment
+    ///
+    /// A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over `deployment:{id} / __cancel_deployment_transfer / {}`. `404 NO_TRANSFER` when none waits.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /deployments/{id}/transfer`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/delete(deployment_transfer_cancel)`.
+    func deploymentTransferCancel(_ input: Operations.DeploymentTransferCancel.Input) async throws -> Operations.DeploymentTransferCancel.Output
+    /// Accept a deployment offered to an owner
+    ///
+    /// A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to, offeredAt }` (the offer it accepts): `to` becomes the owner, and the deployment's offers and customers' instances stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new owner sets its own. Until a person approves an update of a customer's instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_STALE` once whoever offered it no longer manages it, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/transfer/accept`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/accept/post(deployment_transfer_accept)`.
+    func deploymentTransferAccept(_ input: Operations.DeploymentTransferAccept.Input) async throws -> Operations.DeploymentTransferAccept.Output
     /// Node health
     ///
     /// In the clear. The node's id, the system group's leader (`null`: none known), its `merod` release, the newest cluster version it supports (`clusterVersion`) and the cluster's rollback epoch (`null` on a node without a rollback counter).
@@ -3576,7 +3603,7 @@ extension APIProtocol {
     }
     /// Deployments
     ///
-    /// The deployments the caller manages.
+    /// The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting for its acceptance (`POST /deployments/{id}/transfer/accept`).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -3737,6 +3764,63 @@ extension APIProtocol {
         body: Operations.DeploymentSecretClear.Input.Body? = nil
     ) async throws -> Operations.DeploymentSecretClear.Output {
         try await deploymentSecretClear(Operations.DeploymentSecretClear.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Offer a deployment to another owner
+    ///
+    /// A manager of the deployment offers it to `to`, another account or organization, with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.36.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/transfer`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/post(deployment_transfer_offer)`.
+    public func deploymentTransferOffer(
+        path: Operations.DeploymentTransferOffer.Input.Path,
+        headers: Operations.DeploymentTransferOffer.Input.Headers = .init(),
+        body: Operations.DeploymentTransferOffer.Input.Body
+    ) async throws -> Operations.DeploymentTransferOffer.Output {
+        try await deploymentTransferOffer(Operations.DeploymentTransferOffer.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Cancel the offer of a deployment
+    ///
+    /// A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over `deployment:{id} / __cancel_deployment_transfer / {}`. `404 NO_TRANSFER` when none waits.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /deployments/{id}/transfer`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/delete(deployment_transfer_cancel)`.
+    public func deploymentTransferCancel(
+        path: Operations.DeploymentTransferCancel.Input.Path,
+        headers: Operations.DeploymentTransferCancel.Input.Headers = .init(),
+        body: Operations.DeploymentTransferCancel.Input.Body? = nil
+    ) async throws -> Operations.DeploymentTransferCancel.Output {
+        try await deploymentTransferCancel(Operations.DeploymentTransferCancel.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Accept a deployment offered to an owner
+    ///
+    /// A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to, offeredAt }` (the offer it accepts): `to` becomes the owner, and the deployment's offers and customers' instances stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new owner sets its own. Until a person approves an update of a customer's instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_STALE` once whoever offered it no longer manages it, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/transfer/accept`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/accept/post(deployment_transfer_accept)`.
+    public func deploymentTransferAccept(
+        path: Operations.DeploymentTransferAccept.Input.Path,
+        headers: Operations.DeploymentTransferAccept.Input.Headers = .init(),
+        body: Operations.DeploymentTransferAccept.Input.Body
+    ) async throws -> Operations.DeploymentTransferAccept.Output {
+        try await deploymentTransferAccept(Operations.DeploymentTransferAccept.Input(
             path: path,
             headers: headers,
             body: body
@@ -8999,7 +9083,7 @@ public enum Components {
                 case member
             }
         }
-        /// A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339.
+        /// A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339. `transfer`: the offer of it to another owner waiting for acceptance (`expiresAt`: 7 days after `offeredAt`), else `null`; `transferred`: whom it came from at its last hand-over, else `null`.
         ///
         /// - Remark: Generated from `#/components/schemas/Deployment`.
         public struct Deployment: Codable, Hashable, Sendable {
@@ -9060,6 +9144,68 @@ public enum Components {
             public var createdBy: Swift.String
             /// - Remark: Generated from `#/components/schemas/Deployment/createdAt`.
             public var createdAt: Swift.String
+            /// - Remark: Generated from `#/components/schemas/Deployment/transfer`.
+            public struct TransferPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/Deployment/transfer/to`.
+                public var to: Components.Schemas.Deployer
+                /// - Remark: Generated from `#/components/schemas/Deployment/transfer/offeredBy`.
+                public var offeredBy: Swift.String
+                /// - Remark: Generated from `#/components/schemas/Deployment/transfer/offeredAt`.
+                public var offeredAt: Swift.String
+                /// - Remark: Generated from `#/components/schemas/Deployment/transfer/expiresAt`.
+                public var expiresAt: Swift.String
+                /// Creates a new `TransferPayload`.
+                ///
+                /// - Parameters:
+                ///   - to:
+                ///   - offeredBy:
+                ///   - offeredAt:
+                ///   - expiresAt:
+                public init(
+                    to: Components.Schemas.Deployer,
+                    offeredBy: Swift.String,
+                    offeredAt: Swift.String,
+                    expiresAt: Swift.String
+                ) {
+                    self.to = to
+                    self.offeredBy = offeredBy
+                    self.offeredAt = offeredAt
+                    self.expiresAt = expiresAt
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case to
+                    case offeredBy
+                    case offeredAt
+                    case expiresAt
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/Deployment/transfer`.
+            public var transfer: Components.Schemas.Deployment.TransferPayload?
+            /// - Remark: Generated from `#/components/schemas/Deployment/transferred`.
+            public struct TransferredPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/Deployment/transferred/from`.
+                public var from: Components.Schemas.Deployer
+                /// - Remark: Generated from `#/components/schemas/Deployment/transferred/at`.
+                public var at: Swift.String
+                /// Creates a new `TransferredPayload`.
+                ///
+                /// - Parameters:
+                ///   - from:
+                ///   - at:
+                public init(
+                    from: Components.Schemas.Deployer,
+                    at: Swift.String
+                ) {
+                    self.from = from
+                    self.at = at
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case from
+                    case at
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/Deployment/transferred`.
+            public var transferred: Components.Schemas.Deployment.TransferredPayload?
             /// Creates a new `Deployment`.
             ///
             /// - Parameters:
@@ -9070,6 +9216,8 @@ public enum Components {
             ///   - apps:
             ///   - createdBy:
             ///   - createdAt:
+            ///   - transfer:
+            ///   - transferred:
             public init(
                 id: Swift.String,
                 host: Swift.String? = nil,
@@ -9077,7 +9225,9 @@ public enum Components {
                 owner: Components.Schemas.Deployer,
                 apps: Components.Schemas.Deployment.AppsPayload,
                 createdBy: Swift.String,
-                createdAt: Swift.String
+                createdAt: Swift.String,
+                transfer: Components.Schemas.Deployment.TransferPayload? = nil,
+                transferred: Components.Schemas.Deployment.TransferredPayload? = nil
             ) {
                 self.id = id
                 self.host = host
@@ -9086,6 +9236,8 @@ public enum Components {
                 self.apps = apps
                 self.createdBy = createdBy
                 self.createdAt = createdAt
+                self.transfer = transfer
+                self.transferred = transferred
             }
             public enum CodingKeys: String, CodingKey {
                 case id
@@ -9095,9 +9247,11 @@ public enum Components {
                 case apps
                 case createdBy
                 case createdAt
+                case transfer
+                case transferred
             }
         }
-        /// The deployment an instance comes from, as its customers are shown it: names are not unique, so always with its id and its owner's kind and name (`null` once the owner is gone).
+        /// The deployment an instance comes from, as its customers are shown it: names are not unique, so always with its id and its owner's kind and name (`null` once the owner is gone); once it changed hands, whom it came from and when (`transferred`, RFC 3339).
         ///
         /// - Remark: Generated from `#/components/schemas/DeploymentShown`.
         public struct DeploymentShown: Codable, Hashable, Sendable {
@@ -9135,25 +9289,82 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/DeploymentShown/owner`.
             public var owner: Components.Schemas.DeploymentShown.OwnerPayload
+            /// - Remark: Generated from `#/components/schemas/DeploymentShown/transferred`.
+            public struct TransferredPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/DeploymentShown/transferred/from`.
+                public struct FromPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/DeploymentShown/transferred/from/kind`.
+                    @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                        case account = "account"
+                        case org = "org"
+                    }
+                    /// - Remark: Generated from `#/components/schemas/DeploymentShown/transferred/from/kind`.
+                    public var kind: Components.Schemas.DeploymentShown.TransferredPayload.FromPayload.KindPayload
+                    /// - Remark: Generated from `#/components/schemas/DeploymentShown/transferred/from/name`.
+                    public var name: Swift.String?
+                    /// Creates a new `FromPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - kind:
+                    ///   - name:
+                    public init(
+                        kind: Components.Schemas.DeploymentShown.TransferredPayload.FromPayload.KindPayload,
+                        name: Swift.String? = nil
+                    ) {
+                        self.kind = kind
+                        self.name = name
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case kind
+                        case name
+                    }
+                }
+                /// - Remark: Generated from `#/components/schemas/DeploymentShown/transferred/from`.
+                public var from: Components.Schemas.DeploymentShown.TransferredPayload.FromPayload
+                /// - Remark: Generated from `#/components/schemas/DeploymentShown/transferred/at`.
+                public var at: Swift.String
+                /// Creates a new `TransferredPayload`.
+                ///
+                /// - Parameters:
+                ///   - from:
+                ///   - at:
+                public init(
+                    from: Components.Schemas.DeploymentShown.TransferredPayload.FromPayload,
+                    at: Swift.String
+                ) {
+                    self.from = from
+                    self.at = at
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case from
+                    case at
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/DeploymentShown/transferred`.
+            public var transferred: Components.Schemas.DeploymentShown.TransferredPayload?
             /// Creates a new `DeploymentShown`.
             ///
             /// - Parameters:
             ///   - id:
             ///   - name:
             ///   - owner:
+            ///   - transferred:
             public init(
                 id: Swift.String,
                 name: Swift.String,
-                owner: Components.Schemas.DeploymentShown.OwnerPayload
+                owner: Components.Schemas.DeploymentShown.OwnerPayload,
+                transferred: Components.Schemas.DeploymentShown.TransferredPayload? = nil
             ) {
                 self.id = id
                 self.name = name
                 self.owner = owner
+                self.transferred = transferred
             }
             public enum CodingKeys: String, CodingKey {
                 case id
                 case name
                 case owner
+                case transferred
             }
         }
         /// A cross-app call that was never delivered: its sequence number, the target app and method, why, and when (`atMs`, Unix milliseconds).
@@ -9915,6 +10126,62 @@ public enum Components {
             public var createdBy: Swift.String
             /// - Remark: Generated from `#/components/schemas/DeploymentRecord/createdAt`.
             public var createdAt: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/DeploymentRecord/transfer`.
+            public struct TransferPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/DeploymentRecord/transfer/to`.
+                public var to: Components.Schemas.Deployer
+                /// - Remark: Generated from `#/components/schemas/DeploymentRecord/transfer/offeredBy`.
+                public var offeredBy: Swift.String
+                /// - Remark: Generated from `#/components/schemas/DeploymentRecord/transfer/offeredAt`.
+                public var offeredAt: Swift.Int64
+                /// Creates a new `TransferPayload`.
+                ///
+                /// - Parameters:
+                ///   - to:
+                ///   - offeredBy:
+                ///   - offeredAt:
+                public init(
+                    to: Components.Schemas.Deployer,
+                    offeredBy: Swift.String,
+                    offeredAt: Swift.Int64
+                ) {
+                    self.to = to
+                    self.offeredBy = offeredBy
+                    self.offeredAt = offeredAt
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case to
+                    case offeredBy
+                    case offeredAt
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/DeploymentRecord/transfer`.
+            public var transfer: Components.Schemas.DeploymentRecord.TransferPayload?
+            /// - Remark: Generated from `#/components/schemas/DeploymentRecord/transferred`.
+            public struct TransferredPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/DeploymentRecord/transferred/from`.
+                public var from: Components.Schemas.Deployer
+                /// - Remark: Generated from `#/components/schemas/DeploymentRecord/transferred/at`.
+                public var at: Swift.Int64
+                /// Creates a new `TransferredPayload`.
+                ///
+                /// - Parameters:
+                ///   - from:
+                ///   - at:
+                public init(
+                    from: Components.Schemas.Deployer,
+                    at: Swift.Int64
+                ) {
+                    self.from = from
+                    self.at = at
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case from
+                    case at
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/DeploymentRecord/transferred`.
+            public var transferred: Components.Schemas.DeploymentRecord.TransferredPayload?
             /// Creates a new `DeploymentRecord`.
             ///
             /// - Parameters:
@@ -9924,13 +10191,17 @@ public enum Components {
             ///   - apps:
             ///   - createdBy:
             ///   - createdAt:
+            ///   - transfer:
+            ///   - transferred:
             public init(
                 id: Swift.String,
                 name: Swift.String,
                 owner: Components.Schemas.Deployer,
                 apps: Components.Schemas.DeploymentRecord.AppsPayload,
                 createdBy: Swift.String,
-                createdAt: Swift.Int64
+                createdAt: Swift.Int64,
+                transfer: Components.Schemas.DeploymentRecord.TransferPayload? = nil,
+                transferred: Components.Schemas.DeploymentRecord.TransferredPayload? = nil
             ) {
                 self.id = id
                 self.name = name
@@ -9938,6 +10209,8 @@ public enum Components {
                 self.apps = apps
                 self.createdBy = createdBy
                 self.createdAt = createdAt
+                self.transfer = transfer
+                self.transferred = transferred
             }
             public enum CodingKeys: String, CodingKey {
                 case id
@@ -9946,6 +10219,8 @@ public enum Components {
                 case apps
                 case createdBy
                 case createdAt
+                case transfer
+                case transferred
             }
         }
         /// A grant to install where deployments are granted: until when (Unix seconds; absent: it does not end), when and by whom it was granted.
@@ -32529,7 +32804,7 @@ public enum Operations {
     }
     /// Deployments
     ///
-    /// The deployments the caller manages.
+    /// The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting for its acceptance (`POST /deployments/{id}/transfer/accept`).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -32566,15 +32841,120 @@ public enum Operations {
                     public struct JsonPayload: Codable, Hashable, Sendable {
                         /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/deployments`.
                         public var deployments: [Components.Schemas.Deployment]
+                        /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload`.
+                        public struct OfferedPayloadPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/id`.
+                            public var id: Swift.String
+                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/name`.
+                            public var name: Swift.String
+                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/owner`.
+                            @frozen public enum OwnerPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                                case account = "account"
+                                case org = "org"
+                            }
+                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/owner`.
+                            public var owner: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload.OwnerPayload
+                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/ownerName`.
+                            public var ownerName: Swift.String?
+                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/AppsPayload`.
+                            public struct AppsPayloadPayload: Codable, Hashable, Sendable {
+                                /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/AppsPayload/app`.
+                                public var app: Swift.String
+                                /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/AppsPayload/package`.
+                                public var package: Swift.String
+                                /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/AppsPayload/version`.
+                                public var version: Swift.String
+                                /// Creates a new `AppsPayloadPayload`.
+                                ///
+                                /// - Parameters:
+                                ///   - app:
+                                ///   - package:
+                                ///   - version:
+                                public init(
+                                    app: Swift.String,
+                                    package: Swift.String,
+                                    version: Swift.String
+                                ) {
+                                    self.app = app
+                                    self.package = package
+                                    self.version = version
+                                }
+                                public enum CodingKeys: String, CodingKey {
+                                    case app
+                                    case package
+                                    case version
+                                }
+                            }
+                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/apps`.
+                            public typealias AppsPayload = [Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload.AppsPayloadPayload]
+                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/apps`.
+                            public var apps: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload.AppsPayload
+                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/to`.
+                            public var to: Components.Schemas.Deployer
+                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/offeredAt`.
+                            public var offeredAt: Swift.String
+                            /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/OfferedPayload/expiresAt`.
+                            public var expiresAt: Swift.String
+                            /// Creates a new `OfferedPayloadPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - id:
+                            ///   - name:
+                            ///   - owner:
+                            ///   - ownerName:
+                            ///   - apps:
+                            ///   - to:
+                            ///   - offeredAt:
+                            ///   - expiresAt:
+                            public init(
+                                id: Swift.String,
+                                name: Swift.String,
+                                owner: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload.OwnerPayload,
+                                ownerName: Swift.String? = nil,
+                                apps: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload.AppsPayload,
+                                to: Components.Schemas.Deployer,
+                                offeredAt: Swift.String,
+                                expiresAt: Swift.String
+                            ) {
+                                self.id = id
+                                self.name = name
+                                self.owner = owner
+                                self.ownerName = ownerName
+                                self.apps = apps
+                                self.to = to
+                                self.offeredAt = offeredAt
+                                self.expiresAt = expiresAt
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case id
+                                case name
+                                case owner
+                                case ownerName
+                                case apps
+                                case to
+                                case offeredAt
+                                case expiresAt
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/offered`.
+                        public typealias OfferedPayload = [Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayloadPayload]
+                        /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/json/offered`.
+                        public var offered: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayload
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
                         ///   - deployments:
-                        public init(deployments: [Components.Schemas.Deployment]) {
+                        ///   - offered:
+                        public init(
+                            deployments: [Components.Schemas.Deployment],
+                            offered: Operations.DeploymentList.Output.Ok.Body.JsonPayload.OfferedPayload
+                        ) {
                             self.deployments = deployments
+                            self.offered = offered
                         }
                         public enum CodingKeys: String, CodingKey {
                             case deployments
+                            case offered
                         }
                     }
                     /// - Remark: Generated from `#/paths/deployments/GET/responses/200/content/application\/json`.
@@ -34477,6 +34857,607 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.DeploymentSecretClear.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Offer a deployment to another owner
+    ///
+    /// A manager of the deployment offers it to `to`, another account or organization, with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.36.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/transfer`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/post(deployment_transfer_offer)`.
+    public enum DeploymentTransferOffer {
+        public static let id: Swift.String = "deployment_transfer_offer"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/path/id`.
+                public var id: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - id:
+                public init(id: Swift.String) {
+                    self.id = id
+                }
+            }
+            public var path: Operations.DeploymentTransferOffer.Input.Path
+            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentTransferOffer.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentTransferOffer.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.DeploymentTransferOffer.Input.Headers
+            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/requestBody/json/to`.
+                    public var to: Components.Schemas.Deployer
+                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - to:
+                    ///   - confirm:
+                    public init(
+                        to: Components.Schemas.Deployer,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.to = to
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case to
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.to = try container.decode(
+                            Components.Schemas.Deployer.self,
+                            forKey: .to
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "to",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/requestBody/content/application\/json`.
+                case json(Operations.DeploymentTransferOffer.Input.Body.JsonPayload)
+            }
+            public var body: Operations.DeploymentTransferOffer.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.DeploymentTransferOffer.Input.Path,
+                headers: Operations.DeploymentTransferOffer.Input.Headers = .init(),
+                body: Operations.DeploymentTransferOffer.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/deployment`.
+                        public var deployment: Swift.String
+                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/transfer`.
+                        public struct TransferPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/transfer/to`.
+                            public var to: Components.Schemas.Deployer
+                            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/transfer/offeredBy`.
+                            public var offeredBy: Swift.String
+                            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/transfer/offeredAt`.
+                            public var offeredAt: Swift.Int64
+                            /// Creates a new `TransferPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - to:
+                            ///   - offeredBy:
+                            ///   - offeredAt:
+                            public init(
+                                to: Components.Schemas.Deployer,
+                                offeredBy: Swift.String,
+                                offeredAt: Swift.Int64
+                            ) {
+                                self.to = to
+                                self.offeredBy = offeredBy
+                                self.offeredAt = offeredAt
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case to
+                                case offeredBy
+                                case offeredAt
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/json/transfer`.
+                        public var transfer: Operations.DeploymentTransferOffer.Output.Ok.Body.JsonPayload.TransferPayload
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - deployment:
+                        ///   - transfer:
+                        public init(
+                            deployment: Swift.String,
+                            transfer: Operations.DeploymentTransferOffer.Output.Ok.Body.JsonPayload.TransferPayload
+                        ) {
+                            self.deployment = deployment
+                            self.transfer = transfer
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case deployment
+                            case transfer
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/POST/responses/200/content/application\/json`.
+                    case json(Operations.DeploymentTransferOffer.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.DeploymentTransferOffer.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.DeploymentTransferOffer.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.DeploymentTransferOffer.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//deployments/{id}/transfer/post(deployment_transfer_offer)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.DeploymentTransferOffer.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.DeploymentTransferOffer.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Cancel the offer of a deployment
+    ///
+    /// A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over `deployment:{id} / __cancel_deployment_transfer / {}`. `404 NO_TRANSFER` when none waits.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /deployments/{id}/transfer`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/delete(deployment_transfer_cancel)`.
+    public enum DeploymentTransferCancel {
+        public static let id: Swift.String = "deployment_transfer_cancel"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/path/id`.
+                public var id: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - id:
+                public init(id: Swift.String) {
+                    self.id = id
+                }
+            }
+            public var path: Operations.DeploymentTransferCancel.Input.Path
+            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentTransferCancel.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentTransferCancel.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.DeploymentTransferCancel.Input.Headers
+            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/requestBody/content/application\/json`.
+                case json(Components.Schemas.ConfirmOnly)
+            }
+            public var body: Operations.DeploymentTransferCancel.Input.Body?
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.DeploymentTransferCancel.Input.Path,
+                headers: Operations.DeploymentTransferCancel.Input.Headers = .init(),
+                body: Operations.DeploymentTransferCancel.Input.Body? = nil
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/responses/200/content/json/deployment`.
+                        public var deployment: Swift.String
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - deployment:
+                        public init(deployment: Swift.String) {
+                            self.deployment = deployment
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case deployment
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/DELETE/responses/200/content/application\/json`.
+                    case json(Operations.DeploymentTransferCancel.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.DeploymentTransferCancel.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.DeploymentTransferCancel.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.DeploymentTransferCancel.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//deployments/{id}/transfer/delete(deployment_transfer_cancel)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.DeploymentTransferCancel.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.DeploymentTransferCancel.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Accept a deployment offered to an owner
+    ///
+    /// A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to, offeredAt }` (the offer it accepts): `to` becomes the owner, and the deployment's offers and customers' instances stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new owner sets its own. Until a person approves an update of a customer's instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_STALE` once whoever offered it no longer manages it, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/transfer/accept`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/accept/post(deployment_transfer_accept)`.
+    public enum DeploymentTransferAccept {
+        public static let id: Swift.String = "deployment_transfer_accept"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/path/id`.
+                public var id: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - id:
+                public init(id: Swift.String) {
+                    self.id = id
+                }
+            }
+            public var path: Operations.DeploymentTransferAccept.Input.Path
+            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentTransferAccept.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentTransferAccept.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.DeploymentTransferAccept.Input.Headers
+            /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/requestBody/json/to`.
+                    public var to: Components.Schemas.Deployer
+                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - to:
+                    ///   - confirm:
+                    public init(
+                        to: Components.Schemas.Deployer,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.to = to
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case to
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.to = try container.decode(
+                            Components.Schemas.Deployer.self,
+                            forKey: .to
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "to",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/requestBody/content/application\/json`.
+                case json(Operations.DeploymentTransferAccept.Input.Body.JsonPayload)
+            }
+            public var body: Operations.DeploymentTransferAccept.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.DeploymentTransferAccept.Input.Path,
+                headers: Operations.DeploymentTransferAccept.Input.Headers = .init(),
+                body: Operations.DeploymentTransferAccept.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/json/deployment`.
+                        public var deployment: Swift.String
+                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/json/owner`.
+                        public var owner: Components.Schemas.Deployer
+                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/json/from`.
+                        public var from: Components.Schemas.Deployer
+                        /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/json/secretsDropped`.
+                        public var secretsDropped: [Swift.String]
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - deployment:
+                        ///   - owner:
+                        ///   - from:
+                        ///   - secretsDropped:
+                        public init(
+                            deployment: Swift.String,
+                            owner: Components.Schemas.Deployer,
+                            from: Components.Schemas.Deployer,
+                            secretsDropped: [Swift.String]
+                        ) {
+                            self.deployment = deployment
+                            self.owner = owner
+                            self.from = from
+                            self.secretsDropped = secretsDropped
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case deployment
+                            case owner
+                            case from
+                            case secretsDropped
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/deployments/{id}/transfer/accept/POST/responses/200/content/application\/json`.
+                    case json(Operations.DeploymentTransferAccept.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.DeploymentTransferAccept.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.DeploymentTransferAccept.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.DeploymentTransferAccept.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//deployments/{id}/transfer/accept/post(deployment_transfer_accept)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.DeploymentTransferAccept.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.DeploymentTransferAccept.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):

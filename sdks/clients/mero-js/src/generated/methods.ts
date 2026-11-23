@@ -1036,6 +1036,33 @@ export function createRoutes(api: RouteClient) {
       signUpSet: (args: operations['sign_up_set']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['sign_up_set']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/sign-up","pathParams":[],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['sign_up_set']['responses'][200]['content']['application/json']>,
       /**
+       * Accept a deployment offered to an owner.
+       *
+       * `POST /deployments/{id}/transfer/accept` (`deployment_transfer_accept`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      transferAccept: (args: operations['deployment_transfer_accept']['parameters']['path'] & operations['deployment_transfer_accept']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['deployment_transfer_accept']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/deployments/{id}/transfer/accept","pathParams":["id"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_transfer_accept']['responses'][200]['content']['application/json']>,
+      /**
+       * Cancel the offer of a deployment.
+       *
+       * `DELETE /deployments/{id}/transfer` (`deployment_transfer_cancel`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      transferCancel: (args: operations['deployment_transfer_cancel']['parameters']['path'] & Partial<NonNullable<operations['deployment_transfer_cancel']['requestBody']>['content']['application/json']>, options?: MethodOptions): Promise<operations['deployment_transfer_cancel']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/deployments/{id}/transfer","pathParams":["id"],"query":[],"body":"fields","optionalBody":true,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_transfer_cancel']['responses'][200]['content']['application/json']>,
+      /**
+       * Offer a deployment to another owner.
+       *
+       * `POST /deployments/{id}/transfer` (`deployment_transfer_offer`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      transferOffer: (args: operations['deployment_transfer_offer']['parameters']['path'] & operations['deployment_transfer_offer']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['deployment_transfer_offer']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/deployments/{id}/transfer","pathParams":["id"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_transfer_offer']['responses'][200]['content']['application/json']>,
+      /**
        * Withdraw an offer.
        *
        * `DELETE /deployments/{id}/apps/{app}` (`deployment_withdraw`). **Who:** an account holder (a passkey session not bound to an app's frontend).

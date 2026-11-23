@@ -302,6 +302,15 @@ from .deployment_get_response_200_apps_item import DeploymentGetResponse200AppsI
 from .deployment_get_response_200_owner import DeploymentGetResponse200Owner
 from .deployment_get_response_200_owner_kind import DeploymentGetResponse200OwnerKind
 from .deployment_list_response_200 import DeploymentListResponse200
+from .deployment_list_response_200_offered_item import (
+    DeploymentListResponse200OfferedItem,
+)
+from .deployment_list_response_200_offered_item_apps_item import (
+    DeploymentListResponse200OfferedItemAppsItem,
+)
+from .deployment_list_response_200_offered_item_owner import (
+    DeploymentListResponse200OfferedItemOwner,
+)
 from .deployment_offer_body import DeploymentOfferBody
 from .deployment_offer_response_200 import DeploymentOfferResponse200
 from .deployment_orgs_response_200 import DeploymentOrgsResponse200
@@ -314,6 +323,8 @@ from .deployment_record_apps import DeploymentRecordApps
 from .deployment_record_apps_additional_property import (
     DeploymentRecordAppsAdditionalProperty,
 )
+from .deployment_record_transfer import DeploymentRecordTransfer
+from .deployment_record_transferred import DeploymentRecordTransferred
 from .deployment_secret_clear_response_200 import DeploymentSecretClearResponse200
 from .deployment_secret_set_body import DeploymentSecretSetBody
 from .deployment_secret_set_response_200 import DeploymentSecretSetResponse200
@@ -328,6 +339,19 @@ from .deployment_secrets_response_200_secrets_additional_property_declared_by_it
 from .deployment_shown import DeploymentShown
 from .deployment_shown_owner import DeploymentShownOwner
 from .deployment_shown_owner_kind import DeploymentShownOwnerKind
+from .deployment_shown_transferred import DeploymentShownTransferred
+from .deployment_shown_transferred_from import DeploymentShownTransferredFrom
+from .deployment_shown_transferred_from_kind import DeploymentShownTransferredFromKind
+from .deployment_transfer_accept_body import DeploymentTransferAcceptBody
+from .deployment_transfer_accept_response_200 import DeploymentTransferAcceptResponse200
+from .deployment_transfer_cancel_response_200 import DeploymentTransferCancelResponse200
+from .deployment_transfer_offer_body import DeploymentTransferOfferBody
+from .deployment_transfer_offer_response_200 import DeploymentTransferOfferResponse200
+from .deployment_transfer_offer_response_200_transfer import (
+    DeploymentTransferOfferResponse200Transfer,
+)
+from .deployment_transfer_type_0 import DeploymentTransferType0
+from .deployment_transferred_type_0 import DeploymentTransferredType0
 from .deployment_withdraw_response_200 import DeploymentWithdrawResponse200
 from .error import Error
 from .exports_export_body import ExportsExportBody
@@ -1042,6 +1066,9 @@ __all__ = (
     "DeploymentGetResponse200Owner",
     "DeploymentGetResponse200OwnerKind",
     "DeploymentListResponse200",
+    "DeploymentListResponse200OfferedItem",
+    "DeploymentListResponse200OfferedItemAppsItem",
+    "DeploymentListResponse200OfferedItemOwner",
     "DeploymentOfferBody",
     "DeploymentOfferResponse200",
     "DeploymentOrgsResponse200",
@@ -1050,6 +1077,8 @@ __all__ = (
     "DeploymentRecord",
     "DeploymentRecordApps",
     "DeploymentRecordAppsAdditionalProperty",
+    "DeploymentRecordTransfer",
+    "DeploymentRecordTransferred",
     "DeploymentSecretClearResponse200",
     "DeploymentSecretSetBody",
     "DeploymentSecretSetResponse200",
@@ -1060,6 +1089,17 @@ __all__ = (
     "DeploymentShown",
     "DeploymentShownOwner",
     "DeploymentShownOwnerKind",
+    "DeploymentShownTransferred",
+    "DeploymentShownTransferredFrom",
+    "DeploymentShownTransferredFromKind",
+    "DeploymentTransferAcceptBody",
+    "DeploymentTransferAcceptResponse200",
+    "DeploymentTransferCancelResponse200",
+    "DeploymentTransferOfferBody",
+    "DeploymentTransferOfferResponse200",
+    "DeploymentTransferOfferResponse200Transfer",
+    "DeploymentTransferredType0",
+    "DeploymentTransferType0",
     "DeploymentWithdrawResponse200",
     "Error",
     "ExportsExportBody",

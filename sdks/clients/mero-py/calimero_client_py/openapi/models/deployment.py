@@ -6,13 +6,17 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
 from typing import cast
 from typing import cast, Union
+from typing import Union
 
 if TYPE_CHECKING:
-    from ..models.deployer_type_0 import DeployerType0
-    from ..models.deployment_apps_item import DeploymentAppsItem
     from ..models.deployer_type_1 import DeployerType1
+    from ..models.deployer_type_0 import DeployerType0
+    from ..models.deployment_transfer_type_0 import DeploymentTransferType0
+    from ..models.deployment_transferred_type_0 import DeploymentTransferredType0
+    from ..models.deployment_apps_item import DeploymentAppsItem
 
 
 T = TypeVar("T", bound="Deployment")
@@ -21,7 +25,8 @@ T = TypeVar("T", bound="Deployment")
 @_attrs_define
 class Deployment:
     """A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are
-    RFC 3339.
+    RFC 3339. `transfer`: the offer of it to another owner waiting for acceptance (`expiresAt`: 7 days after
+    `offeredAt`), else `null`; `transferred`: whom it came from at its last hand-over, else `null`.
 
         Attributes:
             id (str):
@@ -31,6 +36,8 @@ class Deployment:
             apps (list['DeploymentAppsItem']):
             created_by (str):
             created_at (str):
+            transfer (Union['DeploymentTransferType0', None, Unset]):
+            transferred (Union['DeploymentTransferredType0', None, Unset]):
     """
 
     id: str
@@ -40,12 +47,16 @@ class Deployment:
     apps: list["DeploymentAppsItem"]
     created_by: str
     created_at: str
+    transfer: Union["DeploymentTransferType0", None, Unset] = UNSET
+    transferred: Union["DeploymentTransferredType0", None, Unset] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.deployer_type_0 import DeployerType0
-        from ..models.deployment_apps_item import DeploymentAppsItem
         from ..models.deployer_type_1 import DeployerType1
+        from ..models.deployer_type_0 import DeployerType0
+        from ..models.deployment_transfer_type_0 import DeploymentTransferType0
+        from ..models.deployment_transferred_type_0 import DeploymentTransferredType0
+        from ..models.deployment_apps_item import DeploymentAppsItem
 
         id = self.id
 
@@ -69,6 +80,22 @@ class Deployment:
 
         created_at = self.created_at
 
+        transfer: Union[None, Unset, dict[str, Any]]
+        if isinstance(self.transfer, Unset):
+            transfer = UNSET
+        elif isinstance(self.transfer, DeploymentTransferType0):
+            transfer = self.transfer.to_dict()
+        else:
+            transfer = self.transfer
+
+        transferred: Union[None, Unset, dict[str, Any]]
+        if isinstance(self.transferred, Unset):
+            transferred = UNSET
+        elif isinstance(self.transferred, DeploymentTransferredType0):
+            transferred = self.transferred.to_dict()
+        else:
+            transferred = self.transferred
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -82,14 +109,20 @@ class Deployment:
                 "createdAt": created_at,
             }
         )
+        if transfer is not UNSET:
+            field_dict["transfer"] = transfer
+        if transferred is not UNSET:
+            field_dict["transferred"] = transferred
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.deployer_type_0 import DeployerType0
-        from ..models.deployment_apps_item import DeploymentAppsItem
         from ..models.deployer_type_1 import DeployerType1
+        from ..models.deployer_type_0 import DeployerType0
+        from ..models.deployment_transfer_type_0 import DeploymentTransferType0
+        from ..models.deployment_transferred_type_0 import DeploymentTransferredType0
+        from ..models.deployment_apps_item import DeploymentAppsItem
 
         d = dict(src_dict)
         id = d.pop("id")
@@ -131,6 +164,44 @@ class Deployment:
 
         created_at = d.pop("createdAt")
 
+        def _parse_transfer(
+            data: object,
+        ) -> Union["DeploymentTransferType0", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                transfer_type_0 = DeploymentTransferType0.from_dict(data)
+
+                return transfer_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union["DeploymentTransferType0", None, Unset], data)
+
+        transfer = _parse_transfer(d.pop("transfer", UNSET))
+
+        def _parse_transferred(
+            data: object,
+        ) -> Union["DeploymentTransferredType0", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                transferred_type_0 = DeploymentTransferredType0.from_dict(data)
+
+                return transferred_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union["DeploymentTransferredType0", None, Unset], data)
+
+        transferred = _parse_transferred(d.pop("transferred", UNSET))
+
         deployment = cls(
             id=id,
             host=host,
@@ -139,6 +210,8 @@ class Deployment:
             apps=apps,
             created_by=created_by,
             created_at=created_at,
+            transfer=transfer,
+            transferred=transferred,
         )
 
         deployment.additional_properties = d

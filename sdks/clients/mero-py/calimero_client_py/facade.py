@@ -252,6 +252,15 @@ from .openapi.api.sign_up_and_deployments import (
     deployment_secrets as _deployment_secrets,
 )
 from .openapi.api.sign_up_and_deployments import (
+    deployment_transfer_accept as _deployment_transfer_accept,
+)
+from .openapi.api.sign_up_and_deployments import (
+    deployment_transfer_cancel as _deployment_transfer_cancel,
+)
+from .openapi.api.sign_up_and_deployments import (
+    deployment_transfer_offer as _deployment_transfer_offer,
+)
+from .openapi.api.sign_up_and_deployments import (
     deployment_withdraw as _deployment_withdraw,
 )
 from .openapi.api.sign_up_and_deployments import (
@@ -316,6 +325,8 @@ from .openapi.models import DeployerGrantBody
 from .openapi.models import DeploymentCreateBody
 from .openapi.models import DeploymentOfferBody
 from .openapi.models import DeploymentSecretSetBody
+from .openapi.models import DeploymentTransferAcceptBody
+from .openapi.models import DeploymentTransferOfferBody
 from .openapi.models import ExportsExportBody
 from .openapi.models import IntentsBody
 from .openapi.models import InviteCreateBody
@@ -3104,6 +3115,27 @@ _SIGN_UP_PUBLIC = Operation(
 _SIGN_UP_SET = Operation(
     _sign_up_set, "sign_up_set", body=SignUpSetBody, answer="json", confirm=True
 )
+_DEPLOYMENT_TRANSFER_ACCEPT = Operation(
+    _deployment_transfer_accept,
+    "deployment_transfer_accept",
+    body=DeploymentTransferAcceptBody,
+    answer="json",
+    confirm=True,
+)
+_DEPLOYMENT_TRANSFER_CANCEL = Operation(
+    _deployment_transfer_cancel,
+    "deployment_transfer_cancel",
+    body=ConfirmOnly,
+    answer="json",
+    confirm=True,
+)
+_DEPLOYMENT_TRANSFER_OFFER = Operation(
+    _deployment_transfer_offer,
+    "deployment_transfer_offer",
+    body=DeploymentTransferOfferBody,
+    answer="json",
+    confirm=True,
+)
 _DEPLOYMENT_WITHDRAW = Operation(
     _deployment_withdraw,
     "deployment_withdraw",
@@ -3210,7 +3242,7 @@ class Deployments(Group):
     def list(self):
         """Deployments (`GET /deployments`, `deployment_list`).
 
-        The deployments the caller manages.
+        The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting for its acceptance (`POST /deployments/{id}/transfer/accept`).
 
         **Who:** signed in (a session or an API key).
 
@@ -3386,6 +3418,57 @@ class Deployments(Group):
         Returns: SignUpSet
         """
         return self._run(_SIGN_UP_SET, (), {}, {"policy": policy}, confirm=confirm)
+
+    def transfer_accept(self, *, id, to, confirm=None):
+        """Accept a deployment offered to an owner (`POST /deployments/{id}/transfer/accept`, `deployment_transfer_accept`).
+
+        A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to, offeredAt }` (the offer it accepts): `to` becomes the owner, and the deployment's offers and customers' instances stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new owner sets its own. Until a person approves an update of a customer's instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_STALE` once whoever offered it no longer manages it, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            id: path
+            to: body `to`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: DeploymentTransferAcceptResponse200
+        """
+        return self._run(
+            _DEPLOYMENT_TRANSFER_ACCEPT, (id,), {}, {"to": to}, confirm=confirm
+        )
+
+    def transfer_cancel(self, *, id, confirm=None):
+        """Cancel the offer of a deployment (`DELETE /deployments/{id}/transfer`, `deployment_transfer_cancel`).
+
+        A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over `deployment:{id} / __cancel_deployment_transfer / {}`. `404 NO_TRANSFER` when none waits.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            id: path
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: DeploymentTransferCancelResponse200
+        """
+        return self._run(_DEPLOYMENT_TRANSFER_CANCEL, (id,), {}, {}, confirm=confirm)
+
+    def transfer_offer(self, *, id, to, confirm=None):
+        """Offer a deployment to another owner (`POST /deployments/{id}/transfer`, `deployment_transfer_offer`).
+
+        A manager of the deployment offers it to `to`, another account or organization, with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.36.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            id: path
+            to: body `to`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: DeploymentTransferOfferResponse200
+        """
+        return self._run(
+            _DEPLOYMENT_TRANSFER_OFFER, (id,), {}, {"to": to}, confirm=confirm
+        )
 
     def withdraw(self, *, id, app, confirm=None):
         """Withdraw an offer (`DELETE /deployments/{id}/apps/{app}`, `deployment_withdraw`).
