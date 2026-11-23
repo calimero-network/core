@@ -400,8 +400,16 @@ is its command line.
   `install_from_registry`, `install_upload` and `POST /bundles`; `403
   DEPLOY_NOT_GRANTED`); `apply` refuses again (`system::NOT_A_DEPLOYER`). So
   does `POST /apps` (and an upgrade run, the consent page) where it would
-  install a release from the registry first; an instance of a release the
-  caller already sees needs no grant. The operator's installs never need one.
+  install a release from the registry first. An instance from no deployment
+  is a deployer's, or of a release its creator installed (a raw bundle it
+  uploaded), or of the operator's catalog (`SystemState::creates_outside_offers`):
+  anyone else, a customer who sees a release through an instance included,
+  creates only from an offer (`POST /apps` `403 DEPLOY_NOT_GRANTED`; `CreateApp
+  { offers_only }` at apply, `Feature::OffersOnly`, rc.36, or the logged
+  cluster version bringing it; earlier entries replay as they applied).
+  Regressions: `on_a_granted_cluster_a_customer_creates_only_from_an_offer`,
+  `on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers`.
+  The operator's installs never need one.
   Grants: `GrantDeployer`/`RevokeDeployer`, the operator's signature
   (`POST /ops/deployers`, `DELETE /ops/deployers/{key}` or `POST
   /ops/deployers/{key}/revoke`; `cluster /
