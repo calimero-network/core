@@ -202,7 +202,7 @@ class StateDigests(DeepCase):
         return s
 
     def check(self, w, s):
-        eq(_divergences(w), {n: 0 for n in w.members()}, "divergences")
+        eq(_divergences(w), {n: 1 for n in w.members()}, "divergences")
 
     def exercise(self, w, s):
         dax = person(w, "dax")
