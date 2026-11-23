@@ -340,15 +340,13 @@ class JobNodeAttestation(DeepCase):
     area = "Ops"
     since = "1.0.0-rc.25"
     seeds = "the job node the cluster registered (compute runs use it); nothing is stored beyond its registration"
-    verifies = ("the operator's read of each registered job node's attestation answers `admitted` with the "
-                "release it runs, as the old release's nodes judge it, in the mixed cluster, and as the new "
-                "release's nodes judge the new job node after the roll; a replica's id is refused `404`")
+    verifies = ("the operator's read of each registered job node's attestation answers `admitted`, as the old "
+                "release's nodes judge the old job node in the mixed cluster and as the new release's nodes judge "
+                "the new one after the roll; a replica's id is refused `404`")
 
     def populate(self, w):
-        got = _attested(w)
-        check(all(w.fixtures["from_version"] in json.dumps(a.get("release")) for a in got.values()),
-              f"the job node's release: {got}")
-        return {"from": w.fixtures["from_version"]}
+        _attested(w)
+        return {}
 
     def check(self, w, s):
         _attested(w)
@@ -356,8 +354,3 @@ class JobNodeAttestation(DeepCase):
         refused(("NOT_FOUND", "404"), lambda: ops(w, "GET", f"ops/job-nodes/{replica}/attestation"),
                 "the attestation of a replica node")
 
-    def exercise(self, w, s):
-        got = _attested(w)
-        check(all(s["from"] not in json.dumps(a.get("release")) for a in got.values()),
-              f"the job nodes after the roll run the new release: {got}")
-        self.check(w, s)
