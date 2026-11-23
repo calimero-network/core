@@ -177,6 +177,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/tests/install-test.sh
 
+      # The previous-release app comes from the pinned release, never from one still uploading.
+      - name: Test fetch-release-app
+        if: ${{ !cancelled() }}
+        run: python3 scripts/tests/fetch-release-app-test.py
+
   # Clippy builds in check mode, which the test build's cache does not hold, so lint
   # keeps a group of its own, saved by a push to master (the one push job that lints).
   rust-lint:
