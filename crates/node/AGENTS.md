@@ -961,22 +961,26 @@ is its command line.
   packaging-signing, `uses`): creating an instance of a release whose signed
   manifest has `uses` with `mode: create` first creates each referenced app
   (same organization and owner, the release its lock pinned or the newest
-  installed one in range that the creator may use (`sees_release`) or the
-  instance's own signer published, else `409 USES_NOT_INSTALLED`, answered as for
-  a package not installed; a deployment's units are the managers' choice and skip
-  this; at most
+  installed one in range that the creator may use (`sees_release`), the
+  instance's own signer published, or, for an instance from a deployment, that
+  deployment offers; else `409 USES_NOT_INSTALLED`, answered as for a package
+  not installed; the member's create runs exactly that release
+  (`CreateAppBody::unit_release`, `serde(skip)`); a unit's preview
+  (`egress::release_unit`) and upgrade (`unit_plan`, `egress::update`) pick by the
+  same rule for the instance's owner and deployment; at most
   `MAX_UNIT_DEPTH` deep), then records them on the instance
   (`AppRecord::links`, `Feature::AppLinks`, rc.31) and, when the release's
   `init` takes `links`, passes their ids in `initArgs` (a client's own
   `links` there is refused). A failure after a member was made leaves it in
   place. Regressions: `creating_an_instance_creates_the_apps_its_release_uses`,
-  `a_unit_never_creates_a_member_from_a_private_release_its_creator_cannot_use`.
+  `a_unit_never_creates_a_member_from_a_private_release_its_creator_cannot_use`,
+  `a_deployments_unit_never_creates_a_member_from_a_private_release_it_does_not_offer`,
+  `a_deployments_unit_creates_a_member_from_a_release_the_deployment_offers`.
   A unit is one (`Feature::WholeUnits`, rc.32): members of an instance from a deployment
   carry its deployment (billed to its developer, its secret values), their `CreateApp`
   naming the offer of the instance's release that covers them (`unit_offer`, checked at
   apply in place of the member's own release; set by the node, `CreateAppBody::unit_offer`
-  is `serde(skip)`; the member's release is resolved without the owner's visibility,
-  as the instance's offer is). `DELETE /apps/{app}` of an instance deletes its whole unit
+  is `serde(skip)`; the member's release is the one `unit_members` chose, above). `DELETE /apps/{app}` of an instance deletes its whole unit
   (`SystemState::unit_of`: its `links`, transitively, as they exist; `DeleteApp { members }`
   names them and apply refuses a list that differs, `UNIT_NOT_AS_NAMED`, or an actor who may
   not delete each one) and answers them in `members`; a member (`unit_parent`: an app whose

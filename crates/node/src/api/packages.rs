@@ -261,7 +261,7 @@ async fn package_capabilities(
     };
     // A member release that is not installed here (`409 USES_NOT_INSTALLED` at create)
     // leaves the unit unknown: `null`, never a card the release alone would mislead with.
-    let described = match crate::egress::release_unit(&node, &at).await {
+    let described = match crate::egress::release_unit(&node, &at, (&account, None)).await {
         Ok(unit) => crate::egress::describe(&crate::egress::Placed {
             unit,
             apps: std::collections::BTreeMap::new(),

@@ -6926,6 +6926,132 @@ async fn a_publishers_own_package_is_a_unit_member_wherever_its_other_package_ru
     assert_eq!(record["release"]["package"], json!("com.pub.vault"));
 }
 
+/// `who`'s account id.
+async fn account_id(who: &Client) -> String {
+    who.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// A deployment of `who`'s own, created with its passkey: its id.
+async fn own_deployment(who: &Client, pk: &mut SoftAuthenticator) -> String {
+    let owner = json!({ "account": account_id(who).await });
+    who.deployments()
+        .create("labs", typed(owner), Some(pk))
+        .await
+        .map(wire)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// An instance named `name` of `package` from `deployment`, made by `who`.
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error type, as its route methods return it"
+)]
+async fn from_offer(
+    who: &Client,
+    deployment: &str,
+    package: &str,
+) -> Result<Value, calimero_client::Error> {
+    who.apps()
+        .create(AppCreateRequest {
+            name: Some("from-offer".to_owned()),
+            deployment: Some(deployment.to_owned()),
+            package: Some(package.to_owned()),
+            ..AppCreateRequest::default()
+        })
+        .await
+        .map(wire)
+}
+
+/// A deployment is no way around the unit rule: Mallory's own package that `uses` Acme's
+/// private package with `mode: create`, offered in her own deployment, is answered `409
+/// USES_NOT_INSTALLED` when she creates an instance from the offer, and she ends with no
+/// instance of either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_deployments_unit_never_creates_a_member_from_a_private_release_it_does_not_offer() {
+    let acme_key = ed25519_dalek::SigningKey::from_bytes(&[46; 32]);
+    let evil_key = ed25519_dalek::SigningKey::from_bytes(&[47; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (mallory, mut m) = signed_up(&c, 1, "mallory").await;
+    let _acme = new_org(&alice, "Acme").await;
+    let _evil = new_org(&mallory, "Evil").await;
+    let secret = "com.acme.secret";
+    upload_release(&alice, None, secret, &acme_key, "secret", Value::Null).await;
+    let wrap = "com.evil.wrap";
+    upload_release(
+        &mallory,
+        None,
+        wrap,
+        &evil_key,
+        "wrap",
+        creates_vault(secret, false),
+    )
+    .await;
+    let d = own_deployment(&mallory, &mut m).await;
+    let _ = mallory
+        .deployments()
+        .offer(&d, "wrap", wrap, "0.1.0", Some(&mut m))
+        .await
+        .unwrap();
+
+    let e = from_offer(&mallory, &d, wrap).await.unwrap_err();
+    assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
+    let mine = mallory.apps().list(None, None).await.map(wire).unwrap();
+    assert!(mine["apps"].as_array().unwrap().is_empty(), "{mine}");
+}
+
+/// A deployment's unit takes a member from a release the same deployment offers, though
+/// its customer may not use that release otherwise; until it offers it, the customer's
+/// create is `409 USES_NOT_INSTALLED`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_deployments_unit_creates_a_member_from_a_release_the_deployment_offers() {
+    let acme_key = ed25519_dalek::SigningKey::from_bytes(&[48; 32]);
+    let other_key = ed25519_dalek::SigningKey::from_bytes(&[49; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let _acme = new_org(&alice, "Acme").await;
+    let _bobco = new_org(&bob, "Bobco").await;
+    let vault = "com.acme.vault";
+    upload_release(&alice, None, vault, &acme_key, "vault", Value::Null).await;
+    let notes = "com.other.notes";
+    upload_release(
+        &alice,
+        None,
+        notes,
+        &other_key,
+        "notes",
+        creates_vault(vault, false),
+    )
+    .await;
+    let d = own_deployment(&alice, &mut a).await;
+    let _ = alice
+        .deployments()
+        .offer(&d, "notes", notes, "0.1.0", Some(&mut a))
+        .await
+        .unwrap();
+
+    let e = from_offer(&bob, &d, notes).await.unwrap_err();
+    assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
+
+    let _ = alice
+        .deployments()
+        .offer(&d, "vault", vault, "0.1.0", Some(&mut a))
+        .await
+        .unwrap();
+    let made = from_offer(&bob, &d, notes).await.unwrap();
+    let member = made["links"]["vault"].as_str().unwrap();
+    let record = bob.apps().get(member).await.map(wire).unwrap();
+    assert_eq!(record["release"]["package"], json!(vault));
+    assert_eq!(record["deployment"], json!(d));
+}
+
 /// A member names the instance that created it: `env::unit_of()` in the member's run answers
 /// the instance's id, and in the instance's own run, or an app created on its own, `None`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

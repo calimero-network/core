@@ -406,10 +406,10 @@ pub(super) struct CreateAppBody {
     /// unit_offer }`). The node's own, never a client's.
     #[serde(skip)]
     unit_offer: Option<PackageRef>,
-    /// A unit's member, whose release `unit_members` chose for its creator. The node's own,
-    /// never a client's.
+    /// A unit's member: the release `unit_members` chose for it, which it runs as judged
+    /// there. The node's own, never a client's.
     #[serde(skip)]
-    unit_member: bool,
+    unit_release: Option<PackageRef>,
     /// Asked by a session bound to the package's own frontend through the consent page's
     /// install sheet: it runs a release that frontend sees, as `POST /apps` from that
     /// session does. The node's own, never a client's.
@@ -451,7 +451,7 @@ pub(crate) async fn create_installed(
         metadata: Value::Null,
         deployment: i.deployment,
         unit_offer: None,
-        unit_member: false,
+        unit_release: None,
         from_frontend: i.from_frontend,
     };
     create_instance(node, p, owner, body, 0).await
@@ -515,7 +515,12 @@ async fn create_instance(
     depth: usize,
 ) -> Result<Value, ApiError> {
     let now = now_secs();
-    let (bundle, compute_bundle, release) = match (&body.deployment, &body.unit_offer) {
+    let (bundle, compute_bundle, release) = match (&body.deployment, &body.unit_release) {
+        // A unit's member: the release `unit_members` chose, nothing else.
+        (_, Some(chosen)) => {
+            let (bundle, compute) = chosen_parts(node, chosen)?;
+            (bundle, compute, Some(chosen.clone()))
+        }
         // From a deployment's offer: installed already, and the caller's
         // to run whether or not they see the release otherwise.
         (Some(d), None) => {
@@ -538,14 +543,10 @@ async fn create_instance(
             .await?;
             (bundle, compute, Some(release))
         }
-        // A unit's member, or an app from a release or a bundle.
-        _ => {
-            // Checked above: a bound session names its own package only. A member from a
-            // deployment runs the release its instance's offered release pins, whether or not
-            // its owner sees it otherwise, as the instance does.
-            let via = if body.unit_offer.is_some() || body.unit_member {
-                Via::Offer
-            } else if p.bound_app().is_some() || body.from_frontend {
+        // An app from a release or a bundle.
+        (None, None) => {
+            // Checked above: a bound session names its own package only.
+            let via = if p.bound_app().is_some() || body.from_frontend {
                 Via::Frontend
             } else {
                 Via::Account
@@ -621,9 +622,7 @@ async fn create_instance(
     let mut init_args = body.init_args;
     let links = match &release {
         Some(release) => {
-            // A deployment's managers chose its releases; any other unit is the creator's.
-            let creator = body.deployment.is_none().then_some(owner.as_str());
-            let unit = unit_members(node, release, creator).await?;
+            let unit = unit_members(node, release, &owner, body.deployment.as_deref()).await?;
             if unit.is_empty() {
                 BTreeMap::new()
             } else {
@@ -657,6 +656,12 @@ async fn create_instance(
                 });
                 let mut links = BTreeMap::new();
                 for (name, (package, version)) in unit.members {
+                    let chosen = PackageRef {
+                        package: package.clone(),
+                        version: version.clone(),
+                        service: None,
+                        compute: false,
+                    };
                     let member = CreateAppBody {
                         name: format!("{}.{name}", body.name),
                         bundle: None,
@@ -670,7 +675,7 @@ async fn create_instance(
                         metadata: json!({ "unit": { "of": body.name, "as": name } }),
                         deployment: body.deployment.clone(),
                         unit_offer: unit_offer.clone(),
-                        unit_member: true,
+                        unit_release: Some(chosen),
                         from_frontend: body.from_frontend,
                     };
                     let made = Box::pin(create_instance(node, p, owner.clone(), member, depth + 1))
@@ -765,15 +770,32 @@ impl Unit {
     }
 }
 
+/// The app component and compute component of the installed release `r`, a unit member's.
+fn chosen_parts(node: &Node, r: &PackageRef) -> Result<(String, Option<String>), ApiError> {
+    let (services, compute) = node
+        .sys(|s| {
+            let v = s.packages.get(&r.package)?.versions.get(&r.version)?;
+            Some((v.app_parts().clone(), v.compute.clone()))
+        })
+        .ok_or_else(|| ApiError::not_found("no such package version"))?;
+    let key = r.service.as_deref().unwrap_or_default();
+    let bundle = services
+        .get(key)
+        .cloned()
+        .ok_or_else(|| crate::packages::no_such_service(&r.package, &r.version, key, &services))?;
+    Ok((bundle, compute.get(key).cloned()))
+}
+
 /// The [`Unit`] of `release`, read from its verified manifest and embedded ABI. Each
 /// member's release is the one its lock pinned (`uses.version`), else the newest installed
-/// release of the package inside its range, among those `creator` may use or the release's
-/// own signer published (any, for `None`); a package with none is `409 USES_NOT_INSTALLED`,
-/// naming what to install.
+/// release of the package inside its range, among those `creator` may use, the release's
+/// own signer published, or `deployment` (the instance's) offers; a package with none is
+/// `409 USES_NOT_INSTALLED`, naming what to install.
 pub(crate) async fn unit_members(
     node: &Node,
     release: &crate::system::PackageRef,
-    creator: Option<&str>,
+    creator: &str,
+    deployment: Option<&str>,
 ) -> Result<Unit, ApiError> {
     let Some(version) = node.sys(|s| {
         s.packages
@@ -812,15 +834,21 @@ pub(crate) async fn unit_members(
             .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
         let installed: Vec<String> = node.sys(|s| {
             let own = s.packages.get(&release.package).map(|p| &p.signer_id);
+            let offers = deployment.and_then(|d| s.deployments.get(d));
+            let offered = |version: &str| {
+                offers.is_some_and(|d| {
+                    d.apps
+                        .values()
+                        .any(|o| o.package == u.package && o.version == version)
+                })
+            };
             s.packages
                 .get(&u.package)
                 .map(|p| {
                     let same_signer = own == Some(&p.signer_id);
                     p.versions
                         .iter()
-                        .filter(|(_, v)| {
-                            same_signer || creator.is_none_or(|who| s.sees_release(v, who))
-                        })
+                        .filter(|(k, v)| same_signer || s.sees_release(v, creator) || offered(k))
                         .map(|(k, _)| k.clone())
                         .collect()
                 })

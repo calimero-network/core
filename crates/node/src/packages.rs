@@ -48,13 +48,11 @@ pub enum Via {
     Account,
     /// A session bound to the package's frontend ([`SystemState::sees_release_from`]).
     Frontend,
-    /// A unit's member from its instance's deployment offer, which `CreateApp` checks again.
-    Offer,
 }
 
 impl Via {
     fn sees(self, s: &SystemState, v: &PackageVersion, actor: &str) -> bool {
-        self == Self::Offer || s.sees_release_from(v, actor, self == Self::Frontend)
+        s.sees_release_from(v, actor, self == Self::Frontend)
     }
 }
 

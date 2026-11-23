@@ -456,7 +456,9 @@ pub(super) async fn install_request(
         .metadata
         .as_ref()
         .and_then(|m| m.author.clone());
-    let unit = crate::egress::release_unit(node, &release).await?;
+    let unit =
+        crate::egress::release_unit(node, &release, (account, subject.deployment.as_deref()))
+            .await?;
     let mut creates = vec![json!({
         "name": app_name, "what": "the app", "package": package, "version": release.version,
     })];

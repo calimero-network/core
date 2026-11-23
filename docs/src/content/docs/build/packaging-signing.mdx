@@ -148,8 +148,9 @@ detail.
      Creating an instance of a release with `create` references first creates
      each of them: in the same organization, by the same owner, from the release
      its lock pinned (else the newest installed one inside its range), among the
-     installed releases the creator may use and those signed by the same key as
-     the instance's own package; a package with none answers
+     installed releases the creator may use, those signed by the same key as
+     the instance's own package, and, for an instance from a deployment, those
+     the same deployment offers; a package with none answers
      `409 USES_NOT_INSTALLED`, as for a package that is not installed at all,
      named `<instance>.<name>`. The
      instance's record names them (`links`), the create answers them, and an
@@ -164,9 +165,9 @@ detail.
      `attach` references are never created.
 
      The instance and its members are one unit. An instance created from a
-     deployment's offer gives each member the same deployment, though the
-     deployment offers only the instance's release (its offer covers the
-     unit): every member's usage is billed to the deployment's developer, and
+     deployment's offer gives each member the same deployment, which need not
+     offer the member's release when the same key signed it (the instance's
+     offer covers the unit): every member's usage is billed to the deployment's developer, and
      the deployment's secret values fill what the member's own release
      declares, as they do the instance's. Deleting the
      instance deletes every member with it, down to the members' own members

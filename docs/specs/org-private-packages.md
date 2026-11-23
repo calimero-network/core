@@ -65,7 +65,8 @@ Not exposed (verified): another org reading the victim's own instance, its state
   A private install's fetch sends the installing account (`x-calimero-install-account: <account id>`) with the cluster credential; `calimero-app-downloader`'s `HttpRegistry` takes the header.
   A re-fetch of a release the log already records (`release_mpk`: other nodes, `release_wasm`, frontends) sends none and is pinned by the recorded hash.
 - **C5. Unit members follow the creator.**
-  `unit_members` picks only releases the creator may use, or ones signed by the same signer as the instance's release (a publisher composing its own packages).
+  `unit_members` picks only releases the creator may use, ones signed by the same signer as the instance's release (a publisher composing its own packages), or, for an instance from a deployment, ones that deployment offers.
+  The rule is the same for every unit, from a deployment or not, and for a unit's preview and upgrade; the member's create runs exactly the release it chose.
   Pipeline modules already resolve through `sees_release` and follow C3.
 - **C6. Signing in on a private package's frontend is gated.**
   At sign-in, sign-up finish and refresh on a package's origin, a private release's origin opens a session only for an account that may use it, reaches an instance running it, or carries an unredeemed invite to its org or to such an instance.
@@ -92,7 +93,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
 
 ## Tests
 
-- Core: the two repro tests turn green; red-first tests for exposures 3, 4 and 5 and for C6 (member, guest, invite holder, deployment customer, stranger); a stranger's frontend create of a public registry package still works; a customer of a deployment still reads its instance's release name; a release from before keeps today's rule (`DeepCase`); an install for org B by a member of A and B is used in B only; an installer who left the org loses it.
+- Core: the two repro tests turn green; red-first tests for exposures 3, 4 and 5 (5 also through a deployment's offer) and for C6 (member, guest, invite holder, deployment customer, stranger); a stranger's frontend create of a public registry package still works; a customer of a deployment still reads its instance's release name; a release from before keeps today's rule (`DeepCase`); an install for org B by a member of A and B is used in B only; an installer who left the org loses it.
 - app-registry: authorize forwards `account` and caches per account.
 - mdma: authorize with a verified member, an unverified account, a non-member, no account before and after M1 recorded it, a product package; a cluster below the core release gets no credential.
 
