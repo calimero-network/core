@@ -235,6 +235,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             actor,
             at,
             consent: _,
+            deployment_needs_recovery,
         } => {
             if !s.accounts.contains_key(&actor) {
                 return Err("unknown account");
@@ -249,6 +250,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             if !s.may_deploy(&actor, at) {
                 return Err(NOT_A_DEPLOYER);
+            }
+            if !s.keeps_recoverable(&owner, deployment_needs_recovery) {
+                return Err(RECOVERY_KEY_REQUIRED);
             }
             if s.deployments.contains_key(&id) {
                 return Err("that deployment exists");

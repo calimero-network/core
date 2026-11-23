@@ -951,6 +951,8 @@ pub fn rejected(reason: &str) -> ApiError {
         ApiError::new(403, "SIGN_UP_REFUSED", reason)
     } else if reason == crate::system::NOT_A_DEPLOYER {
         not_a_deployer()
+    } else if reason == crate::system::RECOVERY_KEY_REQUIRED {
+        ApiError::new(409, "RECOVERY_KEY_REQUIRED", reason)
     } else if reason == crate::system::PERSONAL_ORG_EXISTS {
         ApiError::new(409, PERSONAL_ORG_EXISTS, reason)
     } else if reason == crate::system::GUESTS_NOT_ALLOWED {

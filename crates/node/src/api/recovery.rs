@@ -434,6 +434,14 @@ async fn recovery_set(
             )
         })?;
     }
+    let needs_recovery = super::deployments::deployment_needs_recovery(&node).await;
+    let owner = crate::system::Deployer::Org(org.clone());
+    if body.public_key.is_none()
+        && needs_recovery
+        && node.sys(|s| s.deployments.values().any(|d| d.owner == owner))
+    {
+        return Err(crate::node::rejected(crate::system::RECOVERY_KEY_REQUIRED));
+    }
     let args = json!({ "publicKey": body.public_key });
     let consent = org_consent(&node, &p, &org, "__set_recovery_key", &args, body.confirm).await?;
     let _ok = node
@@ -443,6 +451,7 @@ async fn recovery_set(
             at: recovery_now(&node),
             actor,
             consent,
+            deployment_needs_recovery: needs_recovery,
         })
         .await?;
     Ok(Json(json!({})))

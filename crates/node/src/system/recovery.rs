@@ -387,12 +387,20 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             public_key,
             at,
             actor,
+            deployment_needs_recovery,
             ..
         } => {
+            let owner = Deployer::Org(org.clone());
+            let keeps_key = public_key.is_none()
+                && s.recovery_rule(deployment_needs_recovery)
+                && s.deployments.values().any(|d| d.owner == owner);
             let recovery = public_key.map(|k| recovery_key_of(k, at)).transpose()?;
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
             if o.role(&actor) != Some(OrgRole::Owner) {
                 return Err(OWNER_ONLY_RECOVERY);
+            }
+            if keeps_key {
+                return Err(RECOVERY_KEY_REQUIRED);
             }
             // A new key, or none: a recovery under way ends with the old one.
             o.recovery = recovery;

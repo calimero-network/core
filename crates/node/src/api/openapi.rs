@@ -1847,11 +1847,11 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "BAD_BACKUP_KEY"), (403, "FORBIDDEN"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/recovery", "recovery_set", AccountHolder, "Set the organization's recovery key")
-            .about("Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first.")
+            .about("Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before the step-up from cluster version 1.0.0-rc.36 (rotating stays allowed).")
             .json::<super::RecoveryKeyBody>("{ publicKey?: string | null, confirm?: #Confirm }")
             .ok("{}")
             .step_up()
-            .errors(&[(400, "BAD_RECOVERY_KEY")]),
+            .errors(&[(400, "BAD_RECOVERY_KEY"), (409, "RECOVERY_KEY_REQUIRED")]),
         post("/orgs/{org}/recovery/start", "recovery_start", AccountHolder, "Start an organization recovery")
             .about("The recovery seed's signature handing the organization to the caller.")
             .json::<super::RecoveryStartBody>("{ nonce: string, signature: string }")
@@ -2135,11 +2135,11 @@ fn operations() -> Vec<Op> {
             .ok("{ key: string }")
             .step_up(),
         post("/deployments", "deployment_create", AccountHolder, "Create a deployment")
-            .about("A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain).")
+            .about("A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain). An organization owns a deployment only holding a recovery key (`POST /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the step-up from cluster version 1.0.0-rc.36.")
             .json::<super::DeploymentBody>("{ name: string, owner: #Deployer, confirm?: #Confirm }")
             .ok("{ id: string, deployment: #DeploymentRecord, host: string | null }")
             .step_up()
-            .errors(&[(403, "FORBIDDEN")]),
+            .errors(&[(403, "FORBIDDEN"), (409, "RECOVERY_KEY_REQUIRED")]),
         get("/deployments", "deployment_list", SignedIn, "Deployments")
             .about("The deployments the caller manages.")
             .ok("{ deployments: #Deployment[] }"),
