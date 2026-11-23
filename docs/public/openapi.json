@@ -16112,7 +16112,69 @@
                     "offered": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/Deployment"
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "owner": {
+                            "type": "string",
+                            "enum": [
+                              "account",
+                              "org"
+                            ]
+                          },
+                          "ownerName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "apps": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "app": {
+                                  "type": "string"
+                                },
+                                "package": {
+                                  "type": "string"
+                                },
+                                "version": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "app",
+                                "package",
+                                "version"
+                              ]
+                            }
+                          },
+                          "to": {
+                            "$ref": "#/components/schemas/Deployer"
+                          },
+                          "offeredAt": {
+                            "type": "string"
+                          },
+                          "expiresAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "owner",
+                          "ownerName",
+                          "apps",
+                          "to",
+                          "offeredAt",
+                          "expiresAt"
+                        ]
                       }
                     }
                   },
@@ -17812,7 +17874,7 @@
         ],
         "x-calimero-group": "deployments",
         "summary": "Accept a deployment offered to an owner",
-        "description": "A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to }`: `to` becomes the owner, and the deployment's offers, secret values and customers' instances stay with it. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to, offeredAt }` (the offer it accepts): `to` becomes the owner, and the deployment's offers and customers' instances stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new owner sets its own. Until a person approves an update of a customer's instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_STALE` once whoever offered it no longer manages it, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -17870,12 +17932,19 @@
                     },
                     "from": {
                       "$ref": "#/components/schemas/Deployer"
+                    },
+                    "secretsDropped": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
                     "deployment",
                     "owner",
-                    "from"
+                    "from",
+                    "secretsDropped"
                   ]
                 }
               }
@@ -17937,7 +18006,7 @@
             ]
           },
           "409": {
-            "description": "`FEATURE_NOT_ACTIVE`; `RECOVERY_KEY_REQUIRED`; `TRANSFER_LAPSED`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "description": "`FEATURE_NOT_ACTIVE`; `RECOVERY_KEY_REQUIRED`; `TRANSFER_LAPSED`; `TRANSFER_STALE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17948,7 +18017,8 @@
             "x-calimero-codes": [
               "FEATURE_NOT_ACTIVE",
               "RECOVERY_KEY_REQUIRED",
-              "TRANSFER_LAPSED"
+              "TRANSFER_LAPSED",
+              "TRANSFER_STALE"
             ],
             "x-calimero-details": {
               "FEATURE_NOT_ACTIVE": {
@@ -35485,12 +35555,6 @@
               "from",
               "at"
             ]
-          },
-          "ownerName": {
-            "type": [
-              "string",
-              "null"
-            ]
           }
         },
         "required": [
@@ -35500,11 +35564,9 @@
           "owner",
           "apps",
           "createdBy",
-          "createdAt",
-          "transfer",
-          "transferred"
+          "createdAt"
         ],
-        "description": "A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339. `transfer`: the offer of it to another owner waiting for acceptance (`expiresAt`: 7 days after `offeredAt`), else `null`; `transferred`: whom it came from at its last hand-over, else `null`. `ownerName`: only in `offered`, the current owner's name."
+        "description": "A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339. `transfer`: the offer of it to another owner waiting for acceptance (`expiresAt`: 7 days after `offeredAt`), else `null`; `transferred`: whom it came from at its last hand-over, else `null`."
       },
       "DeploymentShown": {
         "type": "object",

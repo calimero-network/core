@@ -986,8 +986,8 @@ fn components() -> Vec<Component> {
         ),
         component(
             "Deployment",
-            "A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339. `transfer`: the offer of it to another owner waiting for acceptance (`expiresAt`: 7 days after `offeredAt`), else `null`; `transferred`: whom it came from at its last hand-over, else `null`. `ownerName`: only in `offered`, the current owner's name.",
-            "{ id: string, host: string | null, name: string, owner: #Deployer, apps: { app: string, package: string, version: string, addedBy: string, addedAt: string }[], createdBy: string, createdAt: string, transfer: { to: #Deployer, offeredBy: string, offeredAt: string, expiresAt: string } | null, transferred: { from: #Deployer, at: string } | null, ownerName?: string | null }",
+            "A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339. `transfer`: the offer of it to another owner waiting for acceptance (`expiresAt`: 7 days after `offeredAt`), else `null`; `transferred`: whom it came from at its last hand-over, else `null`.",
+            "{ id: string, host: string | null, name: string, owner: #Deployer, apps: { app: string, package: string, version: string, addedBy: string, addedAt: string }[], createdBy: string, createdAt: string, transfer?: { to: #Deployer, offeredBy: string, offeredAt: string, expiresAt: string } | null, transferred?: { from: #Deployer, at: string } | null }",
         ),
         component(
             "DeploymentShown",
@@ -2142,7 +2142,7 @@ fn operations() -> Vec<Op> {
             .errors(&[(403, "FORBIDDEN"), (409, "RECOVERY_KEY_REQUIRED")]),
         get("/deployments", "deployment_list", SignedIn, "Deployments")
             .about("The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting for its acceptance (`POST /deployments/{id}/transfer/accept`).")
-            .ok("{ deployments: #Deployment[], offered: #Deployment[] }"),
+            .ok(r#"{ deployments: #Deployment[], offered: { id: string, name: string, owner: "account" | "org", ownerName: string | null, apps: { app: string, package: string, version: string }[], to: #Deployer, offeredAt: string, expiresAt: string }[] }"#),
         get("/deployments/{id}", "deployment_get", SignedIn, "One deployment")
             .about("As anyone may read it: its name, its owner's kind and name (`null` when unknown), and the releases it offers; never its managers or customers.")
             .ok(r#"{ id: string, host: string | null, name: string, owner: { kind: "account" | "org", name: string | null }, apps: { app: string, package: string, version: string }[] }"#)
@@ -2174,11 +2174,11 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_TRANSFER"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/deployments/{id}/transfer/accept", "deployment_transfer_accept", AccountHolder, "Accept a deployment offered to an owner")
-            .about("A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to }`: `to` becomes the owner, and the deployment's offers, secret values and customers' instances stay with it. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.")
+            .about("A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to, offeredAt }` (the offer it accepts): `to` becomes the owner, and the deployment's offers and customers' instances stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new owner sets its own. Until a person approves an update of a customer's instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_STALE` once whoever offered it no longer manages it, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.")
             .json::<super::DeploymentTransferBody>("{ to: #Deployer, confirm?: #Confirm }")
-            .ok("{ deployment: string, owner: #Deployer, from: #Deployer }")
+            .ok("{ deployment: string, owner: #Deployer, from: #Deployer, secretsDropped: string[] }")
             .step_up()
-            .errors(&[(403, "DEPLOY_NOT_GRANTED"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_TRANSFER"), (409, "FEATURE_NOT_ACTIVE"), (409, "RECOVERY_KEY_REQUIRED"), (409, "TRANSFER_LAPSED"), (429, "QUOTA_EXCEEDED")]),
+            .errors(&[(403, "DEPLOY_NOT_GRANTED"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_TRANSFER"), (409, "FEATURE_NOT_ACTIVE"), (409, "RECOVERY_KEY_REQUIRED"), (409, "TRANSFER_LAPSED"), (409, "TRANSFER_STALE"), (429, "QUOTA_EXCEEDED")]),
         get("/deployments/{id}/orgs", "deployment_orgs", SignedIn, "The organizations a deployment serves")
             .about("For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or (below cluster version 1.0.0-rc.32) in a personal organization, are only counted (`outsideOrgs`). Never who the members are.")
             .ok("{ deployment: string, orgs: { orgId: string, name: string | null, memberCount: uint, activeMembers30d: uint, instances: uint, apps: { app: string, version: string }[], firstCreatedAt: string }[], outsideOrgs: uint }"),

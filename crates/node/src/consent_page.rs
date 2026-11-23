@@ -2178,21 +2178,7 @@ async fn upgrade_request(
     if let Some(d) = &shown {
         points.push(json!(offered_by(d)));
     }
-    // Changed hands since the instance's creation or last upgrade (the same second counts:
-    // times are whole seconds): the person may never have seen this owner on a sheet.
-    let seen_at = app
-        .last_upgrade
-        .as_ref()
-        .map_or(app.created_at, |u| u.at.max(app.created_at));
-    let handed_over = app.deployment.as_ref().is_some_and(|d| {
-        node.sys(|s| {
-            s.deployments
-                .get(d)
-                .and_then(|d| d.transferred.as_ref())
-                .is_some_and(|t| t.at >= seen_at)
-        })
-    });
-    if let (true, Some(d)) = (handed_over, &shown) {
+    if let (true, Some(d)) = (node.sys(|s| s.handed_over_unseen(&app)), &shown) {
         points.push(json!(taken_over(d)));
     }
     let mut attention = upgrade_attention(&sheet);

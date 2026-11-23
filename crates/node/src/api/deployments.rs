@@ -358,6 +358,26 @@ async fn managed_deployment(node: &Node, p: &Principal, id: &str) -> Result<Depl
     })
 }
 
+/// A deployment as the owner it is offered to reads it before accepting: what it offers,
+/// who runs it and until when the offer waits; never the accounts of the offering side.
+fn offered_json(s: &crate::system::SystemState, d: &Deployment) -> Value {
+    let t = d.transfer.as_ref();
+    json!({
+        "id": d.id,
+        "name": d.name,
+        "owner": s.deployer_named(&d.owner).0,
+        "ownerName": s.deployer_named(&d.owner).1,
+        "apps": d.apps.iter().map(|(app, o)| json!({
+            "app": app, "package": o.package, "version": o.version,
+        })).collect::<Vec<_>>(),
+        "to": t.map(|t| &t.to),
+        "offeredAt": t.map(|t| crate::system::rfc3339(t.offered_at)),
+        "expiresAt": t.map(|t| crate::system::rfc3339(
+            t.offered_at.saturating_add(crate::system::TRANSFER_TTL_SECS)
+        )),
+    })
+}
+
 /// A deployment as its managers read it.
 fn deployment_json(node: &Node, d: &Deployment) -> Value {
     json!({
@@ -631,7 +651,7 @@ async fn deployment_transfer_accept(
         .await?;
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
     let at = now_secs();
-    node.sys(|s| {
+    let offered_at = node.sys(|s| {
         let d = s
             .deployments
             .get(&id)
@@ -646,6 +666,9 @@ async fn deployment_transfer_accept(
             .as_ref()
             .filter(|t| t.to == body.to)
             .ok_or_else(|| crate::node::rejected(crate::system::NO_TRANSFER))?;
+        if !s.acts_for(&d.owner, &t.offered_by) {
+            return Err(crate::node::rejected(crate::system::TRANSFER_STALE));
+        }
         if !t.live(at) {
             return Err(crate::node::rejected(crate::system::TRANSFER_LAPSED));
         }
@@ -655,14 +678,19 @@ async fn deployment_transfer_accept(
         if !s.keeps_recoverable(&body.to, true) {
             return Err(crate::node::rejected(crate::system::RECOVERY_KEY_REQUIRED));
         }
-        Ok(())
+        if s.deployments.values().filter(|d| d.owner == body.to).count()
+            >= crate::system::MAX_DEPLOYMENTS_PER_OWNER
+        {
+            return Err(crate::node::rejected("quota exceeded: deployments per owner"));
+        }
+        Ok(t.offered_at)
     })?;
     let consent = consent(
         &node,
         &p,
         &format!("deployment:{id}"),
         "__accept_deployment",
-        &json!({ "to": body.to }),
+        &json!({ "to": body.to, "offeredAt": offered_at }),
         body.confirm,
     )
     .await?;
@@ -670,6 +698,7 @@ async fn deployment_transfer_accept(
         node.sys_write(&SystemCmd::AcceptDeployment {
             deployment: id,
             to: body.to,
+            offered_at,
             actor: account,
             at,
             consent,
@@ -755,11 +784,7 @@ async fn deployment_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> A
                     .as_ref()
                     .is_some_and(|t| t.live(now) && s.acts_for(&t.to, &account))
             })
-            .map(|d| {
-                let mut v = deployment_json(&node, d);
-                v["ownerName"] = json!(s.deployer_named(&d.owner).1);
-                v
-            })
+            .map(|d| offered_json(s, d))
             .collect();
         (managed, offered)
     });

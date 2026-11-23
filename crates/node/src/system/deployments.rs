@@ -115,23 +115,33 @@ pub(super) fn authorize(
             actor,
             consent,
             ..
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            proofs.states(
+                &st,
+                &format!("deployment:{deployment}"),
+                "__offer_deployment",
+                &|a| a["to"] == json!(to),
+            )?;
+            Ok(Some(used))
         }
-        | SystemCmd::AcceptDeployment {
+        SystemCmd::AcceptDeployment {
             deployment,
             to,
+            offered_at,
             actor,
             consent,
             ..
         } => {
-            let method = if matches!(cmd, SystemCmd::OfferDeployment { .. }) {
-                "__offer_deployment"
-            } else {
-                "__accept_deployment"
-            };
             let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
-            proofs.states(&st, &format!("deployment:{deployment}"), method, &|a| {
-                a["to"] == json!(to)
-            })?;
+            // Bound to the one offer the receiver saw: a cancelled and repeated offer
+            // needs a new acceptance.
+            proofs.states(
+                &st,
+                &format!("deployment:{deployment}"),
+                "__accept_deployment",
+                &|a| a["to"] == json!(to) && a["offeredAt"] == json!(offered_at),
+            )?;
             Ok(Some(used))
         }
         SystemCmd::CancelDeploymentTransfer {
@@ -420,18 +430,22 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         SystemCmd::AcceptDeployment {
             deployment,
             to,
+            offered_at,
             actor,
             at,
             consent: _,
         } => {
             let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
+            if !s.acts_for(&to, &actor) {
+                return Err("a deployment is accepted by the account it is offered to, or by MANAGE_APPLICATION in that organization");
+            }
             let t = d
                 .transfer
                 .as_ref()
-                .filter(|t| t.to == to)
+                .filter(|t| t.to == to && t.offered_at == offered_at)
                 .ok_or(NO_TRANSFER)?;
-            if !s.acts_for(&to, &actor) {
-                return Err("a deployment is accepted by the account it is offered to, or by MANAGE_APPLICATION in that organization");
+            if !s.acts_for(&d.owner, &t.offered_by) {
+                return Err(TRANSFER_STALE);
             }
             if !t.live(at) {
                 return Err(TRANSFER_LAPSED);
@@ -447,7 +461,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err("quota exceeded: deployments per owner");
             }
             let from = d.owner.clone();
-            let out = json!({ "deployment": deployment, "owner": to, "from": from });
+            // The previous owner's secret values stay theirs: an offer the new owner makes
+            // could otherwise declare a name and send its value to a host of its own.
+            let dropped: Vec<String> = s
+                .deployment_secrets
+                .remove(&deployment)
+                .map(|h| h.into_keys().collect())
+                .unwrap_or_default();
+            let out = json!({
+                "deployment": deployment, "owner": to, "from": from, "secretsDropped": dropped,
+            });
             if let Some(d) = s.deployments.get_mut(&deployment) {
                 d.owner = to;
                 d.transfer = None;
