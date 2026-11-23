@@ -79,7 +79,6 @@ class GrantedGovernance(DeepCase):
     name = "granted-governance"
     governance = ("granted",)
     area = "Governance"
-    since = "1.0.0-rc.34"
     seeds = ("a cluster deployed with `--release-approvals owner --deployers owner`: the operator grants an account "
              "while it still may (`POST /ops/deployers`), names the cluster's owner (`POST /ops/cluster-owner`) and "
              "switches deployments to granted (`POST /ops/deployments/granted`); from then on the owner grants "
@@ -127,7 +126,6 @@ class GrantedInstalls(DeepCase):
     name = "granted-installs"
     governance = ("granted",)
     area = "Deployments"
-    since = "1.0.0-rc.34"
     seeds = ("a granted account's install (`POST /packages/install`) and app of it; an ungranted member of its "
              "organization (an admin) makes an instance of that release (no install, no grant)")
     verifies = ("both apps read back; an ungranted account's install, bundle upload and `POST /apps` of a registry "
@@ -177,7 +175,6 @@ class OwnerDeployers(DeepCase):
     name = "owner-deployers"
     governance = ("granted",)
     area = "Deployments"
-    since = "1.0.0-rc.34"
     seeds = ("the cluster owner's grants (`POST /deployers`, its passkey): an organization's until a date, whose "
              "owner installs on it; an account's, revoked again (`DELETE /deployers/{key}`) after it installed")
     verifies = ("`GET /deployers` as the owner on every node; an account reads no grants; the revoked account's "
@@ -225,7 +222,6 @@ class OwnerReleaseApprovals(DeepCase):
     name = "owner-release-approvals"
     governance = ("granted",)
     area = "Governance"
-    since = "1.0.0-rc.34"
     seeds = ("an organization's own release approvals (`POST /orgs/{org}/releases`, passkey): an older release "
              "added to the one it was made through, and an app of it holding data")
     verifies = ("`GET /ops/orgs` keeps every approval seeded, plus the new release its owner approved in the "
@@ -274,7 +270,6 @@ class ReleaseDeadlines(DeepCase):
     name = "release-deadlines"
     governance = ("granted",)
     area = "Governance"
-    since = "1.0.0-rc.34"
     seeds = (f"the operator's release deadlines (`POST /ops/releases/{{version}}/deadline`): a passed one on the "
              f"old nodes' release (so no node retires) and one announced far ahead; an organization that approves "
              f"only an older release ({OLDER}) is stalled; its owner, also a member of one on the old release, is "
