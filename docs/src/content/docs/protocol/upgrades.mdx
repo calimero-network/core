@@ -252,8 +252,13 @@ an update **red** when any of these holds, and **green** otherwise:
 | A release newly calls a method of another app as the person (`delegatedMethodsAdded`) | A new way to act as the user |
 
 New and removed methods are reported (`newMethods`, `removedMethods`) but do not
-make an update red. Nothing applies an update by its class yet: every update
-still waits for an owner's or admin's approval.
+make an update red. The class decides how an update applies: a red one waits
+for an owner's or admin's approval, for two of them under a `secondApprover`
+policy ([A second approver](#a-second-approver)), and a green one applies on its
+own only under a `noDestinations` policy, when the app's unit has no destination
+before or after it and the update removes no method and moves none of the apps
+it created ([Updates that apply on their own](#updates-that-apply-on-their-own));
+any other green update waits for one owner's or admin's approval.
 
 ### The class at apply
 

@@ -1321,9 +1321,14 @@ is its command line.
   changes, a member with egress joins or leaves, or a release newly calls another app as
   the person, else green, with `reasons`, the egress diff (`before`, `after`, `added`,
   `removed`), `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
-  unit's moves its direct members as `unit_plan` does. Nothing applies an update by its
-  class yet (C8). Regressions: `a_units_destinations_are_judged_over_its_members`
-  (`tests/consent_page.rs`), `calimero_bundle::update::tests`.
+  unit's moves its direct members as `unit_plan` does. The class decides how it applies:
+  under `secondApprover` a red one takes two approvers (C8), under `noDestinations` a
+  green one of a unit with no destination before or after applies on its own, unless it
+  removes a method or would move the unit's members (C9).
+  Regressions: `a_units_destinations_are_judged_over_its_members`
+  (`tests/consent_page.rs`), `calimero_bundle::update::tests`,
+  `an_update_that_would_move_the_units_members_waits_for_a_person`
+  (`tests/auto_updates.rs`).
 - **Update classes and policies** (C8; `system/updates.rs`, `api/update_policies.rs`;
   docs: protocol upgrades "The class at apply", "Update policies"): every `UpgradeApp`
   the API writes carries `class` (`types::UpgradeClass`: `egress::update` of that app's
@@ -1355,8 +1360,8 @@ is its command line.
   __set_upgrade_policy / system::upgrade_policy_args`, kept on `Org::upgrade_policy` and
   `Org::app_upgrade_policies` (a move drops the app's, `move_app`); `types::UpgradePolicy
   { autoApply: never | noDestinations, holdHours, secondApprover }`, `holdHours` in `MIN_HOLD_HOURS..=MAX_HOLD_HOURS`
-  (`BAD_UPGRADE_POLICY`); `SystemState::upgrade_policy_of` (app, org, default). Only
-  `secondApprover` acts now: `ApproveUpgrade` (consent `<app> / __approve_upgrade /
+  (`BAD_UPGRADE_POLICY`); `SystemState::upgrade_policy_of` (app, org, default).
+  `secondApprover` acts through `ApproveUpgrade` (consent `<app> / __approve_upgrade /
   system::approve_upgrade_args`, `POST /apps/{app}/upgrade-approvals { version, unit? }`)
   logs a `types::PendingApproval` in `Org::pending_upgrades` (one per app; `targets` for a
   unit; `ONE_APPROVAL` without the policy or for a green class, `APPROVAL_PENDING` for

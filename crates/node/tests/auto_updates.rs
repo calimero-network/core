@@ -29,11 +29,11 @@ const DAY: u64 = 24 * 3600;
 
 /// A signed single-service `.mpk` of `PACKAGE` at `version`, declaring no destination.
 fn release(version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
-    release_using(PACKAGE, version, wasm, key, Value::Null)
+    release_of(PACKAGE, version, wasm, key, Value::Null)
 }
 
-/// [`release`] of `package`, its signed manifest also declaring `uses` (`null`: none).
-fn release_using(
+/// [`release`] of `package`, its manifest's `uses` set to `uses` (JSON; `null` for none).
+fn release_of(
     package: &str,
     version: &str,
     wasm: &[u8],
@@ -65,7 +65,7 @@ fn release_using(
         frontend_aliases: Vec::new(),
         outbound: Vec::new(),
         secrets: None,
-        uses: None,
+        uses: serde_json::from_value(uses).unwrap(),
         upgrades: None,
         instance_org: None,
         guests: None,
@@ -74,9 +74,6 @@ fn release_using(
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
-    if !uses.is_null() {
-        manifest["uses"] = uses;
-    }
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
     let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
         Vec::new(),
@@ -776,7 +773,7 @@ async fn a_green_update_that_drops_a_method_waits_for_a_person() {
     });
     for mpk in [
         release("1.0.0", &kv_wasm(), &publisher),
-        release_using("com.test.plugin", "1.0.0", &kv_wasm(), &publisher, uses),
+        release_of("com.test.plugin", "1.0.0", &kv_wasm(), &publisher, uses),
     ] {
         let _ = alice.packages().upload(mpk).await.unwrap();
     }
@@ -873,15 +870,15 @@ async fn an_update_that_would_move_the_units_members_waits_for_a_person() {
     let kv_at =
         |version: &str| json!({ "kv": { "package": kv, "range": "^0.1", "version": version } });
     for mpk in [
-        release_using(kv, "0.1.0", &kv_wasm(), &publisher, Value::Null),
-        release_using(
+        release_of(kv, "0.1.0", &kv_wasm(), &publisher, Value::Null),
+        release_of(
             kv,
             "0.1.1",
             &variant(&kv_wasm(), "kv011"),
             &publisher,
             Value::Null,
         ),
-        release_using(notes, "0.1.0", &kv_wasm(), &publisher, kv_at("0.1.0")),
+        release_of(notes, "0.1.0", &kv_wasm(), &publisher, kv_at("0.1.0")),
     ] {
         let _ = alice.packages().upload(mpk).await.unwrap();
     }
@@ -911,14 +908,14 @@ async fn an_update_that_would_move_the_units_members_waits_for_a_person() {
         .await
         .unwrap();
     for mpk in [
-        release_using(
+        release_of(
             notes,
             "0.1.5",
             &variant(&kv_wasm(), "n015"),
             &publisher,
             kv_at("0.1.0"),
         ),
-        release_using(
+        release_of(
             notes,
             "0.2.0",
             &variant(&kv_wasm(), "n020"),
