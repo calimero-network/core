@@ -62,6 +62,41 @@ class Packages(DeepCase):
         self._record(w, s)
 
 
+@case
+class ReleaseVisibility(DeepCase):
+    name = "release-visibility"
+    area = "Packages"
+    seeds = ("kv-b 1.0.0 installed from the registry by an account whose organization holds a second member, "
+             "who never installed it (a release recorded before it was public or private)")
+    verifies = ("the release from before keeps its rule: the member lists it on every node and, on the new "
+                "release, creates an instance of it; kv-c installed on the new release, which the registry serves "
+                "to anyone, is public: an account in no organization lists it and creates an instance of it")
+
+    def populate(self, w):
+        ines, ivo = people(w, "ines", "ivo")
+        org = new_org(ines, "Ines Packages")
+        join(ines, org, ivo)
+        p, v = install(ines, w, "kv-b-1.0.0.mpk")
+        return {"org": org, "before": [p, v], "after": None}
+
+    def check(self, w, s):
+        ivo, isla = people(w, "ivo", "isla")
+        p, v = s["before"]
+        for n in w.members():
+            check(v in json.dumps(ivo.get(f"packages/{p}", node=n)), f"ivo lists {p}@{v} on node {n}")
+        if s["after"]:
+            p, v = s["after"]
+            check(v in json.dumps(isla.get(f"packages/{p}")), f"isla lists the public {p}@{v}")
+
+    def exercise(self, w, s):
+        ines, ivo, isla = people(w, "ines", "ivo", "isla")
+        p, v = s["before"]
+        ivo.raw("post", "apps", {"name": "vis-before", "package": p, "version": v, "org": s["org"]})
+        p, v = install(ines, w, "kv-c-1.0.0.mpk")
+        isla.raw("post", "apps", {"name": "vis-after", "package": p, "version": v})
+        s["after"] = [p, v]
+
+
 def _did_key(pub: bytes) -> str:
     """The did:key signer id of an Ed25519 public key (multicodec 0xed01, base58btc)."""
     data = b"\xed\x01" + pub
