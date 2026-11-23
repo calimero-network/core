@@ -25,6 +25,20 @@ public final class FakeCloud: @unchecked Sendable {
             [:]
     public var teams: [String: (org: String, name: String, join: String, members: [String: String])] = [:]
     public var apps: [String: (name: String, org: String?, team: String?, package: String)] = [:]
+    /// Team id → its parent team (a team made under another).
+    public var teamParents: [String: String] = [:]
+    /// Team id → its metadata (an app team's `{"app": {"package": …}}`).
+    public var teamMetadata: [String: JSONValue] = [:]
+    /// Invite token → the teams it names.
+    public private(set) var inviteTeams: [String: [String]] = [:]
+    /// The package the session is bound to (signed in on its served page), or
+    /// `nil`. A bound session is refused what core refuses it
+    /// (calimero-network/core#4934): organizations, invites (redeeming
+    /// included), members, capabilities, renames, a team outside the
+    /// package's app team, and instances of another package, with `403`.
+    public var boundPackage: String?
+    /// Every request refused to the bound session, as `METHOD path`.
+    public private(set) var refused: [String] = []
     private var next = 0
     /// How many `412 CONFIRM_REQUIRED` step-ups the cluster asked for.
     public private(set) var stepUps = 0
@@ -57,6 +71,10 @@ public final class FakeCloud: @unchecked Sendable {
             on("POST", "orgs/*/members") != nil || on("DELETE", "orgs/*/members/*") != nil
             || on("POST", "orgs/*/invites") != nil || on("POST", "orgs/*/teams/*/members") != nil
             || on("DELETE", "orgs/*/teams/*/members/*") != nil || on("POST", "orgs/*/capabilities") != nil
+        if let package = boundPackage, let why = refusal(request.method, on: on, body: body, package: package) {
+            refused.append("\(request.method) \(request.path)")
+            return .error(403, "FORBIDDEN", message: why)
+        }
         if stepUp, body["confirm"] == nil {
             stepUps += 1
             return .error(
@@ -117,9 +135,10 @@ public final class FakeCloud: @unchecked Sendable {
             var teamJSON: [String: JSONValue] = [:]
             for (tid, t) in teams where t.org == org {
                 teamJSON[tid] = [
-                    "teamId": .string(tid), "name": .string(t.name), "join": .string(t.join), "parent": .null,
+                    "teamId": .string(tid), "name": .string(t.name), "join": .string(t.join),
+                    "parent": teamParents[tid].map { .string($0) } ?? .null,
                     "members": .object(t.members.mapValues { .bool($0 == "lead") }), "readOnly": [],
-                    "capabilities": [:], "metadata": .null, "removed": [],
+                    "capabilities": [:], "metadata": teamMetadata[tid] ?? .null, "removed": [],
                 ]
             }
             return .json([
@@ -131,6 +150,7 @@ public final class FakeCloud: @unchecked Sendable {
         case on("POST", "orgs/*/metadata") != nil:
             w = on("POST", "orgs/*/metadata")!
             let org = w[0]
+            guard orgs[org] != nil else { return .error(404, "NOT_FOUND") }
             orgs[org]?.metadata = body["metadata"] ?? .null
             return .json([:])
         case on("POST", "orgs/*/members/*/metadata") != nil:
@@ -157,14 +177,17 @@ public final class FakeCloud: @unchecked Sendable {
             teams[team] = (
                 org, body["name"]?.stringValue ?? "", body["join"]?.stringValue ?? "invite", [Self.me: "lead"]
             )
+            teamParents[team] = body["parent"]?.stringValue
             return .json(["teamId": .string(team)])
         case on("GET", "orgs/*/teams/*") != nil:
             w = on("GET", "orgs/*/teams/*")!
             let team = w[1]
             guard let t = teams[team] else { return .error(404, "NOT_FOUND") }
             return .json([
-                "teamId": .string(team), "name": .string(t.name), "join": .string(t.join), "parent": .null,
-                "metadata": .null, "children": [], "myRole": .string(t.members[Self.me] ?? "member"),
+                "teamId": .string(team), "name": .string(t.name), "join": .string(t.join),
+                "parent": teamParents[team].map { .string($0) } ?? .null,
+                "metadata": teamMetadata[team] ?? .null, "children": [],
+                "myRole": .string(t.members[Self.me] ?? "member"),
                 "member": .bool(t.members[Self.me] != nil),
                 "members": .array(
                     t.members.map { entry -> JSONValue in
@@ -178,7 +201,9 @@ public final class FakeCloud: @unchecked Sendable {
         case on("POST", "orgs/*/invites") != nil:
             w = on("POST", "orgs/*/invites")!
             let org = w[0]
-            return .json(["token": .string("inv_\(org)")])
+            let token = "inv_\(org)"
+            inviteTeams[token] = (body["teams"]?.arrayValue ?? []).compactMap(\.stringValue)
+            return .json(["token": .string(token)])
         case on("POST", "invites/*/redeem") != nil:
             w = on("POST", "invites/*/redeem")!
             let token = w[0]
@@ -217,6 +242,73 @@ public final class FakeCloud: @unchecked Sendable {
 }
 
 // swiftlint:enable large_tuple cyclomatic_complexity function_body_length
+
+extension FakeCloud {
+    /// An organization as the node's consent page makes it for `package`'s
+    /// frontend (calimero-network/core#5034): owned by ``me``, starting with
+    /// the package's app team. Answers the org and its app team.
+    @discardableResult
+    public func consentOrg(name: String, package: String) -> (org: String, appTeam: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        let org = id("org")
+        let team = id("team")
+        orgs[org] = (name, .null, [Self.me: "owner"], [:])
+        teams[team] = (org, package, "everyone", [Self.me: "lead"])
+        teamMetadata[team] = ["app": ["package": .string(package)]]
+        return (org, team)
+    }
+
+    /// An invite to `org` naming `teams`, as the consent page's `createInvite`
+    /// makes it. Answers its token.
+    public func consentInvite(org: String, teams: [String]) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let token = "inv_\(org)"
+        inviteTeams[token] = teams
+        return token
+    }
+
+    /// Redeems `token` as the consent page's `acceptInvite` does: ``me`` joins
+    /// its org and the teams it names. Answers the org.
+    public func consentRedeem(_ token: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let org = String(token.dropFirst(4))
+        orgs[org]?.members[Self.me] = "member"
+        for team in inviteTeams[token] ?? [] { teams[team]?.members[Self.me] = "member" }
+        return org
+    }
+
+    /// Why a session bound to `package` is refused this request, or `nil`.
+    func refusal(
+        _ method: String, on: (String, String) -> [String]?, body: JSONValue, package: String
+    ) -> String? {
+        let holderOnly = [
+            ("POST", "orgs"), ("POST", "orgs/*/invites"), ("POST", "invites/*/redeem"), ("POST", "orgs/*/members"),
+            ("DELETE", "orgs/*/members/*"), ("POST", "orgs/*/capabilities"), ("POST", "orgs/*/name"),
+            ("POST", "orgs/*/all-apps"), ("POST", "orgs/*/members/*/teams"), ("DELETE", "orgs/*"),
+        ]
+        if holderOnly.contains(where: { on($0.0, $0.1) != nil }) {
+            return "a session opened on an app's frontend manages no organization"
+        }
+        if let w = on("POST", "orgs/*/teams") {
+            let appTeam = teams.first {
+                $0.value.org == w[0] && teamParents[$0.key] == nil
+                    && teamMetadata[$0.key]?["app"]?["package"]?.stringValue == package
+            }?.key
+            var parent = body["parent"]?.stringValue
+            while let p = parent, p != appTeam { parent = teamParents[p] }
+            if appTeam == nil || parent == nil {
+                return "a session opened on an app's frontend makes teams under its app team only"
+            }
+        }
+        if on("POST", "apps") != nil, body["package"]?.stringValue != package || body["bundle"] != nil {
+            return "a session opened on an app's frontend creates instances of that app only"
+        }
+        return nil
+    }
+}
 
 extension FakeCloud {
     /// An app instance as `GET /apps` and `GET /apps/{app}` answer it (the document's `App`).

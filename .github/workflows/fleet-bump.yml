@@ -16,7 +16,7 @@ on:
         default: ""
         type: string
       surfaces:
-        description: "Comma-separated surfaces to move: cargo and tee with the binaries, npm once the SDKs under sdks/ are published"
+        description: "Comma-separated surfaces to move: cargo and tee with the binaries, npm and mobile once the SDKs under sdks/ are published"
         required: false
         default: "cargo,tee"
         type: string
@@ -37,7 +37,7 @@ on:
         default: ""
         type: string
       surfaces:
-        description: "Comma-separated surfaces to move: cargo and tee with the binaries, npm once the SDKs under sdks/ are published"
+        description: "Comma-separated surfaces to move: cargo and tee with the binaries, npm and mobile once the SDKs under sdks/ are published"
         required: false
         default: "cargo,tee"
         type: string
@@ -69,10 +69,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # Three surfaces move on release: `cargo` pins the SDK by git tag; `tee` ships a
+      # Four surfaces move on release: `cargo` pins the SDK by git tag; `tee` ships a
       # merod binary with no SDK link, reached only through this list; `npm` pins the
-      # JavaScript SDKs (mero-js, mero-react), which release.yml asks for separately,
-      # once they are published (they ship from sdks/ on core's version).
+      # JavaScript SDKs (mero-js, mero-react), and `mobile` the Swift and Kotlin
+      # SDKs, which release.yml asks for separately once they are published (they
+      # ship from sdks/ on core's version).
       - name: Select the targets
         id: pick
         env:
@@ -104,8 +105,9 @@ jobs:
     needs: plan
     if: needs.plan.outputs.targets != '[]'
     runs-on: ubuntu-latest
-    # 20 minutes for the bump itself, plus up to 20 waiting for npm (npm surface).
-    timeout-minutes: 40
+    # 20 minutes for the bump itself, plus up to 20 waiting for npm (npm surface)
+    # or 40 for Maven Central (mobile surface).
+    timeout-minutes: 60
     strategy:
       # One repository failing must not stop the others from getting their
       # pull request.
@@ -182,6 +184,29 @@ jobs:
               sleep 20
             done
             echo "npm serves $name"
+          done
+
+      # Maven Central serves an artifact some time after the publish that put it
+      # there, often 10-30 minutes. The Swift SDK needs no wait: SwiftPM reads it
+      # from core's tag, which the release created before anything was published.
+      - name: Wait for Maven Central to serve the release's Kotlin SDK
+        if: matrix.surface == 'mobile'
+        timeout-minutes: 41
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          deadline=$(( $(date +%s) + 2400 ))
+          for artifact in mero-kotlin mero-kotlin-compose mero-kotlin-testkit; do
+            url="https://repo1.maven.org/maven2/network/calimero/$artifact/$VERSION/$artifact-$VERSION.pom"
+            until curl -sfI -o /dev/null "$url"; do
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::error::Maven Central does not serve network.calimero:$artifact:$VERSION after 40 minutes"
+                exit 1
+              fi
+              echo "waiting for Maven Central to serve network.calimero:$artifact:$VERSION"
+              sleep 30
+            done
+            echo "Maven Central serves network.calimero:$artifact:$VERSION"
           done
 
       - name: Rewrite the pins
@@ -263,6 +288,9 @@ jobs:
           elif [ "$SURFACE" = "npm" ]; then
             title="chore(deps): pin the Calimero JavaScript SDKs and components to $VERSION"
             branch="chore/core-sdks-$VERSION"
+          elif [ "$SURFACE" = "mobile" ]; then
+            title="chore(deps): pin the Calimero mobile SDKs to $VERSION"
+            branch="chore/core-mobile-$VERSION"
           else
             title="chore(deps): pin the Calimero SDK to $VERSION"
           fi
@@ -329,6 +357,39 @@ jobs:
           not exercise mixed-version interop or data written by an older binary.
           If the fleet's state is disposable this is routine; if it is not, it wants a
           deliberate answer rather than a merge.
+          PR_BODY
+          elif [ "$SURFACE" = "mobile" ]; then
+          cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
+          Moves the native apps' Calimero SDK pins to \`$VERSION\`.
+
+          Rewritten automatically by \`fleet-bump\` in
+          [calimero-network/core](https://github.com/calimero-network/core) once that
+          release's Kotlin SDK was on Maven Central.
+
+          - iOS: \`exactVersion\` of the core package in each \`project.yml\`,
+            \`exact:\` in each \`Package.swift\` that depends on core, and the core
+            pin in each \`Package.resolved\` (the commit \`$VERSION\` is tagged at).
+            SwiftPM installs mero-swift from core's root \`Package.swift\`.
+          - Android: the \`libs.versions.toml\` version the
+            \`network.calimero:mero-kotlin\` entries read.
+
+          A pin marked \`fleet-bump: hold\` is left where it is. The iOS and Android
+          workflows of every app this touches run on this pull request; a red one is
+          an SDK change that app needs code for.
+          PR_BODY
+          elif [ "$SURFACE" = "npm" ]; then
+          cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
+          Moves this repository's \`@calimero-network/*\` SDK and component pins to
+          \`$VERSION\`.
+
+          Rewritten automatically by \`fleet-bump\` in
+          [calimero-network/core](https://github.com/calimero-network/core) once that
+          release's packages were served by npm: each \`package.json\` or pnpm catalog
+          entry that declares one, and the lockfile beside it.
+
+          A pin marked \`fleet-bump: hold\` is left where it is. Before merging, check
+          that the frontends typecheck, build and pass their tests on this pull
+          request.
           PR_BODY
           elif [ -f Cargo.toml ] && [ ! -f logic/Cargo.toml ]; then
           # The monorepo. One pull request stands in for what used to be
