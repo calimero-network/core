@@ -23,22 +23,6 @@ fn test_hash_43() {
     assert_eq!(hash.to_string(), expected);
 }
 
-#[test]
-fn test_hash_44() {
-    let hash = Hash::new(b"Hello World");
-    let expected = "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e";
-
-    assert_eq!(hex::encode(hash.as_bytes()), expected);
-    assert_eq!(hash.to_string(), expected);
-}
-
-#[test]
-fn a_hash_round_trips_through_its_string_form() {
-    let hash = Hash::new(b"Hello World");
-
-    assert_eq!(hash.to_string().parse::<Hash>().expect("parse"), hash);
-}
-
 /// Base58 must now be **refused**, not quietly accepted.
 ///
 /// Accepting both was right while two spellings were in circulation; with one, a

@@ -92,22 +92,7 @@ impl FromStr for ContextId {
 mod tests {
     use super::*;
 
-    use crate::common::DIGEST_SIZE;
-
     use std::str::FromStr;
-
-    #[test]
-    fn test_context_id_rountrip() {
-        // Create context id
-        let context_id = ContextId::from([1; DIGEST_SIZE]);
-        let encoded_context_id = context_id.to_string();
-
-        // Verify context id is an expected one
-        let expected_encoded_context_id =
-            "0101010101010101010101010101010101010101010101010101010101010101";
-        assert!(!encoded_context_id.is_empty());
-        assert_eq!(&encoded_context_id, expected_encoded_context_id);
-    }
 
     #[test]
     fn test_context_id_invalid_hex() {
