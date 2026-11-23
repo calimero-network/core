@@ -52,7 +52,9 @@ class Packages(DeepCase):
 
     def exercise(self, w, s):
         pia = person(w, "pia")
-        pia.raw("post", "packages/install", {"package": s["package"], "version": s["v2"]})
+        # Her two instances made her an organization each: an install names one.
+        org = pia.get(f"apps/{s['app']}")["org"]
+        pia.raw("post", "packages/install", {"package": s["package"], "version": s["v2"], "org": org})
         pia.raw("post", f"apps/{s['app']}/upgrade", {"version": s["v2"]})
         check(s["v2"] in json.dumps(pia.get(f"apps/{s['app']}")), f"the app runs {s['v2']} after the upgrade")
         eq(pia.result(s["app"], "get", {"key": "release"}), s["v1"], "data across an upgrade on the new release")
