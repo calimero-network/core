@@ -414,7 +414,7 @@ pub(super) async fn install_request(
                     p.versions
                         .values()
                         .filter(|v| subject.version.as_ref().is_none_or(|w| &v.version == w))
-                        .filter(|v| frontend || s.sees_release(v, account))
+                        .filter(|v| s.sees_release_from(v, account, frontend))
                         .max_by(|a, b| crate::system::compare_versions(&a.version, &b.version))
                         .map(|v| v.version.clone())
                 })

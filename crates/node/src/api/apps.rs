@@ -190,6 +190,30 @@ pub(crate) const STANDALONE_INSTANCE: &str = "STANDALONE_INSTANCE";
 /// `400 ORG_INSTANCE`: an `org` instance asks for a new organization.
 pub(crate) const ORG_INSTANCE: &str = "ORG_INSTANCE";
 
+/// `account`'s only organization (`member` or above), on fresh state: `None` when it is in
+/// none, `400 ORG_REQUIRED` when it is in several.
+pub(crate) async fn only_org(node: &Node, account: &str) -> Result<Option<String>, ApiError> {
+    let _caught_up = node.sys_fresh().await;
+    let mine: Vec<String> = node.sys(|s| s.orgs_of(account).into_iter().cloned().collect());
+    match mine.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(one.clone())),
+        _ => Err(ApiError::bad_request(
+            ORG_REQUIRED,
+            "you are in several organizations: name the one this is for (`org`)",
+        )),
+    }
+}
+
+/// `409 NO_ORGANIZATION`: what `needs` asks for an organization the caller is in, and it is in none.
+pub(crate) fn no_organization(needs: &str) -> ApiError {
+    ApiError::new(
+        409,
+        NO_ORGANIZATION,
+        &format!("{needs}, and you are in none: create one or accept an invite first"),
+    )
+}
+
 /// The instance mode of `release` (`instanceOrg` in its signed manifest): the one its
 /// record keeps, else (a release recorded before the node kept it) its `.mpk`'s. A raw
 /// bundle, or a release no longer installed, is `either`.
@@ -302,27 +326,15 @@ async fn instance_org(
             ))
         }
         (InstanceOrg::Standalone, _) | (InstanceOrg::Either, Some(_)) => {}
-        (InstanceOrg::Org | InstanceOrg::Either, None) => {
-            let _caught_up = node.sys_fresh().await;
-            let mine: Vec<String> = node.sys(|s| s.orgs_of(owner).into_iter().cloned().collect());
-            match mine.as_slice() {
-                [one] => return Ok(one.clone()),
-                [] if mode == InstanceOrg::Org => {
-                    return Err(ApiError::new(
-                        409,
-                        NO_ORGANIZATION,
-                        &format!("an instance of {label} goes into an organization you are in, and you are in none: create one or accept an invite first"),
-                    ))
-                }
-                [] => {}
-                _ => {
-                    return Err(ApiError::bad_request(
-                        ORG_REQUIRED,
-                        "you are in several organizations: name the one the instance goes into (`org`)",
-                    ))
-                }
+        (InstanceOrg::Org | InstanceOrg::Either, None) => match only_org(node, owner).await? {
+            Some(one) => return Ok(one),
+            None if mode == InstanceOrg::Org => {
+                return Err(no_organization(&format!(
+                    "an instance of {label} goes into an organization you are in"
+                )))
             }
-        }
+            None => {}
+        },
     }
     // A new organization, its creator the owner, approving this node's release as the
     // personal one did.
@@ -523,17 +535,24 @@ async fn create_instance(
         }
         // A unit's member, or an app from a release or a bundle.
         _ => {
+            // Checked above: a bound session names its own package only. A member from a
+            // deployment runs the release its instance's offered release pins, whether or not
+            // its owner sees it otherwise, as the instance does.
+            let via = if body.unit_offer.is_some() {
+                Via::Offer
+            } else if p.bound_app().is_some() || body.from_frontend {
+                Via::Frontend
+            } else {
+                Via::Account
+            };
             bundle_named(
                 node,
                 body.bundle.clone(),
                 body.package.as_deref(),
                 body.version.as_deref(),
                 body.service.as_deref(),
-                &owner,
-                // Checked above: a bound session names its own package only. A member from
-                // a deployment runs the release its instance's offered release pins, whether
-                // or not its owner sees it otherwise, as the instance does.
-                p.bound_app().is_some() || body.unit_offer.is_some() || body.from_frontend,
+                (&owner, body.org.as_deref()),
+                via,
             )
             .await?
         }

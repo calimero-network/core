@@ -276,7 +276,7 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
         } => {
             let (package, version, bundle) = match path {
                 Some(path) => {
-                    let installed = crate::app::install_file(env, &path).await?;
+                    let installed = crate::app::install_file(env, &path, None).await?;
                     match installed["bundle"].as_str() {
                         Some(b) => (None, None, Some(b.to_owned())),
                         None => (

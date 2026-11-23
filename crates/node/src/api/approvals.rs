@@ -139,13 +139,13 @@ pub(crate) async fn set_outbound_approval(
     body: OutboundApprovalBody,
 ) -> ApiResult {
     let account = p.account()?;
-    // A package none of whose releases the caller may see is not installed
-    // for them: answered before the passkey ceremony, as a missing one.
+    // A package none of whose releases the caller may read (use, or run in an instance it
+    // reaches) is not installed for them: answered before the passkey, as a missing one.
     node.sys_fresh_from(p.sys_index).await;
     if !node.sys(|s| {
         s.packages
             .get(&body.package)
-            .is_some_and(|pkg| s.visible_versions(pkg, &account).next().is_some())
+            .is_some_and(|pkg| pkg.versions.values().any(|v| s.reads_release(v, &account)))
     }) {
         return Err(ApiError::not_found("no such package"));
     }

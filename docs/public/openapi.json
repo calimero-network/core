@@ -29412,7 +29412,7 @@
         ],
         "x-calimero-group": "packages",
         "summary": "Upload a signed release",
-        "description": "A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
+        "description": "A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several, `409 NO_ORGANIZATION` in none.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
         "security": [
           {
             "session": []
@@ -29423,6 +29423,16 @@
         ],
         "x-calimero-who": "an installer (an account holder, or an unscoped API key that is not read-only)",
         "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "org",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -29471,7 +29481,7 @@
             }
           },
           "400": {
-            "description": "`BAD_BUNDLE`; `BAD_PACKAGE`; `COMPUTE_ABI_MISMATCH`; `UNSUPPORTED_BUNDLE`. `details` of `BAD_BUNDLE`: a `ServiceRefused`, `COMPUTE_ABI_MISMATCH`: a `ServiceRefused`, `UNSUPPORTED_BUNDLE`: a `ServiceRefused`.",
+            "description": "`BAD_BUNDLE`; `BAD_PACKAGE`; `COMPUTE_ABI_MISMATCH`; `ORG_REQUIRED`; `UNSUPPORTED_BUNDLE`. `details` of `BAD_BUNDLE`: a `ServiceRefused`, `COMPUTE_ABI_MISMATCH`: a `ServiceRefused`, `UNSUPPORTED_BUNDLE`: a `ServiceRefused`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -29483,6 +29493,7 @@
               "BAD_BUNDLE",
               "BAD_PACKAGE",
               "COMPUTE_ABI_MISMATCH",
+              "ORG_REQUIRED",
               "UNSUPPORTED_BUNDLE"
             ],
             "x-calimero-details": {
@@ -29523,6 +29534,32 @@
               "DEPLOY_NOT_GRANTED",
               "FORBIDDEN",
               "UPLOADS_DISABLED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`NO_ORGANIZATION`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NO_ORGANIZATION"
             ]
           },
           "413": {
@@ -29630,7 +29667,7 @@
         ],
         "x-calimero-group": "packages",
         "summary": "Install a release from the registry",
-        "description": "**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
+        "description": "For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; with no organization it is `409 NO_ORGANIZATION`. `404` when the registry serves it to neither.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
         "security": [
           {
             "session": []
@@ -29652,6 +29689,9 @@
                     "type": "string"
                   },
                   "version": {
+                    "type": "string"
+                  },
+                  "org": {
                     "type": "string"
                   }
                 },
@@ -29698,7 +29738,7 @@
             }
           },
           "400": {
-            "description": "`BAD_BUNDLE`; `BAD_PACKAGE`; `COMPUTE_ABI_MISMATCH`; `NO_REGISTRY`; `UNSUPPORTED_BUNDLE`. `details` of `BAD_BUNDLE`: a `ServiceRefused`, `COMPUTE_ABI_MISMATCH`: a `ServiceRefused`, `UNSUPPORTED_BUNDLE`: a `ServiceRefused`.",
+            "description": "`BAD_BUNDLE`; `BAD_PACKAGE`; `COMPUTE_ABI_MISMATCH`; `NO_REGISTRY`; `ORG_REQUIRED`; `UNSUPPORTED_BUNDLE`. `details` of `BAD_BUNDLE`: a `ServiceRefused`, `COMPUTE_ABI_MISMATCH`: a `ServiceRefused`, `UNSUPPORTED_BUNDLE`: a `ServiceRefused`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -29711,6 +29751,7 @@
               "BAD_PACKAGE",
               "COMPUTE_ABI_MISMATCH",
               "NO_REGISTRY",
+              "ORG_REQUIRED",
               "UNSUPPORTED_BUNDLE"
             ],
             "x-calimero-details": {
@@ -29750,6 +29791,32 @@
             "x-calimero-codes": [
               "DEPLOY_NOT_GRANTED",
               "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`NO_ORGANIZATION`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NO_ORGANIZATION"
             ]
           },
           "421": {
@@ -30022,7 +30089,7 @@
         ],
         "x-calimero-group": "packages",
         "summary": "A release's capabilities",
-        "description": "What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.\n\n**Who:** signed in (a session or an API key).",
+        "description": "What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads what its account does (every release of it recorded before releases were public or private). `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []

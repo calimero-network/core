@@ -79,6 +79,10 @@ pub enum AppCmd {
         version: Option<String>,
         #[arg(long, conflicts_with = "coords")]
         path: Option<PathBuf>,
+        /// The organization it is installed for (default: your only one). A private
+        /// release, and every upload, is used only by its members.
+        #[arg(long)]
+        org: Option<String>,
     },
     /// Installed applications and their versions.
     #[command(alias = "ls", alias = "list-packages")]
@@ -167,11 +171,11 @@ pub enum OriginsCmd {
     },
 }
 
-/// Install a local file: a `.mpk` as a package, anything else as a raw bundle.
-pub async fn install_file(env: &Env, path: &Path) -> eyre::Result<Value> {
+/// Install a local file: a `.mpk` as a package (for `org`), anything else as a raw bundle.
+pub async fn install_file(env: &Env, path: &Path, org: Option<&str>) -> eyre::Result<Value> {
     let bytes = read_file(path)?;
     if path.extension().is_some_and(|e| e == "mpk") {
-        to_json(&env.client.packages().upload(bytes).await?)
+        to_json(&env.client.packages().upload(bytes, org).await?)
     } else {
         let hash = env.client.packages().bundle_put(bytes).await?.hash;
         Ok(json!({ "bundle": hash }))
@@ -234,11 +238,12 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
             coords,
             version,
             path,
+            org,
         } => match (path, coords) {
-            (Some(path), _) => install_file(env, &path).await?,
+            (Some(path), _) => install_file(env, &path, org.as_deref()).await?,
             (None, Some(coords)) => {
                 let (package, version) = split_coords(&coords, version)?;
-                to_json(&packages.install(&package, &version).await?)?
+                to_json(&packages.install(&package, &version, org.as_deref()).await?)?
             }
             (None, None) => unreachable!("clap requires one"),
         },
@@ -311,9 +316,14 @@ async fn release(a: &crate::make::ReleaseArgs, env: &Env) -> eyre::Result<Value>
     // Published: the cluster installs it from its registry, as production
     // clusters only do. Otherwise uploaded, which development clusters take.
     let installed = if a.publish {
-        to_json(&env.client.packages().install(&package, &a.version).await?)?
+        to_json(
+            &env.client
+                .packages()
+                .install(&package, &a.version, None)
+                .await?,
+        )?
     } else {
-        to_json(&env.client.packages().upload(read_file(&mpk)?).await?)?
+        to_json(&env.client.packages().upload(read_file(&mpk)?, None).await?)?
     };
     Ok(json!({
         "package": package,
@@ -415,7 +425,7 @@ async fn push(
     let client = &env.client;
     let bytes = read_file(path)?;
     let (body, targets) = if path.extension().is_some_and(|e| e == "mpk") {
-        let installed = client.packages().upload(bytes).await?;
+        let installed = client.packages().upload(bytes, None).await?;
         let targets = if contexts.is_empty() {
             let me = client.auth().me().await?.account_id;
             client

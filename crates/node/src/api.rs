@@ -36,6 +36,7 @@ use crate::attest::{kms_report_data, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
 use crate::node::{CallRequest, JobAttestError, Node, ViewRequest};
+use crate::packages::Via;
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::cluster_version::{scope_app_features, Feature};
 use crate::system::{
@@ -132,7 +133,7 @@ use {
         ScopeAppsBody, TeamBody, TeamDeleteBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,
         TeamUpdateBody,
     },
-    packages::{InstallBody, PublisherBody},
+    packages::{AccountInstallBody, InstallBody, PublisherBody, UploadQuery},
     public_links::PublicLinkBody,
     recovery::{RecoveryBegin, RecoveryFinish, RecoveryKeyBody, RecoveryStart, RecoveryStartBody},
     sign_up::{OpsSignUpInviteBody, SignUpBody, SignUpInviteBody},
@@ -1199,15 +1200,15 @@ fn utc_day(secs: u64) -> Option<String> {
 
 /// The bundle a create or upgrade names, with the compute component of the release it
 /// comes from: a bundle hash (a raw upload, no compute), or a package release (installed
-/// from the registry first if the fleet lacks it).
+/// from the registry first, for `org`, if the fleet lacks it).
 async fn bundle_named(
     node: &Node,
     bundle: Option<String>,
     package: Option<&str>,
     version: Option<&str>,
     service: Option<&str>,
-    actor: &str,
-    frontend: bool,
+    (actor, org): (&str, Option<&str>),
+    via: Via,
 ) -> Result<(String, Option<String>, Option<PackageRef>), ApiError> {
     match (bundle, package) {
         // A hash names a release's WASM only for who may see that release;
@@ -1221,7 +1222,7 @@ async fn bundle_named(
         (Some(_), None) => Err(crate::node::rejected("unknown bundle")),
         (None, Some(p)) => {
             let (bundle, compute, release) = node
-                .resolve_release_parts(p, version, service, actor, frontend)
+                .resolve_release_parts(p, version, service, (actor, org), via)
                 .await?;
             Ok((bundle, compute, Some(release)))
         }

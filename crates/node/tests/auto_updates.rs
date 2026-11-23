@@ -235,10 +235,11 @@ async fn a_green_update_applies_after_its_hold_and_is_undone_within_a_week() {
     shift_update_clock(0);
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
     let _ = alice
         .packages()
-        .upload(release("1.0.0", &kv_wasm(), &publisher))
+        .upload(release("1.0.0", &kv_wasm(), &publisher), None)
         .await
         .unwrap();
     let org = home_org(&alice).await;
@@ -276,7 +277,10 @@ async fn a_green_update_applies_after_its_hold_and_is_undone_within_a_week() {
     assert_eq!(set["policy"]["autoApply"], "noDestinations", "{set}");
     let _ = alice
         .packages()
-        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let update = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
@@ -413,7 +417,10 @@ async fn auto_app(
 ) -> String {
     let _ = alice
         .packages()
-        .upload(release("1.0.0", &kv_wasm(), publisher))
+        .upload(
+            release("1.0.0", &kv_wasm(), publisher),
+            Some(&home_org(alice).await),
+        )
         .await
         .unwrap();
     let org = home_org(alice).await;
@@ -466,7 +473,10 @@ async fn a_passing_failure_before_an_automatic_update_is_retried_not_held_agains
     let app = auto_app(&alice, &mut alice_pk, &publisher).await;
     let _ = alice
         .packages()
-        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let _ = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
@@ -520,7 +530,7 @@ async fn a_red_newest_release_does_not_hold_back_a_green_one_below_it() {
     ] {
         let _ = alice
             .packages()
-            .upload(release(version, &wasm, &publisher))
+            .upload(release(version, &wasm, &publisher), None)
             .await
             .unwrap();
     }
@@ -555,7 +565,10 @@ async fn an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app()
     let app = auto_app(&alice, &mut alice_pk, &publisher).await;
     let _ = alice
         .packages()
-        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let info = get(&alice, &format!("apps/{app}")).await.unwrap();
@@ -648,7 +661,10 @@ async fn passes_take_turns_and_move_an_app_once() {
     let app = auto_app(&alice, &mut alice_pk, &publisher).await;
     let _ = alice
         .packages()
-        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let _ = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
@@ -693,7 +709,10 @@ async fn a_pass_off_the_system_leader_moves_nothing() {
     let app = auto_app(&alice, &mut alice_pk, &publisher).await;
     let _ = alice
         .packages()
-        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let _ = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {

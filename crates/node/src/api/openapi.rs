@@ -1286,17 +1286,19 @@ fn operations() -> Vec<Op> {
             .ok("{ hash: string }")
             .errors(&[(400, "BAD_BUNDLE"), (400, "UNSUPPORTED_BUNDLE"), (403, "FORBIDDEN"), (413, "TOO_LARGE"), (429, "QUOTA_EXCEEDED")]),
         post("/packages", "package_upload", Installer, "Upload a signed release")
-            .about("A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`.")
+            .about("A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several, `409 NO_ORGANIZATION` in none.")
+            .query::<super::UploadQuery>("{ org?: string }")
             .raw("application/octet-stream", "the `.mpk`")
             .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (413, "TOO_LARGE")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "ORG_REQUIRED"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (409, "NO_ORGANIZATION"), (413, "TOO_LARGE")]),
         get("/packages", "package_list", SignedIn, "Installed packages")
             .about("Only the releases the caller may see.")
             .ok("{ packages: #Package[] }"),
         post("/packages/install", "package_install", Installer, "Install a release from the registry")
-            .json::<super::InstallBody>("{ package: string, version: string }")
+            .about("For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; with no organization it is `409 NO_ORGANIZATION`. `404` when the registry serves it to neither.")
+            .json::<super::AccountInstallBody>("{ package: string, version: string, org?: string }")
             .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "NO_REGISTRY"), (403, "DEPLOY_NOT_GRANTED")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "NO_REGISTRY"), (400, "ORG_REQUIRED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (409, "NO_ORGANIZATION")]),
         get("/packages/{package}", "package_get", SignedIn, "One package")
             .about("The versions the caller may see; `404` when none.")
             .ok("#Package")
@@ -1619,7 +1621,7 @@ fn operations() -> Vec<Op> {
             .ok("{ [string]: { hash: string, worstCaseFuel: any, modules: any, pipeline: any } }")
             .errors(&[(404, "NOT_FOUND")]),
         get("/packages/{package}/{version}/capabilities", "package_capabilities", SignedIn, "A release's capabilities")
-            .about("What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.")
+            .about("What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads what its account does (every release of it recorded before releases were public or private). `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.")
             .query::<super::packages::CapabilitiesQuery>("{ service?: string }")
             .ok("{ package: string, version: string, service: string | null, bundle: string, mpk: string, manifestHash: string, signer: string, name: string | null, author: string | null, outbound: string[], secrets: any, uses: any, abi: any, destinations: string[] | null, members: { [string]: #UnitMember } | null }")
             .errors(&[(400, "BAD_REQUEST"), (400, "NO_SUCH_SERVICE"), (404, "NOT_FOUND")]),

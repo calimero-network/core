@@ -39,6 +39,13 @@ const CREATE_CHILD_TEAM: u32 = 1 << 11;
 
 /// A signed single-service `.mpk` of `package@1.0.0`, its WASM tagged so each
 /// package ships its own.
+/// Installs `mpk` as the operator: the cluster's catalog, which every account here uses.
+async fn catalog(c: &Cluster, mpk: Vec<u8>) {
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ok = ops.ops().package_upload(mpk).await.unwrap();
+}
+
 fn release(package: &str) -> Vec<u8> {
     let mut wasm = kv_wasm();
     let tag = package.as_bytes();
@@ -452,7 +459,7 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     let (dave, _d) = signed_up(&c, 0, "dave").await;
     for p in [CHAT, BLOCKS, NOTES] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     for p in [&bob, &carol] {
@@ -632,11 +639,7 @@ async fn scoping_two_packages_that_ship_one_component_keeps_their_instances_apar
     let c = Cluster::start(3).await;
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     for p in [CHAT, NOTES] {
-        let _ok = alice
-            .packages()
-            .upload(release_shipping(p, kv_wasm()))
-            .await
-            .unwrap();
+        catalog(&c, release_shipping(p, kv_wasm())).await;
     }
     // Naming both packages, and naming none (every package with an instance).
     let both = json!({ "apps": [{ "package": CHAT }, { "package": NOTES }] });
@@ -671,7 +674,7 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
     let (eve, _e) = signed_up(&c, 2, "eve").await;
     let (gail, _g) = signed_up(&c, 0, "gail").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     join(
@@ -816,7 +819,7 @@ async fn a_dm_is_reached_only_by_those_in_its_apps_team() {
     let (frank, _f) = signed_up(&c, 1, "frank").await;
     let (erin, _e) = signed_up(&c, 2, "erin").await;
     for p in [CHAT, NOTES] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     for p in [&bob, &carol, &frank] {
@@ -959,7 +962,7 @@ async fn members_of_an_app_team_make_private_channels_below_it() {
     let (dave, _d) = signed_up(&c, 0, "dave").await;
     let (gail, _g) = signed_up(&c, 1, "gail").await;
     let (erin, _e) = signed_up(&c, 2, "erin").await;
-    let _ok = alice.packages().upload(release(CHAT)).await.unwrap();
+    catalog(&c, release(CHAT)).await;
     let org = new_org(&alice).await;
     for p in [&bob, &carol, &dave] {
         join(
@@ -1087,7 +1090,7 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
     let (frank, _f) = signed_up(&c, 1, "frank").await;
     let (erin, mut e) = signed_up(&c, 2, "erin").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     for p in [&bob, &carol, &dave, &frank] {
@@ -1280,7 +1283,7 @@ async fn an_all_apps_member_gets_every_app_added_later() {
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     let (dave, mut d) = signed_up(&c, 0, "dave").await;
     for p in [CHAT, NOTES, BLOCKS] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     for p in [&carol, &dave] {
@@ -1391,7 +1394,7 @@ async fn closing_an_app_team_takes_the_channels_of_whoever_loses_it() {
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (dave, mut d) = signed_up(&c, 2, "dave").await;
-    let _ok = alice.packages().upload(release(CHAT)).await.unwrap();
+    catalog(&c, release(CHAT)).await;
     let org = new_org(&alice).await;
     join(
         &bob,
@@ -1481,7 +1484,7 @@ async fn an_admin_lets_an_app_teams_members_make_channels() {
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, mut b) = signed_up(&c, 1, "bob").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     join(
@@ -1550,7 +1553,7 @@ async fn an_admin_gives_a_member_every_app_in_one_step() {
     let (bob, mut b) = signed_up(&c, 1, "bob").await;
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     for p in [CHAT, BLOCKS, NOTES] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     join(
@@ -1672,7 +1675,7 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     join(

@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, ops_signed, signed_up, typed, wire, Cluster};
+use harness::{home_org, kv_wasm, ops_signed, signed_up, typed, wire, Cluster};
 
 const MANAGE_APPLICATION: u32 = 1 << 4;
 
@@ -310,6 +310,7 @@ fn forbidden(e: &calimero_client::Error) {
 async fn accounts_and_organizations_own_deployments_their_managers_change() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let bob_id = account_of(&bob).await;
@@ -317,7 +318,7 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     let carol_id = account_of(&carol).await;
     let _ok = alice
         .packages()
-        .upload(release("com.test.notes", "1.0.0"))
+        .upload(release("com.test.notes", "1.0.0"), None)
         .await
         .unwrap();
 
@@ -431,8 +432,12 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     join(&alice, &mut alice_pk, &acme, &bob).await;
     join(&alice, &mut alice_pk, &acme, &carol).await;
     set_caps(&alice, &mut alice_pk, &acme, &carol_id, MANAGE_APPLICATION).await;
-    // carol needs to see the release to offer it: she shares the org with
-    // its installer.
+    // carol needs to see the release to offer it: alice installs it for Acme too.
+    let _ok = alice
+        .packages()
+        .upload(release("com.test.notes", "1.0.0"), Some(&acme))
+        .await
+        .unwrap();
     forbidden(
         &bob.deployments()
             .create("acme", typed(json!({ "org": acme })), Some(&mut bob_pk))
@@ -557,6 +562,7 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
 async fn deployments_of_one_release_are_independent() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     let (dave, mut dave_pk) = signed_up(&c, 1, "dave").await;
     let dave_id = account_of(&dave).await;
@@ -565,17 +571,26 @@ async fn deployments_of_one_release_are_independent() {
     let (bob, _bob_pk) = signed_up(&c, 1, "bob").await;
 
     let notes = release("com.test.notes", "1.0.0");
-    let _ok = alice.packages().upload(notes.clone()).await.unwrap();
-    // Dave installs the same release: it is his to offer too.
-    let _ok = dave.packages().upload(notes).await.map(wire).unwrap();
     let _ok = alice
         .packages()
-        .upload(release("com.test.notes", "2.0.0"))
+        .upload(notes.clone(), Some(&home_org(&alice).await))
+        .await
+        .unwrap();
+    // Dave installs the same release: it is his to offer too.
+    let _ok = dave
+        .packages()
+        .upload(notes, Some(&home_org(&dave).await))
+        .await
+        .map(wire)
+        .unwrap();
+    let _ok = alice
+        .packages()
+        .upload(release("com.test.notes", "2.0.0"), None)
         .await
         .unwrap();
     let _ok = alice
         .packages()
-        .upload(release("com.test.board", "1.0.0"))
+        .upload(release("com.test.board", "1.0.0"), None)
         .await
         .unwrap();
 
@@ -698,6 +713,7 @@ async fn deployments_of_one_release_are_independent() {
 async fn frontends_open_the_deployed_release() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     let (carol, _carol_pk) = signed_up(&c, 1, "carol").await;
     let site = |version: &str, html: &'static [u8]| {
@@ -710,12 +726,12 @@ async fn frontends_open_the_deployed_release() {
     };
     let _ok = alice
         .packages()
-        .upload(site("1.0.0", b"<p>one"))
+        .upload(site("1.0.0", b"<p>one"), None)
         .await
         .unwrap();
     let _ok = alice
         .packages()
-        .upload(release("com.test.other", "1.0.0"))
+        .upload(release("com.test.other", "1.0.0"), None)
         .await
         .unwrap();
     let d = deploy(
@@ -743,7 +759,7 @@ async fn frontends_open_the_deployed_release() {
     // A newer release is installed: `/` moves to it.
     let _ok = alice
         .packages()
-        .upload(site("1.1.0", b"<p>two"))
+        .upload(site("1.1.0", b"<p>two"), None)
         .await
         .map(wire)
         .unwrap();
@@ -830,6 +846,7 @@ async fn frontends_open_the_deployed_release() {
 async fn each_deployment_serves_its_frontend_on_its_own_host() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     let site = |version: &str, html: &'static [u8]| {
         mpk(
@@ -841,17 +858,17 @@ async fn each_deployment_serves_its_frontend_on_its_own_host() {
     };
     let _ok = alice
         .packages()
-        .upload(site("1.0.0", b"<p>one"))
+        .upload(site("1.0.0", b"<p>one"), None)
         .await
         .unwrap();
     let _ok = alice
         .packages()
-        .upload(site("1.1.0", b"<p>two"))
+        .upload(site("1.1.0", b"<p>two"), None)
         .await
         .unwrap();
     let _ok = alice
         .packages()
-        .upload(release("com.test.other", "1.0.0"))
+        .upload(release("com.test.other", "1.0.0"), None)
         .await
         .unwrap();
     let created = alice
@@ -1085,15 +1102,19 @@ async fn each_deployment_serves_its_frontend_on_its_own_host() {
 async fn frontend_redirects_keep_the_query() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     let _ok = alice
         .packages()
-        .upload(mpk(
-            "com.test.site",
-            "1.0.0",
-            &variant(&kv_wasm(), "1.0.0"),
-            &[("frontend/index.html", b"<p>one")],
-        ))
+        .upload(
+            mpk(
+                "com.test.site",
+                "1.0.0",
+                &variant(&kv_wasm(), "1.0.0"),
+                &[("frontend/index.html", b"<p>one")],
+            ),
+            None,
+        )
         .await
         .unwrap();
     let d = deploy(
@@ -1190,6 +1211,7 @@ async fn frontend_redirects_keep_the_query() {
 async fn an_instance_link_opens_the_release_that_instance_runs() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     // One WASM in three releases; by string "1.0.0" < "10.0.0" < "9.0.0".
     let wasm = variant(&kv_wasm(), "shared");
@@ -1197,12 +1219,15 @@ async fn an_instance_link_opens_the_release_that_instance_runs() {
         let page = format!("<p>{version}");
         let _ok = alice
             .packages()
-            .upload(mpk(
-                "com.test.site",
-                version,
-                &wasm,
-                &[("frontend/index.html", page.as_bytes())],
-            ))
+            .upload(
+                mpk(
+                    "com.test.site",
+                    version,
+                    &wasm,
+                    &[("frontend/index.html", page.as_bytes())],
+                ),
+                None,
+            )
             .await
             .unwrap();
     }
@@ -1283,6 +1308,7 @@ async fn on_a_granted_cluster_deploying_needs_a_grant() {
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     let (bob, _bob_pk) = signed_up(&c, 1, "bob").await;
     let not_granted = |e: &calimero_client::Error| {
@@ -1309,12 +1335,12 @@ async fn on_a_granted_cluster_deploying_needs_a_grant() {
     .unwrap();
     let _ok = alice
         .packages()
-        .upload(release("com.test.notes", "1.0.0"))
+        .upload(release("com.test.notes", "1.0.0"), None)
         .await
         .unwrap();
     let _ok = alice
         .packages()
-        .upload(release("com.test.notes", "1.1.0"))
+        .upload(release("com.test.notes", "1.1.0"), None)
         .await
         .unwrap();
     let d = deploy(
@@ -1418,6 +1444,7 @@ async fn an_instances_usage_is_billed_to_its_deployments_developer() {
     })
     .await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     let (dave, mut dave_pk) = signed_up(&c, 1, "dave").await;
     let (carol, _carol_pk) = signed_up(&c, 2, "carol").await;
@@ -1425,16 +1452,16 @@ async fn an_instances_usage_is_billed_to_its_deployments_developer() {
     // Developer A is alice's account; developer B is dave's organization.
     let _ok = alice
         .packages()
-        .upload(release("com.test.notes", "1.0.0"))
+        .upload(release("com.test.notes", "1.0.0"), None)
         .await
         .map(wire)
         .unwrap();
+    let dev_b = org(&dave, "Bee Labs").await;
     let _ok = dave
         .packages()
-        .upload(release("com.test.board", "1.0.0"))
+        .upload(release("com.test.board", "1.0.0"), Some(&dev_b))
         .await
         .unwrap();
-    let dev_b = org(&dave, "Bee Labs").await;
     let da = deploy(
         &alice,
         &mut alice_pk,
@@ -1550,13 +1577,14 @@ async fn a_units_members_are_billed_to_its_deployments_developer() {
     })
     .await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     let (carol, _carol_pk) = signed_up(&c, 2, "carol").await;
 
     // The developer installs the member's release and the instance's, which creates it.
     let _ok = alice
         .packages()
-        .upload(release("com.test.unit-kv", "0.1.0"))
+        .upload(release("com.test.unit-kv", "0.1.0"), None)
         .await
         .unwrap();
     let uses = json!({
@@ -1564,13 +1592,16 @@ async fn a_units_members_are_billed_to_its_deployments_developer() {
     });
     let _ok = alice
         .packages()
-        .upload(mpk_using(
-            "com.test.unit-notes",
-            "1.0.0",
-            &variant(&kv_wasm(), "com.test.unit-notes@1.0.0"),
-            &[],
-            uses,
-        ))
+        .upload(
+            mpk_using(
+                "com.test.unit-notes",
+                "1.0.0",
+                &variant(&kv_wasm(), "com.test.unit-notes@1.0.0"),
+                &[],
+                uses,
+            ),
+            None,
+        )
         .await
         .unwrap();
     let da = deploy(
@@ -1674,6 +1705,7 @@ async fn a_units_members_are_billed_to_its_deployments_developer() {
 async fn a_unit_from_a_deployment_moves_only_to_its_offer() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     let (carol, mut carol_pk) = signed_up(&c, 2, "carol").await;
 
@@ -1681,20 +1713,23 @@ async fn a_unit_from_a_deployment_moves_only_to_its_offer() {
     for version in ["0.1.0", "0.1.1"] {
         let _ok = alice
             .packages()
-            .upload(release("com.test.dunit-kv", version))
+            .upload(release("com.test.dunit-kv", version), None)
             .await
             .unwrap();
     }
     for (version, kv) in [("1.0.0", "0.1.0"), ("1.1.0", "0.1.1")] {
         let _ok = alice
             .packages()
-            .upload(mpk_using(
-                "com.test.dunit-notes",
-                version,
-                &variant(&kv_wasm(), &format!("com.test.dunit-notes@{version}")),
-                &[],
-                uses(kv),
-            ))
+            .upload(
+                mpk_using(
+                    "com.test.dunit-notes",
+                    version,
+                    &variant(&kv_wasm(), &format!("com.test.dunit-notes@{version}")),
+                    &[],
+                    uses(kv),
+                ),
+                None,
+            )
             .await
             .unwrap();
     }
@@ -1805,6 +1840,7 @@ async fn finished(client: &Client, org: &str, run: &str) -> Value {
 async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     let (carol, _carol_pk) = signed_up(&c, 1, "carol").await;
     let (erin, _erin_pk) = signed_up(&c, 2, "erin").await;
@@ -1813,7 +1849,7 @@ async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
 
     let _ok = alice
         .packages()
-        .upload(release("com.test.notes", "1.0.0"))
+        .upload(release("com.test.notes", "1.0.0"), None)
         .await
         .unwrap();
     let alpha = deploy(
@@ -1969,13 +2005,14 @@ async fn an_instance_shows_its_update_and_who_may_approve_it() {
     const CREATE_APP: u32 = 1 << 0;
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_of(&alice).await;
     let (carol, mut carol_pk) = signed_up(&c, 1, "carol").await;
     let (bob, mut bob_pk) = signed_up(&c, 2, "bob").await;
     for version in ["1.0.0", "2.0.0"] {
         let _ok = alice
             .packages()
-            .upload(release("com.test.notes", version))
+            .upload(release("com.test.notes", version), None)
             .await
             .unwrap();
     }
@@ -2116,4 +2153,72 @@ async fn an_instance_shows_its_update_and_who_may_approve_it() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+}
+
+/// A customer of a deployment offering a private release creates from the offer, and its
+/// report names the release its instance runs, while the release is not the customer's to
+/// list or create from otherwise.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_customer_creates_from_an_offered_private_release_and_reads_its_name() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _acme = org(&alice, "Acme").await;
+    let alice_id = account_of(&alice).await;
+    let (carol, _carol_pk) = signed_up(&c, 1, "carol").await;
+    let globex = org(&carol, "Globex").await;
+    let _ok = alice
+        .packages()
+        .upload(release("com.test.notes", "1.0.0"), None)
+        .await
+        .unwrap();
+    let d = deploy(
+        &alice,
+        &mut alice_pk,
+        "alpha",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &d,
+        "notes",
+        "com.test.notes",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
+
+    let app = instance(&carol, &d, "com.test.notes", None, Some(&globex))
+        .await
+        .unwrap();
+    let report = carol
+        .auth()
+        .account_apps(None, None)
+        .await
+        .map(wire)
+        .unwrap();
+    let entry = report["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["app"] == json!(app))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        entry["package"],
+        json!({ "package": "com.test.notes", "version": "1.0.0", "service": null }),
+        "{report}"
+    );
+    let e = carol.packages().get("com.test.notes").await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    let e = carol
+        .apps()
+        .create(typed(
+            json!({ "name": "own", "package": "com.test.notes", "version": "1.0.0" }),
+        ))
+        .await
+        .unwrap_err();
+    // As for a release the cluster lacks: this cluster has no registry to install it from.
+    assert_eq!(e.code(), Some("NO_REGISTRY"), "{e}");
 }

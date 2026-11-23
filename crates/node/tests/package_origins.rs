@@ -25,7 +25,7 @@ use serde_json::json;
 )]
 mod harness;
 
-use harness::{kv_wasm, ops_signed, signed_up, typed, wire, Cluster, ORIGIN};
+use harness::{home_org, kv_wasm, ops_signed, signed_up, typed, wire, Cluster, ORIGIN};
 use reqwest::Method;
 
 const NOTES: &str = "com.test.notes";
@@ -36,6 +36,14 @@ const SITE_RP: &str = "notes.example.com";
 
 /// A signed single-service `.mpk` of `package@version`, its WASM tagged so
 /// each package ships its own.
+/// The operator installs `mpk` too, which puts the release in the cluster's catalog that
+/// every account uses: a stranger's session on its frontend creates from it.
+async fn into_catalog(c: &Cluster, mpk: Vec<u8>) {
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ok = ops.ops().package_upload(mpk).await.unwrap();
+}
+
 fn release(package: &str, version: &str) -> Vec<u8> {
     release_with(package, version, &[])
 }
@@ -132,15 +140,17 @@ async fn cors_allows(url: &str, origin: &str) -> bool {
 async fn a_registered_origin_signs_people_in_to_its_package_only() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let _ok = alice
         .packages()
-        .upload(release(NOTES, "1.0.0"))
+        .upload(release(NOTES, "1.0.0"), Some(&home_org(&alice).await))
         .await
         .unwrap();
+    into_catalog(&c, release(NOTES, "1.0.0")).await;
     let _ok = bob
         .packages()
-        .upload(release(OTHER, "1.0.0"))
+        .upload(release(OTHER, "1.0.0"), Some(&home_org(&bob).await))
         .await
         .unwrap();
 
@@ -198,7 +208,11 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .origins_add(NOTES, SITE, None, None, Some(&mut bob_pk))
         .await
         .unwrap_err();
-    assert_eq!(status(&e), 404, "bob does not see the package: {e}");
+    assert_eq!(
+        status(&e),
+        403,
+        "bob sees the catalog's package, manages none: {e}"
+    );
     let statement = calimero_node::proof::Statement::new(
         &format!("package:{NOTES}"),
         "__add_origin",
@@ -297,7 +311,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     assert_eq!(list["origins"][0]["origin"], SITE, "{list}");
     assert_eq!(list["origins"].as_array().unwrap().len(), 1);
     let e = bob.packages().origins_list(NOTES).await.unwrap_err();
-    assert_eq!(status(&e), 404, "{e}");
+    assert_eq!(status(&e), 403, "{e}");
     // Bob's package cannot take alice's origin.
     let e = bob
         .packages()
@@ -489,7 +503,7 @@ async fn a_registered_origin_signs_up_only_whom_the_cluster_takes() {
         .unwrap();
     let _ok = alice
         .packages()
-        .upload(release(NOTES, "1.0.0"))
+        .upload(release(NOTES, "1.0.0"), Some(&home_org(&alice).await))
         .await
         .unwrap();
     let _ok = alice
@@ -536,23 +550,26 @@ async fn a_registered_origin_signs_up_only_whom_the_cluster_takes() {
 async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("apps.localhost".into())).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let html: &[u8] = b"<!doctype html><html><body>notes</body></html>";
+    let notes = release_with(
+        NOTES,
+        "1.0.0",
+        &[
+            ("frontend/index.html", html),
+            ("frontend/assets/app.js", b"console.log(1)"),
+        ],
+    );
     let _ok = alice
         .packages()
-        .upload(release_with(
-            NOTES,
-            "1.0.0",
-            &[
-                ("frontend/index.html", html),
-                ("frontend/assets/app.js", b"console.log(1)"),
-            ],
-        ))
+        .upload(notes.clone(), Some(&home_org(&alice).await))
         .await
         .unwrap();
+    into_catalog(&c, notes).await;
     let _ok = bob
         .packages()
-        .upload(release(OTHER, "1.0.0"))
+        .upload(release(OTHER, "1.0.0"), Some(&home_org(&bob).await))
         .await
         .unwrap();
 
@@ -606,7 +623,7 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
         .origins_add(NOTES, &origin, None, Some(true), Some(&mut bob_pk))
         .await
         .unwrap_err();
-    assert_eq!(status(&e), 404, "bob does not manage the package: {e}");
+    assert_eq!(status(&e), 403, "bob does not manage the package: {e}");
 
     // A plain registration is never served.
     let plain = format!("http://plain.localhost:{port}");

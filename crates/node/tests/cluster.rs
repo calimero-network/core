@@ -1116,7 +1116,7 @@ async fn registry_rig() -> RegistryRig {
     // Install by name; the node that installs it verifies it first.
     let installed = alice
         .packages()
-        .install("com.test.kv", "1.0.0")
+        .install("com.test.kv", "1.0.0", None)
         .await
         .map(wire)
         .unwrap();
@@ -1183,7 +1183,11 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
     // operator: every release comes from the registry, so any node that lacks
     // it fetches it there, and none lives only where it was uploaded.
     let signed = mpk("com.test.kv", "1.0.0", &kv, &publisher);
-    let e = alice.packages().upload(signed.clone()).await.unwrap_err();
+    let e = alice
+        .packages()
+        .upload(signed.clone(), None)
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("UPLOADS_DISABLED"), "{e}");
     let e = ops_at(&c, 0)
         .await
@@ -1236,7 +1240,7 @@ async fn a_registry_release_is_pinned_to_its_publisher_and_its_signed_bytes() {
     );
     let e = alice
         .packages()
-        .install("com.test.kv", "1.1.0")
+        .install("com.test.kv", "1.1.0", None)
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
@@ -1269,7 +1273,7 @@ async fn a_registry_release_is_pinned_to_its_publisher_and_its_signed_bytes() {
     registry.publish("com.test.kv", "1.2.0", tampered);
     let e = alice
         .packages()
-        .install("com.test.kv", "1.2.0")
+        .install("com.test.kv", "1.2.0", None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_PACKAGE"), "{e}");
@@ -1284,7 +1288,7 @@ async fn a_registry_release_is_pinned_to_its_publisher_and_its_signed_bytes() {
     );
     let _ = alice
         .packages()
-        .install("com.test.kv", "2.0.0")
+        .install("com.test.kv", "2.0.0", None)
         .await
         .unwrap();
     let created = alice
@@ -1418,17 +1422,18 @@ async fn a_registry_release_upgrades_in_place_and_uninstalls_once_nothing_runs_i
 async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
     let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("Alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let kv = kv_wasm();
 
     // An unsigned archive is refused.
     let unsigned = pack(&[("app.wasm", kv.clone())]);
-    let e = alice.packages().upload(unsigned).await.unwrap_err();
+    let e = alice.packages().upload(unsigned, None).await.unwrap_err();
     assert_eq!(e.code(), Some("BAD_PACKAGE"), "{e}");
 
     let installed = alice
         .packages()
-        .upload(mpk("com.test.up", "0.1.0", &kv, &publisher))
+        .upload(mpk("com.test.up", "0.1.0", &kv, &publisher), None)
         .await
         .map(wire)
         .unwrap();
@@ -1484,9 +1489,10 @@ async fn a_dev_signed_package_is_refused_outside_development() {
 
     let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("Alice org", None, None).await.unwrap();
     let e = alice
         .packages()
-        .upload(mpk("com.test.dev", "0.1.0", &kv, &dev))
+        .upload(mpk("com.test.dev", "0.1.0", &kv, &dev), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("DEV_SIGNED_PACKAGE"), "{e}");
@@ -1495,9 +1501,10 @@ async fn a_dev_signed_package_is_refused_outside_development() {
 
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("Alice org", None, None).await.unwrap();
     let installed = alice
         .packages()
-        .upload(mpk("com.test.dev", "0.1.0", &kv, &dev))
+        .upload(mpk("com.test.dev", "0.1.0", &kv, &dev), None)
         .await
         .unwrap();
     assert_eq!(installed.signer_id, calimero_bundle::DEV_SIGNER_ID);
@@ -1569,7 +1576,7 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     let secret = variant(&kv, "secret");
     let _ = alice
         .packages()
-        .upload(mpk("com.acme.secret", "1.0.0", &secret, &publisher))
+        .upload(mpk("com.acme.secret", "1.0.0", &secret, &publisher), None)
         .await
         .unwrap();
     let only_secret = BTreeMap::from([("com.acme.secret".to_owned(), vec!["1.0.0".to_owned()])]);
@@ -1673,13 +1680,13 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
         .unwrap()
         .to_owned();
     let _r = bob.orgs().invite_redeem(&token).await.unwrap();
-    // Once Bob reaches an app running it, he sees that release.
-    assert_eq!(listed(&bob).await, only_secret, "Bob reaches {shared}");
+    // Reaching an app running it is not using it: Bob still lists nothing.
+    assert_eq!(listed(&bob).await, BTreeMap::new(), "Bob reaches {shared}");
     let _ = amy.apps().delete(&shared).await.unwrap();
     assert_eq!(listed(&bob).await, BTreeMap::new());
 
-    // A registry release is private to its installers too; Bob installing the
-    // same release himself makes it his as well.
+    // A release the registry serves to anyone is public: once Alice installed it,
+    // Bob lists it and creates from it without installing it himself.
     registry.publish(
         "com.test.kv",
         "1.0.0",
@@ -1687,13 +1694,7 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     );
     let _ = alice
         .packages()
-        .install("com.test.kv", "1.0.0")
-        .await
-        .unwrap();
-    assert!(!listed(&bob).await.contains_key("com.test.kv"));
-    let _ = bob
-        .packages()
-        .install("com.test.kv", "1.0.0")
+        .install("com.test.kv", "1.0.0", None)
         .await
         .unwrap();
     assert_eq!(
@@ -2380,7 +2381,7 @@ async fn the_operator_installs_the_releases_it_upgrades_to() {
     // A release an account installed stays that account's.
     let _ = alice
         .packages()
-        .upload(mpk("com.test.mine", "1.0.0", &kv, &publisher))
+        .upload(mpk("com.test.mine", "1.0.0", &kv, &publisher), None)
         .await
         .map(wire)
         .unwrap();
@@ -2443,13 +2444,16 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         let publisher = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let _ = alice
             .packages()
-            .upload(mpk_declaring(
-                "com.test.gov",
-                "0.1.0",
-                &variant(&kv, "pkg"),
-                &publisher,
-                &["https://api.example.com/v1/"],
-            ))
+            .upload(
+                mpk_declaring(
+                    "com.test.gov",
+                    "0.1.0",
+                    &variant(&kv, "pkg"),
+                    &publisher,
+                    &["https://api.example.com/v1/"],
+                ),
+                None,
+            )
             .await
             .unwrap();
 
@@ -2867,11 +2871,6 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
     let kv = kv_wasm();
-    let _ = alice
-        .packages()
-        .upload(mpk("com.test.kv", "0.1.0", &kv, &publisher))
-        .await
-        .unwrap();
     let org = alice
         .orgs()
         .create("Acme", None, None)
@@ -2881,6 +2880,11 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
         .as_str()
         .unwrap()
         .to_owned();
+    let _ = alice
+        .packages()
+        .upload(mpk("com.test.kv", "0.1.0", &kv, &publisher), None)
+        .await
+        .unwrap();
     let team = |name: &str, parent: Option<&str>| {
         let alice = &alice;
         let org = org.clone();
@@ -2913,7 +2917,10 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     }
     let _ = alice
         .packages()
-        .upload(mpk("com.test.kv", "0.2.0", &variant(&kv, "v2"), &publisher))
+        .upload(
+            mpk("com.test.kv", "0.2.0", &variant(&kv, "v2"), &publisher),
+            None,
+        )
         .await
         .map(wire)
         .unwrap();
@@ -2962,7 +2969,7 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
             "1.0.0",
             &variant(&kv, "checked-v1"),
             &publisher,
-        ))
+        ), None)
         .await.map(wire)
         .unwrap();
     let checked = alice
@@ -2991,12 +2998,15 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     }
     let _ = alice
         .packages()
-        .upload(mpk(
-            "com.test.checked",
-            "2.0.0",
-            &variant(&kv, "checked-v2"),
-            &publisher,
-        ))
+        .upload(
+            mpk(
+                "com.test.checked",
+                "2.0.0",
+                &variant(&kv, "checked-v2"),
+                &publisher,
+            ),
+            None,
+        )
         .await
         .map(wire)
         .unwrap();
@@ -3171,13 +3181,23 @@ async fn presence_reaches_every_node_and_expires() {
 /// package, reaching its apps and nothing else of the account.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn app_frontends_are_served_and_their_sessions_are_bound() {
-    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let registry = FakeRegistry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.apps_domain = Some("localhost".into());
+        cfg.registry = Some(url.clone());
+    })
+    .await;
     let (alice, _apk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("Alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
     let html: &[u8] = b"<!doctype html><html><head><script type=\"module\" src=\"./assets/app.js\"></script></head><body></body></html>";
-    let _ = alice
-        .packages()
-        .upload(mpk_full(
+    // A public release (the registry serves it to anyone), so a stranger's session on
+    // its frontend creates from it.
+    registry.publish(
+        "com.test.site",
+        "0.1.0",
+        mpk_full(
             "com.test.site",
             "0.1.0",
             &kv_wasm(),
@@ -3188,17 +3208,24 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
                 ("frontend/assets/app.js", b"console.log(1)"),
             ],
             None,
-        ))
+        ),
+    );
+    let _ = alice
+        .packages()
+        .install("com.test.site", "0.1.0", None)
         .await
         .unwrap();
     let _ = alice
         .packages()
-        .upload(mpk(
-            "com.test.other",
-            "0.1.0",
-            &variant(&kv_wasm(), "o"),
-            &publisher,
-        ))
+        .upload(
+            mpk(
+                "com.test.other",
+                "0.1.0",
+                &variant(&kv_wasm(), "o"),
+                &publisher,
+            ),
+            None,
+        )
         .await
         .unwrap();
     let other = alice
@@ -3471,19 +3498,23 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
 async fn a_frontend_session_manages_no_organization_and_no_app() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, mut home_key) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("Alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
     let html: &[u8] = b"<!doctype html><html><body></body></html>";
     let _ = alice
         .packages()
-        .upload(mpk_full(
-            "com.test.site",
-            "0.1.0",
-            &kv_wasm(),
-            &publisher,
-            &[],
-            &[("frontend/index.html", html)],
+        .upload(
+            mpk_full(
+                "com.test.site",
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[],
+                &[("frontend/index.html", html)],
+                None,
+            ),
             None,
-        ))
+        )
         .await
         .unwrap();
     let app = alice
@@ -5191,10 +5222,14 @@ async fn a_stopped_nodes_store_can_be_inspected() {
 async fn the_client_creates_from_a_package_deletes_confirmed_and_signs_out_everywhere() {
     let c = Cluster::start(3).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("Alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let _ = alice
         .packages()
-        .upload(mpk("com.test.client", "1.0.0", &kv_wasm(), &publisher))
+        .upload(
+            mpk("com.test.client", "1.0.0", &kv_wasm(), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let app = alice
@@ -5778,7 +5813,7 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     stopped(
         alice
             .packages()
-            .upload(mpk("com.test.late", "0.1.0", &kv_wasm(), &publisher))
+            .upload(mpk("com.test.late", "0.1.0", &kv_wasm(), &publisher), None)
             .await
             .unwrap_err(),
     );
@@ -5906,8 +5941,8 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
     };
     let kv = kv_wasm();
     let first = release("1.0.0", &kv, Publisher);
-    let _ok = pam.packages().upload(first.clone()).await.unwrap();
-    let _ok = cora.packages().upload(first).await.unwrap();
+    let _ok = pam.packages().upload(first.clone(), None).await.unwrap();
+    let _ok = cora.packages().upload(first, None).await.unwrap();
     let inst = cora
         .apps()
         .create(typed(
@@ -5976,8 +6011,8 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
     assert!(e.to_string().starts_with("403"), "{e}");
 
     let v2 = release("1.1.0", &variant(&kv, "v2"), Publisher);
-    let _ok = pam.packages().upload(v2.clone()).await.unwrap();
-    let _ok = cora.packages().upload(v2).await.unwrap();
+    let _ok = pam.packages().upload(v2.clone(), None).await.unwrap();
+    let _ok = cora.packages().upload(v2, None).await.unwrap();
     // The publisher's run moves its own organization's instance, never the customer's.
     let run = pam
         .orgs()
@@ -6016,13 +6051,13 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
     // Upgrades go to owners in a later release, never back.
     let _ok = pam
         .packages()
-        .upload(release("1.2.0", &variant(&kv, "v3"), Owner))
+        .upload(release("1.2.0", &variant(&kv, "v3"), Owner), None)
         .await
         .map(wire)
         .unwrap();
     let e = pam
         .packages()
-        .upload(release("1.3.0", &variant(&kv, "v4"), Publisher))
+        .upload(release("1.3.0", &variant(&kv, "v4"), Publisher), None)
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("409"), "{e}");
@@ -6110,17 +6145,15 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let _ = alice
         .packages()
-        .upload(mpk("com.test.track", "1.0.0", &kv, &publisher))
+        .upload(mpk("com.test.track", "1.0.0", &kv, &publisher), None)
         .await
         .unwrap();
     let _ = alice
         .packages()
-        .upload(mpk(
-            "com.test.track",
-            "1.1.0",
-            &variant(&kv, "next"),
-            &publisher,
-        ))
+        .upload(
+            mpk("com.test.track", "1.1.0", &variant(&kv, "next"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let created = alice
@@ -6436,15 +6469,18 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
         let page = format!("<p>{version}");
         let _ = alice
             .packages()
-            .upload(mpk_full(
-                "com.test.fe",
-                version,
-                &wasm,
-                &publisher,
-                &[],
-                &[("frontend/index.html", page.as_bytes())],
+            .upload(
+                mpk_full(
+                    "com.test.fe",
+                    version,
+                    &wasm,
+                    &publisher,
+                    &[],
+                    &[("frontend/index.html", page.as_bytes())],
+                    None,
+                ),
                 None,
-            ))
+            )
             .await
             .unwrap();
     }
@@ -7281,12 +7317,15 @@ async fn a_bound_session_does_not_open_a_package_its_account_cannot_see() {
     // Alice's package has no frontend.
     let _ = alice
         .packages()
-        .upload(mpk(
-            "com.acme.secret",
-            "1.0.0",
-            &variant(&kv_wasm(), "s"),
-            &publisher,
-        ))
+        .upload(
+            mpk(
+                "com.acme.secret",
+                "1.0.0",
+                &variant(&kv_wasm(), "s"),
+                &publisher,
+            ),
+            None,
+        )
         .await
         .unwrap();
     let alices_app = alice
@@ -7392,4 +7431,193 @@ async fn on_frontend(
     let me = site.auth().me().await.map(wire).unwrap();
     assert_eq!(me["app"], json!(package), "{me}");
     site
+}
+
+/// A private release is used only in the organizations it was installed for: Alice, in
+/// Acme and Bobco, installs for Bobco (naming it, as she is in two), and Carol, who shares
+/// only Acme with her, does not see it; an installer removed from Bobco loses it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_private_release_is_used_only_in_the_organizations_it_was_installed_for() {
+    let c = Cluster::start(3).await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let acme = new_org(&alice, "Acme").await;
+    let bobco = new_org(&bob, "Bobco").await;
+    join((&alice, &mut a), &carol, &acme, "member").await;
+    join((&bob, &mut b), &alice, &bobco, "member").await;
+    let tool = || {
+        mpk(
+            "com.bob.tool",
+            "1.0.0",
+            &variant(&kv_wasm(), "tool"),
+            &publisher,
+        )
+    };
+
+    let e = alice.packages().upload(tool(), None).await.unwrap_err();
+    assert_eq!(e.code(), Some("ORG_REQUIRED"), "{e}");
+    let e = carol
+        .packages()
+        .upload(tool(), Some(&bobco))
+        .await
+        .unwrap_err();
+    assert!(
+        e.to_string().starts_with("404"),
+        "not her organization: {e}"
+    );
+    let _ok = alice.packages().upload(tool(), Some(&bobco)).await.unwrap();
+    let tool_listed = BTreeMap::from([("com.bob.tool".to_owned(), vec!["1.0.0".to_owned()])]);
+    assert_eq!(listed(&alice).await, tool_listed);
+    assert_eq!(listed(&bob).await, tool_listed, "a member of Bobco");
+    assert_eq!(listed(&carol).await, BTreeMap::new(), "Acme is not Bobco");
+    let e = carol
+        .apps()
+        .create(typed(
+            json!({ "name": "t", "package": "com.bob.tool", "version": "1.0.0" }),
+        ))
+        .await
+        .unwrap_err();
+    // As for a release the cluster lacks: this cluster has no registry to install it from.
+    assert_eq!(e.code(), Some("NO_REGISTRY"), "{e}");
+
+    let alice_id = account_id(&alice).await;
+    let _ok = bob
+        .orgs()
+        .remove_member(&bobco, &alice_id, Some(&mut b))
+        .await
+        .unwrap();
+    assert_eq!(listed(&alice).await, BTreeMap::new(), "removed from Bobco");
+    assert_eq!(listed(&bob).await, tool_listed);
+}
+
+/// Reaching an instance reads it and the release it runs, never uses that release: Bob,
+/// through an `anyone` grant, reads Alice's instance and its release's name, and neither
+/// lists the package nor creates an instance of his own from it; a public release is his
+/// to create from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn reaching_an_instance_reads_its_release_but_does_not_use_it() {
+    let registry = FakeRegistry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let _acme = new_org(&alice, "Acme").await;
+    let _bobco = new_org(&bob, "Bobco").await;
+    let _ok = alice
+        .packages()
+        .upload(
+            mpk(
+                "com.acme.secret",
+                "1.0.0",
+                &variant(&kv_wasm(), "s"),
+                &publisher,
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let open = alice
+        .apps()
+        .create(typed(json!({ "name": "open", "package": "com.acme.secret",
+            "version": "1.0.0", "grants": [{ "kind": "anyone" }] })))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let read = bob.apps().get(&open).await.map(wire).unwrap();
+    assert_eq!(
+        read["release"]["package"],
+        json!("com.acme.secret"),
+        "{read}"
+    );
+    let update = bob.apps().update(&open).await.map(wire).unwrap();
+    assert_eq!(
+        update["running"],
+        json!({ "package": "com.acme.secret", "version": "1.0.0" })
+    );
+    assert_eq!(listed(&bob).await, BTreeMap::new());
+    let e = bob.packages().get("com.acme.secret").await.unwrap_err();
+    assert!(e.to_string().starts_with("404"), "{e}");
+    let e = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "mine", "package": "com.acme.secret", "version": "1.0.0" }),
+        ))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("404"), "{e}");
+
+    registry.publish(
+        "com.test.kv",
+        "1.0.0",
+        mpk("com.test.kv", "1.0.0", &kv_wasm(), &publisher),
+    );
+    let _ok = alice
+        .packages()
+        .install("com.test.kv", "1.0.0", None)
+        .await
+        .unwrap();
+    let _mine = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "mine", "package": "com.test.kv", "version": "1.0.0" }),
+        ))
+        .await
+        .unwrap();
+}
+
+/// On a granted cluster, a stranger's session on a public release's frontend creates an
+/// instance of it: another organization installed it, and the stranger needs no install
+/// and no deployer grant of their own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_strangers_frontend_session_creates_from_a_public_release_another_org_installed() {
+    use calimero_node::system::Deployments;
+    let registry = FakeRegistry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.apps_domain = Some("localhost".into());
+        cfg.registry = Some(url.clone());
+        cfg.governance.deployments = Deployments::Granted;
+    })
+    .await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (_bob, bob_pk) = signed_up(&c, 1, "bob").await;
+    let _acme = new_org(&alice, "Acme").await;
+    let alice_id = account_id(&alice).await;
+    let _ok = harness::ops_signed(
+        &ops_at(&c, 0).await,
+        "ops/deployers",
+        json!({ "deployer": { "account": alice_id } }),
+    )
+    .await
+    .unwrap();
+    registry.publish(
+        "com.test.site",
+        "1.0.0",
+        mpk("com.test.site", "1.0.0", &kv_wasm(), &publisher),
+    );
+    let _ok = alice
+        .packages()
+        .install("com.test.site", "1.0.0", None)
+        .await
+        .unwrap();
+
+    // Bob holds no grant, so an install of his own would be refused.
+    let site = on_frontend(&c, 1, &bob_pk, "com.test.site").await;
+    let made = site
+        .apps()
+        .create(typed(
+            json!({ "name": "b", "package": "com.test.site", "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    assert!(made["appId"].is_string(), "{made}");
 }

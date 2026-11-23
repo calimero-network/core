@@ -82,7 +82,7 @@ pub struct ReleaseName {
     pub service: Option<String>,
 }
 
-/// The release `app` runs, if `reader` may see it: the one its record names
+/// The release `app` runs, if `reader` may read it: the one its record names
 /// (`AppRecord::release`, set at create and at every upgrade), else, for a
 /// record from before or a raw upload, the one its bundle ships in
 /// ([`release_of_bundle`]).
@@ -94,18 +94,18 @@ pub fn release_of_app(s: &SystemState, app: &AppRecord, reader: Reader<'_>) -> O
     }
 }
 
-/// Release `r`, if installed and `reader` may see it.
+/// Release `r`, if installed and `reader` may read it ([`SystemState::reads_release`]).
 fn named_release(s: &SystemState, r: &PackageRef, reader: Reader<'_>) -> Option<ReleaseName> {
     let v = s.packages.get(&r.package)?.versions.get(&r.version)?;
-    s.sees_release(v, reader.who()).then(|| ReleaseName {
+    s.reads_release(v, reader.who()).then(|| ReleaseName {
         package: r.package.clone(),
         version: r.version.clone(),
         service: r.service.clone(),
     })
 }
 
-/// The package release that ships bundle `hash`, if `reader` may see one: the
-/// release the bundle was recorded from when visible, else the highest visible
+/// The package release that ships bundle `hash`, if `reader` may read one: the
+/// release the bundle was recorded from when readable, else the highest readable
 /// release that ships it. Releases may share a WASM, so this is only a guess
 /// at which one an app runs, for a record that does not name it.
 #[must_use]
@@ -117,7 +117,7 @@ pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Opt
             .packages
             .get(&r.package)
             .and_then(|p| p.versions.get(&r.version))
-            .is_some_and(|v| v.app_parts().values().any(|h| h == hash) && s.sees_release(v, who));
+            .is_some_and(|v| v.app_parts().values().any(|h| h == hash) && s.reads_release(v, who));
         if visible {
             return Some(ReleaseName {
                 package: r.package.clone(),
@@ -129,7 +129,7 @@ pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Opt
     s.packages
         .values()
         .flat_map(|p| p.versions.values().map(move |v| (p, v)))
-        .filter(|(_, v)| s.sees_release(v, who))
+        .filter(|(_, v)| s.reads_release(v, who))
         .filter_map(|(p, v)| {
             let service = v.app_parts().iter().find(|(_, h)| *h == hash)?.0;
             Some((p, v, service))

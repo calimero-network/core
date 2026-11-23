@@ -56,12 +56,13 @@ async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Bod
 async fn package_upload(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
+    Query(q): Query<UploadQuery>,
     body: Body,
 ) -> ApiResult {
     let account = installer(&node, &headers).await?.account()?;
     uploads_allowed(&node)?;
     Ok(Json(
-        node.install_upload(Arc::from(body.to_vec()), &account)
+        node.install_upload(Arc::from(body.to_vec()), &account, q.org.as_deref())
             .await?,
     ))
 }
@@ -85,16 +86,34 @@ pub(super) struct InstallBody {
     version: String,
 }
 
+/// `POST /packages/install`: an account names the organization it installs for.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AccountInstallBody {
+    package: String,
+    version: String,
+    #[serde(default)]
+    org: Option<String>,
+}
+
+/// `POST /packages?org=`: the organization an upload is private to.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct UploadQuery {
+    #[serde(default)]
+    org: Option<String>,
+}
+
 /// Install `package@version` from the registry: verified here, then fetched
 /// and verified again by every node that runs it.
 async fn package_install(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
-    Json(body): Json<InstallBody>,
+    Json(body): Json<AccountInstallBody>,
 ) -> ApiResult {
     let account = installer(&node, &headers).await?.account()?;
     Ok(Json(
-        node.install_from_registry(&body.package, &body.version, &account)
+        node.install_from_registry(&body.package, &body.version, &account, body.org.as_deref())
             .await?,
     ))
 }
@@ -102,8 +121,8 @@ async fn package_install(
 /// `p` as `who` (an account, or `system::OPERATOR`) may see it: only the
 /// releases [`SystemState::sees_release`] lets them see, `None` when that is
 /// none, so a package they may not use is not listed and answers `404`.
-/// `frontend`: `who` came through `p`'s own frontend, public by name, and
-/// sees every release of it.
+/// `frontend`: `who` came through `p`'s own frontend
+/// ([`SystemState::sees_release_from`]).
 fn package_json(
     s: &SystemState,
     p: &crate::system::PackageRecord,
@@ -113,7 +132,7 @@ fn package_json(
     let mut versions: Vec<&crate::system::PackageVersion> = p
         .versions
         .values()
-        .filter(|v| frontend || s.sees_release(v, who))
+        .filter(|v| s.sees_release_from(v, who, frontend))
         .collect();
     if versions.is_empty() {
         return None;
@@ -188,7 +207,8 @@ async fn package_pipelines(
     let refs = node
         .sys(|s| {
             let v = s.packages.get(&package)?.versions.get(&version)?;
-            (frontend || s.sees_release(v, &account)).then(|| v.pipelines.clone())
+            s.sees_release_from(v, &account, frontend)
+                .then(|| v.pipelines.clone())
         })
         .ok_or_else(|| ApiError::not_found("no such package version"))?;
     Ok(Json(node.release_pipelines(&refs).await?))
@@ -224,7 +244,8 @@ async fn package_capabilities(
     let release = node
         .sys(|s| {
             let v = s.packages.get(&package)?.versions.get(&version)?;
-            (frontend || s.sees_release(v, &account)).then(|| v.clone())
+            s.sees_release_from(v, &account, frontend)
+                .then(|| v.clone())
         })
         .ok_or_else(|| ApiError::not_found("no such package version"))?;
     let mut card =
@@ -295,7 +316,7 @@ async fn ops_package_upload(
     operator(&node, &headers)?;
     uploads_allowed(&node)?;
     Ok(Json(
-        node.install_upload(Arc::from(body.to_vec()), crate::system::OPERATOR)
+        node.install_upload(Arc::from(body.to_vec()), crate::system::OPERATOR, None)
             .await?,
     ))
 }
@@ -308,7 +329,7 @@ async fn ops_package_install(
 ) -> ApiResult {
     operator(&node, &headers)?;
     Ok(Json(
-        node.install_from_registry(&body.package, &body.version, crate::system::OPERATOR)
+        node.install_from_registry(&body.package, &body.version, crate::system::OPERATOR, None)
             .await?,
     ))
 }

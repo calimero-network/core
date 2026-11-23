@@ -70,7 +70,7 @@ pub async fn run(cmd: DevCmd, env: &Env) -> eyre::Result<()> {
             watch,
             dev_passkey,
         } => {
-            let installed = crate::app::install_file(env, &path).await?;
+            let installed = crate::app::install_file(env, &path, None).await?;
             let text = |k: &str| installed[k].as_str().map(str::to_owned);
             let mut body = AppCreateRequest {
                 name: Some(name),

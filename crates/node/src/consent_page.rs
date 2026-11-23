@@ -105,6 +105,7 @@ use crate::api::{
 };
 use crate::error::ApiError;
 use crate::node::Node;
+use crate::packages::Via;
 use crate::system::{PackageRef, PackageVersion, ReleaseScope};
 use crate::types::{now_secs, Caller, OrgRole};
 
@@ -402,8 +403,12 @@ async fn requested_release(
                     package,
                     Some(version),
                     service,
-                    account,
-                    p.bound_app() == Some(package),
+                    (account, Some(&app.org)),
+                    if p.bound_app() == Some(package) {
+                        Via::Frontend
+                    } else {
+                        Via::Account
+                    },
                 )
                 .await?;
             Ok((version.to_owned(), bundle))
@@ -2470,7 +2475,10 @@ async fn outbound_request(
         .sys(|s| {
             let pkg = s.packages.get(&package)?;
             let latest = pkg.latest()?;
-            (bound == Some(package.as_str()) || s.visible_versions(pkg, account).next().is_some())
+            let frontend = bound == Some(package.as_str());
+            pkg.versions
+                .values()
+                .any(|v| s.sees_release_from(v, account, frontend) || s.reads_release(v, account))
                 .then(|| latest.clone())
         })
         .ok_or_else(|| ApiError::not_found("no such package"))?;

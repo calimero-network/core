@@ -334,8 +334,8 @@ pub(crate) async fn upgrade_app(
                 package.as_deref(),
                 body.version.as_deref(),
                 service.as_deref(),
-                &account,
-                false,
+                (&account, Some(&app.org)),
+                Via::Account,
             )
             .await?
         }
@@ -1084,7 +1084,13 @@ async fn org_upgrade(
     run_refusal(&node, &org, &account, body.team.as_deref(), owner_approves)?;
     // Installed from the registry first if the cluster lacks the release.
     let _bundle = node
-        .resolve_release(&body.package, Some(&body.version), None, &account, false)
+        .resolve_release(
+            &body.package,
+            Some(&body.version),
+            None,
+            (&account, Some(&org)),
+            Via::Account,
+        )
         .await;
     let consent = consent(
         &node,
@@ -1174,7 +1180,13 @@ async fn publisher_upgrade(
         .await?;
     // Installed from the registry first if the cluster lacks the release.
     let _bundle = node
-        .resolve_release(&package, Some(&body.version), None, &account, false)
+        .resolve_release(
+            &package,
+            Some(&body.version),
+            None,
+            (&account, Some(&org)),
+            Via::Account,
+        )
         .await;
     let consent = consent(
         &node,
@@ -1540,7 +1552,13 @@ pub(crate) async fn unit_plan(
         .release_of_app(&app)
         .ok_or_else(|| ApiError::bad_request("NOT_A_UNIT", "this app runs no package release"))?;
     let _bundle = node
-        .resolve_release(&current.at.package, Some(version), None, account, false)
+        .resolve_release(
+            &current.at.package,
+            Some(version),
+            None,
+            (account, Some(&app.org)),
+            Via::Account,
+        )
         .await;
     let target = PackageRef {
         package: current.at.package.clone(),
@@ -1769,8 +1787,8 @@ async fn app_update(
     Ok(Json(update_view(&node, &app, account, bound).await))
 }
 
-/// `GET /apps/{app}/update`'s answer for `app`, read by `account` (a session bound to
-/// package `bound` sees all its releases); `GET /orgs/{org}/updates` lists the same.
+/// `GET /apps/{app}/update`'s answer for `app`, read by `account` (through package
+/// `bound`'s frontend, `SystemState::sees_release_from`); `GET /orgs/{org}/updates` lists the same.
 pub(crate) async fn update_view(
     node: &Node,
     app: &crate::types::AppRecord,
@@ -1808,9 +1826,9 @@ pub(crate) async fn update_view(
             version: r.version.clone(),
             service: r.service.clone(),
         };
+        let frontend = bound == Some(r.package.as_str());
         let sees = |v: &crate::system::PackageVersion| {
-            bound == Some(r.package.as_str())
-                || account.is_some_and(|a| s.sees_release(v, a))
+            account.is_some_and(|a| s.sees_release_from(v, a, frontend))
                 || s.sees_release(v, crate::system::OPERATOR)
         };
         let newer = crate::report::newer_versions(s, &current, sees);

@@ -4339,6 +4339,7 @@ async fn unique_ids_survive_a_crash_before_the_commit_index_reaches_the_disk() {
 async fn a_snapshot_install_carries_a_components_host_records() {
     let mut c = Cluster::start_with(3, |cfg| cfg.raft.snapshot_every = 20).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let bundle = alice
         .packages()
         .bundle_put(kv_wasm())
@@ -4472,13 +4473,10 @@ async fn a_core_module_bundle_is_refused_as_an_sdk_0_12_app() {
     refused(
         alice
             .packages()
-            .upload(mpk_declaring(
-                "com.test.core",
-                "0.1.0",
-                &core,
-                &publisher,
-                &[],
-            ))
+            .upload(
+                mpk_declaring("com.test.core", "0.1.0", &core, &publisher, &[]),
+                Some(&home_org(&alice).await),
+            )
             .await
             .unwrap_err(),
     );
@@ -5010,6 +5008,7 @@ async fn an_app_calls_another_as_the_person_only_with_their_grant() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
     let c = Cluster::start(3).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
@@ -5021,7 +5020,10 @@ async fn an_app_calls_another_as_the_person_only_with_their_grant() {
     for (package, u) in [("com.test.d-cal", Value::Null), ("com.test.d-plugin", uses)] {
         let _ = alice
             .packages()
-            .upload(mpk_using(package, "1.0.0", &kv_wasm(), &publisher, &[], u))
+            .upload(
+                mpk_using(package, "1.0.0", &kv_wasm(), &publisher, &[], u),
+                None,
+            )
             .await
             .unwrap();
     }
@@ -5428,15 +5430,13 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
     let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
     let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let _ = alice
         .packages()
-        .upload(mpk_declaring(
-            PACKAGE,
-            "0.1.0",
-            &kv_wasm(),
-            &publisher,
-            &[PREFIX],
-        ))
+        .upload(
+            mpk_declaring(PACKAGE, "0.1.0", &kv_wasm(), &publisher, &[PREFIX]),
+            None,
+        )
         .await
         .unwrap();
     let app = alice
@@ -5575,18 +5575,22 @@ async fn a_release_fills_only_the_secrets_it_declares() {
     let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
     let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
 
     // Naming a host the release does not send to: refused before anything is recorded.
     let e = alice
         .packages()
-        .upload(mpk_with_secrets(
-            "com.calimero.declares-bad",
-            "0.1.0",
-            &kv_wasm(),
-            &publisher,
-            &[PREFIX],
-            Some(&[("ECHO_KEY", "elsewhere.test")]),
-        ))
+        .upload(
+            mpk_with_secrets(
+                "com.calimero.declares-bad",
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[PREFIX],
+                Some(&[("ECHO_KEY", "elsewhere.test")]),
+            ),
+            None,
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_SECRETS"), "{e}");
@@ -5595,14 +5599,17 @@ async fn a_release_fills_only_the_secrets_it_declares() {
     for (package, name) in packages.iter().zip(["ECHO_KEY", "OTHER_KEY"]) {
         let _ = alice
             .packages()
-            .upload(mpk_with_secrets(
-                package,
-                "0.1.0",
-                &kv_wasm(),
-                &publisher,
-                &[PREFIX],
-                Some(&[(name, HOST)]),
-            ))
+            .upload(
+                mpk_with_secrets(
+                    package,
+                    "0.1.0",
+                    &kv_wasm(),
+                    &publisher,
+                    &[PREFIX],
+                    Some(&[(name, HOST)]),
+                ),
+                None,
+            )
             .await
             .unwrap();
         let _ = alice
@@ -5683,6 +5690,7 @@ async fn a_release_names_the_apps_it_uses_on_its_card() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let abi = format!("sha256:{}", "b".repeat(64));
 
     let e = alice
@@ -5694,7 +5702,7 @@ async fn a_release_names_the_apps_it_uses_on_its_card() {
             &publisher,
             &[],
             json!({ "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.2.0" } }),
-        ))
+        ), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_USES"), "{e}");
@@ -5711,7 +5719,7 @@ async fn a_release_names_the_apps_it_uses_on_its_card() {
                 "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.1.0", "abi": abi },
                 "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
             }),
-        ))
+        ), None)
         .await
         .unwrap();
     let card: Value = alice
@@ -5804,6 +5812,7 @@ async fn a_deployments_secret_reaches_its_instances_unless_they_set_their_own() 
     let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
     let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
@@ -5815,14 +5824,17 @@ async fn a_deployments_secret_reaches_its_instances_unless_they_set_their_own() 
         .to_owned();
     let _ = alice
         .packages()
-        .upload(mpk_with_secrets(
-            PACKAGE,
-            "0.1.0",
-            &kv_wasm(),
-            &publisher,
-            &[PREFIX],
-            Some(&[("ECHO_KEY", HOST)]),
-        ))
+        .upload(
+            mpk_with_secrets(
+                PACKAGE,
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[PREFIX],
+                Some(&[("ECHO_KEY", HOST)]),
+            ),
+            None,
+        )
         .await
         .unwrap();
     let _ = alice
@@ -6097,6 +6109,7 @@ async fn a_deployments_secret_never_reaches_a_package_it_does_not_offer() {
     let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
     let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
@@ -6108,14 +6121,17 @@ async fn a_deployments_secret_never_reaches_a_package_it_does_not_offer() {
     for version in ["0.1.0", "0.2.0", "0.3.0"] {
         let _ = alice
             .packages()
-            .upload(mpk_with_secrets(
-                PACKAGE,
-                version,
-                &kv_wasm(),
-                &publisher,
-                &[PREFIX],
-                Some(&[("ECHO_KEY", HOST)]),
-            ))
+            .upload(
+                mpk_with_secrets(
+                    PACKAGE,
+                    version,
+                    &kv_wasm(),
+                    &publisher,
+                    &[PREFIX],
+                    Some(&[("ECHO_KEY", HOST)]),
+                ),
+                None,
+            )
             .await
             .unwrap();
     }
@@ -6160,14 +6176,17 @@ async fn a_deployments_secret_never_reaches_a_package_it_does_not_offer() {
             // custom section of theirs, which changes its hash and nothing it does.
             let _ = bob
                 .packages()
-                .upload(mpk_with_secrets(
-                    THEIRS,
-                    "0.1.0",
-                    &with_custom_section(&kv_wasm(), "customer", b"theirs"),
-                    &customer_key,
-                    &[PREFIX],
-                    Some(&[("ECHO_KEY", HOST)]),
-                ))
+                .upload(
+                    mpk_with_secrets(
+                        THEIRS,
+                        "0.1.0",
+                        &with_custom_section(&kv_wasm(), "customer", b"theirs"),
+                        &customer_key,
+                        &[PREFIX],
+                        Some(&[("ECHO_KEY", HOST)]),
+                    ),
+                    None,
+                )
                 .await
                 .unwrap();
         }
@@ -6300,32 +6319,39 @@ async fn a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it() {
     let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
     let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
     let _ = alice
         .packages()
-        .upload(mpk_with_secrets(
-            USED,
-            "0.1.0",
-            &kv_wasm(),
-            &publisher,
-            &[PREFIX],
-            Some(&[("ECHO_KEY", HOST)]),
-        ))
+        .upload(
+            mpk_with_secrets(
+                USED,
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[PREFIX],
+                Some(&[("ECHO_KEY", HOST)]),
+            ),
+            None,
+        )
         .await
         .unwrap();
     let _ = alice
         .packages()
-        .upload(mpk_using(
-            NOTES,
-            "0.1.0",
-            &kv_wasm(),
-            &publisher,
-            &[],
-            json!({ "echo": { "package": USED, "range": "^0.1", "version": "0.1.0" } }),
-        ))
+        .upload(
+            mpk_using(
+                NOTES,
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[],
+                json!({ "echo": { "package": USED, "range": "^0.1", "version": "0.1.0" } }),
+            ),
+            None,
+        )
         .await
         .unwrap();
     let _ = alice
@@ -6442,17 +6468,21 @@ async fn an_owner_sets_its_instances_own_secret_and_it_goes_only_where_declared(
     let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
     let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let _ = alice
         .packages()
-        .upload(mpk_with_secrets(
-            PACKAGE,
-            "0.1.0",
-            &kv_wasm(),
-            &publisher,
-            &[PREFIX],
-            Some(&[("ECHO_KEY", HOST)]),
-        ))
+        .upload(
+            mpk_with_secrets(
+                PACKAGE,
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[PREFIX],
+                Some(&[("ECHO_KEY", HOST)]),
+            ),
+            None,
+        )
         .await
         .unwrap();
     let _ = alice
@@ -6585,20 +6615,24 @@ async fn creating_an_instance_creates_the_apps_its_release_uses() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[13; 32]);
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let uses = json!({
         "kv": { "package": "com.calimero.unit-kv", "range": "^0.1", "version": "0.1.0" },
         "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
     });
     let _ = alice
         .packages()
-        .upload(mpk_using(
-            "com.calimero.unit-notes",
-            "0.1.0",
-            &kv_wasm(),
-            &publisher,
-            &[],
-            uses,
-        ))
+        .upload(
+            mpk_using(
+                "com.calimero.unit-notes",
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[],
+                uses,
+            ),
+            None,
+        )
         .await
         .unwrap();
     let create = |name: &'static str, init: Value| {
@@ -6624,14 +6658,17 @@ async fn creating_an_instance_creates_the_apps_its_release_uses() {
 
     let _ = alice
         .packages()
-        .upload(mpk_using(
-            "com.calimero.unit-kv",
-            "0.1.0",
-            &kv_wasm(),
-            &publisher,
-            &[],
-            Value::Null,
-        ))
+        .upload(
+            mpk_using(
+                "com.calimero.unit-kv",
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[],
+                Value::Null,
+            ),
+            None,
+        )
         .await
         .unwrap();
     let e = alice
@@ -6702,6 +6739,7 @@ async fn a_member_names_the_instance_that_created_it_with_unit_of() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let uses = json!({
         "kv": { "package": "com.calimero.unit-of-kv", "range": "^0.1", "version": "0.1.0" },
     });
@@ -6711,14 +6749,10 @@ async fn a_member_names_the_instance_that_created_it_with_unit_of() {
     ] {
         let _ = alice
             .packages()
-            .upload(mpk_using(
-                package,
-                "0.1.0",
-                &kv_wasm(),
-                &publisher,
-                &[],
-                uses,
-            ))
+            .upload(
+                mpk_using(package, "0.1.0", &kv_wasm(), &publisher, &[], uses),
+                None,
+            )
             .await
             .unwrap();
     }
@@ -6766,6 +6800,7 @@ async fn deleting_an_instance_deletes_its_unit_and_never_a_member_alone() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let upload = |package: &'static str, uses: Value| {
         mpk_using(package, "0.1.0", &kv_wasm(), &publisher, &[], uses)
     };
@@ -6783,7 +6818,7 @@ async fn deleting_an_instance_deletes_its_unit_and_never_a_member_alone() {
     ] {
         let _ = alice
             .packages()
-            .upload(upload(package, uses))
+            .upload(upload(package, uses), None)
             .await
             .unwrap();
     }
@@ -6850,6 +6885,7 @@ async fn a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
     let c = Cluster::start(3).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let upload = |package: &'static str, version: &'static str, uses: Value| {
         mpk_using(package, version, &kv_wasm(), &publisher, &[], uses)
     };
@@ -6863,7 +6899,7 @@ async fn a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range() {
     ] {
         let _ = alice
             .packages()
-            .upload(upload(package, version, u))
+            .upload(upload(package, version, u), None)
             .await
             .unwrap();
     }
@@ -7245,15 +7281,19 @@ async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
     let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
     let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let _ = alice
         .packages()
-        .upload(mpk_declaring(
-            PACKAGE,
-            "0.1.0",
-            &wasm("fixture-captcha"),
-            &publisher,
-            &[calimero_outbound::TURNSTILE_VERIFY_URL],
-        ))
+        .upload(
+            mpk_declaring(
+                PACKAGE,
+                "0.1.0",
+                &wasm("fixture-captcha"),
+                &publisher,
+                &[calimero_outbound::TURNSTILE_VERIFY_URL],
+            ),
+            None,
+        )
         .await
         .unwrap();
     let captcha = alice
@@ -9198,6 +9238,7 @@ async fn an_owner_attaches_an_app_and_the_instance_reads_it_with_linked() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
     let c = Cluster::start(3).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let uses = json!({
         "kv": { "package": "com.calimero.a-kv", "range": "^0.1", "version": "0.1.0" },
         "calendar": { "package": "com.example.a-cal", "range": "^2", "mode": "attach" },
@@ -9210,7 +9251,10 @@ async fn an_owner_attaches_an_app_and_the_instance_reads_it_with_linked() {
     ] {
         let _ = alice
             .packages()
-            .upload(mpk_using(package, version, &kv_wasm(), &publisher, &[], u))
+            .upload(
+                mpk_using(package, version, &kv_wasm(), &publisher, &[], u),
+                None,
+            )
             .await
             .unwrap();
     }

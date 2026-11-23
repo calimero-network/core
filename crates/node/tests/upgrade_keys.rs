@@ -150,6 +150,7 @@ fn code(e: &calimero_client::Error) -> Option<&str> {
 async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
     let c = Cluster::start(3).await;
     let (alice, mut apk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let kv = kv_wasm();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let stranger = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
@@ -160,18 +161,16 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
     ] {
         let _ = alice
             .packages()
-            .upload(mpk("com.test.ci", version, &wasm, &publisher))
+            .upload(mpk("com.test.ci", version, &wasm, &publisher), None)
             .await
             .unwrap();
     }
     let _ = alice
         .packages()
-        .upload(mpk(
-            "com.test.other",
-            "1.0.0",
-            &variant(&kv, "other"),
-            &stranger,
-        ))
+        .upload(
+            mpk("com.test.other", "1.0.0", &variant(&kv, "other"), &stranger),
+            None,
+        )
         .await
         .map(wire)
         .unwrap();
@@ -301,12 +300,10 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
     );
     only(
         ci.packages()
-            .upload(mpk(
-                "com.test.ci",
-                "9.0.0",
-                &variant(&kv, "nine"),
-                &publisher,
-            ))
+            .upload(
+                mpk("com.test.ci", "9.0.0", &variant(&kv, "nine"), &publisher),
+                None,
+            )
             .await
             .map(wire),
         "install a package",
@@ -395,33 +392,30 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
 async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
     let c = Cluster::start(3).await;
     let (alice, mut apk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let alice_id = account_id(&alice).await;
     let kv = kv_wasm();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let stranger = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
     let _ = alice
         .packages()
-        .upload(mpk("com.test.ci", "1.0.0", &kv, &publisher))
+        .upload(mpk("com.test.ci", "1.0.0", &kv, &publisher), None)
         .await
         .unwrap();
     let _ = alice
         .packages()
-        .upload(mpk(
-            "com.test.ci",
-            "1.1.0",
-            &variant(&kv, "next"),
-            &publisher,
-        ))
+        .upload(
+            mpk("com.test.ci", "1.1.0", &variant(&kv, "next"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let _ = alice
         .packages()
-        .upload(mpk(
-            "com.test.other",
-            "1.0.0",
-            &variant(&kv, "other"),
-            &stranger,
-        ))
+        .upload(
+            mpk("com.test.other", "1.0.0", &variant(&kv, "other"), &stranger),
+            None,
+        )
         .await
         .unwrap();
     let app = alice
@@ -500,13 +494,14 @@ async fn an_upgrade_key_is_an_owners_or_admins_of_the_apps_organization() {
     const MANAGE_APPLICATION: u64 = 1 << 4;
     let c = Cluster::start(3).await;
     let (alice, mut apk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, mut bpk) = signed_up(&c, 1, "bob").await;
     let kv = kv_wasm();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
     for (version, wasm) in [("1.0.0", kv.clone()), ("1.1.0", variant(&kv, "one-one"))] {
         let _ = alice
             .packages()
-            .upload(mpk("com.test.team-ci", version, &wasm, &publisher))
+            .upload(mpk("com.test.team-ci", version, &wasm, &publisher), None)
             .await
             .unwrap();
     }
