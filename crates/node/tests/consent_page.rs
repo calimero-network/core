@@ -34,6 +34,8 @@ struct Declares<'a> {
     publisher_upgrades: bool,
     /// `uses`, as the manifest's JSON.
     uses: Option<Value>,
+    /// The display name (default `Notes`).
+    name: Option<&'a str>,
 }
 
 /// A signed single-service `.mpk` of `PACKAGE`, and its manifest's hash.
@@ -64,7 +66,7 @@ fn release_of(
         )),
         min_runtime_version: "0.1.0".to_owned(),
         metadata: Some(calimero_bundle::BundleMetadata {
-            name: "Notes".to_owned(),
+            name: d.name.unwrap_or("Notes").to_owned(),
             description: None,
             author: Some("Example".to_owned()),
             icon: None,
@@ -947,6 +949,42 @@ async fn a_strangers_bound_session_never_shows_a_private_releases_name() {
     .unwrap();
     let shown = begun["options"]["user"]["name"].as_str().unwrap();
     assert!(!shown.contains("Notes"), "{shown}");
+}
+
+/// A sign-up on a package's origin names its newest release open to anyone: the operator's
+/// 1.0.0, never the private 2.0.0 Acme installed since.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_sign_up_names_the_newest_release_open_to_anyone() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[14; 32]);
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops.ops().package_upload(v1).await.unwrap();
+    let private = Declares {
+        name: Some("Acme Internal"),
+        ..Declares::default()
+    };
+    let (v2, _) = release("2.0.0", &variant(&kv_wasm(), "v2"), &publisher, &private);
+    let _ = alice.packages().upload(v2, None).await.unwrap();
+
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let begun = post(
+        &c.client(2),
+        "auth/passkey/register/begin",
+        json!({ "name": "carol", "origin": app_origin }),
+    )
+    .await
+    .unwrap();
+    let shown = begun["options"]["user"]["name"].as_str().unwrap();
+    assert!(shown.contains("Notes"), "{shown}");
+    assert!(!shown.contains("Acme Internal"), "{shown}");
 }
 
 /// Release and outbound requests through the page, a person's own account

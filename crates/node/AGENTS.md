@@ -423,9 +423,10 @@ is its command line.
   `Feature::PrivateReleases`; `createOrg` then offers no app team; regressions
   `an_app_team_reads_only_the_releases_its_actor_may_use`,
   `an_app_team_of_a_private_package_answers_as_a_missing_package`),
-  and a sign-up on the package's origin (`passkeys::app_name`) only when it is public
-  or the operator's; else they answer as for a release without them
-  (`a_strangers_bound_session_never_shows_a_private_releases_name`). Regressions:
+  and a sign-up on the package's origin (`passkeys::app_name`) names the newest release
+  that is public or the operator's; else they answer as for a release without them
+  (`a_strangers_bound_session_never_shows_a_private_releases_name`,
+  `a_sign_up_names_the_newest_release_open_to_anyone`). Regressions:
   `a_private_package_is_listed_only_to_accounts_that_may_use_it`,
   `a_release_from_before_installers_reads_and_records_who_installs_it_again`,
   `a_private_release_is_used_only_in_the_organizations_it_was_installed_for` (both

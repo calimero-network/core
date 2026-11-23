@@ -33,7 +33,7 @@ const READS_ALLOWED: &[(&str, &str, &str)] = &[
     ("api/apps.rs", "p.versions.iter().filter(|(k, v)| same_signer || s.sees_release(v, creator) || offered(k, v))", "unit_members: the member rule itself"),
     ("api/packages.rs", "s.packages.values().filter_map(|p| {", "package_list: package_json lists the releases used"),
     ("api/packages.rs", "s.packages.values().filter_map(|p| package_json(s, p, crate::system::OPERATOR, false))", "ops_package_list: the operator's"),
-    ("api/passkeys.rs", "s.packages.get(package)?.latest().filter(|v| {", "app_name: a name only from a release open to anyone"),
+    ("api/passkeys.rs", "s.packages.get(package)?.latest_where(|v| {", "app_name: a name only from a release open to anyone"),
     ("api/upgrades.rs", "let v = s.packages.get(&to.package)?.versions.get(&to.version)?;", "auto_upgrade: the leader's own pass, judged by auto_update_allows"),
     ("api/upgrades.rs", "&& s.packages.get(&package).and_then(|pk| s.publisher_of_signer(&pk.signer_id))", "publisher_upgrade: the package's own publisher"),
     ("api/upgrades.rs", "s.packages.get(&release.at.package).and_then(|p| p.versions.get(&release.at.version))", "refuse_off_unit_range: the release the unit's instance runs"),

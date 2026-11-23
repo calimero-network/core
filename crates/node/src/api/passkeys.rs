@@ -68,15 +68,14 @@ pub(super) fn cluster_tag(node: &Node) -> String {
     hex::encode(&node.cluster_identity()[..2])
 }
 
-/// The name of `package` a person recognizes: its newest release's display
-/// name where that release is open to anyone (public, or the operator's), else the
-/// package id: a sign-up is no account yet.
+/// The name of `package` a person recognizes: the display name of its newest release
+/// open to anyone (public, or the operator's), else the package id: a sign-up is no
+/// account yet.
 pub(super) fn app_name(node: &Node, package: &str) -> String {
     node.sys(|s| {
         s.packages
             .get(package)?
-            .latest()
-            .filter(|v| {
+            .latest_where(|v| {
                 v.installed_by_any(crate::system::OPERATOR)
                     || v.visibility == Some(crate::system::Visibility::Public)
             })?
