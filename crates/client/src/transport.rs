@@ -291,6 +291,13 @@ impl Transport {
         *self.visitor.write().await = Some(visitor);
     }
 
+    /// Carry no credential: drop the API key, the session and the visitor.
+    pub async fn forget(&self) {
+        *self.visitor.write().await = None;
+        *self.auth.write().await = None;
+        *self.session.write().await = None;
+    }
+
     /// Use a session token for every request, refreshed on a `401`.
     pub async fn use_session(&self, session: Session) {
         *self.visitor.write().await = None;

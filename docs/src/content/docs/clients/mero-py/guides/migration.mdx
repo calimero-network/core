@@ -142,8 +142,8 @@ the key helpers and the calls on any path (`get`, `post`, `post_confirmed`,
 | `set_recovery_key(org, public_key, passkey)` | `client.orgs.recovery_set(...)` |
 | `set_team_member(org, team, account, passkey, role, capabilities)` | `client.orgs.team_set_member(...)` |
 | `set_team_members(org, account, teams, passkey)` | `client.orgs.member_set_teams(...)` |
-| `sign_out()` | `client.auth.logout(...)` |
-| `sign_out_everywhere()` | `client.auth.logout_all(...)` |
+| `sign_out()` | `client.sign_out()` (`client.auth.logout()` alone leaves the credential set) |
+| `sign_out_everywhere()` | `client.sign_out_everywhere()` |
 | `transfer_app(app, to, passkey)` | `client.apps.transfer(...)` |
 | `uninstall_package(package, version)` | `client.packages.uninstall(...)` / `client.packages.version_uninstall(...)` |
 | `update_team(org, team, name, join, metadata, parent, to_top)` | `client.orgs.team_update(...)` |

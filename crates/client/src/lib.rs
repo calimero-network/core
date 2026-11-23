@@ -278,6 +278,11 @@ impl Client {
         self.transport.use_visitor(visitor).await;
     }
 
+    /// Carry no credential from now on: drop the API key, the session or the visitor.
+    pub async fn forget(&self) {
+        self.transport.forget().await;
+    }
+
     /// Use a session token for every request.
     pub async fn use_session(&self, session: Session) {
         self.transport.use_session(session).await;
