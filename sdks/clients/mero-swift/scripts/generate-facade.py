@@ -147,10 +147,17 @@ def operations(types):
                         else:
                             op["body"] = ("whole", case, typ)
                     break
-        ok_at = next((i for i in range(out_at, len(block))
-                      if block[i] == "            public struct Ok: Sendable, Hashable {"), None)
+        # The success answer: `Ok` for a 200, `Accepted` for a 202 (the node's
+        # pipeline start and retry), read through `.ok` or `.accepted`.
+        ok_at, op["success"] = None, None
+        for struct, accessor in (("Ok", "ok"), ("Accepted", "accepted")):
+            at = next((i for i in range(out_at, len(block))
+                       if block[i] == f"            public struct {struct}: Sendable, Hashable {{"), None)
+            if at is not None:
+                ok_at, op["success"] = at, accessor
+                break
         if ok_at is None:
-            raise SystemExit(f"{op_id}: no 200 answer")
+            raise SystemExit(f"{op_id}: no 200 or 202 answer")
         op["answer"] = ("none", None)
         for i in range(ok_at, len(block)):
             if block[i] == "            }":
@@ -324,15 +331,16 @@ def facade(document, ops, taken):
             input_expr = f"Operations.{op['name']}.Input({', '.join(parts)})"
             gen_method = camel(op_id)
             case, answer_type = op["answer"]
+            ok = op["success"]
             if case == "none":
-                returns, extract = "", "_ = try await api.{m}(input).ok"
+                returns, extract = "", f"_ = try await api.{{m}}(input).{ok}"
             elif answer_type == "OpenAPIRuntime.HTTPBody" and case in ("textEventStream", "plainText"):
-                returns, extract = " -> HTTPBody", f"try await api.{{m}}(input).ok.body.{case}"
+                returns, extract = " -> HTTPBody", f"try await api.{{m}}(input).{ok}.body.{case}"
             elif answer_type == "OpenAPIRuntime.HTTPBody":
                 returns = " -> Data"
-                extract = f"try await Data(collecting: api.{{m}}(input).ok.body.{case}, upTo: .max)"
+                extract = f"try await Data(collecting: api.{{m}}(input).{ok}.body.{case}, upTo: .max)"
             else:
-                returns, extract = f" -> {answer_type}", f"try await api.{{m}}(input).ok.body.{case}"
+                returns, extract = f" -> {answer_type}", f"try await api.{{m}}(input).{ok}.body.{case}"
             extract = extract.format(m=gen_method)
             w("")
             summary = spec.get("summary", op_id)

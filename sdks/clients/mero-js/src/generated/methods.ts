@@ -328,16 +328,16 @@ export function createRoutes(api: RouteClient) {
        * `POST /apps/{app}/pipeline-runs/{run}/retry` (`pipelines_retry`). **Who:** signed in (a session or an API key).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
-      pipelinesRetry: (args: operations['pipelines_retry']['parameters']['path'] & operations['pipelines_retry']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['pipelines_retry']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"POST","path":"/apps/{app}/pipeline-runs/{run}/retry","pathParams":["app","run"],"query":[],"body":"fields","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['pipelines_retry']['responses'][200]['content']['application/json']>,
+      pipelinesRetry: (args: operations['pipelines_retry']['parameters']['path'] & operations['pipelines_retry']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['pipelines_retry']['responses'][202]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/pipeline-runs/{run}/retry","pathParams":["app","run"],"query":[],"body":"fields","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['pipelines_retry']['responses'][202]['content']['application/json']>,
       /**
        * Start a pipeline run.
        *
        * `POST /apps/{app}/pipelines/{name}/runs` (`pipelines_start`). **Who:** signed in (a session or an API key).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
-      pipelinesStart: (args: operations['pipelines_start']['parameters']['path'] & operations['pipelines_start']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['pipelines_start']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"POST","path":"/apps/{app}/pipelines/{name}/runs","pathParams":["app","name"],"query":[],"body":"fields","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['pipelines_start']['responses'][200]['content']['application/json']>,
+      pipelinesStart: (args: operations['pipelines_start']['parameters']['path'] & operations['pipelines_start']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['pipelines_start']['responses'][202]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/pipelines/{name}/runs","pathParams":["app","name"],"query":[],"body":"fields","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['pipelines_start']['responses'][202]['content']['application/json']>,
       /**
        * Validate a pipeline.
        *

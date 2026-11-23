@@ -186,6 +186,11 @@ struct Op {
     body: Body,
     query: Option<Input>,
     reply: Reply,
+    /// The success status: `200`, or `202` for a route that answers once the
+    /// work is accepted (`accepted()`). The generated clients read only the
+    /// statuses the document lists, so a `202` documented as `200` reaches them
+    /// as no answer at all.
+    status: u16,
     /// `412 CONFIRM_REQUIRED` first: a passkey assertion over the exact request.
     step_up: bool,
     /// When the step-up applies, if not always (`x-calimero-step-up-when`).
@@ -215,6 +220,7 @@ fn op(
         body: Body::None,
         query: None,
         reply: Reply::Json("{}"),
+        status: 200,
         step_up: false,
         step_up_when: "",
         user_verification: "required",
@@ -307,6 +313,12 @@ impl Op {
 
     fn ok(mut self, shape: &'static str) -> Self {
         self.reply = Reply::Json(shape);
+        self
+    }
+
+    /// The route answers `202 Accepted` (with its `ok` body), not `200`.
+    fn accepted(mut self) -> Self {
+        self.status = 202;
         self
     }
 
@@ -1633,6 +1645,7 @@ fn operations() -> Vec<Op> {
             .about("The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.")
             .json::<super::pipelines::StartBody>("{ inputs?: { [string]: string[] }, params?: { [string]: any }, maxCost?: string }")
             .ok("{ run: string, worstCase?: string }")
+            .accepted()
             .errors(&[(400, "BAD_INPUTS"), (400, "BAD_MAX_COST"), (400, "BAD_PARAMS"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_SUCH_PIPELINE"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (410, "OUTPUT_EXPIRED"), (422, "PIPELINES_NEED_ONE_SERVICE"), (429, "TOO_MANY_PIPELINE_RUNS"), (503, "UNAVAILABLE")]),
         get("/apps/{app}/pipeline-runs", "pipelines::list", AppAccess, "An app's pipeline runs")
             .about("The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.")
@@ -1660,6 +1673,7 @@ fn operations() -> Vec<Op> {
             .about("The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.")
             .json::<super::pipelines::RetryBody>("{ limits?: { [string]: { fuel?: uint, memoryMib?: uint, wallSecs?: uint } }, maxCost?: string }")
             .ok("{ run: string, retryOf: string, worstCase?: string }")
+            .accepted()
             .errors(&[(400, "BAD_LIMITS"), (400, "BAD_MAX_COST"), (400, "LIMIT_EXCEEDS_CAP"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (409, "STILL_RUNNING"), (410, "OUTPUT_EXPIRED"), (429, "TOO_MANY_PIPELINE_RUNS"), (503, "UNAVAILABLE")]),
         get("/apps/{app}/xcalls", "app_xcalls", SignedIn, "An app's cross-app calls")
             .about("The owner or an organization admin: how many calls wait in its outbox for delivery (`pending`, a count), and its dead letters, oldest first (`atMs`: the entry time it was dead-lettered at, Unix milliseconds).")
@@ -2484,8 +2498,12 @@ fn operation(op: &Op, ops: &[Op], shapes: &BTreeMap<&'static str, Shape>) -> Val
             })
         }
     };
+    let mut ok = ok;
+    if op.status == 202 {
+        ok["description"] = json!("Accepted");
+    }
     let mut responses = Map::new();
-    let _prev = responses.insert("200".to_owned(), ok);
+    let _prev = responses.insert(op.status.to_string(), ok);
     for (status, codes) in op.codes() {
         let _prev = responses.insert(status.to_string(), error_response(status, &codes));
     }
@@ -3488,6 +3506,29 @@ mod tests {
             rest = &rest[i + "#/components/schemas/".len()..];
             let name = &rest[..rest.find('"').expect("ref end")];
             assert!(names.contains(name), "#{name} is not a component");
+        }
+    }
+
+    /// A route that answers `202` is documented `202`, never `200`: the
+    /// generated clients parse only the statuses the document lists, so
+    /// calimero-client-py's `pipelines_start` answered `None` for every run it
+    /// started while the document said `200`.
+    #[test]
+    fn accepted_routes_document_202_not_200() {
+        let doc = document();
+        for (path, method) in [
+            ("/apps/{app}/pipelines/{name}/runs", "post"),
+            ("/apps/{app}/pipeline-runs/{run}/retry", "post"),
+        ] {
+            let responses = &doc["paths"][path][method]["responses"];
+            assert!(
+                responses.get("202").is_some(),
+                "{method} {path} documents 202"
+            );
+            assert!(
+                responses.get("200").is_none(),
+                "{method} {path} documents no 200"
+            );
         }
     }
 

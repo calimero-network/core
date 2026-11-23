@@ -771,10 +771,10 @@ extension CalimeroClient {
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
-        public func pipelinesRetry(app: Swift.String, run: Swift.String, limits: Operations.PipelinesRetry.Input.Body.JsonPayload.LimitsPayload? = nil, maxCost: Swift.String? = nil) async throws -> Operations.PipelinesRetry.Output.Ok.Body.JsonPayload {
+        public func pipelinesRetry(app: Swift.String, run: Swift.String, limits: Operations.PipelinesRetry.Input.Body.JsonPayload.LimitsPayload? = nil, maxCost: Swift.String? = nil) async throws -> Operations.PipelinesRetry.Output.Accepted.Body.JsonPayload {
             let input = Operations.PipelinesRetry.Input(path: .init(app: app, run: run), body: .json(.init(limits: limits, maxCost: maxCost)))
             return try await client.perform { api in
-                try await api.pipelinesRetry(input).ok.body.json
+                try await api.pipelinesRetry(input).accepted.body.json
             }
         }
 
@@ -784,10 +784,10 @@ extension CalimeroClient {
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
-        public func pipelinesStart(app: Swift.String, name: Swift.String, inputs: Operations.PipelinesStart.Input.Body.JsonPayload.InputsPayload? = nil, params: Operations.PipelinesStart.Input.Body.JsonPayload.ParamsPayload? = nil, maxCost: Swift.String? = nil) async throws -> Operations.PipelinesStart.Output.Ok.Body.JsonPayload {
+        public func pipelinesStart(app: Swift.String, name: Swift.String, inputs: Operations.PipelinesStart.Input.Body.JsonPayload.InputsPayload? = nil, params: Operations.PipelinesStart.Input.Body.JsonPayload.ParamsPayload? = nil, maxCost: Swift.String? = nil) async throws -> Operations.PipelinesStart.Output.Accepted.Body.JsonPayload {
             let input = Operations.PipelinesStart.Input(path: .init(app: app, name: name), body: .json(.init(inputs: inputs, params: params, maxCost: maxCost)))
             return try await client.perform { api in
-                try await api.pipelinesStart(input).ok.body.json
+                try await api.pipelinesStart(input).accepted.body.json
             }
         }
 

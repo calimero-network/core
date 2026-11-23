@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.pipelines_start_body import PipelinesStartBody
-from ...models.pipelines_start_response_200 import PipelinesStartResponse200
+from ...models.pipelines_start_response_202 import PipelinesStartResponse202
 from typing import cast
 
 
@@ -39,11 +39,11 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, PipelinesStartResponse200]]:
-    if response.status_code == 200:
-        response_200 = PipelinesStartResponse200.from_dict(response.json())
+) -> Optional[Union[Error, PipelinesStartResponse202]]:
+    if response.status_code == 202:
+        response_202 = PipelinesStartResponse202.from_dict(response.json())
 
-        return response_200
+        return response_202
 
     if response.status_code == 400:
         response_400 = Error.from_dict(response.json())
@@ -103,7 +103,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, PipelinesStartResponse200]]:
+) -> Response[Union[Error, PipelinesStartResponse202]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -118,7 +118,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: PipelinesStartBody,
-) -> Response[Union[Error, PipelinesStartResponse200]]:
+) -> Response[Union[Error, PipelinesStartResponse202]]:
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
@@ -136,7 +136,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PipelinesStartResponse200]]
+        Response[Union[Error, PipelinesStartResponse202]]
     """
 
     kwargs = _get_kwargs(
@@ -158,7 +158,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: PipelinesStartBody,
-) -> Optional[Union[Error, PipelinesStartResponse200]]:
+) -> Optional[Union[Error, PipelinesStartResponse202]]:
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
@@ -176,7 +176,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PipelinesStartResponse200]
+        Union[Error, PipelinesStartResponse202]
     """
 
     return sync_detailed(
@@ -193,7 +193,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: PipelinesStartBody,
-) -> Response[Union[Error, PipelinesStartResponse200]]:
+) -> Response[Union[Error, PipelinesStartResponse202]]:
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
@@ -211,7 +211,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PipelinesStartResponse200]]
+        Response[Union[Error, PipelinesStartResponse202]]
     """
 
     kwargs = _get_kwargs(
@@ -231,7 +231,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: PipelinesStartBody,
-) -> Optional[Union[Error, PipelinesStartResponse200]]:
+) -> Optional[Union[Error, PipelinesStartResponse202]]:
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
@@ -249,7 +249,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PipelinesStartResponse200]
+        Union[Error, PipelinesStartResponse202]
     """
 
     return (

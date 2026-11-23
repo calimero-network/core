@@ -1079,7 +1079,7 @@ class AppsFacade internal constructor(
         run: kotlin.String,
         limits: kotlin.collections.Map<kotlin.String, PipelinesRetryRequestLimitsValue>? = null,
         maxCost: kotlin.String? = null,
-    ): PipelinesRetry200Response =
+    ): PipelinesRetry202Response =
         api(null, null, emptySet()).apps.pipelinesRetry(app = app, run = run, pipelinesRetryRequest = PipelinesRetryRequest(limits = limits, maxCost = maxCost))
 
     /**
@@ -1099,7 +1099,7 @@ class AppsFacade internal constructor(
         inputs: kotlin.collections.Map<kotlin.String, kotlin.collections.List<kotlin.String>>? = null,
         params: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>? = null,
         maxCost: kotlin.String? = null,
-    ): PipelinesStart200Response =
+    ): PipelinesStart202Response =
         api(null, null, emptySet()).apps.pipelinesStart(app = app, name = name, pipelinesStartRequest = PipelinesStartRequest(inputs = inputs, params = params, maxCost = maxCost))
 
     /**

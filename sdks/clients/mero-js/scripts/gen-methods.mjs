@@ -64,7 +64,10 @@ for (const [path, item] of Object.entries(doc.paths)) {
   for (const [verb, op] of Object.entries(item)) {
     if (!['get', 'post', 'put', 'delete', 'patch'].includes(verb)) continue;
     const id = op.operationId;
-    const ok = op.responses?.['200']?.content ?? {};
+    // The success answer: 200, or 202 for a route that answers once its work
+    // is accepted (the node's pipeline start and retry).
+    const status = op.responses?.['200'] ? 200 : op.responses?.['202'] ? 202 : 200;
+    const ok = op.responses?.[String(status)]?.content ?? {};
     const replyMedia = Object.keys(ok)[0];
     if (replyMedia === 'text/event-stream') {
       skipped.push(`${verb.toUpperCase()} ${path}`);
@@ -126,7 +129,7 @@ for (const [path, item] of Object.entries(doc.paths)) {
           ? 'text'
           : 'json';
     const answer =
-      reply === 'bytes' ? 'Blob' : reply === 'text' ? 'string' : `${O}['responses'][200]['content']['application/json']`;
+      reply === 'bytes' ? 'Blob' : reply === 'text' ? 'string' : `${O}['responses'][${status}]['content']['application/json']`;
     const args = parts.length ? parts.join(' & ') : 'Record<string, never>';
     const shape = {
       method: verb.toUpperCase(),

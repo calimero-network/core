@@ -610,11 +610,11 @@ from .pipelines_retry_body_limits import PipelinesRetryBodyLimits
 from .pipelines_retry_body_limits_additional_property import (
     PipelinesRetryBodyLimitsAdditionalProperty,
 )
-from .pipelines_retry_response_200 import PipelinesRetryResponse200
+from .pipelines_retry_response_202 import PipelinesRetryResponse202
 from .pipelines_start_body import PipelinesStartBody
 from .pipelines_start_body_inputs import PipelinesStartBodyInputs
 from .pipelines_start_body_params import PipelinesStartBodyParams
-from .pipelines_start_response_200 import PipelinesStartResponse200
+from .pipelines_start_response_202 import PipelinesStartResponse202
 from .pipelines_validate_body import PipelinesValidateBody
 from .pipelines_validate_response_200 import PipelinesValidateResponse200
 from .pipelines_validate_response_200_errors_item import (
@@ -1291,11 +1291,11 @@ __all__ = (
     "PipelinesRetryBody",
     "PipelinesRetryBodyLimits",
     "PipelinesRetryBodyLimitsAdditionalProperty",
-    "PipelinesRetryResponse200",
+    "PipelinesRetryResponse202",
     "PipelinesStartBody",
     "PipelinesStartBodyInputs",
     "PipelinesStartBodyParams",
-    "PipelinesStartResponse200",
+    "PipelinesStartResponse202",
     "PipelinesValidateBody",
     "PipelinesValidateResponse200",
     "PipelinesValidateResponse200ErrorsItem",

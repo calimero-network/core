@@ -1588,7 +1588,7 @@ class Apps(Group):
             limits: body `limits`
             max_cost: body `maxCost`
 
-        Returns: PipelinesRetryResponse200
+        Returns: PipelinesRetryResponse202
         """
         return self._run(
             _PIPELINES_RETRY,
@@ -1614,7 +1614,7 @@ class Apps(Group):
             params: body `params`
             max_cost: body `maxCost`
 
-        Returns: PipelinesStartResponse200
+        Returns: PipelinesStartResponse202
         """
         return self._run(
             _PIPELINES_START,

@@ -3215,9 +3215,9 @@ public struct Client: APIProtocol {
             },
             deserializer: { response, responseBody in
                 switch response.status.code {
-                case 200:
+                case 202:
                     let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
-                    let body: Operations.PipelinesRetry.Output.Ok.Body
+                    let body: Operations.PipelinesRetry.Output.Accepted.Body
                     let chosenContentType = try converter.bestContentType(
                         received: contentType,
                         options: [
@@ -3227,7 +3227,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PipelinesRetry.Output.Ok.Body.JsonPayload.self,
+                            Operations.PipelinesRetry.Output.Accepted.Body.JsonPayload.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3236,7 +3236,7 @@ public struct Client: APIProtocol {
                     default:
                         preconditionFailure("bestContentType chose an invalid content type.")
                     }
-                    return .ok(.init(body: body))
+                    return .accepted(.init(body: body))
                 default:
                     return .undocumented(
                         statusCode: response.status.code,
@@ -3367,9 +3367,9 @@ public struct Client: APIProtocol {
             },
             deserializer: { response, responseBody in
                 switch response.status.code {
-                case 200:
+                case 202:
                     let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
-                    let body: Operations.PipelinesStart.Output.Ok.Body
+                    let body: Operations.PipelinesStart.Output.Accepted.Body
                     let chosenContentType = try converter.bestContentType(
                         received: contentType,
                         options: [
@@ -3379,7 +3379,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PipelinesStart.Output.Ok.Body.JsonPayload.self,
+                            Operations.PipelinesStart.Output.Accepted.Body.JsonPayload.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3388,7 +3388,7 @@ public struct Client: APIProtocol {
                     default:
                         preconditionFailure("bestContentType chose an invalid content type.")
                     }
-                    return .ok(.init(body: body))
+                    return .accepted(.init(body: body))
                 default:
                     return .undocumented(
                         statusCode: response.status.code,

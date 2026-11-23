@@ -16,6 +16,8 @@ from calimero_client_py import CloudError, FeatureNotActive, SoftPasskey, facade
 from calimero_client_py.openapi.models import (
     InviteCreateResponse200,
     OrgCreateResponse200,
+    PipelinesRetryResponse202,
+    PipelinesStartResponse202,
 )
 
 from test_openapi_client import (
@@ -1022,6 +1024,23 @@ def test_the_typed_answer_is_the_generated_model():
     r = client_on(native).orgs.create(name="Acme")
     assert isinstance(r, OrgCreateResponse200)
     assert r.org_id == "o1"
+
+
+def test_a_202_answer_is_the_generated_model():
+    """Starting a pipeline run answers `202 Accepted`. While the document said
+    `200`, the generated parser read no status it knew and the facade answered
+    `None` for every run it started (staging, 2026-11-23)."""
+    native = Native(answer(202, {"run": "r-1", "worstCase": "5"}))
+    r = client_on(native).apps.pipelines_start(
+        app="a", name="fanout", inputs={"docs": ["b1"]}
+    )
+    assert isinstance(r, PipelinesStartResponse202)
+    assert r.run == "r-1"
+    assert r.worst_case == "5"
+    native = Native(answer(202, {"run": "r-2", "retryOf": "r-1"}))
+    r = client_on(native).apps.pipelines_retry(app="a", run="r-1")
+    assert isinstance(r, PipelinesRetryResponse202)
+    assert (r.run, r.retry_of) == ("r-2", "r-1")
 
 
 def test_an_operator_signer_makes_the_proof():
