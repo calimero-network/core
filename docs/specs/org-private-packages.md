@@ -63,7 +63,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
   A record without `visibility` keeps today's rule; no cluster holds a private registry install yet, and none gets a credential before this release (mdma, below).
   `Feature::PrivateReleases` gates the new fields; a `DeepCase` covers a release installed before and after.
   Everything that picks a release by its version follows the use right: an update on its own moves an app only to a release its owner may use; an app team is named after, and a package named for one, an upgrade key or an outbound approval is found from, the newest release the actor may use (an outbound approval: reads); a package with none answers as a missing one.
-  A first approval of an update names only a target its approver may use (or, for an instance from a deployment, the offer that serves it); any other answers as a missing version.
+  A first approval of an update and a unit's upgrade name only a target their account may use (or, for an instance from a deployment, the offer that serves it); any other answers as a missing version, before anything of it is read.
   A deployment's offer serves only while someone who acts for its owner may use the release.
   An install again that would leave its installer a release it may not use is refused before it is logged.
   Apply judges the rules it can from the logged version that brings `Feature::PrivateReleases`, so earlier entries replay as they applied.

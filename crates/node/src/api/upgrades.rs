@@ -1551,21 +1551,27 @@ pub(crate) async fn unit_plan(
     let current = node
         .release_of_app(&app)
         .ok_or_else(|| ApiError::bad_request("NOT_A_UNIT", "this app runs no package release"))?;
-    let _bundle = node
-        .resolve_release(
-            &current.at.package,
-            Some(version),
-            None,
-            (account, Some(&app.org)),
-            Via::Account,
-        )
-        .await;
     let target = PackageRef {
         package: current.at.package.clone(),
         version: version.to_owned(),
         service: current.at.service.clone(),
         compute: false,
     };
+    // Nothing of a target the account may not use is read: it answers as a missing release.
+    // An instance from a deployment takes its offer that still serves, used or not.
+    if !node
+        .sys(|s| app.deployment.is_some() && s.within_deployment(&app, Some(&target), None).is_ok())
+    {
+        let _bundle = node
+            .resolve_release(
+                &target.package,
+                Some(version),
+                target.service.as_deref(),
+                (account, Some(&app.org)),
+                Via::Account,
+            )
+            .await?;
+    }
     // A unit from a deployment moves only to the release its developer offers:
     // refused here, before any passkey is asked for, as one app's upgrade is.
     if node.sys(|s| s.within_deployment(&app, Some(&target), None).is_err()) {

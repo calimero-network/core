@@ -1056,6 +1056,10 @@ is its command line.
   (`UpgradeRun::target_of`). A member upgraded alone off its instance's range
   is refused at the API (`refuse_off_unit_range`, `409 OUTSIDE_UNIT_RANGE`).
   Regression: `a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range`.
+  `unit_plan` reads nothing of a target its account may not use (for an instance from a
+  deployment, other than the offer that still serves it): it answers as `resolve_release`
+  answers a missing release, before any member, target or passkey (regression
+  `a_unit_upgrade_answers_a_release_its_owner_may_not_use_as_a_missing_one`).
   The consent page's `upgradeUnit { app, toVersion }` (`unit_upgrade_request`)
   builds one model from `api::unit_plan` and each app's `upgrade_request` sheet
   (members skip the package-bound session's `within`: the instance created them),

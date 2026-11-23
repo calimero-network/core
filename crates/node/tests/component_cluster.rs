@@ -9863,3 +9863,91 @@ async fn a_first_approval_answers_a_release_its_approver_may_not_use_as_a_missin
         assert!(!signed.to_string().contains("partner"), "{signed}");
     }
 }
+
+/// A unit's upgrade reads nothing of a release its owner may not use: Bob, removed from
+/// Acme, keeps a unit of Acme's private 0.1.0; Acme's later private 0.2.0, whose `uses`
+/// names a member from another private package, answers his unit upgrade exactly as a
+/// version that does not exist, naming none of its members.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_upgrade_answers_a_release_its_owner_may_not_use_as_a_missing_one() {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let acme = new_org(&alice, "Acme").await;
+    let bobco = new_org(&bob, "Bobco").await;
+    join_org(&alice, &mut a, &bob, &acme, "member").await;
+    let kv = "com.acme.unitkv";
+    let notes = "com.acme.unitnotes";
+    let up = |p: &'static str, v: &'static str, tag: &'static str, uses: Value| {
+        mpk_using(p, v, &variant(&kv_wasm(), tag), &key, &[], uses)
+    };
+    let _ = alice
+        .packages()
+        .upload(up(kv, "0.1.0", "k1", Value::Null), Some(&acme))
+        .await
+        .unwrap();
+    let _ = alice
+        .packages()
+        .upload(
+            up(
+                notes,
+                "0.1.0",
+                "n1",
+                json!({ "kv": { "package": kv, "range": "^0.1" } }),
+            ),
+            Some(&acme),
+        )
+        .await
+        .unwrap();
+    let made = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "n", "package": notes, "version": "0.1.0", "org": bobco }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let app = made["appId"].as_str().unwrap().to_owned();
+    let bob_id = account_id(&bob).await;
+    let _ = alice
+        .orgs()
+        .remove_member(&acme, &bob_id, Some(&mut a))
+        .await
+        .unwrap();
+    let secret = json!({
+        "secretmember": { "package": "com.acme.topsecret", "range": "^3", "version": "3.1.4" },
+    });
+    let _ = alice
+        .packages()
+        .upload(up(notes, "0.2.0", "n2", secret), Some(&acme))
+        .await
+        .unwrap();
+    all_applied(&c).await;
+
+    let missing = bob
+        .apps()
+        .upgrade_unit(&app, "0.9.0", None)
+        .await
+        .unwrap_err();
+    let private = bob
+        .apps()
+        .upgrade_unit(&app, "0.2.0", None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        missing.to_string(),
+        private.to_string().replace("0.2.0", "0.9.0")
+    );
+    assert!(!private.to_string().contains("topsecret"), "{private}");
+    let signed = bob
+        .apps()
+        .upgrade_unit(&app, "0.2.0", Some(&mut b))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        signed.to_string(),
+        private.to_string(),
+        "before the passkey"
+    );
+}
