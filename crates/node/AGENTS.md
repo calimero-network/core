@@ -476,7 +476,10 @@ is its command line.
   passkey; `SystemState::keeps_recoverable`, `recovery_rule`) when the entry's
   `deployment_needs_recovery` flag is set or the logged version brings
   `Feature::DeploymentNeedsRecovery` (rc.36); earlier entries replay as they
-  applied; rotating is allowed, an account's deployment needs none. Regressions:
+  applied; rotating is allowed, an account's deployment needs none. A deployment an
+  organization created without a key before the version keeps running and changing; the
+  rule binds it only when its organization creates or accepts another, or sets a key
+  and later tries to remove it. Regressions:
   `an_organization_owns_a_deployment_only_with_a_recovery_key`,
   `an_organization_deploys_only_holding_a_recovery_key`.
   Decided, not built: transfer (the spec's section 14); the migration of old

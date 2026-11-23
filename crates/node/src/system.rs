@@ -1403,14 +1403,14 @@ impl DeployerGrant {
     }
 }
 
-/// What an install is refused with where deployments are granted and the
-/// installer holds no live grant; the API answers it `403
-/// DEPLOY_NOT_GRANTED` (`node::rejected`).
 /// Why an organization without a recovery key may not own a deployment, nor remove its key
 /// while it owns one ([`SystemState::keeps_recoverable`]); the API answers it `409
 /// RECOVERY_KEY_REQUIRED` (`node::rejected`).
 pub const RECOVERY_KEY_REQUIRED: &str = "an organization that owns a deployment holds a recovery key, so a lost passkey never locks the deployment: set one first, and rotate it rather than remove it";
 
+/// What an install is refused with where deployments are granted and the
+/// installer holds no live grant; the API answers it `403
+/// DEPLOY_NOT_GRANTED` (`node::rejected`).
 pub const NOT_A_DEPLOYER: &str = "This cluster only lets Calimero Cloud deployers install apps; ask the cluster's owner or operator for a deployer grant.";
 
 /// How many deployer grants a cluster keeps.

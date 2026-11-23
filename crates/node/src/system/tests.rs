@@ -13182,6 +13182,15 @@ fn an_organization_owns_a_deployment_only_with_a_recovery_key() {
             .unwrap_err(),
         RECOVERY_KEY_REQUIRED
     );
+    let _ok = m
+        .run_unproven(set_key(Some(public(&SEED)), "alice", Value::Null))
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(needing(set_key(None, "alice", Value::Null)))
+            .unwrap_err(),
+        RECOVERY_KEY_REQUIRED
+    );
+    let _ok = m.run_unproven(set_key(None, "alice", Value::Null)).unwrap();
 
     let rc36 = "1.0.0-rc.36";
     register(&mut m, 1, "replica");
@@ -13211,7 +13220,13 @@ fn an_organization_owns_a_deployment_only_with_a_recovery_key() {
     let _ok = m
         .run_unproven(create_deployment("after", org(), "carol"))
         .unwrap();
-    // Owning one: the key rotates but is not removed.
+    // Owning one: the key rotates but is not removed; a member is told only that the key is
+    // the owner's, never whether the organization owns a deployment.
+    assert_eq!(
+        m.run_unproven(set_key(None, "carol", Value::Null))
+            .unwrap_err(),
+        super::OWNER_ONLY_RECOVERY
+    );
     assert_eq!(
         m.run_unproven(set_key(None, "alice", Value::Null))
             .unwrap_err(),
