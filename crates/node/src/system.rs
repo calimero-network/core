@@ -2834,11 +2834,15 @@ impl SystemState {
     /// The installed releases `v` references (`PackageVersion::uses`), each with its
     /// package: every installed release of a referenced package inside the reference's
     /// range (the one its lock pinned among them), which is what an app it creates may run,
-    /// then and after an upgrade within the range. A range that does not parse reaches none.
+    /// then and after an upgrade within the range. A range that does not parse reaches none,
+    /// nor does a release no one acting for `d`'s owner may use ([`Self::offer_serves`]).
     pub fn used_releases<'a>(
         &'a self,
+        d: &'a Deployment,
         v: &'a PackageVersion,
     ) -> impl Iterator<Item = (&'a str, &'a PackageVersion)> + 'a {
+        // Gated so earlier log entries replay as they applied.
+        let private = self.cluster_brings(cluster_version::Feature::PrivateReleases);
         v.uses.values().flat_map(move |u| {
             let range = semver::VersionReq::parse(&u.range).ok();
             self.packages
@@ -2848,7 +2852,7 @@ impl SystemState {
                 .filter(move |r| {
                     range.as_ref().is_some_and(|range| {
                         semver::Version::parse(&r.version).is_ok_and(|ver| range.matches(&ver))
-                    })
+                    }) && (!private || self.offer_serves(d, r))
                 })
                 .map(move |r| (u.package.as_str(), r))
         })
@@ -2861,7 +2865,7 @@ impl SystemState {
     pub fn deployment_uses_declare(&self, d: &Deployment, name: &str) -> bool {
         d.apps.values().any(|o| {
             self.offered_release(o).is_some_and(|v| {
-                self.used_releases(v)
+                self.used_releases(d, v)
                     .any(|(_, r)| r.secrets.contains_key(name))
             })
         })
@@ -2877,7 +2881,7 @@ impl SystemState {
             let Some(v) = self.offered_release(o) else {
                 continue;
             };
-            let reached = std::iter::once((o.package.as_str(), v)).chain(self.used_releases(v));
+            let reached = std::iter::once((o.package.as_str(), v)).chain(self.used_releases(d, v));
             for (package, r) in reached {
                 for name in r.secrets.keys() {
                     let row = out.entry(name.clone()).or_default();
@@ -2903,7 +2907,7 @@ impl SystemState {
             o.package == package
                 || self
                     .offered_release(o)
-                    .is_some_and(|v| self.used_releases(v).any(|(p, _)| p == package))
+                    .is_some_and(|v| self.used_releases(d, v).any(|(p, _)| p == package))
         })
     }
 

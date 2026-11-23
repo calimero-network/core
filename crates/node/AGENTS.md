@@ -579,7 +579,11 @@ is its command line.
   release declares it; `Feature::DeploymentUsedSecrets`, rc.32; an entry
   without it is judged by the offers alone, as before):
   `SystemState::deployment_uses_declare` over `used_releases` (every installed
-  release of each `PackageVersion::uses` package inside its range). `uses`
+  release of each `PackageVersion::uses` package inside its range that someone acting
+  for the deployment's owner may use, `offer_serves`, once the logged cluster version
+  brings `Feature::PrivateReleases`; regressions
+  `a_deployments_secrets_never_name_a_used_release_its_owner_may_not_use`,
+  `system::tests::a_used_release_its_owner_may_not_use_declares_no_deployment_secret`). `uses`
   (`system::ReleaseUse`: package, range, version) is recorded by
   `InstallPackage` only once the feature is active (`record_release` drops it
   before; `SystemCmd::features` names it), and installing the same `.mpk`

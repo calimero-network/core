@@ -9693,6 +9693,66 @@ fn a_deployment_holds_secrets_the_releases_its_offers_use_declare() {
     assert!(filled("notes-1", "notes").is_empty());
 }
 
+/// A deployment holds no secret a used release declares that no one acting for its owner
+/// may use, from the logged version that brings private releases; below it, as it applied.
+#[test]
+fn a_used_release_its_owner_may_not_use_declares_no_deployment_secret() {
+    use super::{cluster_version::Feature, Deployer, Deployments, Visibility, UNDECLARED_SECRET};
+    let mut m = deploying(Deployments::Open);
+    let _ok = m
+        .run_unproven(install_release("pi", "1.0.0", &["PI_KEY"], Value::Null))
+        .unwrap();
+    let uses = json!({ "inference": { "package": "pi", "range": "*" } });
+    let _ok = m
+        .run_unproven(install_release("notes", "1.0.0", &[], uses))
+        .unwrap();
+    let _ok = m
+        .run_unproven(create_deployment(
+            "a",
+            Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::OfferApp {
+            deployment: "a".into(),
+            app: "notes".into(),
+            package: "notes".into(),
+            version: "1.0.0".into(),
+            actor: "alice".into(),
+            at: 10,
+            consent: Value::Null,
+        })
+        .unwrap();
+    // pi becomes private to an organization alice is not in.
+    if let Some(v) = m
+        .state
+        .packages
+        .get_mut("pi")
+        .and_then(|p| p.versions.get_mut("1.0.0"))
+    {
+        v.visibility = Some(Visibility::Private);
+        v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+    }
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    assert!(old
+        .run_unproven(set_used_secret("a", "PI_KEY", "k", "alice"))
+        .is_ok());
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(
+        m.run_unproven(set_used_secret("a", "PI_KEY", "k", "alice"))
+            .unwrap_err(),
+        UNDECLARED_SECRET
+    );
+    assert!(m
+        .state
+        .deployment_declarers(&m.state.deployments["a"])
+        .is_empty());
+}
+
 /// A release recorded before its `uses` were kept reads with none and writes as it did; an
 /// install of the same `.mpk` again fills them in, and nothing else of the record changes.
 /// An entry from before `used` reads as `false` and writes as it was.

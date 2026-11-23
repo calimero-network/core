@@ -6445,6 +6445,78 @@ async fn a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it() {
     );
 }
 
+/// A deployment's secrets read nothing of a release its owner may not use: Mallory's own
+/// package `uses` Acme's private vault, and her deployment of it lists and takes the vault's
+/// secret exactly as it would were the vault not installed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_deployments_secrets_never_name_a_used_release_its_owner_may_not_use() {
+    const HOST: &str = "echo.outbound.test";
+    let acme_key = ed25519_dalek::SigningKey::from_bytes(&[95; 32]);
+    let evil_key = ed25519_dalek::SigningKey::from_bytes(&[96; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (mallory, mut m) = signed_up(&c, 1, "mallory").await;
+    let _acme = new_org(&alice, "Acme").await;
+    let _evil = new_org(&mallory, "Evil").await;
+    let vault = "com.acme.secretvault";
+    let _ = alice
+        .packages()
+        .upload(
+            mpk_with_secrets(
+                vault,
+                "2.3.4",
+                &variant(&kv_wasm(), vault),
+                &acme_key,
+                &["https://echo.outbound.test/v1/"],
+                Some(&[("VAULT_TOKEN", HOST)]),
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let probe = "com.evil.probe";
+    let _ = mallory
+        .packages()
+        .upload(
+            mpk_using(
+                probe,
+                "0.1.0",
+                &variant(&kv_wasm(), probe),
+                &evil_key,
+                &[],
+                json!({ "probe": { "package": vault, "range": "*" } }),
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let d = own_deployment(&mallory, &mut m).await;
+    let _ = mallory
+        .deployments()
+        .offer(&d, "probe", probe, "0.1.0", Some(&mut m))
+        .await
+        .unwrap();
+    all_applied(&c).await;
+
+    let listed = mallory.deployments().secrets(&d).await.map(wire).unwrap();
+    assert_eq!(listed["secrets"], json!({}), "{listed}");
+    let used = mallory
+        .deployments()
+        .secret_set(&d, "VAULT_TOKEN", "x", Some(&mut m))
+        .await
+        .unwrap_err();
+    let unknown = mallory
+        .deployments()
+        .secret_set(&d, "NO_SUCH_NAME", "x", Some(&mut m))
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.code(), Some("UNDECLARED_SECRET"), "{unknown}");
+    assert_eq!(
+        used.to_string().replace("VAULT_TOKEN", "NO_SUCH_NAME"),
+        unknown.to_string()
+    );
+}
+
 /// An instance's owner sets its own value of a secret its release declares: no operator
 /// bound one here, so the action that names it fails until the owner sets it, then reaches
 /// the echo host with it (redacted in what comes back). The value is never answered, only
