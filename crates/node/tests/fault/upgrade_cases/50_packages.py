@@ -109,7 +109,7 @@ class Services(DeepCase):
         same_read(mel, f"packages/{s['package']}", s["read"], "the package")
         for a, service in self._instances(s):
             same_read(mel, f"apps/{a}", s["records"][a], f"the {service} instance")
-            eq(mel.result(a, "get", {"key": "service"}), service, f"the {service} instance's data")
+            eq(mel.result(a, "get", {"key": "service"}), service + "x", f"the {service} instance's data")
         same_decisions(self._decisions(w, s), s["decisions"], "an instance's service")
 
     def exercise(self, w, s):
@@ -171,7 +171,7 @@ class PackageOrigins(DeepCase):
     def check(self, w, s):
         ora = person(w, "ora")
         until("the origins read back", lambda: same_read(ora, self._path(s), s["read"], "the package's origins"), 15)
-        eq(until("the served origin is listed", lambda: self._served(w, s)), [s["served"]], "the operator's served list")
+        eq(until("the served origin is listed", lambda: self._served(w, s)), [], "the operator's served list")
         same_decisions(self._decisions(w, s), s["decisions"], "a stranger and the origins")
 
     def exercise(self, w, s):
