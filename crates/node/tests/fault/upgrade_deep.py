@@ -43,7 +43,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.modules.setdefault("upgrade_deep", sys.modules[__name__])
+import ed25519_sign  # noqa: E402
 import upgrade_path  # noqa: E402
+from rollout import OPERATOR_SEED  # noqa: E402
 from rv2 import ORIGIN, CliError, HttpError  # noqa: E402
 from upgrade_path import Case, Failed  # noqa: E402
 
@@ -87,9 +89,12 @@ NOT_COVERED = [
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
      "recovery code (`account-recovery-code`) is covered"),
-    ("Accounts", "Sign-up through a cluster sign-up invite, and issuing one",
-     "meroctl's login takes no invite and has no command to issue one (an operator-signed request); "
-     "the policy and the invite list are read back (`ops-state`)"),
+    ("Accounts", "Finishing a sign-up with a cluster sign-up invite (`register/finish { invite }`, which spends a use)",
+     "the finish carries a WebAuthn registration made by a new P-256 passkey, which the suite's standard-library "
+     "Python cannot make; meroctl's `login --dev-passkey` registers a new file but takes no invite, and the "
+     "release's meroctl is the one that seeds. Issuing, listing and revoking an invite and the node's refusal or "
+     "acceptance of a token at `register/begin` are covered (`sign-up-invites`); "
+     "`tests/sign_up.rs` covers the finish and the spent use on one build"),
     ("Accounts", ("Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the "
                   "organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, "
                   "`setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, "
@@ -131,9 +136,6 @@ NOT_COVERED = [
     ("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
      "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
      "is covered, the stream itself by the cluster tests"),
-    ("Ops", "Restoring a backup onto the new release",
-     "`POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, "
-     "not a rollout"),
     ("Ops", "A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`)",
      "a read that stores nothing, so there is no data to carry across a roll; it needs a registered job "
      "node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable"),
@@ -533,6 +535,20 @@ def anyone(w, method, path, body=None, node=None):
 def ops(w, method, path, body=None, node=None):
     node = node if node is not None else w.members()[0]
     return _http(method, w.fleet.url(node) + path, body, w.fleet.ops_token, 30)
+
+
+def operator(w, method, path, body=None):
+    """An operator decision over the ops route: the node answers `428 OPERATOR_SIGNATURE_REQUIRED`
+    with the bytes to sign, and the retry carries the operator key's signature over them."""
+    try:
+        return ops(w, method, path, body)
+    except HttpError as e:
+        if e.status != 428 or not isinstance(e.body, dict):
+            raise
+        details = e.body["details"]
+    seed = bytes.fromhex(OPERATOR_SEED)
+    sig = ed25519_sign.sign(seed, base64.b64decode(details["message"])).hex()
+    return ops(w, method, path, {**(body or {}), "operatorProof": {"nonce": details["nonce"], "signature": sig}})
 
 
 def ops_text(w, path, node):
