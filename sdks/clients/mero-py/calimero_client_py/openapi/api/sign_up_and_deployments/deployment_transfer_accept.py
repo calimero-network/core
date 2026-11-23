@@ -116,7 +116,7 @@ def sync_detailed(
     stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new
     owner sets its own. Until a person approves an update of a customer's instance on a sheet that names
     the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not
-    offered to `to`, `409 TRANSFER_STALE` once whoever offered it no longer manages it, `409
+    offered to `to`, `409 TRANSFER_STALE` once whoever offered it may no longer hand it over, `409
     TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and
     `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization
     without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet
@@ -164,7 +164,7 @@ def sync(
     stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new
     owner sets its own. Until a person approves an update of a customer's instance on a sheet that names
     the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not
-    offered to `to`, `409 TRANSFER_STALE` once whoever offered it no longer manages it, `409
+    offered to `to`, `409 TRANSFER_STALE` once whoever offered it may no longer hand it over, `409
     TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and
     `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization
     without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet
@@ -207,7 +207,7 @@ async def asyncio_detailed(
     stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new
     owner sets its own. Until a person approves an update of a customer's instance on a sheet that names
     the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not
-    offered to `to`, `409 TRANSFER_STALE` once whoever offered it no longer manages it, `409
+    offered to `to`, `409 TRANSFER_STALE` once whoever offered it may no longer hand it over, `409
     TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and
     `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization
     without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet
@@ -253,7 +253,7 @@ async def asyncio(
     stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new
     owner sets its own. Until a person approves an update of a customer's instance on a sheet that names
     the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not
-    offered to `to`, `409 TRANSFER_STALE` once whoever offered it no longer manages it, `409
+    offered to `to`, `409 TRANSFER_STALE` once whoever offered it may no longer hand it over, `409
     TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and
     `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization
     without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet

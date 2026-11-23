@@ -60,6 +60,7 @@ class App:
                 first approver of a red update whose policy asks for a second. `auto`: it applied on its own under the app's
                 update policy (`by` is `policy:auto-update`); `undo`: it undid the upgrade before it (`fromRelease` the release
                 undone).
+            owner_seen_at (Union[Unset, int]):
             deployment (Union[Unset, str]):
             release (Union[Unset, PackageRef]): One service of one package release: `service` is absent for a single-service
                 bundle, `compute` (absent: false) marks the service's compute component.
@@ -91,6 +92,7 @@ class App:
     compute_bundle: Union[Unset, str] = UNSET
     components: Union[Unset, AppComponents] = UNSET
     last_upgrade: Union[Unset, "Upgrade"] = UNSET
+    owner_seen_at: Union[Unset, int] = UNSET
     deployment: Union[Unset, str] = UNSET
     release: Union[Unset, "PackageRef"] = UNSET
     restore: Union[Unset, "AppRestore"] = UNSET
@@ -165,6 +167,8 @@ class App:
         if not isinstance(self.last_upgrade, Unset):
             last_upgrade = self.last_upgrade.to_dict()
 
+        owner_seen_at = self.owner_seen_at
+
         deployment = self.deployment
 
         release: Union[Unset, dict[str, Any]] = UNSET
@@ -213,6 +217,8 @@ class App:
             field_dict["components"] = components
         if last_upgrade is not UNSET:
             field_dict["lastUpgrade"] = last_upgrade
+        if owner_seen_at is not UNSET:
+            field_dict["ownerSeenAt"] = owner_seen_at
         if deployment is not UNSET:
             field_dict["deployment"] = deployment
         if release is not UNSET:
@@ -344,6 +350,8 @@ class App:
         else:
             last_upgrade = Upgrade.from_dict(_last_upgrade)
 
+        owner_seen_at = d.pop("ownerSeenAt", UNSET)
+
         deployment = d.pop("deployment", UNSET)
 
         _release = d.pop("release", UNSET)
@@ -398,6 +406,7 @@ class App:
             compute_bundle=compute_bundle,
             components=components,
             last_upgrade=last_upgrade,
+            owner_seen_at=owner_seen_at,
             deployment=deployment,
             release=release,
             restore=restore,
