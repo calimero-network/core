@@ -2617,8 +2617,8 @@ fn team_names(node: &Node, org: &str, account: Option<&str>, teams: &[String]) -
 }
 
 /// The app team a `createOrg` asked from `package`'s frontend starts with:
-/// that package and its display name (its id for `account`, who may not read the newest
-/// release), when it is installed and every node applies `CreateOrg { app_team }` alike;
+/// that package and the display name of the newest release `account` may use (else its
+/// id), when it has such a release and every node applies `CreateOrg { app_team }` alike;
 /// `None` (a bare organization) else.
 async fn org_app_team(
     node: &Node,
@@ -2627,12 +2627,14 @@ async fn org_app_team(
 ) -> Option<(String, String)> {
     let package = package?;
     let name = node.sys(|s| {
-        let record = s.packages.get(package)?;
+        let newest = s
+            .packages
+            .get(package)?
+            .latest_where(|v| s.sees_release(v, account))?;
         Some(
-            record
-                .latest()
-                .filter(|v| s.reads_release(v, account))
-                .and_then(|v| v.metadata.get("name"))
+            newest
+                .metadata
+                .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or(package)
                 .to_owned(),

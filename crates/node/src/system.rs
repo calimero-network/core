@@ -576,8 +576,14 @@ impl PackageRecord {
     /// The highest release by semver (a version that does not parse sorts first).
     #[must_use]
     pub fn latest(&self) -> Option<&PackageVersion> {
+        self.latest_where(|_| true)
+    }
+
+    /// The highest release by semver among those `keep` holds of.
+    pub fn latest_where(&self, keep: impl Fn(&PackageVersion) -> bool) -> Option<&PackageVersion> {
         self.versions
             .values()
+            .filter(|v| keep(v))
             .max_by(|a, b| compare_versions(&a.version, &b.version))
     }
 }
@@ -3654,6 +3660,10 @@ impl SystemState {
             return Err(ONLY_ADMINS_INSTALL);
         }
         let in_org = |a: &&AppRecord| a.org == org;
+        // A package named outright with no release the actor may use answers as a missing
+        // one; entries logged below the version that brings private releases apply as they did.
+        let gated = self.cluster_brings(cluster_version::Feature::PrivateReleases);
+        let named = apps.is_some();
         let specs = match apps {
             Some(specs) => specs,
             None => self
@@ -3704,10 +3714,13 @@ impl SystemState {
                 return Err("a package is named twice");
             }
             let record = self.packages.get(&spec.package).ok_or("no such package")?;
+            let newest = record.latest_where(|v| !gated || self.sees_release(v, actor));
+            if named && newest.is_none() {
+                return Err("no such package");
+            }
             let name = match spec.name {
                 Some(n) => n,
-                None => record
-                    .latest()
+                None => newest
                     .and_then(|v| v.metadata.get("name"))
                     .and_then(Value::as_str)
                     .unwrap_or(spec.package.as_str())
@@ -4142,11 +4155,12 @@ impl SystemState {
                 .and_then(|p| source?.app_team(p))
                 .map(|t| t.team_id.clone())
         });
+        let gated = self.cluster_brings(cluster_version::Feature::PrivateReleases);
         let team_name = package.as_deref().map(|p| {
             let name = self
                 .packages
                 .get(p)
-                .and_then(PackageRecord::latest)
+                .and_then(|r| r.latest_where(|v| !gated || self.sees_release(v, actor)))
                 .and_then(|v| v.metadata.get("name"))
                 .and_then(Value::as_str)
                 .filter(|n| !n.trim().is_empty())

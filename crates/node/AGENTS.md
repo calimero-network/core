@@ -392,7 +392,13 @@ is its command line.
   the caller reads the latest release, whose prefixes it approves and shows, and upgrade runs skip it (`api::upgrade_sees`; the operator's:
   its own or the app owner's). Frontends stay public by name; the newest release's
   display name and author reach a session bound to the package (the consent page's
-  `requestedBy`, `createOrg`'s app team) only when its account reads that release,
+  `requestedBy`) only when its account reads that release, an app team (`ScopeApps`,
+  `MoveApp`, `createOrg`'s) is named after the newest release its maker may use
+  (`PackageRecord::latest_where`), and a package named for one with no such release
+  answers `no such package` (API, and apply once the logged cluster version brings
+  `Feature::PrivateReleases`; `createOrg` then offers no app team; regressions
+  `an_app_team_reads_only_the_releases_its_actor_may_use`,
+  `an_app_team_of_a_private_package_answers_as_a_missing_package`),
   and a sign-up on the package's origin (`passkeys::app_name`) only when it is public
   or the operator's; else they answer as for a release without them
   (`a_strangers_bound_session_never_shows_a_private_releases_name`). Regressions:

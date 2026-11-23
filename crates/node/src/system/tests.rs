@@ -856,6 +856,122 @@ fn an_uninstall_takes_only_the_releases_its_actor_may_use() {
     assert!(before.manages_package("p", "bob"), "as it applied before");
 }
 
+/// An app team is named, and a package named outright is found, only from the releases its
+/// actor may use, from the logged version that brings private releases: a package with
+/// none answers as a missing one, and a team (by a scope or a move) is named after the
+/// newest release the actor may use. Entries logged below it apply as they did.
+#[test]
+fn an_app_team_reads_only_the_releases_its_actor_may_use() {
+    use super::cluster_version::Feature;
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    let _ok = m.run_authorized(account("alice")).unwrap();
+    for id in ["org", "dst"] {
+        let mut o = org(&[("alice", "owner")], &[], &["2.0.0"]);
+        id.clone_into(&mut o.org_id);
+        let _prev = m.state.orgs.insert(id.into(), o);
+    }
+    let release = |version: &str, visibility: &str, name: &str| {
+        json!({
+            "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+            "services": { "": format!("b-{version}") }, "installedBy": "bob",
+            "installedAt": 1, "visibility": visibility, "orgs": ["elsewhere"],
+            "metadata": { "name": name }
+        })
+    };
+    for (package, versions) in [
+        (
+            "p",
+            json!({ "1.0.0": release("1.0.0", "public", "Open"),
+                    "2.0.0": release("2.0.0", "private", "Secret") }),
+        ),
+        (
+            "q",
+            json!({ "1.0.0": release("1.0.0", "private", "Hidden") }),
+        ),
+        ("r", json!({ "1.0.0": release("1.0.0", "public", "Other") })),
+    ] {
+        let _prev = m.state.packages.insert(
+            package.into(),
+            serde_json::from_value(json!({
+                "name": package, "signerId": "did:key:z", "owner": "bob", "versions": versions
+            }))
+            .unwrap(),
+        );
+    }
+    let _prev = m.state.bundles.insert(
+        "b-1.0.0".into(),
+        serde_json::from_value(json!({
+            "hash": "b-1.0.0", "size": 1, "uploadedBy": "bob",
+            "package": { "package": "p", "version": "1.0.0" }
+        }))
+        .unwrap(),
+    );
+    let _prev = m.state.apps.insert(
+        "a".into(),
+        serde_json::from_value(json!({
+            "appId": "a", "name": "a", "group": 5, "bundle": "b-1.0.0", "owner": "alice",
+            "org": "org", "grants": [{ "kind": "org" }], "replicas": [1], "createdAt": 0,
+            "release": { "package": "p", "version": "1.0.0" }
+        }))
+        .unwrap(),
+    );
+    let scope_in = |org: &str, package: &str| SystemCmd::ScopeApps {
+        org: org.into(),
+        apps: Some(vec![super::ScopeApp {
+            package: package.into(),
+            name: None,
+            instances: Some(Vec::new()),
+            join: None,
+            keep: None,
+            child_teams: None,
+        }]),
+        shared: None,
+        nonce: package.into(),
+        actor: "alice".into(),
+        consent: Value::Null,
+        member_child_teams: true,
+        all_apps_rows: true,
+        by_release: true,
+    };
+    let scope = |package: &str| scope_in("org", package);
+    // A target with an app team gives a moved app one of its own.
+    let _ok = m.run_unproven(scope_in("dst", "r")).unwrap();
+    let team_name = |m: &SystemMachine, org: &str, package: &str| {
+        m.state.orgs[org].app_team(package).map(|t| t.name.clone())
+    };
+
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let _ok = old.run_unproven(scope("p")).unwrap();
+    let _ok = old.run_unproven(scope("q")).unwrap();
+    assert_eq!(
+        team_name(&old, "org", "p").as_deref(),
+        Some("Secret"),
+        "as it applied"
+    );
+    let _ok = old
+        .run_unproven(move_app("a", "dst", "alice", false, Value::Null))
+        .unwrap();
+    assert_eq!(
+        team_name(&old, "dst", "p").as_deref(),
+        Some("Secret"),
+        "as it applied"
+    );
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(m.run_unproven(scope("q")), m.run_unproven(scope("missing")));
+    assert_eq!(team_name(&m, "org", "q"), None);
+    let _ok = m.run_unproven(scope("p")).unwrap();
+    assert_eq!(team_name(&m, "org", "p").as_deref(), Some("Open"));
+    let _ok = m
+        .run_unproven(move_app("a", "dst", "alice", false, Value::Null))
+        .unwrap();
+    assert_eq!(team_name(&m, "dst", "p").as_deref(), Some("Open"));
+}
+
 /// A release recorded before `visibility` keeps the rule from before: whoever shares an
 /// organization with an installer, or reaches an app of it, uses it. Its entry writes back
 /// byte for byte; a private install of it again leaves that rule, a public one replaces it.

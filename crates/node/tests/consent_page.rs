@@ -902,8 +902,8 @@ async fn an_outbound_approval_never_reads_a_release_its_approver_cannot_read() {
 
 /// A session bound to a package learns nothing of a release its account may not read: Bob,
 /// signed in on the origin of Alice's private package, asks for an organization, and the
-/// page names neither the release's display name nor its author, as for a package with no
-/// such metadata; a sign-up begun on that origin names the package id alone.
+/// page names neither the release's display name nor its author and offers no app team, as
+/// for a package not installed; a sign-up begun on that origin names the package id alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_strangers_bound_session_never_shows_a_private_releases_name() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
@@ -933,7 +933,7 @@ async fn a_strangers_bound_session_never_shows_a_private_releases_name() {
     let model = Page::new(made["url"].as_str().unwrap()).model().await;
     assert_eq!(model["requestedBy"]["name"], Value::Null, "{model}");
     assert_eq!(model["requestedBy"]["publisher"], Value::Null, "{model}");
-    assert_eq!(model["appTeam"]["name"], json!(PACKAGE), "{model}");
+    assert_eq!(model["appTeam"], Value::Null, "{model}");
     assert!(!model.to_string().contains("Notes"), "{model}");
 
     let begun = post(

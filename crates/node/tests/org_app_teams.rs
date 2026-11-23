@@ -1917,3 +1917,36 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
     assert!(alice.orgs().team_get(&org, &channel).await.is_err());
     assert!(alice.apps().get(&chat_app).await.is_ok());
 }
+
+/// An app team is made only for a package the admin may use: Mal, an admin of his own
+/// organization, asking for one of Bob's private package is answered as for a package
+/// the cluster lacks, and no team is made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_app_team_of_a_private_package_answers_as_a_missing_package() {
+    let c = Cluster::start(3).await;
+    let (bob, _b) = signed_up(&c, 0, "bob").await;
+    let (mal, mut mal_pk) = signed_up(&c, 1, "mal").await;
+    let _bobco = new_org(&bob).await;
+    let _ok = bob.packages().upload(release(NOTES), None).await.unwrap();
+    let malco = new_org(&mal).await;
+
+    let private = scope(
+        &mal,
+        &mut mal_pk,
+        &malco,
+        json!({ "apps": [{ "package": NOTES }] }),
+    )
+    .await
+    .unwrap_err();
+    let missing = scope(
+        &mal,
+        &mut mal_pk,
+        &malco,
+        json!({ "apps": [{ "package": "com.test.missing" }] }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(private.to_string(), missing.to_string());
+    let teams = mal.orgs().app_team_list(&malco).await.map(wire).unwrap();
+    assert_eq!(teams["appTeams"], json!([]), "{teams}");
+}
