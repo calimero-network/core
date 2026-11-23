@@ -1399,8 +1399,9 @@ async fn on_a_granted_cluster_deploying_needs_a_grant() {
 }
 
 /// On a granted cluster a customer creates instances only from an offer: the release
-/// its instance runs, which it now sees, makes no instance outside the deployment.
-/// A deployer still creates one of its own release.
+/// its instance runs, which it now sees, makes no instance outside the deployment, nor
+/// does an upgrade of one it made from the operator's catalog. A deployer still creates
+/// one of its own release.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn on_a_granted_cluster_a_customer_creates_only_from_an_offer() {
     let c = Cluster::start_with(3, |cfg| {
@@ -1411,7 +1412,7 @@ async fn on_a_granted_cluster_a_customer_creates_only_from_an_offer() {
     ops.use_api_key("ops-secret").await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
     let alice_id = account_of(&alice).await;
-    let (bob, _bob_pk) = signed_up(&c, 1, "bob").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let _ok = ops_signed(
         &ops,
         "ops/deployers",
@@ -1422,6 +1423,11 @@ async fn on_a_granted_cluster_a_customer_creates_only_from_an_offer() {
     let _ok = alice
         .packages()
         .upload(release("com.test.notes", "1.0.0"))
+        .await
+        .unwrap();
+    let _ok = ops
+        .ops()
+        .package_upload(release("com.test.catalog", "1.0.0"))
         .await
         .unwrap();
     let d = deploy(
@@ -1454,6 +1460,28 @@ async fn on_a_granted_cluster_a_customer_creates_only_from_an_offer() {
     let e = bob.apps().create(outside()).await.unwrap_err();
     assert_eq!(e.code(), Some("DEPLOY_NOT_GRANTED"), "{e}");
     let _own = alice.apps().create(outside()).await.unwrap();
+
+    let catalog = bob
+        .apps()
+        .create(AppCreateRequest {
+            name: Some("catalog".to_owned()),
+            package: Some("com.test.catalog".to_owned()),
+            version: Some("1.0.0".to_owned()),
+            ..AppCreateRequest::default()
+        })
+        .await
+        .unwrap()
+        .app_id;
+    let e = bob
+        .apps()
+        .upgrade(
+            &catalog,
+            typed(json!({ "package": "com.test.notes", "version": "1.0.0" })),
+            Some(&mut bob_pk),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("DEPLOY_NOT_GRANTED"), "{e}");
 }
 
 /// The value of `metric{labels}` in Prometheus text, if the series is there.

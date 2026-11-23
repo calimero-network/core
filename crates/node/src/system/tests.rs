@@ -7946,6 +7946,63 @@ fn on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers() {
         .unwrap();
 }
 
+/// Where deployments are granted, an instance from no deployment moves into another
+/// package only as its upgrader could create one there, from the logged version that
+/// brings the rule; within its package, and before that version, it moves as it did.
+#[test]
+fn on_a_granted_cluster_an_instance_outside_every_deployment_keeps_out_of_a_deployers_package() {
+    use super::{cluster_version::Feature, Deployments, NOT_A_DEPLOYER, OPERATOR};
+    let mut m = deploying(Deployments::Granted);
+    let _ok = m
+        .run_unproven(grant(account_deployer("alice"), None, OPERATOR))
+        .unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.1.0", 5)).unwrap();
+    let catalog = SystemCmd::InstallPackage {
+        package: "q".into(),
+        signer_id: "did:key:q".into(),
+        release: serde_json::from_value(json!({
+            "version": "1.0.0", "mpk": "q", "mpkSize": 1, "source": "upload",
+            "services": { "": "b-q" }, "installedBy": OPERATOR, "installedAt": 5
+        }))
+        .unwrap(),
+    };
+    let _ok = m.run_unproven(catalog).unwrap();
+    let create =
+        |m: &mut SystemMachine, id: &str, owner: &str, bundle: &str, release: (&str, &str)| {
+            let mut cmd = instance(id, owner, bundle, None);
+            if let SystemCmd::CreateApp { app, .. } = &mut cmd {
+                app.release = Some(super::PackageRef {
+                    package: release.0.into(),
+                    version: release.1.into(),
+                    service: None,
+                    compute: false,
+                });
+            }
+            m.run_unproven(cmd).unwrap();
+        };
+    create(&mut m, "early", "bob", "b-q", ("q", "1.0.0"));
+    create(&mut m, "late", "bob", "b-q", ("q", "1.0.0"));
+    create(&mut m, "own", "alice", "b-1.0.0", ("p", "1.0.0"));
+
+    let _ok = m
+        .run_unproven(upgrade_to("early", "bob", "b-1.0.0", Some(("p", "1.0.0"))))
+        .unwrap();
+
+    m.state.cluster_version = Some(Feature::OffersOnly.since().into());
+    assert_eq!(
+        m.run_unproven(upgrade_to("late", "bob", "b-1.0.0", Some(("p", "1.0.0"))))
+            .unwrap_err(),
+        NOT_A_DEPLOYER
+    );
+    let _ok = m
+        .run_unproven(upgrade_to("early", "bob", "b-1.1.0", Some(("p", "1.1.0"))))
+        .unwrap();
+    let _ok = m
+        .run_unproven(upgrade_to("own", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
+        .unwrap();
+}
+
 /// Where deployments are open, installs go on exactly as before.
 #[test]
 fn on_an_open_cluster_anyone_installs() {

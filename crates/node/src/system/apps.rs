@@ -516,6 +516,15 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     s.within_deployment(a, release.as_ref(), run.as_deref())?;
                 }
             }
+            // An instance from no deployment enters another package only as its upgrader
+            // could create one there; read from the logged version alone.
+            if !by_operator && s.cluster_brings(cluster_version::Feature::OffersOnly) {
+                if let Some(a) = s.apps.get(&app_id) {
+                    if !s.upgrades_outside_offers(a, &actor, release.as_ref(), &bundle, at) {
+                        return Err(NOT_A_DEPLOYER);
+                    }
+                }
+            }
             // A run moves each app it names once, along its package and
             // never back: its consent covers that, not whatever an entry
             // naming it says.

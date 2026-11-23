@@ -343,6 +343,11 @@ pub(crate) async fn upgrade_app(
     if let Err(why) = node.sys(|s| s.within_deployment(&app, release.as_ref(), None)) {
         return Err(crate::node::rejected(why));
     }
+    if !node
+        .sys(|s| s.upgrades_outside_offers(&app, &account, release.as_ref(), &bundle, now_secs()))
+    {
+        return Err(crate::node::not_a_deployer());
+    }
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
         return Err(crate::node::rejected("unknown bundle"));
     }

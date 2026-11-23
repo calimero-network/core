@@ -207,7 +207,9 @@ pub enum Feature {
     /// `CreateApp { offers_only }`: where deployments are granted, an instance from no
     /// deployment's offer is a deployer's (`SystemState::creates_outside_offers`). An earlier
     /// release ignores the field and would create one a later one refuses. Apply also reads the
-    /// logged version for the rule, so an entry before it replays as it applied.
+    /// logged version for the rule, so an entry before it replays as it applied; from that
+    /// version an `UpgradeApp` moving such an instance into another package is judged alike
+    /// (`SystemState::upgrades_outside_offers`).
     OffersOnly,
 }
 

@@ -407,9 +407,13 @@ is its command line.
   anyone else, a customer who sees a release through an instance included,
   creates only from an offer (`POST /apps` `403 DEPLOY_NOT_GRANTED`; `CreateApp
   { offers_only }` at apply, `Feature::OffersOnly`, rc.36, or the logged
-  cluster version bringing it; earlier entries replay as they applied).
-  Regressions: `on_a_granted_cluster_a_customer_creates_only_from_an_offer`,
-  `on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers`.
+  cluster version bringing it; earlier entries replay as they applied). Such an
+  instance moves into another package only as its upgrader could create one
+  there (`SystemState::upgrades_outside_offers`; `UpgradeApp` from that logged
+  version, the operator's excepted). Regressions:
+  `on_a_granted_cluster_a_customer_creates_only_from_an_offer`,
+  `on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers`,
+  `on_a_granted_cluster_an_instance_outside_every_deployment_keeps_out_of_a_deployers_package`.
   The operator's installs never need one.
   Grants: `GrantDeployer`/`RevokeDeployer`, the operator's signature
   (`POST /ops/deployers`, `DELETE /ops/deployers/{key}` or `POST

@@ -2417,6 +2417,33 @@ impl SystemState {
         }
     }
 
+    /// Whether `actor` may move `app` to `bundle` (from `release`) at `at`: an instance
+    /// from a deployment, or one moving within its package, may; else only into what
+    /// `actor` [creates outside offers](Self::creates_outside_offers).
+    #[must_use]
+    pub fn upgrades_outside_offers(
+        &self,
+        app: &AppRecord,
+        actor: &str,
+        release: Option<&PackageRef>,
+        bundle: &str,
+        at: u64,
+    ) -> bool {
+        if app.deployment.is_some() {
+            return true;
+        }
+        let from = app
+            .release
+            .as_ref()
+            .map(|r| r.package.as_str())
+            .or_else(|| self.package_of(app));
+        let to = release.map(|r| r.package.as_str()).or_else(|| {
+            let b = self.bundles.get(bundle)?;
+            b.package.as_ref().map(|r| r.package.as_str())
+        });
+        (from.is_some() && from == to) || self.creates_outside_offers(actor, release, bundle, at)
+    }
+
     /// The owner that grants deployers: the cluster's owner where governance
     /// says `deployers: owner` and the operator has named it; `None` while
     /// the operator grants them.
