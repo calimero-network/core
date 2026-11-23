@@ -1061,7 +1061,7 @@ async fn an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_nod
     for (version, wasm) in [("1.0.0", kv_wasm()), ("1.1.0", v11)] {
         let _ = alice
             .packages()
-            .upload(undo_release(version, &wasm))
+            .upload(undo_release(version, &wasm), None)
             .await
             .unwrap();
     }
