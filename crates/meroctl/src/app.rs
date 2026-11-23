@@ -111,23 +111,7 @@ pub enum AppCmd {
     /// watch`). A signed `.mpk` is installed and the instances running its
     /// package are updated to its version; a raw `.wasm` (development
     /// clusters) updates the instances named with `--instance`.
-    Watch {
-        #[arg(long)]
-        path: PathBuf,
-        /// The instances to update (default for a `.mpk`: this account's
-        /// instances of its package).
-        #[arg(long = "instance", short = 'i', value_name = "INSTANCE")]
-        contexts: Vec<String>,
-        /// The owner's passkey file that approves each update.
-        #[arg(long)]
-        dev_passkey: PathBuf,
-        /// Push once and exit.
-        #[arg(long)]
-        once: bool,
-        /// How often to look at the file, in milliseconds.
-        #[arg(long, default_value_t = 500)]
-        interval_ms: u64,
-    },
+    Watch(WatchArgs),
     /// The web origins (a developer's own site, a hosting preview) whose
     /// pages may sign people in to this application, each under its own
     /// passkey rp-id. Its manager's: the publisher organization's
@@ -169,6 +153,29 @@ pub enum OriginsCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
+}
+
+/// What `app watch` and `dev watch` push, where, and how often.
+#[derive(Debug, clap::Args)]
+pub struct WatchArgs {
+    #[arg(long)]
+    pub path: PathBuf,
+    /// The instances to update (default for a `.mpk`: this account's
+    /// instances of its package).
+    #[arg(long = "instance", short = 'i', value_name = "INSTANCE")]
+    pub contexts: Vec<String>,
+    /// The owner's passkey file that approves each update.
+    #[arg(long)]
+    pub dev_passkey: PathBuf,
+    /// Push once and exit.
+    #[arg(long)]
+    pub once: bool,
+    /// How often to look at the file, in milliseconds.
+    #[arg(long, default_value_t = 500)]
+    pub interval_ms: u64,
+    /// The organization a `.mpk` is installed for (default: your only one).
+    #[arg(long)]
+    pub org: Option<String>,
 }
 
 /// Install a local file: a `.mpk` as a package (for `org`), anything else as a raw bundle.
@@ -266,14 +273,8 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
             Some(v) => to_json(&packages.version_uninstall(&package, &v).await?)?,
             None => to_json(&packages.uninstall(&package).await?)?,
         },
-        AppCmd::Watch {
-            path,
-            contexts,
-            dev_passkey,
-            once,
-            interval_ms,
-        } => {
-            watch(env, &path, &contexts, &dev_passkey, once, interval_ms, true).await?;
+        AppCmd::Watch(a) => {
+            watch(env, &a, true).await?;
             return Ok(Value::Null);
         }
         AppCmd::Origins(cmd) => origins(cmd, env).await?,
@@ -319,11 +320,16 @@ async fn release(a: &crate::make::ReleaseArgs, env: &Env) -> eyre::Result<Value>
         to_json(
             &env.client
                 .packages()
-                .install(&package, &a.version, None)
+                .install(&package, &a.version, a.install_org.as_deref())
                 .await?,
         )?
     } else {
-        to_json(&env.client.packages().upload(read_file(&mpk)?, None).await?)?
+        to_json(
+            &env.client
+                .packages()
+                .upload(read_file(&mpk)?, a.install_org.as_deref())
+                .await?,
+        )?
     };
     Ok(json!({
         "package": package,
@@ -377,21 +383,14 @@ async fn origins(cmd: OriginsCmd, env: &Env) -> eyre::Result<Value> {
 
 /// Push `path` to its instances (now, if `push_first`), and again on every
 /// save unless `once`.
-pub async fn watch(
-    env: &Env,
-    path: &Path,
-    contexts: &[String],
-    dev_passkey: &Path,
-    once: bool,
-    interval_ms: u64,
-    push_first: bool,
-) -> eyre::Result<()> {
+pub async fn watch(env: &Env, a: &WatchArgs, push_first: bool) -> eyre::Result<()> {
+    let (path, once, interval_ms) = (a.path.as_path(), a.once, a.interval_ms);
     let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let mut seen = modified(path);
     let mut push_now = push_first;
     loop {
         if push_now {
-            match push(env, path, contexts, dev_passkey).await {
+            match push(env, a).await {
                 Ok(out) => println!("{}", serde_json::to_string(&out)?),
                 Err(e) if once => return Err(e),
                 Err(e) => eprintln!("push failed: {e:#}"),
@@ -416,16 +415,12 @@ pub async fn watch(
 }
 
 /// One push: the build, then each instance's update to it.
-async fn push(
-    env: &Env,
-    path: &Path,
-    contexts: &[String],
-    dev_passkey: &Path,
-) -> eyre::Result<Value> {
+async fn push(env: &Env, a: &WatchArgs) -> eyre::Result<Value> {
+    let (path, contexts, dev_passkey) = (&a.path, &a.contexts, &a.dev_passkey);
     let client = &env.client;
     let bytes = read_file(path)?;
     let (body, targets) = if path.extension().is_some_and(|e| e == "mpk") {
-        let installed = client.packages().upload(bytes, None).await?;
+        let installed = client.packages().upload(bytes, a.org.as_deref()).await?;
         let targets = if contexts.is_empty() {
             let me = client.auth().me().await?.account_id;
             client

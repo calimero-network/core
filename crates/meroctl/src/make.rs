@@ -309,6 +309,10 @@ pub struct ReleaseArgs {
     /// List the package publicly (`app publish --public`).
     #[arg(long, requires = "publish")]
     pub public: bool,
+    /// The cluster organization it is installed for (`app install --org`; default: your
+    /// only one).
+    #[arg(long)]
+    pub install_org: Option<String>,
 }
 
 impl ReleaseArgs {
