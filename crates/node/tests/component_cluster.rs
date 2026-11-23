@@ -10024,6 +10024,74 @@ async fn a_unit_upgrade_answers_a_release_its_owner_may_not_use_as_a_missing_one
     );
 }
 
+/// An organization run moves no app to a release its starter may not use: Bob, removed from
+/// Acme, runs Bobco's instances of Acme's private N to 0.2.0, and his app is noted failed
+/// exactly as for a version that does not exist.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_org_run_answers_a_release_its_starter_may_not_use_as_a_missing_one() {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let acme = new_org(&alice, "Acme").await;
+    let bobco = new_org(&bob, "Bobco").await;
+    join_org(&alice, &mut a, &bob, &acme, "member").await;
+    let notes = "com.acme.runnotes";
+    for v in ["0.1.0", "0.2.0"] {
+        let _ = alice
+            .packages()
+            .upload(
+                mpk_using(notes, v, &variant(&kv_wasm(), v), &key, &[], Value::Null),
+                Some(&acme),
+            )
+            .await
+            .unwrap();
+    }
+    let app = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "n", "package": notes, "version": "0.1.0", "org": bobco }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bob_id = account_id(&bob).await;
+    let _ = alice
+        .orgs()
+        .remove_member(&acme, &bob_id, Some(&mut a))
+        .await
+        .unwrap();
+    all_applied(&c).await;
+
+    let mut runs = Vec::new();
+    for version in ["0.2.0", "0.9.0"] {
+        let run = bob
+            .orgs()
+            .upgrade(
+                &bobco,
+                typed(json!({ "package": notes, "version": version })),
+                Some(&mut b),
+            )
+            .await
+            .map(wire)
+            .unwrap();
+        runs.push(finished_run(&bob, &bobco, run["runId"].as_str().unwrap()).await);
+    }
+    let (private, missing) = (&runs[0], &runs[1]);
+    assert!(private["failed"].get(&app).is_some(), "{private}");
+    assert_eq!(
+        private["failed"][&app]
+            .to_string()
+            .replace("0.2.0", "0.9.0"),
+        missing["failed"][&app].to_string()
+    );
+    let r = bob.apps().get(&app).await.map(wire).unwrap();
+    assert_eq!(r["release"]["version"], json!("0.1.0"), "{r}");
+}
+
 /// `who`'s upgrade run `run` of `org`, once it finished.
 async fn finished_run(who: &Client, org: &str, run: &str) -> Value {
     for _ in 0..200 {
