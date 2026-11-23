@@ -6116,25 +6116,23 @@ async fn a_deployments_secret_never_reaches_a_package_it_does_not_offer() {
         .unwrap()
         .to_owned();
 
-    // The developer installs three releases of PACKAGE, each declaring ECHO_KEY, offers
-    // the first and sets the secret's value.
-    for version in ["0.1.0", "0.2.0", "0.3.0"] {
-        let _ = alice
-            .packages()
-            .upload(
-                mpk_with_secrets(
-                    PACKAGE,
-                    version,
-                    &kv_wasm(),
-                    &publisher,
-                    &[PREFIX],
-                    Some(&[("ECHO_KEY", HOST)]),
-                ),
-                None,
-            )
-            .await
-            .unwrap();
-    }
+    // The developer installs a release of PACKAGE declaring ECHO_KEY, offers it and sets
+    // the secret's value; two more releases follow once the customer approved its outbound
+    // (an approval reads the latest release, which the customer must read).
+    let release_echo = |version: &'static str| {
+        alice.packages().upload(
+            mpk_with_secrets(
+                PACKAGE,
+                version,
+                &kv_wasm(),
+                &publisher,
+                &[PREFIX],
+                Some(&[("ECHO_KEY", HOST)]),
+            ),
+            None,
+        )
+    };
+    let _ = release_echo("0.1.0").await.unwrap();
     let d = alice
         .deployments()
         .create("labs", typed(json!({ "account": alice_id })), Some(&mut pk))
@@ -6201,6 +6199,9 @@ async fn a_deployments_secret_never_reaches_a_package_it_does_not_offer() {
             )
             .await
             .unwrap();
+    }
+    for version in ["0.2.0", "0.3.0"] {
+        let _ = release_echo(version).await.unwrap();
     }
     let mut round = 0;
     assert_eq!(
