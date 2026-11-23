@@ -16,10 +16,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use calimero_app_downloader::source::http::HttpRegistry;
+use calimero_app_downloader::source::http::{HttpRegistry, RegistryStatus};
 use calimero_app_downloader::{AppRequest, AppSource};
 use calimero_app_host::{Abi, MethodKind};
 use calimero_bundle::VerifiedBundle;
+use reqwest::StatusCode;
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
@@ -196,6 +197,16 @@ impl Node {
         package: &str,
         version: &str,
     ) -> Result<Option<Arc<[u8]>>, ApiError> {
+        Self::fetch_raw(registry, package, version)
+            .await
+            .map_err(unreachable_registry)
+    }
+
+    async fn fetch_raw(
+        registry: HttpRegistry,
+        package: &str,
+        version: &str,
+    ) -> eyre::Result<Option<Arc<[u8]>>> {
         let req = AppRequest {
             application_id: None,
             package,
@@ -203,9 +214,7 @@ impl Node {
             bytecode_id: None,
             context_id: None,
         };
-        registry.fetch(&req).await.map_err(|e| {
-            ApiError::unavailable(&format!("the registry could not be reached: {e:#}"))
-        })
+        registry.fetch(&req).await
     }
 
     /// `package@version` for an install by `actor`, and whether it is public: served without
@@ -217,8 +226,15 @@ impl Node {
         version: &str,
         actor: &str,
     ) -> Result<(Arc<[u8]>, Visibility), ApiError> {
-        if let Some(mpk) = Self::fetch_from(self.registry(false)?, package, version).await? {
-            return Ok((mpk, Visibility::Public));
+        // A registry that asks for a sign-in (401, 403) serves no public release.
+        match Self::fetch_raw(self.registry(false)?, package, version).await {
+            Ok(Some(mpk)) => return Ok((mpk, Visibility::Public)),
+            Ok(None) => {}
+            Err(e)
+                if e.downcast_ref::<RegistryStatus>().is_some_and(|r| {
+                    matches!(r.status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+                }) => {}
+            Err(e) => return Err(unreachable_registry(e)),
         }
         let url = self.registry_url()?;
         if url.username().is_empty() && url.password().is_none() {
@@ -833,6 +849,11 @@ impl Node {
             .map(|b| (b, compute.get(key).cloned(), release));
         found.ok_or_else(|| no_such_service(package, &version, key, &services))
     }
+}
+
+/// `503`: the registry did not serve a fetch.
+fn unreachable_registry(e: eyre::Report) -> ApiError {
+    ApiError::unavailable(&format!("the registry could not be reached: {e:#}"))
 }
 
 /// `400 NO_SUCH_SERVICE`: `key` names none of `services`, or is empty and the

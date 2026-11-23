@@ -102,6 +102,9 @@ struct Registry {
     private: Arc<Mutex<BTreeMap<String, Vec<String>>>>,
     authorized: Arc<Mutex<Vec<String>>>,
     asked: Arc<Mutex<Vec<Asked>>>,
+    /// The status a private release answers a fetch without the credential (`404` when
+    /// unset), as a registry that tells "sign in" from "not here" does.
+    anonymous: Arc<Mutex<Option<u16>>>,
 }
 
 impl Registry {
@@ -179,7 +182,11 @@ impl Registry {
                             .unwrap()
                             .push((key.clone(), credential, account.clone()));
                         if !reg.serves(&key, credential, account.as_deref()) {
-                            return StatusCode::NOT_FOUND.into_response();
+                            let anonymous = *reg.anonymous.lock().unwrap();
+                            return match anonymous.filter(|_| !credential) {
+                                Some(code) => StatusCode::from_u16(code).unwrap().into_response(),
+                                None => StatusCode::NOT_FOUND.into_response(),
+                            };
                         }
                         match reg.files.lock().unwrap().get(&key) {
                             Some(b) => (StatusCode::OK, b.clone()).into_response(),
@@ -838,6 +845,48 @@ async fn another_orgs_account_cannot_install_a_private_package_from_the_registry
         bob.apps().get(&alices_app).await.unwrap_err(),
     );
     assert!(leaks.is_empty(), "{}", leaks.join("\n"));
+}
+
+/// A registry that answers a fetch without its credential `401` or `403` (sign in) is
+/// telling core the release is not public: the install goes on with the credential and
+/// records it private. Any other refusal stays an error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_anonymous_fetch_refused_as_unauthorized_goes_on_with_the_credential() {
+    let registry = Registry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let _acme = alice.orgs().create("Acme", None, None).await.unwrap();
+    let _bobco = bob.orgs().create("Bobco", None, None).await.unwrap();
+    let alice_id = account_of(&alice).await;
+    for (code, version) in [(401, "1.0.0"), (403, "2.0.0")] {
+        *registry.anonymous.lock().unwrap() = Some(code);
+        registry.publish_private("com.acme.secret", version, &[&alice_id]);
+        let _ok = alice
+            .packages()
+            .install("com.acme.secret", version, None)
+            .await
+            .unwrap_or_else(|e| panic!("{code}: {e}"));
+    }
+    let listed = alice
+        .packages()
+        .get("com.acme.secret")
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(listed["versions"].as_array().unwrap().len(), 2, "{listed}");
+    let e = bob.packages().get("com.acme.secret").await.unwrap_err();
+    assert!(e.to_string().starts_with("404"), "private: {e}");
+
+    *registry.anonymous.lock().unwrap() = Some(500);
+    registry.publish_private("com.acme.secret", "3.0.0", &[&alice_id]);
+    let e = alice
+        .packages()
+        .install("com.acme.secret", "3.0.0", None)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("503"), "{e}");
 }
 
 /// A release the log records is fetched again (by a node that runs it and lacks it)

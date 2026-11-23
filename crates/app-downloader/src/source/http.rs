@@ -64,6 +64,22 @@ fn is_local_or_private_v4(ip: Ipv4Addr) -> bool {
     ip.is_loopback() || ip.is_private() || ip.is_link_local()
 }
 
+/// A registry answer that is neither the artifact nor `404`, as its status.
+#[derive(Debug)]
+pub struct RegistryStatus {
+    pub status: StatusCode,
+    pub url: Url,
+}
+
+impl std::fmt::Display for RegistryStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let url = calimero_primitives::utils::loggable_url(&self.url);
+        write!(f, "registry returned HTTP {} for {url}", self.status)
+    }
+}
+
+impl std::error::Error for RegistryStatus {}
+
 /// The node's own configured registry, addressed by `package@version`.
 #[derive(Clone, Debug)]
 pub struct HttpRegistry {
@@ -139,7 +155,11 @@ impl AppSource for HttpRegistry {
             return Ok(None);
         }
         if !response.status().is_success() {
-            bail!("registry returned HTTP {} for {url}", response.status());
+            return Err(RegistryStatus {
+                status: response.status(),
+                url,
+            }
+            .into());
         }
         let bytes = read_body_capped(response, MAX_ARTIFACT_BYTES).await?;
         Ok(Some(bytes.into()))

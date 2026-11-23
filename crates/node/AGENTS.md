@@ -292,7 +292,8 @@ is its command line.
   else its only one (`api::apps::only_org`; several `400 ORG_REQUIRED`). Public or
   private (`PackageVersion::visibility`, `Feature::PrivateReleases`, rc.36;
   `Node::fetch_for_install`): the registry URL's credential (userinfo) is left out
-  first, and a release served so is public; else it is fetched with the credential
+  first, and a release served so is public (a `401` or `403` to that fetch,
+  `RegistryStatus`, counts as not public; any other failure is `503`); else it is fetched with the credential
   and `x-calimero-install-account: <account>` (`INSTALL_ACCOUNT_HEADER`; none for the
   operator) and is private. An upload is private. An account in no organization
   installs for none (`orgs` empty): such a private release is its installing
@@ -399,6 +400,7 @@ is its command line.
   `a_bound_session_does_not_open_a_package_its_account_cannot_see`,
   `another_orgs_account_cannot_install_a_private_package_from_the_registry`,
   `a_release_is_fetched_again_with_the_credential_only_while_it_is_private`,
+  `an_anonymous_fetch_refused_as_unauthorized_goes_on_with_the_credential`,
   `an_outbound_approval_never_reads_a_release_its_approver_cannot_read`,
   `an_outbound_sheet_never_shows_a_release_its_asker_cannot_read`.
 - **Governance** (`system::Governance`, `Authority`, shared with clients in

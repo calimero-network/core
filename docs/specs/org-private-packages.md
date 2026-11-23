@@ -58,7 +58,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
   A member of the package's Cloud org may install it for any cluster org they belong to: nothing maps Cloud orgs to cluster orgs, and that is the member's own deliberate share.
 - **C3. Kind and the two rights.**
   `InstallPackage` records `PackageVersion::visibility: public | private`.
-  Core learns it from the registry itself: the install first fetches without a credential, and a release served to anyone is public; else it fetches with the credential and the account (C4) and records private. An upload is private.
+  Core learns it from the registry itself: the install first fetches without a credential, and a release served to anyone is public; else (a `404`, or a `401`/`403` asking for a sign-in) it fetches with the credential and the account (C4) and records private. An upload is private.
   `sees_release` splits into the two rights above; `shares_org` goes, and the reach clause stays only in the read-the-facts rule (`report::named_release`, `app_update`).
   A record without `visibility` keeps today's rule; no cluster holds a private registry install yet, and none gets a credential before this release (mdma, below).
   `Feature::PrivateReleases` gates the new fields; a `DeepCase` covers a release installed before and after.
