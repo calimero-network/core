@@ -507,8 +507,10 @@ fn summary(j: &Judged<'_>) -> String {
         format!("  Data can go to: {}\n", c.egress.after.join(", "))
     };
 
-    if c.class == Class::Green {
+    if c.class == Class::Green && c.removed_methods.is_empty() {
         out += "  Users on automatic updates: apply it on their own (green: same signer, no new destination, same state version)\n";
+    } else if c.class == Class::Green {
+        out += "  Users on automatic updates: wait for an owner's or admin's approval (green, but it removes a method another app may call)\n";
     } else {
         out += "  Users on automatic updates: wait for a person's approval (red):\n";
         for r in &c.reasons {
@@ -643,6 +645,19 @@ mod tests {
         );
         assert!(text.contains("Signer: did:key:a (unchanged)"), "{text}");
         assert!(text.ends_with("Gate (--fail-on red): passed"), "{text}");
+    }
+
+    #[test]
+    fn a_green_update_that_removes_a_method_waits_for_an_owner_or_admin() {
+        let before = Unit::of(release("1.3.0", &[], &["get", "set"]));
+        let after = Unit::of(release("1.4.0", &[], &["get"]));
+        let (text, passed) = judge(&before, &after, Some(FailOn::Red), &[]);
+        assert!(passed, "still green: the gate passes");
+        assert!(!text.contains("apply it on their own"), "{text}");
+        assert!(
+            text.contains("  Users on automatic updates: wait for an owner's or admin's approval (green, but it removes a method another app may call)\n"),
+            "{text}"
+        );
     }
 
     #[test]

@@ -145,6 +145,33 @@ fn the_same_signer_and_egress_is_green_and_passes_the_gate() {
     assert_eq!(v["gate"]["passed"], true);
 }
 
+/// A green release that removes a method: no organization's policy applies it on its own
+/// (another app may call the method), so the summary says it waits for an owner or admin.
+#[test]
+fn a_green_release_that_removes_a_method_waits_for_an_owner_or_admin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    pack(
+        d,
+        "com.acme.notes",
+        "1.3.0",
+        &["get", "set"],
+        &[],
+        "v13.mpk",
+    );
+    pack(d, "com.acme.notes", "1.4.0", &["get"], &[], "v14.mpk");
+
+    let out = check(d, "v14.mpk", "v13.mpk", &["--fail-on", "red"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let summary = String::from_utf8_lossy(&out.stdout);
+    assert!(!summary.contains("apply it on their own"), "{summary}");
+    assert!(
+        summary.contains("  Users on automatic updates: wait for an owner's or admin's approval (green, but it removes a method another app may call)\n"),
+        "{summary}"
+    );
+    assert!(summary.contains("removed: set"), "{summary}");
+}
+
 #[test]
 fn an_added_destination_is_red_and_fails_the_gate_unless_allowed() {
     let tmp = tempfile::tempdir().unwrap();
