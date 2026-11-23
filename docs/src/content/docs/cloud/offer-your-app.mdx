@@ -340,7 +340,8 @@ organization that owns a deployment cannot be deleted before it.
 ## Handing a deployment over
 
 A deployment moves to another owner (an organization or an account) in two
-steps, each with that side's passkey:
+steps, each with that side's passkey. For an organization's deployment, its owner
+or an admin offers it:
 
 ```bash
 meroctl deployment transfer Chat --to org:<their-org-id> --dev-passkey ./dev-passkey.json
