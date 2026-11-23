@@ -367,10 +367,6 @@ fn deployment_json(node: &Node, d: &Deployment) -> Value {
     })
 }
 
-/// Create a deployment of `owner` (the caller's own account, or an
-/// organization where it holds `MANAGE_APPLICATION` org-wide), with a passkey
-/// assertion over `cluster / __create_deployment / { name, owner }` (a `412`
-/// asks for it). Its id comes from that consent ([`deployment_id`]).
 /// Whether every node judges the recovery rule
 /// ([`crate::system::cluster_version::Feature::DeploymentNeedsRecovery`]): the API then sets
 /// its flag and refuses first what apply would.
@@ -380,6 +376,10 @@ pub(super) async fn deployment_needs_recovery(node: &Node) -> bool {
         .is_ok()
 }
 
+/// Create a deployment of `owner` (the caller's own account, or an
+/// organization where it holds `MANAGE_APPLICATION` org-wide), with a passkey
+/// assertion over `cluster / __create_deployment / { name, owner }` (a `412`
+/// asks for it). Its id comes from that consent ([`deployment_id`]).
 async fn deployment_create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
