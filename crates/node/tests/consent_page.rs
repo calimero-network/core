@@ -900,6 +900,53 @@ async fn an_outbound_approval_never_reads_a_release_its_approver_cannot_read() {
     assert!(!e.to_string().contains(SECRET), "{e}");
 }
 
+/// A session bound to a package learns nothing of a release its account may not read: Bob,
+/// signed in on the origin of Alice's private package, asks for an organization, and the
+/// page names neither the release's display name nor its author, as for a package with no
+/// such metadata; a sign-up begun on that origin names the package id alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_strangers_bound_session_never_shows_a_private_releases_name() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (_bob, bob_key) = signed_up(&c, 1, "bob").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[13; 32]);
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(v1, None).await.unwrap();
+
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(1);
+    let mut bob_in_app = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut bob_in_app).await.unwrap();
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "createOrg", "subject": { "name": "bobs" },
+            "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    assert_eq!(model["requestedBy"]["name"], Value::Null, "{model}");
+    assert_eq!(model["requestedBy"]["publisher"], Value::Null, "{model}");
+    assert_eq!(model["appTeam"]["name"], json!(PACKAGE), "{model}");
+    assert!(!model.to_string().contains("Notes"), "{model}");
+
+    let begun = post(
+        &c.client(2),
+        "auth/passkey/register/begin",
+        json!({ "name": "carol", "origin": app_origin }),
+    )
+    .await
+    .unwrap();
+    let shown = begun["options"]["user"]["name"].as_str().unwrap();
+    assert!(!shown.contains("Notes"), "{shown}");
+}
+
 /// Release and outbound requests through the page, a person's own account
 /// as the scope; the bounds a request is held to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

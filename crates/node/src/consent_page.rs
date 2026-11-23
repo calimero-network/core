@@ -1202,7 +1202,8 @@ pub async fn create(
         }
         CreateBody::CreateOrg { subject, return_to } => {
             let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
-            let (action, model) = create_org_request(&node, subject, package.as_deref()).await?;
+            let (action, model) =
+                create_org_request(&node, &account, subject, package.as_deref()).await?;
             (action, model, to)
         }
         CreateBody::CreateInvite { subject, return_to } => {
@@ -1259,7 +1260,7 @@ async fn hold(
     let now = now_secs();
     let expires_at = now + CONSENT_REQUEST_TTL;
     let (asker_name, asker_publisher) = match package.as_deref() {
-        Some(p) => package_names(node, p).await,
+        Some(p) => package_names(node, &account, p).await,
         None => (None, None),
     };
     let mut model = model;
@@ -1333,9 +1334,16 @@ pub fn confirmation_code(request_id: &str) -> String {
 }
 
 /// A package's display name and author, from its newest release's signed
-/// manifest; `None` for what it does not name or cannot be read now.
-async fn package_names(node: &Node, package: &str) -> (Option<String>, Option<String>) {
-    let Some(latest) = node.sys(|s| s.packages.get(package)?.latest().cloned()) else {
+/// manifest; `None` for what it does not name, cannot be read now, or `account` may not read.
+async fn package_names(
+    node: &Node,
+    account: &str,
+    package: &str,
+) -> (Option<String>, Option<String>) {
+    let Some(latest) = node.sys(|s| {
+        let v = s.packages.get(package)?.latest()?;
+        s.reads_release(v, account).then(|| v.clone())
+    }) else {
         return (None, None);
     };
     match release_facts(node, package, &latest).await {
@@ -2609,15 +2617,21 @@ fn team_names(node: &Node, org: &str, account: Option<&str>, teams: &[String]) -
 }
 
 /// The app team a `createOrg` asked from `package`'s frontend starts with:
-/// that package and its display name, when it is installed and every node
-/// applies `CreateOrg { app_team }` alike; `None` (a bare organization) else.
-async fn org_app_team(node: &Node, package: Option<&str>) -> Option<(String, String)> {
+/// that package and its display name (its id for `account`, who may not read the newest
+/// release), when it is installed and every node applies `CreateOrg { app_team }` alike;
+/// `None` (a bare organization) else.
+async fn org_app_team(
+    node: &Node,
+    account: &str,
+    package: Option<&str>,
+) -> Option<(String, String)> {
     let package = package?;
     let name = node.sys(|s| {
         let record = s.packages.get(package)?;
         Some(
             record
                 .latest()
+                .filter(|v| s.reads_release(v, account))
                 .and_then(|v| v.metadata.get("name"))
                 .and_then(Value::as_str)
                 .unwrap_or(package)
@@ -2632,6 +2646,7 @@ async fn org_app_team(node: &Node, package: Option<&str>) -> Option<(String, Str
 
 async fn create_org_request(
     node: &Node,
+    account: &str,
     subject: CreateOrgSubject,
     package: Option<&str>,
 ) -> Result<(Action, Value), ApiError> {
@@ -2646,7 +2661,7 @@ async fn create_org_request(
         node.require_features(&[crate::system::cluster_version::Feature::OrgCapabilities])
             .await?;
     }
-    let team = org_app_team(node, package).await;
+    let team = org_app_team(node, account, package).await;
     let mut points = vec![json!(format!(
         "A new organization named {name} is created, and you are its owner."
     ))];

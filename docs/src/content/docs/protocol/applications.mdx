@@ -174,7 +174,7 @@ A release is visible, which is the right to use it (`SystemState::sees_release`)
   adds one;
 - the operator, for the releases it installed; it sees no account's releases.
 
-A session opened on the package's own frontend sees what its account sees.
+A session opened on the package's own frontend sees what its account sees, the display name and author of the package's newest release included; a sign-up there names the package by its id unless that release is public or the operator's.
 A release recorded before releases were public or private keeps the earlier rule: whoever installed it, an account sharing an organization with an installer, an account that reaches an app running it, and a session on the package's frontend.
 Reaching an instance reads the release it runs (its name and version, `SystemState::reads_release`), never uses it, nor reads another release that shares its WASM.
 

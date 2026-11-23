@@ -390,7 +390,12 @@ is its command line.
   `visibility`), outbound approval
   (`POST /orgs/{org}/outbound`, the consent page's `outbound`) answers `404` unless
   the caller reads the latest release, whose prefixes it approves and shows, and upgrade runs skip it (`api::upgrade_sees`; the operator's:
-  its own or the app owner's). Frontends stay public by name. Regressions:
+  its own or the app owner's). Frontends stay public by name; the newest release's
+  display name and author reach a session bound to the package (the consent page's
+  `requestedBy`, `createOrg`'s app team) only when its account reads that release,
+  and a sign-up on the package's origin (`passkeys::app_name`) only when it is public
+  or the operator's; else they answer as for a release without them
+  (`a_strangers_bound_session_never_shows_a_private_releases_name`). Regressions:
   `a_private_package_is_listed_only_to_accounts_that_may_use_it`,
   `a_release_from_before_installers_reads_and_records_who_installs_it_again`,
   `a_private_release_is_used_only_in_the_organizations_it_was_installed_for` (both

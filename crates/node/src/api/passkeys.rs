@@ -69,12 +69,17 @@ pub(super) fn cluster_tag(node: &Node) -> String {
 }
 
 /// The name of `package` a person recognizes: its newest release's display
-/// name, else the package id.
+/// name where that release is open to anyone (public, or the operator's), else the
+/// package id: a sign-up is no account yet.
 pub(super) fn app_name(node: &Node, package: &str) -> String {
     node.sys(|s| {
         s.packages
             .get(package)?
-            .latest()?
+            .latest()
+            .filter(|v| {
+                v.installed_by_any(crate::system::OPERATOR)
+                    || v.visibility == Some(crate::system::Visibility::Public)
+            })?
             .metadata
             .get("name")?
             .as_str()
