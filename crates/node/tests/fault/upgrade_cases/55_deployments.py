@@ -141,7 +141,9 @@ def _update(p, app):
 class DeploymentOfferUpgrades(DeepCase):
     name = "deployment-offer-upgrades"
     area = "Deployments"
-    since = "1.0.0-rc.32"
+    # Offers and `OUTSIDE_DEPLOYMENT` are rc.32's, but `GET /apps/{app}/update` (and its
+    # `owner-and-admins` approvers, `Feature::OwnerApprovedUpgrades`) came with rc.33.
+    since = "1.0.0-rc.33"
     seeds = ("a deployment offering release 1.0.0 of a package whose 1.1.0, 1.2.0 and 1.3.0 are installed too, and a "
              "customer's two instances from it; the customer's owner refused an upgrade outside the offer "
              "(`409 OUTSIDE_DEPLOYMENT`), then, the deployment offering 1.1.0, accepting it on one instance without "
