@@ -987,6 +987,42 @@ async fn a_sign_up_names_the_newest_release_open_to_anyone() {
     assert!(!shown.contains("Acme Internal"), "{shown}");
 }
 
+/// The app list names the release an instance runs, never a private sibling that shares its
+/// WASM: Bob's instance of the operator's 1.0.0 lists as 1.0.0, though Acme's private 2.0.0
+/// shipped that WASM first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_app_list_never_names_a_private_sibling_sharing_the_wasm() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[15; 32]);
+    let (v2, _) = release("2.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(v2, None).await.unwrap();
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops.ops().package_upload(v1).await.unwrap();
+    let app = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "n", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .unwrap()
+        .app_id;
+
+    let listed = bob.apps().list(None, None).await.map(wire).unwrap();
+    let row = listed["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["appId"] == json!(app))
+        .unwrap();
+    assert_eq!(row["version"], json!("1.0.0"), "{listed}");
+    assert!(!listed.to_string().contains("2.0.0"), "{listed}");
+}
+
 /// Release and outbound requests through the page, a person's own account
 /// as the scope; the bounds a request is held to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

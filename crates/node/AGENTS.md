@@ -390,9 +390,10 @@ is its command line.
   instance runs (`report::release_of_app`) is `SystemState::reads_release`: who sees
   it, or reaches an app running it (the release the app's record names, so a release
   sharing its WASM is not read; for a record naming none, only a release not recorded
-  private, so `GET /apps/{app}/update`'s `running` and the reports never name a private
-  sibling to one who only reaches it: regressions
-  `reaching_an_app_by_its_bundle_never_names_a_private_sibling`, `report::tests` and
+  private, so `GET /apps/{app}/update`'s `running`, `GET /apps`' `package` and `version`
+  and the reports never name a private sibling to one who only reaches it: regressions
+  `reaching_an_app_by_its_bundle_never_names_a_private_sibling`,
+  `the_app_list_never_names_a_private_sibling_sharing_the_wasm`, `report::tests` and
   `tests/cluster.rs`). A route
   (`src/api`, `src/consent_page`) reads a release a client names only through
   `SystemState`'s lookups: `release_used`, `releases_used` (with a bound session's

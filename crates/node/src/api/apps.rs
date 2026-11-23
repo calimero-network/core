@@ -958,7 +958,8 @@ async fn app_list(
                 })
             })
             .map(|a| {
-                let release = s.bundles.get(&a.bundle).and_then(|b| b.package.clone());
+                let reader = crate::report::Reader::Account(account.as_deref().unwrap_or_default());
+                let release = crate::report::release_of_app(s, a, reader);
                 json!({
                     "appId": a.app_id,
                     "name": a.name,
