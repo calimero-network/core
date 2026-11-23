@@ -26,7 +26,7 @@ CASES = [
     ("a node-only change skips the standalone apps", ["crates/node/src/lib.rs"], RU),
     ("merod runs the upgrade path, not the standalone apps", ["crates/merod/src/main.rs", "crates/server/src/lib.rs"], RU),
     ("the upgrade path's test runs the upgrade path", ["crates/node/tests/fault/upgrade_path.py"], RU),
-    ("the pinned release runs the upgrade path (Apps of the previous release fetches its kv)", [".github/upgrade-from"], RU),
+    ("the pinned release runs the upgrade path", [".github/upgrade-from"], RU),
     ("the release fetcher runs the upgrade path (ci-checks.yml runs it)", ["scripts/fetch-release.sh"], RU),
     ("a tool no node links skips the upgrade path", ["crates/search/bench/src/main.rs"], R),
     ("the component SDK runs the workspace jobs and the upgrade path (this tree's kv)", ["crates/sdk/src/lib.rs"], ALL),
