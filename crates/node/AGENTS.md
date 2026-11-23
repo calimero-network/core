@@ -328,8 +328,11 @@ is its command line.
   an upgrade like any other (same authority, consent and record; an org run
   writes `UpgradeApp` without running anything on the app's group, and notes a
   refusal as failed). `Node::release_of_app` and `report::release_of_app` read
-  it; a record without it (from before, or a raw upload) falls back to the bundle
-  (`Node::release_of`, `report::release_of_bundle`). `UpgradeRecord::from_release`
+  it; a record without it (from before, or a raw upload) falls back to the only
+  release shipping its bundle (`SystemState::running_release`), and to none when
+  several share the WASM, never to the first recorded. `GET /apps` reads it too.
+  The apply-side `SystemState::governing` still takes the bundle's first recorded
+  release for such a record. `UpgradeRecord::from_release`
   / `to_release` name both ends of an upgrade. Regressions:
   `a_frontend_only_release_is_an_upgrade_of_its_own`,
   `an_instance_link_opens_the_release_that_instance_runs`,
