@@ -214,7 +214,8 @@ is its command line.
   nodes }`, only forward, naming every registered node; `reconcile` ->
   `raise_cluster_version`, at most every 10 s) once every node supports it,
   and admits no node below it to the system group (`joins_at_cluster_version`).
-  Apply never reads it, so a log replays unchanged. The gate judges on the
+  Apply reads only the logged version at the entry's own position
+  (`SystemState::cluster_brings`), so a log replays unchanged. The gate judges on the
   logged version; when every node supports a feature above it, the proposing
   node logs that version first (`cv::admit` -> `Admission::LogFirst`,
   `raise_cluster_version_once` through `Node::sys_propose`, the ungated write),

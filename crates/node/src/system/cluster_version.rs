@@ -14,8 +14,8 @@
 //! node advertises it, and it only moves forward: after it, a node below it
 //! is not admitted to the system group. Until it is logged (and above it, until
 //! the leader logs the next one), a proposing node judges by what the nodes
-//! advertise now ([`floor`]). Apply never reads either: an entry applies as
-//! it did, so a log replays unchanged.
+//! advertise now ([`floor`]). Apply reads only the logged version at the entry's own
+//! position ([`SystemState::cluster_brings`]), so a log replays unchanged.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
