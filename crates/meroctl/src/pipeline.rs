@@ -96,7 +96,8 @@ pub enum PipelineCmd {
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
     },
-    /// Print the module log of one compute run of a step (stdout, stderr and `log` lines) to stdout.
+    /// Print the module log of one compute run of a step (stdout, stderr and `log` lines) to
+    /// stdout, where an earlier release kept one: a current cluster keeps none.
     Logs {
         app: String,
         run: String,

@@ -21,14 +21,12 @@ use super::{locked, JobNode};
 use crate::files::{sealed_len, FileOpener, SegmentWriter, CHUNK_BYTES, SEGMENT_BYTES, TAG_BYTES};
 use crate::job_wire::{
     sign_report, FailReason, OutputRef, Report, ReportStatus, ReportUsage, RunInput,
-    MAX_REPORT_MESSAGE_BYTES, MAX_RUN_LOG_BYTES,
+    MAX_REPORT_MESSAGE_BYTES,
 };
 use crate::usage::Run as Measured;
 
 const INPUT_PREFIX: &str = "in-"; // an input's ciphertext: in-{index}
 const OUTPUT_PREFIX: &str = "out-"; // a finished output: out-{index}
-const LOG_PREFIX: &str = "log-"; // the sealed module log: log-0
-const LOG_TRUNCATED: &str = "[log truncated]"; // the last line of a log cut at MAX_RUN_LOG_BYTES
 const PART_SUFFIX: &str = ".part"; // a file still being written
 const THREAD_NAME: &str = "compute-run"; // name of a run's OS thread
 const FINISHED: &str = "the file is finished"; // soft error of a write after finish
@@ -308,11 +306,8 @@ fn thread_main(job: &JobNode, run: &Arc<Run>) {
         warn!(error = %e, "a compute run could not be served");
         Phase::Lost
     });
-    let (keep_outputs, keep_log) = match &phase {
-        Phase::Done(f) => (f.report.status == ReportStatus::Done, f.log.is_some()),
-        _ => (false, false),
-    };
-    remove_files(&run.dir, keep_outputs, keep_log);
+    let keep_outputs = matches!(&phase, Phase::Done(f) if f.report.status == ReportStatus::Done);
+    remove_files(&run.dir, keep_outputs);
     run.end(phase);
 }
 
@@ -399,8 +394,9 @@ fn ending(
         ReportStatus::Done => (outcome.result, produced),
         ReportStatus::Failed => (Vec::new(), Vec::new()),
     };
-    let log = sealed_log(&run.dir, &outcome.logs);
-    #[allow(unused_mut, reason = "a test may misreport the log")]
+    // No log: the module's lines (`outcome.logs`) may hold user data, which neither Calimero nor
+    // the operator may see, so they are dropped with the outcome and the report names none.
+    #[allow(unused_mut, reason = "a test may name a log")]
     let mut report = Report {
         app: a.app.clone(),
         run: a.run.clone(),
@@ -410,7 +406,7 @@ fn ending(
         message: failure_message(&outcome.status, reason),
         result,
         outputs: kept.iter().map(output_ref).collect(),
-        log: log.as_ref().map(output_ref),
+        log: None,
         usage: ReportUsage::measured(
             measured.cpu,
             outcome.usage.peak_memory,
@@ -419,38 +415,28 @@ fn ending(
         ),
     };
     #[cfg(feature = "testing")]
-    if let Some(l) = report
-        .log
-        .as_mut()
-        .filter(|_| job.log_lie.load(Ordering::Relaxed))
-    {
-        l.sha256 = "0".repeat(2 * crate::job_wire::SHA256_LEN);
+    if job.log_named.load(Ordering::Relaxed) {
+        let hash = "ab".repeat(crate::job_wire::SHA256_LEN);
+        report.log = Some(OutputRef {
+            id: hash.clone(),
+            size: 1,
+            sha256: hash.clone(),
+            segments: vec![hash],
+        });
     }
     let signature = sign_report(&job.job_key, &run.digest(), &report)?;
-    // A request without the log header gets the report as it was before logs, signed as such.
-    let bare = match report.log {
-        Some(_) => {
-            let bare = Report {
-                log: None,
-                ..report.clone()
-            };
-            let signed = sign_report(&job.job_key, &run.digest(), &bare)?;
-            Some((bare, signed))
-        }
-        None => None,
-    };
-    let bytes = kept.iter().chain(&log).map(|p| sealed_len(p.size)).sum();
-    let file = |p: SealedFile| OutputFile {
-        path: p.path,
-        key: p.key,
-    };
-    let outputs = kept.into_iter().map(file).collect();
+    let bytes = kept.iter().map(|p| sealed_len(p.size)).sum();
+    let outputs = kept
+        .into_iter()
+        .map(|p| OutputFile {
+            path: p.path,
+            key: p.key,
+        })
+        .collect();
     Ok(Phase::Done(Box::new(Finished {
         report,
         signature,
-        bare,
         outputs,
-        log: log.map(file),
         bytes,
     })))
 }
@@ -462,38 +448,6 @@ fn output_ref(p: &SealedFile) -> OutputRef {
         sha256: hex::encode(p.sha256),
         segments: p.segments.clone(),
     }
-}
-
-/// The module's log lines joined, cut to [`MAX_RUN_LOG_BYTES`] with a last line saying so;
-/// none when the module logged nothing.
-fn capped_log(logs: &[String]) -> Option<String> {
-    let text = logs.join("\n");
-    if text.len() <= MAX_RUN_LOG_BYTES {
-        return Some(text).filter(|t| !t.is_empty());
-    }
-    let keep = MAX_RUN_LOG_BYTES - LOG_TRUNCATED.len() - 1;
-    Some(format!(
-        "{}\n{LOG_TRUNCATED}",
-        &text[..text.floor_char_boundary(keep)]
-    ))
-}
-
-/// The module's log sealed to disk like an output, under a key of its own. A log that cannot
-/// be sealed is left out: it never ends or loses the run.
-fn sealed_log(dir: &Path, logs: &[String]) -> Option<SealedFile> {
-    let text = capped_log(logs)?;
-    let produced = Arc::default();
-    let part = dir.join(format!("{LOG_PREFIX}w{PART_SUFFIX}"));
-    let sealed = OutputWriter::open(part, dir, LOG_PREFIX, &produced).and_then(|mut writer| {
-        writer.write(text.as_bytes())?;
-        Box::new(writer).finish()
-    });
-    if let Err(e) = sealed {
-        warn!(error = ?e, "cannot seal a run's log");
-        return None;
-    }
-    let sealed = locked(&produced).pop();
-    sealed
 }
 
 /// The text a failed report carries: the method's app error, or what a trap says.
@@ -550,9 +504,7 @@ pub(super) fn fail_integrity(job: &JobNode, run: &Run) {
         Ok(signature) => Phase::Done(Box::new(Finished {
             report,
             signature,
-            bare: None,
             outputs: Vec::new(),
-            log: None,
             bytes: 0,
         })),
         Err(e) => {
@@ -562,21 +514,19 @@ pub(super) fn fail_integrity(job: &JobNode, run: &Run) {
     };
     if run.end_awaiting(phase) {
         *locked(&run.keys) = None;
-        remove_files(&run.dir, false, false);
+        remove_files(&run.dir, false);
     }
 }
 
-/// Deletes what a run leaves on disk: everything, or everything but its finished outputs or log.
-fn remove_files(dir: &Path, keep_outputs: bool, keep_log: bool) {
+/// Deletes what a run leaves on disk: everything, or everything but its finished outputs.
+fn remove_files(dir: &Path, keep_outputs: bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let finished = !name.ends_with(PART_SUFFIX);
-        let keep = finished
-            && ((keep_outputs && name.starts_with(OUTPUT_PREFIX))
-                || (keep_log && name.starts_with(LOG_PREFIX)));
+        let keep = finished && keep_outputs && name.starts_with(OUTPUT_PREFIX);
         if !keep {
             if let Err(e) = std::fs::remove_file(entry.path()) {
                 warn!(path = %entry.path().display(), error = %e, "cannot remove a run file");
@@ -900,53 +850,14 @@ mod tests {
         let finished = files.create().unwrap().finish().unwrap();
         assert_eq!(finished.size, 0);
 
-        remove_files(dir.path(), true, false);
+        remove_files(dir.path(), true);
         let mut left: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         left.sort();
         assert_eq!(left, ["out-0"]);
-        remove_files(dir.path(), false, false);
+        remove_files(dir.path(), false);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn the_log_is_its_lines_joined_and_none_when_the_module_logged_nothing() {
-        assert_eq!(capped_log(&[]), None);
-        assert_eq!(capped_log(&[String::new()]), None);
-        let lines = ["one".to_owned(), "two".to_owned()];
-        assert_eq!(capped_log(&lines).as_deref(), Some("one\ntwo"));
-    }
-
-    #[test]
-    fn a_log_over_the_cap_is_truncated_with_a_marker() {
-        let exact = "x".repeat(MAX_RUN_LOG_BYTES);
-        assert_eq!(
-            capped_log(std::slice::from_ref(&exact)),
-            Some(exact.clone())
-        );
-        // Two-byte characters, so the cut falls inside one unless it is moved back.
-        let long = "\u{e9}".repeat(MAX_RUN_LOG_BYTES);
-        let capped = capped_log(&[long]).unwrap();
-        assert!(capped.len() <= MAX_RUN_LOG_BYTES);
-        assert!(capped.ends_with(&format!("\n{LOG_TRUNCATED}")));
-    }
-
-    #[test]
-    fn a_sealed_log_opens_to_its_text_under_its_own_key_and_survives_the_cleanup() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = sealed_log(dir.path(), &["a".to_owned(), "b".to_owned()]).unwrap();
-        assert_eq!(log.size, 3);
-        let mut opener = FileOpener::new(&log.key);
-        let mut plain = opener.push(&std::fs::read(&log.path).unwrap()).unwrap();
-        plain.extend(opener.finish_expecting(3, &log.sha256).unwrap());
-        assert_eq!(plain, b"a\nb");
-        assert!(sealed_log(dir.path(), &[]).is_none());
-
-        remove_files(dir.path(), false, true);
-        assert!(log.path.exists());
-        remove_files(dir.path(), true, false);
-        assert!(!log.path.exists());
     }
 }

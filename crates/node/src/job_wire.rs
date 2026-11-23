@@ -15,7 +15,7 @@ const BUNDLE_LABEL: &[u8] = b"calimero.compute.bundle.v1\0"; // prefix of the si
 pub(crate) const SHA256_LEN: usize = 32; // bytes of a SHA-256
 pub const BUNDLE_SIGNATURE_HEADER: &str = "x-bundle-signature"; // the header carrying the cluster identity's signature over a component's hash
 pub const MAX_REPORT_MESSAGE_BYTES: usize = 512; // the failure text a signed report carries
-pub const MAX_RUN_LOG_BYTES: usize = 1 << 20; // the module log a run attempt keeps, truncated past it
+pub const MAX_RUN_LOG_BYTES: usize = 1 << 20; // the most a run log an earlier release kept may weigh when its final applies
 const MICROS_PER_SECOND: u128 = 1_000_000; // to turn GiB-microseconds into GiB-seconds
 const BYTES_PER_GIB: u128 = 1 << 30; // a GiB, the unit of memory billed
 
@@ -347,7 +347,9 @@ pub struct Report {
     #[serde(with = "b64")]
     pub result: Vec<u8>,
     pub outputs: Vec<OutputRef>,
-    /// The module's log as a sealed file; any status but an integrity refusal may carry one.
+    /// The module's log as a sealed file: none from a job node of this release, which keeps no log
+    /// (an app's log lines may hold user data). Kept so a final an earlier release logged with one
+    /// still verifies, and a leader refuses a report that names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<OutputRef>,
     pub usage: ReportUsage,

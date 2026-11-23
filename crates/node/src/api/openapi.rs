@@ -1367,7 +1367,7 @@ fn operations() -> Vec<Op> {
             .ok("#Run")
             .errors(&[(404, "NOT_FOUND")]),
         get("/apps/{app}/runs/{run}/logs", "app_run_logs", SignedIn, "A compute run's attempt logs")
-            .about("Each attempt's module log, as a sealed file of the app: `{ attempt, id, size, sha256 }`. Only for those who may handle the app's files; the bytes are a files export.")
+            .about("Deprecated: always `{ logs: [] }`. A run keeps no log, as an app's log lines (stdout, stderr, `log`) may hold user data, which neither Calimero nor the operator may see; a log a release up to 1.0.0-rc.35 kept is answered to no one, and the files export does not know it. Only for those who may handle the app's files. To read a compute method's log lines, run it locally (`meroctl local compute run`).")
             .ok("{ logs: { attempt: uint, id: string, size: uint, sha256: string }[] }")
             .errors(&[(404, "NOT_FOUND")]),
         get("/apps/{app}/presence", "presence_get", AppAccess, "Who is present")

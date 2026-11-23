@@ -237,15 +237,11 @@ Only the active runs and the last `FINISHED_RUNS_KEPT` (256) finished ones are k
 A bad `limit` or `before` is a 400 (`BAD_LIMIT`, `BAD_CURSOR`).
 The sizes and hashes follow the same rule as the single run.
 
-A run keeps the log of its final attempt (stdout, stderr and `log` lines) as a sealed file of the app.
-The host keeps at most 64 KiB of log lines per run.
-The log is not an output: it cannot be published, and it is neither a pipeline output nor an input.
-It counts toward the app's file quota and is kept with the last 256 run records.
-A rollback to a release before logs shows a kept log as an ordinary sealed file.
-`GET /apps/{app}/runs/{run}/logs` answers `{ logs: [{ attempt, id, size, sha256 }] }`, at most one, to the app's owner and its organization's members only.
-The bytes are read with the files export.
-A log the leader cannot fetch as the job node signed it is left out, and the run still ends.
-`meroctl cloud compute logs APP RUN [--attempt N]` prints it, and `meroctl cloud compute pipeline logs APP RUN --step STEP [--index I]` prints a step's.
+A run keeps no log.
+A module's stdout, stderr and `log` lines may hold user data, which neither Calimero nor the operator may see, so the job node seals none and the leader asks for none; a report that names one does not hold up, and the attempt runs again elsewhere.
+Up to 1.0.0-rc.35 a run kept its final attempt's log as a sealed file of the app; a final that earlier release logged still applies as it did, its log held with the last 256 run records and then collected, but no route answers it: the files export does not know it.
+`GET /apps/{app}/runs/{run}/logs` is deprecated and answers `{ logs: [] }`, to the app's owner and its organization's members only.
+To read a compute method's log lines, run it on your own machine with `meroctl local compute run`.
 
 ## Restarts, cancel and caps
 

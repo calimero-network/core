@@ -114,7 +114,11 @@ reports progress (`compute::progress(percent, step)`).
 ## Logging
 
 `env::log(message)` writes a line to the run's log (the component's stderr). The
-host keeps 64 KiB per run.
+host keeps 64 KiB per run. A cluster keeps none of it: neither Calimero nor the
+operator may see user data, and an app's log lines can hold some, so no log entry,
+job node or route stores or answers them (a call's and a timer's entry, and a compute
+run, drop them). To read them, run the method on your own machine:
+`meroctl local compute run` for a compute method, or a test of the app.
 
 ## The world underneath
 
