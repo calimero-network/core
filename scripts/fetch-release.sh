@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Fetches a published core release's Linux x86_64 artifacts, the ones a
-# Calimero Cloud node runs: merod and meroctl (and mero-sign, which releases
-# before meroctl signed apps shipped) from the GitHub release's tarballs,
+# Fetches a published core release's artifacts for this host (Linux x86_64 and
+# aarch64, Apple silicon; a Calimero Cloud node runs the x86_64 ones): merod and
+# meroctl (and mero-sign, which releases before meroctl signed apps shipped)
+# from the GitHub release's tarballs,
 # checked against its SHA256SUMS, and the release's dev-signed kv fixture
 # (kv-store-test-fixture.mpk).
 #
@@ -17,8 +18,19 @@ set -euo pipefail
 TAG="${1:?usage: fetch-release.sh TAG OUT}"
 OUT="${2:?usage: fetch-release.sh TAG OUT}"
 REPO="${REPO:-calimero-network/core}"
-TRIPLE=x86_64-unknown-linux-gnu
+SUPPORTED="x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin" # the triples release.yml publishes
 BASE="https://github.com/$REPO/releases/download/$TAG"
+
+HOST="$(uname -s) $(uname -m)"
+case "$HOST" in
+  "Linux x86_64") TRIPLE=x86_64-unknown-linux-gnu ;;
+  "Linux aarch64") TRIPLE=aarch64-unknown-linux-gnu ;;
+  "Darwin arm64") TRIPLE=aarch64-apple-darwin ;;
+  *)
+    echo "fetch-release: no release artifacts for host $HOST; the supported triples are: $SUPPORTED" >&2
+    exit 1
+    ;;
+esac
 
 if ! git ls-remote --exit-code --tags "https://github.com/$REPO.git" "refs/tags/$TAG" >/dev/null; then
   echo "fetch-release: $REPO has no tag $TAG" >&2
