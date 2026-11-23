@@ -381,7 +381,11 @@ is its command line.
   bound to the package's frontend (`sees_release_from`). Reading the release an
   instance runs (`report::release_of_app`) is `SystemState::reads_release`: who sees
   it, or reaches an app running it (the release the app's record names, so a release
-  sharing its WASM is not read). For
+  sharing its WASM is not read; for a record naming none, only a release not recorded
+  private, so `GET /apps/{app}/update`'s `running` and the reports never name a private
+  sibling to one who only reaches it: regressions
+  `reaching_an_app_by_its_bundle_never_names_a_private_sibling`, `report::tests` and
+  `tests/cluster.rs`). For
   anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages`
   leave it out (`404` by name), `resolve_release` treats it as missing (a
   registry install makes it theirs; an upload answers as a missing release), a

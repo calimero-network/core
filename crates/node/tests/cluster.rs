@@ -7588,6 +7588,56 @@ async fn reaching_an_instance_reads_its_release_but_does_not_use_it() {
         .unwrap();
 }
 
+/// An app created by its WASM's hash names no release: one who only reaches it is told the
+/// public release that ships that WASM, never the private sibling it was recorded from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn reaching_an_app_by_its_bundle_never_names_a_private_sibling() {
+    let registry = FakeRegistry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[14; 32]);
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let _acme = new_org(&alice, "Acme").await;
+    let wasm = variant(&kv_wasm(), "shared");
+    let _ok = alice
+        .packages()
+        .upload(mpk("com.acme.secret", "1.0.0", &wasm, &publisher), None)
+        .await
+        .unwrap();
+    registry.publish(
+        "com.test.open",
+        "1.0.0",
+        mpk("com.test.open", "1.0.0", &wasm, &publisher),
+    );
+    let _ok = alice
+        .packages()
+        .install("com.test.open", "1.0.0", None)
+        .await
+        .unwrap();
+    let hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&wasm));
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "open", "bundle": hash,
+            "grants": [{ "kind": "anyone" }] })))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let read = bob.apps().get(&app).await.map(wire).unwrap();
+    assert!(!read.to_string().contains("com.acme.secret"), "{read}");
+    let update = bob.apps().update(&app).await.map(wire).unwrap();
+    assert_eq!(
+        update["running"],
+        json!({ "package": "com.test.open", "version": "1.0.0" }),
+        "{update}"
+    );
+    assert!(!update.to_string().contains("com.acme.secret"), "{update}");
+}
+
 /// An account in no organization uploads a release for none: it is private to its
 /// installer, who lists and runs it, and nobody else sees it; once a member installs it for
 /// an organization, that organization's members use it, and the first installer, in none

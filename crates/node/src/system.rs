@@ -2042,14 +2042,20 @@ impl SystemState {
     }
 
     /// Whether `who` may read the facts of the release `v` (its name and version where an
-    /// instance runs it): [`Self::sees_release`], or `who` reaches an app running it.
+    /// instance runs it): [`Self::sees_release`], or `who` reaches an app running it (one that
+    /// names no release, only when `v` is not recorded private).
     #[must_use]
     pub fn reads_release(&self, v: &PackageVersion, who: &str) -> bool {
         self.sees_release(v, who)
             || (who != OPERATOR
                 && self.apps.values().any(|a| {
-                    // Releases may share a WASM: an app runs the one its record names.
-                    a.release.as_ref().is_none_or(|r| r.version == v.version)
+                    // Releases may share a WASM: an app runs the one its record names, and
+                    // one naming none is never told a private sibling.
+                    a.release
+                        .as_ref()
+                        .map_or(v.visibility != Some(Visibility::Private), |r| {
+                            r.version == v.version
+                        })
                         && v.app_parts().values().any(|h| *h == a.bundle)
                         && self.may_reach(a, Some(who))
                 }))

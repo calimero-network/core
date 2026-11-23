@@ -582,6 +582,65 @@ mod tests {
         assert_eq!(v["package"], Value::Null, "{v}");
     }
 
+    /// An app that names no release, whose WASM a public and a private release both ship, is
+    /// reported to one who only reaches it at the public one, never the private sibling, even
+    /// when its bundle was recorded from that one; a private one alone names nothing.
+    #[test]
+    fn reaching_an_app_by_its_bundle_never_names_a_private_sibling() {
+        let version = |v: &str, visibility: &str| {
+            json!({
+                "version": v, "mpk": v, "mpkSize": 1, "source": "upload",
+                "services": { "": "b" }, "installedBy": "alice", "installedAt": 0,
+                "visibility": visibility, "orgs": ["acme"],
+            })
+        };
+        let mut s = SystemState::default();
+        for who in ["alice", "bob"] {
+            let _prev = s.accounts.insert(
+                who.into(),
+                serde_json::from_value(
+                    json!({ "accountId": who, "name": who, "createdAt": 0, "passkeys": [] }),
+                )
+                .unwrap(),
+            );
+        }
+        let acme: Org = serde_json::from_value(json!({
+            "orgId": "acme", "name": "Acme", "members": { "alice": "owner" }, "teams": {},
+        }))
+        .unwrap();
+        let _prev = s.orgs.insert("acme".into(), acme);
+        let p = serde_json::from_value(json!({
+            "name": "p", "signerId": "k", "owner": "alice",
+            "versions": {
+                "1.0.0": version("1.0.0", "public"),
+                "1.1.0": version("1.1.0", "private"),
+            },
+        }))
+        .unwrap();
+        let _prev = s.packages.insert("p".into(), p);
+        let b = serde_json::from_value(json!({
+            "hash": "b", "size": 1, "uploadedBy": "alice",
+            "package": { "package": "p", "version": "1.1.0" },
+        }))
+        .unwrap();
+        let _prev = s.bundles.insert("b".into(), b);
+        let mut a = app("alice", Some("acme"));
+        a.access = serde_json::from_value(json!([{ "kind": "anyone" }])).unwrap();
+        let _prev = s.apps.insert("a".into(), a.clone());
+
+        let bob = Reader::Account("bob");
+        assert_eq!(release_of_app(&s, &a, bob).unwrap().version, "1.0.0");
+        assert_eq!(
+            release_of_app(&s, &a, Reader::Account("alice"))
+                .unwrap()
+                .version,
+            "1.1.0",
+            "a member of the organization it is for"
+        );
+        let _gone = s.packages.get_mut("p").unwrap().versions.remove("1.0.0");
+        assert_eq!(release_of_app(&s, &a, bob), None);
+    }
+
     /// An upgrade record from before names no releases: its ends are
     /// inferred from their bundles. One that names them is reported as named.
     #[test]

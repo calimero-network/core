@@ -1798,11 +1798,25 @@ pub(crate) async fn update_view(
 ) -> Value {
     let app = app.clone();
     // The release it runs, named by its record even once uninstalled while another ships
-    // its WASM: its update is then shown, unclassified.
-    let running = node
-        .release_of_app(&app)
-        .map(|r| r.at)
-        .or_else(|| app.release.clone());
+    // its WASM: its update is then shown, unclassified. A record naming none is told only a
+    // release its reader reads.
+    let running = match &app.release {
+        Some(r) => node
+            .release_of_app(&app)
+            .map(|r| r.at)
+            .or_else(|| Some(r.clone())),
+        None => node.sys(|s| {
+            let reader = crate::report::Reader::Account(account.unwrap_or_default());
+            crate::report::release_of_bundle(s, &app.bundle, reader).map(|r| {
+                crate::system::PackageRef {
+                    package: r.package,
+                    version: r.version,
+                    service: r.service,
+                    compute: false,
+                }
+            })
+        }),
+    };
     let runtimes = node.runtimes(&app.replicas).await;
     let owner_approves = owner_approves(node).await;
     let by_operator =
