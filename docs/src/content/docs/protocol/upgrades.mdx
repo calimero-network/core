@@ -438,10 +438,11 @@ restore point is the state just before the upgrade, so whatever the app wrote
 since is lost: `GET /apps/{app}/undo` says what would be undone and lost
 before anyone decides (`lostWrites`: the group's entries since the restore
 point, its last write, and whether it wrote after the restore point was
-taken), and the `POST` answers the same. When the restore point's node no
-longer hosts the app (a replica move took it off), those are read from the
-replicas the app is on now: all are asked, a majority must answer, and the
-furthest of them counts (every committed entry is on a majority). Only an
+taken), and the `POST` answers the same. Those are read from the replicas the
+app is on now, never from the restore point's node alone (it may be behind its
+group, or a replica move may have taken the app off it): all are asked, a
+majority must answer, and the furthest of them counts (every committed entry is
+on a majority). Only an
 applied index at or past the restore point's counts entries or says nothing is
 lost; below it, from a release that does not say, or with no majority
 answering, each is `null` (`any: null`, unless a write after the restore point
