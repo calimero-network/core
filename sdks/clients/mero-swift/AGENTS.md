@@ -73,7 +73,10 @@ checked in. They are `sdk.json`'s `generated`. Never hand-edit them.
 - Regenerate: `python3 scripts/sdks.py generate mero-swift` at core's root
   (runs `scripts/generate-openapi.sh` here). The first run builds
   swift-openapi-generator (`openapi/generator`'s version) into
-  `.build/openapi-generator`, which needs network once.
+  `.build/openapi-generator`, which needs network once. With no local `swift`
+  (Linux), `sdks.py` runs the same script in the pinned `swift` image
+  (`SWIFT_IMAGE` in `scripts/sdks.py`) and needs Docker instead; the generator
+  then builds into `.build/openapi-generator-container`.
 - `scripts/generate-openapi.sh check` fails when the checked-in output is stale.
 - `Tests/MeroKitTests/Fixtures/receipts/receipt-vectors.json` is generated
   too: `scripts/refresh-receipt-vectors.sh` (part of `generate`) copies core's
