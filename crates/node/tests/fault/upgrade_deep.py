@@ -75,6 +75,12 @@ NOT_COVERED = [
      "`restore-points-undo`'s. An upgrade entry and a record without `auto` read and replay as before. "
      "`system::tests` (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`, "
      "`a_deployment_instances_hold_runs_from_its_offer`) and `tests/auto_updates.rs` cover it on one build"),
+    ("Apps", "An undo refused to a release no longer installed (`UndoUpgrade::release_installed`, `UNDO_RELEASE_GONE`)",
+     "it adds a refusal, not a stored shape: an entry without the flag replays as it applied below cluster "
+     "version 1.0.0-rc.36 (`Feature::UndoToInstalledRelease`), and the undo itself is `restore-points-undo`'s. "
+     "The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's "
+     "single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` "
+     "and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
