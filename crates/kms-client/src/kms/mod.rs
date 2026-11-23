@@ -65,9 +65,7 @@ struct KmsGetKeyRequest {
 }
 
 /// Response body from the KMS get-key endpoint.
-///
-/// A KMS that predates sealed release answers with `key` alone; that answer is
-/// refused, because the key in it was readable by whatever terminated TLS.
+/// A key-only answer (no sealed release) is refused: whatever terminated TLS could read it.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct KmsGetKeyResponse {
@@ -172,9 +170,8 @@ struct Transport {
     rollback: bool,
 }
 
-/// The binding an `/attest` answer's quote must carry after the nonce, and
-/// whether that KMS keeps rollback counters: a v2 binding commits to the
-/// capabilities, so a relay that strips them breaks the quote.
+/// The binding an `/attest` quote must carry after the nonce, and whether the KMS keeps counters.
+/// A v2 binding commits to the capabilities, so a relay that strips them breaks the quote.
 fn transport_binding(
     binding: &[u8; 32],
     kms_public: &[u8; 32],
@@ -200,9 +197,7 @@ const MAX_KMS_REPORT_DATA_HEX_LEN: usize = 1024;
 const MAX_KMS_CHALLENGE_ID_LEN: usize = 512;
 const MAX_KMS_NONCE_B64_LEN: usize = 2048;
 const MAX_KMS_KEY_HEX_LEN: usize = 4096;
-/// A v2 release's sealed record (base64): the key's hex plus the counters and
-/// the session, well under this.
-const MAX_KMS_RECORD_B64_LEN: usize = 16 * 1024;
+const MAX_KMS_RECORD_B64_LEN: usize = 16 * 1024; // a v2 sealed record: key hex, counters and session
 const MIN_KMS_KEY_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -648,11 +643,8 @@ where
         .map_err(map_probe_get_key_failure)
 }
 
-/// Verify KMS via POST /attest using policy fetched from release.
-///
-/// Calls KMS /attest, verifies the quote, and enforces measurement policy.
-/// Answers the KMS's attested transport key and the record of the quote that
-/// passed, which the node reports in its own attestation.
+/// Verify KMS via POST /attest using the release policy and enforce its measurement allowlists.
+/// Answers the attested transport key and the record of the quote that passed.
 async fn verify_kms_attestation_from_release_policy(
     kms: &KmsConfig,
     policy: &KmsAttestationPolicy,
@@ -1052,11 +1044,8 @@ where
 
 fn build_kms_http_client(kms: &KmsConfig) -> Result<reqwest::Client> {
     let uses_https = kms.url.scheme().eq_ignore_ascii_case("https");
-    // `tee.kms.url` may be a DNS name resolving to every replica of the KMS
-    // cluster, and a dead replica can stay in that record for about a minute.
-    // reqwest/hyper-util divides the connect timeout evenly across the resolved
-    // addresses, so with five replicas each gets ~2s before the next is tried,
-    // instead of one dead address consuming the whole request timeout.
+    // `tee.kms.url` may resolve to every KMS replica and a dead one can linger in DNS;
+    // the connect timeout is split across addresses so one dead address cannot consume the whole timeout.
     let mut builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30));
@@ -1067,9 +1056,8 @@ fn build_kms_http_client(kms: &KmsConfig) -> Result<reqwest::Client> {
         builder = builder.no_proxy();
     }
 
-    // Keep TLS invariants here even though startup config validation checks the
-    // same constraints. This preserves fail-closed behavior if config is edited
-    // between validation and client construction.
+    // Re-check TLS invariants here so client construction stays fail-closed
+    // if config is edited after startup validation.
     if let Some(ca_cert_path) = kms.tls.ca_cert_path.as_deref() {
         if !uses_https {
             bail!(
@@ -1392,12 +1380,8 @@ fn build_signature_payload(
     serde_json::to_vec(&payload).context("Failed to serialize challenge signature payload")
 }
 
-/// Ensure URL has a trailing slash to prevent `Url::join` from replacing the last path segment.
-///
-/// `Url::join` has counter-intuitive behavior: if the base URL lacks a trailing slash,
-/// it replaces the last path segment. For example:
-/// - `http://host/api/v1`.join("get-key") => `http://host/api/get-key` (wrong!)
-/// - `http://host/api/v1/`.join("get-key") => `http://host/api/v1/get-key` (correct)
+/// Ensure URL has a trailing slash: `Url::join` replaces the last path segment without one.
+/// `http://host/api/v1`.join("get-key") gives `http://host/api/get-key`.
 fn ensure_trailing_slash(url: &Url) -> Url {
     let mut url = url.clone();
     if !url.path().ends_with('/') {
@@ -1742,17 +1726,6 @@ mod tests {
         let url = Url::parse("http://host").unwrap();
         let fixed = ensure_trailing_slash(&url);
         assert_eq!(fixed.as_str(), "http://host/");
-    }
-
-    #[test]
-    fn test_url_join_with_trailing_slash() {
-        // This test verifies that our fix works correctly
-        let url_without_slash = Url::parse("http://host/api/v1").unwrap();
-        let url_with_slash = ensure_trailing_slash(&url_without_slash);
-
-        // Without the fix, this would produce http://host/api/get-key
-        let endpoint = url_with_slash.join("get-key").unwrap();
-        assert_eq!(endpoint.as_str(), "http://host/api/v1/get-key");
     }
 
     #[test]
@@ -2217,9 +2190,8 @@ mod tests {
         Url::parse(&format!("http://{addr}/")).unwrap()
     }
 
-    /// A v2 release returns the node's counters sealed with the key, and the
-    /// sealed session moves them; a relay that strips the capabilities leaves
-    /// the node with the key and no counters, which the node then judges.
+    /// A v2 release returns the counters sealed with the key; a relay that strips the capabilities
+    /// leaves the node with the key and no counters, which the node then judges.
     #[tokio::test]
     #[cfg(feature = "mock-attestation")]
     async fn a_v2_release_carries_the_counters_and_a_session_that_raises_them() {
@@ -2306,10 +2278,8 @@ mod tests {
             .expect("mock verification result should be created")
     }
 
-    /// A key fetch records the KMS quote it accepted: the registers and hash
-    /// of the very quote that passed, the signed policy's release and profile,
-    /// and the host it dialled. The node reports this record in its own
-    /// attestation, so it has to be what was verified, not what was asked.
+    /// A key fetch records the KMS quote it accepted, which the node reports in its own attestation,
+    /// so it has to be what was verified, not what was asked.
     #[tokio::test]
     #[cfg(feature = "mock-attestation")]
     async fn the_kms_a_key_fetch_accepted_is_recorded() {

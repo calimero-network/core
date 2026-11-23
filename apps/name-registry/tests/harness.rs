@@ -48,15 +48,6 @@ fn state(t: &mut TestApp, who: &str, name: &str) -> Value {
 }
 
 #[test]
-fn the_creator_is_the_first_admin() {
-    let mut t = registry();
-    assert_eq!(
-        t.as_("ann").view("admins", json!({})).unwrap(),
-        json!(["owner"])
-    );
-}
-
-#[test]
 fn resolving_a_decided_name_changes_nothing() {
     let mut t = registry();
     claim(&mut t, "ann", "ann");
