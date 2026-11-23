@@ -285,7 +285,9 @@ async fn refuse_unusable(
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let refusal = node.sys(|s| {
-        let pkg = s.packages.get(package)?;
+        let Some(pkg) = s.packages.get(package) else {
+            return Some("no such package");
+        };
         let usable = |v: &crate::system::PackageVersion| s.sees_release(v, &account);
         if !pkg.versions.values().any(usable) {
             return Some("no such package");

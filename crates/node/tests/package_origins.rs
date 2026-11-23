@@ -785,3 +785,67 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
         .unwrap()
         .is_empty());
 }
+
+/// A package's first installer manages its origins only while a release of it is theirs to
+/// use: Bob uploaded Acme's private package for Acme and manages its origins; removed from
+/// Acme, he lists and adds them as for a package that is not installed, before his passkey.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_first_installer_manages_origins_only_while_it_may_use_a_release() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let acme = alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = alice
+        .orgs()
+        .set_member(
+            &acme,
+            &bob_id,
+            calimero_client::types::OrgRole::Member,
+            Some(&mut alice_pk),
+        )
+        .await
+        .unwrap();
+    let _ok = bob
+        .packages()
+        .upload(release(NOTES, "1.0.0"), Some(&acme))
+        .await
+        .unwrap();
+    let _listed = bob.packages().origins_list(NOTES).await.unwrap();
+    let _ = alice
+        .orgs()
+        .remove_member(&acme, &bob_id, Some(&mut alice_pk))
+        .await
+        .unwrap();
+
+    let missing = "com.test.nowhere";
+    let listed = bob.packages().origins_list(NOTES).await.unwrap_err();
+    let absent = bob.packages().origins_list(missing).await.unwrap_err();
+    assert_eq!(
+        (status(&listed), listed.code()),
+        (404, absent.code()),
+        "{listed}"
+    );
+    let p = bob.packages();
+    let added = p
+        .origins_add(NOTES, SITE, None, None, Some(&mut bob_pk))
+        .await
+        .unwrap_err();
+    let absent = bob
+        .packages()
+        .origins_add(missing, SITE, None, None, Some(&mut bob_pk))
+        .await
+        .unwrap_err();
+    assert_eq!(added.to_string(), absent.to_string());
+}

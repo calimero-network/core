@@ -368,12 +368,15 @@ is its command line.
   it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
   another release ships stays); it takes only releases the actor may use, one it may
-  not answering as missing (`api::packages::refuse_unusable`, and `UninstallPackage`
+  not answering as missing (`api::packages::refuse_unusable`, before anything is logged,
+  a missing package too, and `UninstallPackage`
   at apply once the logged cluster version brings `Feature::PrivateReleases`, so
   earlier entries replay as they applied; `manages_package` keeps a first installer
   to the origins of a package with a release it may use, the same way; regression
   `an_uninstall_takes_only_the_releases_its_actor_may_use`,
-  `a_first_installer_uninstalls_only_the_releases_it_may_use`). Raw `POST /bundles` is development only
+  `a_first_installer_uninstalls_only_the_releases_it_may_use`,
+  `an_uninstall_of_a_release_its_actor_may_not_use_logs_nothing`,
+  `a_first_installer_manages_origins_only_while_it_may_use_a_release`). Raw `POST /bundles` is development only
   (`allow_unsigned_bundles`, on with `--dev`). **Who sees a release**
   (`SystemState::sees_release`, the right to use it): everyone for a release the
   operator installed (the catalog), and the operator for its own installs only; a

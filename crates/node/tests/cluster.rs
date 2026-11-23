@@ -7757,6 +7757,48 @@ async fn a_first_installer_uninstalls_only_the_releases_it_may_use() {
     );
 }
 
+/// An uninstall of releases its actor may not use is refused before anything is logged: Bob,
+/// in none of Acme's organizations, removing Acme's private release (or its whole package)
+/// is answered as for a package that is not installed, and the system log does not grow.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_uninstall_of_a_release_its_actor_may_not_use_logs_nothing() {
+    let c = Cluster::start(3).await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[16; 32]);
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let acme = new_org(&alice, "Acme").await;
+    let _bobco = new_org(&bob, "Bobco").await;
+    let tool = "com.acme.unlisted";
+    let _ok = alice
+        .packages()
+        .upload(
+            mpk(tool, "1.0.0", &variant(&kv_wasm(), "unlisted"), &publisher),
+            Some(&acme),
+        )
+        .await
+        .unwrap();
+    let logged = |c: &Cluster| -> Vec<u64> {
+        c.nodes
+            .iter()
+            .flatten()
+            .map(|r| r.node.system.status().last_log.unwrap_or(0))
+            .collect()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while logged(&c).windows(2).any(|w| w[0] != w[1]) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let before = logged(&c);
+
+    let p = bob.packages();
+    let version = p.version_uninstall(tool, "1.0.0").await.unwrap_err();
+    let whole = p.uninstall(tool).await.unwrap_err();
+    let missing = p.uninstall("com.acme.nowhere").await.unwrap_err();
+    assert_eq!(version.to_string(), missing.to_string());
+    assert_eq!(whole.to_string(), missing.to_string());
+    assert_eq!(logged(&c), before, "nothing logged");
+}
+
 /// On a granted cluster, a stranger's session on a public release's frontend creates an
 /// instance of it: another organization installed it, and the stranger needs no install
 /// and no deployer grant of their own.

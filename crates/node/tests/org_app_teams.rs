@@ -1920,7 +1920,7 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
 
 /// An app team is made only for a package the admin may use: Mal, an admin of his own
 /// organization, asking for one of Bob's private package is answered as for a package
-/// the cluster lacks, and no team is made.
+/// the cluster lacks, before his passkey, and no team is made.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_app_team_of_a_private_package_answers_as_a_missing_package() {
     let c = Cluster::start(3).await;
@@ -1947,6 +1947,18 @@ async fn an_app_team_of_a_private_package_answers_as_a_missing_package() {
     .await
     .unwrap_err();
     assert_eq!(private.to_string(), missing.to_string());
+    // Before the passkey: asked without one, the private package is no step-up away.
+    let unsigned = mal
+        .orgs()
+        .app_teams_scope(
+            &malco,
+            Some(typed(json!([{ "package": NOTES }]))),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(unsigned.to_string(), missing.to_string());
     let teams = mal.orgs().app_team_list(&malco).await.map(wire).unwrap();
     assert_eq!(teams["appTeams"], json!([]), "{teams}");
 }
