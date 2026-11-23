@@ -1,6 +1,6 @@
 # Org-private packages: design
 
-Nov 23, 2026 · Status: **agreed**, not implemented.
+Nov 23, 2026 · Status: core C1 to C5 implemented; C6, app-registry and mdma not yet.
 Spans core, app-registry and mdma.
 
 ## The rule
@@ -95,7 +95,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
 
 ## Rollout
 
-1. Core C1 to C6, released.
+1. Core C1 to C5, released (C6 follows).
 2. app-registry R1 and mdma M1 to M3, deployed (independent of 1: authorize judges `account` when sent).
 3. mdma #814 as M4, merged once 1 and 2 are out.
 

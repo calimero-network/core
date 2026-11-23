@@ -14,4 +14,4 @@ Keep each file's **Status** line true when its work lands.
 | [custom-domains.md](custom-domains.md) | Core part (served origins) implemented; other parts belong to mero-tee and mdma. |
 | [gate-system-group.md](gate-system-group.md) | Phase 0 implemented; phases 1 to 3 proposed. |
 | [org-owned-deployments.md](org-owned-deployments.md) | Largely implemented; migration, transfer and lockout guard not done. |
-| [org-private-packages.md](org-private-packages.md) | Agreed; not implemented. |
+| [org-private-packages.md](org-private-packages.md) | Core C1 to C5 implemented; C6, app-registry and mdma not yet. |
