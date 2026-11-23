@@ -1,58 +1,63 @@
 ---
-title: Calimero Core
-description: Build and run Calimero — sandboxed WASM apps replicated by Raft across attested TEE nodes, reached through a sealed channel.
+title: Calimero
+description: A private cloud for apps people use together. Your app's data stays sealed, even from the people who run the servers.
 template: splash
 hero:
-  tagline: Sandboxed WASM apps on a cluster of attested Intel TDX nodes. One Raft log per app, one for the cluster, every request sealed to an attested key — and nobody operating it can read the data.
+  tagline: Build apps people use together, and keep their data private. Calimero runs your app on sealed servers that nobody can look inside, not even us.
   actions:
-    - text: Read the Protocol Reference
-      link: /protocol/overview/
+    - text: Get started
+      link: /cloud/quickstart/
       icon: right-arrow
       variant: primary
-    - text: View on GitHub
+    - text: What is Calimero?
+      link: /cloud/overview/
+      variant: minimal
+    - text: GitHub
       link: https://github.com/calimero-network/core
       icon: external
       variant: minimal
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
-import ClusterArchitecture from '../../components/diagrams/ClusterArchitecture.astro';
 
-{/* Audience-routed landing (Tailscale/Vercel pattern) — pick your track. */}
+## Why Calimero
 
 <CardGrid>
-  <Card title="Start" icon="star">
-    What Calimero is, then a local cluster, an account and a running app in a
-    few commands. [Calimero Cloud →](/cloud/overview/) ·
-    [Quickstart →](/cloud/quickstart/)
+  <Card title="Private by default" icon="seti:lock">
+    Your app's data is encrypted and stays inside sealed hardware. Not the
+    server operator, not Calimero, not anyone else can read it.
   </Card>
-  <Card title="Build" icon="rocket">
-    Write a `calimero:app` component with the Rust SDK: the macros, tables and
-    collections, testing, signed packages. [Start building →](/build/)
+  <Card title="Proof, not promises" icon="approve-check">
+    Before sending anything, your app checks that it is talking to a genuine,
+    unmodified server. Every answer comes back signed.
   </Card>
-  <Card title="Operate" icon="setting">
-    Run `merod` in production: install, the storage key, peers, governance,
-    the Ops API, backups and upgrades. [Operate a cluster →](/operate/)
+  <Card title="Always in sync" icon="random">
+    Every app runs on several servers at once and keeps them in step, so it
+    stays up and nothing is lost if one goes down.
   </Card>
-  <Card title="Protocol" icon="open-book">
-    How a cluster works and why: replication, the system group, attestation,
-    sealed channels, accounts, organizations, upgrades.
-    [Read the reference →](/protocol/overview/)
-  </Card>
-  <Card title="Contribute" icon="puzzle">
-    Work on Calimero core itself. Architecture orientation, the crate map, and
-    the development workflow. [Get oriented →](/contribute/)
+  <Card title="Works where you are" icon="laptop">
+    Sign in with a passkey, no passwords. Call your app from the web, iOS or
+    Android with our client libraries.
   </Card>
 </CardGrid>
 
-## Architecture at a glance
+## Where do you want to start?
 
-<ClusterArchitecture />
+<CardGrid>
+  <Card title="Try it" icon="star">
+    Sign in and run your first app in a few minutes.
+    [Quickstart →](/cloud/quickstart/)
+  </Card>
+  <Card title="Build an app" icon="rocket">
+    Write your app in Rust and publish it. [Start building →](/build/)
+  </Card>
+  <Card title="Run your own servers" icon="setting">
+    Host a Calimero cluster yourself. [Operate a cluster →](/operate/)
+  </Card>
+  <Card title="Learn how it works" icon="open-book">
+    The full technical design, for the curious.
+    [Read the reference →](/protocol/overview/)
+  </Card>
+</CardGrid>
 
-A client verifies a node's TDX attestation, then talks to any node through a
-sealed channel. That node checks the caller against the cluster's system group
-and forwards the call to the leader of the app's own Raft group, which runs the
-component and replicates the resulting diff to the app's other replicas; the
-answer comes back with a receipt signed by an attested key. [More in Calimero Cloud →](/cloud/overview/)
-
-New here? [How to use these docs](/using-the-docs/) · [Journeys by goal](/journeys/) · [Browse by topic](/topics/)
+New here? [How to use these docs](/using-the-docs/) · [Journeys by goal](/journeys/) · [Browse by topic](/topics/) · [Contribute to Calimero](/contribute/)
