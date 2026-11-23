@@ -204,10 +204,15 @@ pub enum Feature {
     /// a part's release no longer installed, approved first and applied as red. rc.34
     /// cannot decode the reason, and a node stops a group on an entry it cannot decode.
     UnclassifiedUpdates,
+    /// `UndoUpgrade { release_installed }`: an undo goes back only to a release that is still
+    /// installed and ships the bundle (`SystemState::undo_release_installed`). An earlier
+    /// release would undo to a release the developer uninstalled while another release's
+    /// WASM kept the bundle, where a later one refuses it.
+    UndoToInstalledRelease,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 46] = [
+pub const FEATURES: [Feature; 47] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -254,6 +259,7 @@ pub const FEATURES: [Feature; 46] = [
     Feature::AutoUpdates,
     Feature::RestorePoints,
     Feature::UnclassifiedUpdates,
+    Feature::UndoToInstalledRelease,
 ];
 
 impl Feature {
@@ -307,6 +313,7 @@ impl Feature {
             Self::AutoUpdates => "autoUpdates",
             Self::RestorePoints => "restorePoints",
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
+            Self::UndoToInstalledRelease => "undoToInstalledRelease",
         }
     }
 
@@ -358,6 +365,7 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
+            Self::UndoToInstalledRelease => "1.0.0-rc.36",
         }
     }
 }
@@ -649,7 +657,15 @@ impl SystemCmd {
             Self::SetUpgradePolicy { .. } | Self::ApproveUpgrade { .. } => {
                 vec![Feature::UpgradePolicies]
             }
-            Self::UndoUpgrade { .. } => vec![Feature::RestorePoints],
+            Self::UndoUpgrade {
+                release_installed, ..
+            } => {
+                let mut f = vec![Feature::RestorePoints];
+                if *release_installed {
+                    f.push(Feature::UndoToInstalledRelease);
+                }
+                f
+            }
             Self::CreateApiKey {
                 owner_approves: true,
                 ..
@@ -932,6 +948,7 @@ mod tests {
     const RC33: &str = "1.0.0-rc.33";
     const RC34: &str = "1.0.0-rc.34";
     const RC35: &str = "1.0.0-rc.35";
+    const RC36: &str = "1.0.0-rc.36";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1175,6 +1192,9 @@ mod tests {
                 "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true })),
             Feature::RestorePoints => entry(json!({ "op": "undoUpgrade",
                 "app_id": "app", "apps": { "app": [1] }, "actor": "alice", "at": 1 })),
+            Feature::UndoToInstalledRelease => entry(json!({ "op": "undoUpgrade",
+                "app_id": "app", "apps": { "app": [1] }, "actor": "alice", "at": 1,
+                "release_installed": true })),
             Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
@@ -1466,7 +1486,10 @@ mod tests {
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES.iter().partition(|f| {
-            ![RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35].contains(&f.since())
+            ![
+                RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
+            ]
+            .contains(&f.since())
         });
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
@@ -1516,13 +1539,14 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.22's wait for every node on rc.22 (an entry naming several is refused for the
-        // first it needs: an unclassified approval for `upgradePolicies`).
+        // first it needs: an unclassified approval for `upgradePolicies`, an undo with the
+        // installed-release rule for `restorePoints`).
         for &feature in &last {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
-            let first = if feature == Feature::UnclassifiedUpdates {
-                Feature::UpgradePolicies
-            } else {
-                feature
+            let first = match feature {
+                Feature::UnclassifiedUpdates => Feature::UpgradePolicies,
+                Feature::UndoToInstalledRelease => Feature::RestorePoints,
+                _ => feature,
             };
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1550,8 +1574,10 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC32);
         let (rc33, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC33);
-        let (rc34, rc35): (Vec<Feature>, Vec<Feature>) =
+        let (rc34, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC34);
+        let (rc35, rc36): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC35);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -1739,6 +1765,26 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc35 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.36's (an undo only to a release still installed) for every node on rc.36.
+        assert_eq!(rc36, [Feature::UndoToInstalledRelease]);
+        for &feature in &rc36 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC35))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC36;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC36.into(),
+            nodes: (1..=3).map(|id| (id, RC36.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc36 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

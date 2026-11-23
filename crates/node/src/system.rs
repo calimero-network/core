@@ -217,8 +217,12 @@ pub const UNDO_STALE: &str =
 /// restore points name (the instance and the members its unit's upgrade moved).
 pub const UNDO_NOT_AS_NAMED: &str =
     "UNDO_NOT_AS_NAMED: an undo reverts the instance and the members its upgrade moved, each seeded by the node that holds its restore point";
+/// The apply error for an undo to a release that is no longer installed (a bundle another
+/// release ships may remain, but the release itself and its frontend are gone).
+pub const UNDO_RELEASE_GONE: &str =
+    "UNDO_RELEASE_GONE: the release the app ran before is no longer installed";
 /// The apply errors a code prefixes (`CODE: why`), with the status the API answers.
-pub const UPDATE_REFUSALS: [(&str, u16); 12] = [
+pub const UPDATE_REFUSALS: [(&str, u16); 13] = [
     (BAD_UPGRADE_POLICY, 400),
     (SECOND_APPROVAL_REQUIRED, 409),
     (UPGRADE_CLASS_MISMATCH, 409),
@@ -231,6 +235,7 @@ pub const UPDATE_REFUSALS: [(&str, u16); 12] = [
     (UNDO_WINDOW_PASSED, 409),
     (UNDO_STALE, 409),
     (UNDO_NOT_AS_NAMED, 409),
+    (UNDO_RELEASE_GONE, 409),
 ];
 /// The apply error for a price table whose version is not the current one plus one.
 pub const PRICE_VERSION: &str = "PRICE_VERSION: the version must be the current one plus one";
@@ -5522,6 +5527,13 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// The release it goes back to must still be installed and ship the bundle
+        /// ([`SystemState::undo_release_installed`]). The API sets it once every node reads it
+        /// ([`cluster_version::Feature::UndoToInstalledRelease`]); absent (`false`) in an earlier
+        /// release's entry, which replays as it applied unless the logged cluster version
+        /// brings the rule.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        release_installed: bool,
     },
     TransferApp {
         app_id: AppId,

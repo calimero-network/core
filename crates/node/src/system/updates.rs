@@ -191,6 +191,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             apps,
             actor,
             at,
+            release_installed,
             ..
         } => {
             let a = s.apps.get(&app_id).ok_or("no such app")?;
@@ -222,6 +223,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 }
                 if !s.bundles.contains_key(&p.from_bundle) {
                     return Err(RESTORE_BUNDLE_GONE);
+                }
+                if release_installed
+                    || s.cluster_brings(cluster_version::Feature::UndoToInstalledRelease)
+                {
+                    s.undo_release_installed(p)?;
                 }
             }
             let mut groups = serde_json::Map::new();
@@ -364,6 +370,25 @@ impl SystemState {
             return Err(UNDO_STALE);
         }
         Ok(())
+    }
+
+    /// Whether the release a restore point returns to is still installed and ships its
+    /// bundle: another release may ship the same WASM and keep the bundle after the
+    /// release itself was uninstalled. A restore point of a raw bundle names no release,
+    /// and one already undone has moved the app (a seed sent again is not refused).
+    ///
+    /// # Errors
+    /// [`UNDO_RELEASE_GONE`].
+    pub fn undo_release_installed(
+        &self,
+        p: &crate::types::RestorePoint,
+    ) -> Result<(), &'static str> {
+        match &p.from_release {
+            Some(r) if p.undone_at.is_none() && !self.release_ships(r, &p.from_bundle) => {
+                Err(UNDO_RELEASE_GONE)
+            }
+            _ => Ok(()),
+        }
     }
 
     /// What lets an update of `app` to `to` (its `bundle`), carrying `class`, apply on
