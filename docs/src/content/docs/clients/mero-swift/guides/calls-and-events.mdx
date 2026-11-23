@@ -115,18 +115,26 @@ When `u.unit` is true the instance's own apps move with it: approve with
 
 A public link lets anyone with its token call the app's `#[app::public]`
 methods without an account ([Public links](/protocol/organizations/#public-links)).
-Whoever may change the app's access makes one:
+Whoever may change the app's access makes one; the visitor's client signs each
+request with its own key:
 
 ```swift
 let made = try await client.apps.publicLinkCreate(app: app, label: "Feedback",
     ratePerMinute: 60, passkey: passkey)              // made.token is shown once; made.link is its id
 let links = try await client.apps.publicLinkList(app: app)
 _ = try await client.apps.publicLinkRevoke(app: app, link: made.link, passkey: passkey)
+
+// The visitor: no sign-in. Keep the seed (newVisitorSeed()) in the keychain to stay the same visitor.
+let visitorClient = CalimeroClient(CalimeroClientOptions(baseUrl: nodeURL, policy: .production))
+let visitor = try await visitorClient.useVisitor(link: made.token, seed: newVisitorSeed())
+// visitor.publicKey is how the app names the visitor; visitor.link names the link
+let answer = try await visitorClient.call(app, "submit", ["text": "Hi"])
 ```
 
-`expiresAt:` (Unix seconds) is optional. MeroKit has no visitor client: a
-visitor signs each request (`Bearer vis1.…`) with its own Ed25519 key, as the
-[protocol page](/protocol/organizations/#public-links) describes.
+`expiresAt:` (Unix seconds) is optional. `useVisitor(link:seed:)` signs every
+request afresh (`Bearer vis1.…`, valid within 5 minutes of the node's clock),
+and only the app's `#[app::public]` methods answer it; `useApiKey` or
+`useSession` replaces it ([Public links](/protocol/organizations/#public-links)).
 
 ## Blobs and presence
 

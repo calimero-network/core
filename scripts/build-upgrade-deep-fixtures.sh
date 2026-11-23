@@ -12,7 +12,8 @@
 # Writes OUT/deep/: kv-dev.wasm (the release's kv fixture component from its
 # kv-store-test-fixture.mpk, as a dev bundle of its own), files.wasm, and the signed
 # packages kv-a-1.0.0.mpk, kv-a-1.1.0.mpk, kv-b-1.0.0.mpk, kv-c-1.0.0.mpk,
-# kv-u-1.0.0.mpk, kv-u-1.1.0.mpk (com.calimero.upgrade.kv-*), notes-1.0.0.mpk and notes-2.0.0.mpk
+# kv-u-1.0.0.mpk, kv-u-1.1.0.mpk, kv-r-1.0.0.mpk, kv-r-1.1.0.mpk, kv-o-1.0.0.mpk to kv-o-1.3.0.mpk (four releases
+# of one package, a deployment's offer moving between them) (com.calimero.upgrade.kv-*), notes-1.0.0.mpk and notes-2.0.0.mpk
 # (com.calimero.upgrade.notes, apps/fixture-notes-v1 and fixture-notes-v2), and, from a
 # release that has the units examples, calendar-0.1.0.mpk, calendar-0.1.1.mpk,
 # planner-0.1.0.mpk, planner-0.2.0.mpk and booking-0.1.0.mpk (com.calimero.example.*); from
@@ -33,7 +34,7 @@ mkdir -p "$DEEP"
 # The release's kv component, as components of their own (one custom section each):
 # kv-dev.wasm, every account's dev bundle, and one per package below
 # (scripts/upgrade-dev-bundle.py says why).
-python3 -I "$(dirname "$0")/upgrade-dev-bundle.py" "$OUT/kv-store-test-fixture.mpk" "$DEEP" dev a b c u unit guest secret
+python3 -I "$(dirname "$0")/upgrade-dev-bundle.py" "$OUT/kv-store-test-fixture.mpk" "$DEEP" dev a b c u r o unit guest secret
 
 for app in files notes-v1 notes-v2; do
   # An older release keeps its test fixtures under apps/v2-fixtures/.
@@ -51,6 +52,12 @@ pack "$DEEP/kv-b.wasm" com.calimero.upgrade.kv-b 1.0.0 kv-b-1.0.0.mpk
 pack "$DEEP/kv-c.wasm" com.calimero.upgrade.kv-c 1.0.0 kv-c-1.0.0.mpk
 pack "$DEEP/kv-u.wasm" com.calimero.upgrade.kv-u 1.0.0 kv-u-1.0.0.mpk
 pack "$DEEP/kv-u.wasm" com.calimero.upgrade.kv-u 1.1.0 kv-u-1.1.0.mpk
+# kv-r: two releases of one WASM, the first uninstalled under its apps (`unclassified-updates`).
+pack "$DEEP/kv-r.wasm" com.calimero.upgrade.kv-r 1.0.0 kv-r-1.0.0.mpk
+pack "$DEEP/kv-r.wasm" com.calimero.upgrade.kv-r 1.1.0 kv-r-1.1.0.mpk
+for v in 1.0.0 1.1.0 1.2.0 1.3.0; do
+  pack "$DEEP/kv-o.wasm" com.calimero.upgrade.kv-o "$v" "kv-o-$v.mpk"
+done
 pack "$DEEP/notes-v1.wasm" com.calimero.upgrade.notes 1.0.0 notes-1.0.0.mpk
 pack "$DEEP/notes-v2.wasm" com.calimero.upgrade.notes 2.0.0 notes-2.0.0.mpk
 

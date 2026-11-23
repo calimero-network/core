@@ -5,7 +5,7 @@ name: Release
 # x86_64 and aarch64; the command-line tools for macOS), crates, the App Bundle,
 # the Homebrew tap, the SDKs under sdks/ (npm, PyPI and Maven Central; Swift
 # installs from this repository's tag; the cut's commit runs scripts/sdks.py version-sync) and the
-# downstream bump PRs, and the merod image (amd64 and arm64) under
+# downstream bump PRs (cargo and tee; npm and mobile once those SDKs are published), and the merod image (amd64 and arm64) under
 # the version and `latest` or `prerelease`, once that image passed its smoke e2e.
 # Any other push builds nothing: `prepare` decides in seconds. PRs and the merge
 # queue build no release: ci-checks tests every crate, and e2e.yml runs a release
@@ -890,6 +890,18 @@ jobs:
     with:
       version: ${{ needs.prepare.outputs.version }}
       surfaces: npm
+    secrets: inherit
+
+  # The native apps that pin the Swift and Kotlin SDKs, once mero-kotlin is
+  # published (mero-swift installs from this repository's tag).
+  fleet-bump-mobile:
+    name: Open SDK mobile bump PRs
+    if: ${{ !cancelled() && github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true' && needs.sdk-mero-kotlin.result == 'success' }}
+    needs: [prepare, sdk-mero-kotlin]
+    uses: ./.github/workflows/fleet-bump.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      surfaces: mobile
     secrets: inherit
 
   fleet-bump:

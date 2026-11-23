@@ -123,6 +123,9 @@ public actor CalimeroClient {
     private let urlSession: URLSession
     private let retry: CloudRetryOptions
     private var credential: String?
+    /// A public link's visitor (``useVisitor(link:seed:)``): a credential
+    /// signed fresh for each request, in place of `credential`.
+    private var visitor: Visitor?
     private var current: CalimeroSession?
     private var refreshing: Task<CalimeroSession, Error>?
     private var refreshGeneration = 0
@@ -265,14 +268,31 @@ public actor CalimeroClient {
 
     /// Authenticate every request with an API key (`cal_…`).
     public func useApiKey(_ key: String) {
+        visitor = nil
         credential = key
         setCurrent(nil)
     }
 
     /// Authenticate every request with `session` (a stored one, say).
     public func useSession(_ session: CalimeroSession) {
+        visitor = nil
         credential = session.sessionToken
         setCurrent(session)
+    }
+
+    /// Call as an anonymous visitor through a public link (`link`: its token,
+    /// from the link's URL), with the visitor's own Ed25519 key (`seed`: 32
+    /// bytes, from ``newVisitorSeed()``, kept to stay the same visitor). Each
+    /// request is signed fresh; only the instance's `#[app::public]` methods
+    /// answer. Answers the ``Visitor`` (its `link` and `publicKey`, how the
+    /// app names it).
+    @discardableResult
+    public func useVisitor(link: String, seed: Data) throws -> Visitor {
+        let next = try Visitor(token: link, seed: seed)
+        credential = nil
+        visitor = next
+        setCurrent(nil)
+        return next
     }
 
     /// The passkey that approves a `412 CONFIRM_REQUIRED` for a request sent
@@ -316,7 +336,9 @@ public actor CalimeroClient {
         var request = URLRequest(url: target)
         request.httpMethod = method
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
-        if let credential { request.setValue("Bearer \(credential)", forHTTPHeaderField: "authorization") }
+        if let bearer = try visitor?.bearer() ?? credential {
+            request.setValue("Bearer \(bearer)", forHTTPHeaderField: "authorization")
+        }
         if let body {
             if headers["content-type"] == nil { request.setValue(contentType, forHTTPHeaderField: "content-type") }
             request.httpBody = body
@@ -650,23 +672,26 @@ public actor CalimeroClient {
         }
     }
 
-    /// End this session.
+    /// End this session. The client is signed out whether or not the node
+    /// answers (a visitor has no session to revoke, and the node refuses the
+    /// route): the revoke is tried, and its failure is thrown after the
+    /// credential is dropped, as in mero-js.
     public func signOut() async throws {
+        defer { forget() }
         _ = try await auth.logout()
-        credential = nil
-        setCurrent(nil)
     }
 
-    /// End every session of the signed-in account, on every device, this one too.
+    /// End every session of the signed-in account, on every device, this one
+    /// too; signed out even when the request fails.
     public func signOutEverywhere() async throws {
+        defer { forget() }
         _ = try await auth.logoutAll()
-        credential = nil
-        setCurrent(nil)
     }
 
     /// Forget the credential without telling the node (it is unreachable, say).
     public func forget() {
         credential = nil
+        visitor = nil
         setCurrent(nil)
     }
 

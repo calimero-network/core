@@ -29,18 +29,10 @@ async fn part_json(node: &Node, a: &AppRecord, p: &RestorePoint) -> Value {
     };
     let (lost, available) = match (&status, &p.file) {
         (Some(Ok(v)), Some(f)) => {
-            // The restore point's node no longer hosts the app (a node from before says
-            // nothing of it, and has no count then): what it wrote since is a current
-            // replica's to say.
-            let hosted = v["hosted"]
-                .as_bool()
-                .unwrap_or_else(|| v["entriesSince"].is_u64());
-            let replica = if hosted {
-                None
-            } else {
-                Some(node.group_progress(a).await)
-            };
-            (lost_writes(v, f.source.index, replica), Value::Null)
+            // What the app wrote since is its replicas' to say, a majority of them, whether
+            // or not the restore point's node still hosts it: that node may be behind.
+            let progress = node.group_progress(a).await;
+            (lost_writes(v, f.source.index, progress), Value::Null)
         }
         (Some(Err(e)), _) => (Value::Null, json!({ "code": e.code, "message": e.message })),
         _ => (
@@ -69,31 +61,22 @@ async fn part_json(node: &Node, a: &AppRecord, p: &RestorePoint) -> Value {
 /// What an undo loses (`lostWrites`): the app group's entries since the restore point
 /// (`entriesSince`, taken at `index`), its last write (`lastWriteAt`, Unix seconds), and
 /// `any` when it wrote after the restore point was taken (`holder`'s `takenAt`), which the
-/// restore takes back too. Read from `holder`, the restore point's node, while it hosts
-/// the app; else from `replica` (`Some` when this node asked the current replicas,
-/// [`Node::group_progress`], `None` inside it when no majority answered). Only an applied
-/// index at or past `index` counts entries or says no write is lost: a replica behind the
-/// restore point has not seen what came after it. What nobody can say is `null`, `any`
-/// included: an undo never says it loses no writes it cannot see.
+/// restore takes back too. Read from `progress`, the furthest of a majority of the app's
+/// current replicas ([`Node::group_progress`]; `None` when no majority answered), never
+/// from the restore point's node alone, which may be behind its group even while it hosts
+/// the app. Only an applied index at or past `index` counts entries or says no write is
+/// lost: a replica behind the restore point has not seen what came after it. What nobody
+/// can say is `null`, `any` included: an undo never says it loses no writes it cannot see.
 fn lost_writes(
     holder: &Value,
     index: u64,
-    replica: Option<Option<crate::node::ReplicaProgress>>,
+    progress: Option<crate::node::ReplicaProgress>,
 ) -> Value {
     let unknown = json!({ "entriesSince": null, "lastWriteAt": null, "any": null });
     let taken = holder["takenAt"].as_u64();
     let wrote_since = |ms: u64| taken.is_none_or(|t| ms / 1000 >= t);
-    let r = match replica {
-        None => {
-            let last = holder["lastWriteMs"].as_u64();
-            return json!({
-                "entriesSince": holder["entriesSince"],
-                "lastWriteAt": last.map(|ms| ms / 1000),
-                "any": last.is_some_and(wrote_since),
-            });
-        }
-        Some(None) => return unknown,
-        Some(Some(r)) => r,
+    let Some(r) = progress else {
+        return unknown;
     };
     let caught_up = r.applied.is_some_and(|i| i >= index);
     let wrote = r.last_write_ms.is_some_and(wrote_since);
@@ -295,7 +278,7 @@ mod tests {
             "hosted": false, "entriesSince": null, "lastWriteMs": null, "takenAt": 100,
         });
         // The holder alone would read as no writes: never answered so.
-        let unknown = lost_writes(&holder, 3, Some(None));
+        let unknown = lost_writes(&holder, 3, None);
         assert_eq!(
             unknown,
             json!({ "entriesSince": null, "lastWriteAt": null, "any": null })
@@ -304,10 +287,10 @@ mod tests {
         let read = lost_writes(
             &holder,
             3,
-            Some(Some(ReplicaProgress {
+            Some(ReplicaProgress {
                 applied: Some(7),
                 last_write_ms: Some(150_000),
-            })),
+            }),
         );
         assert_eq!(
             read,
@@ -318,10 +301,10 @@ mod tests {
         let older = lost_writes(
             &holder,
             3,
-            Some(Some(ReplicaProgress {
+            Some(ReplicaProgress {
                 applied: None,
                 last_write_ms: Some(50_000),
-            })),
+            }),
         );
         assert_eq!(
             older,
@@ -332,10 +315,10 @@ mod tests {
         let lagging = lost_writes(
             &holder,
             3,
-            Some(Some(ReplicaProgress {
+            Some(ReplicaProgress {
                 applied: Some(2),
                 last_write_ms: Some(50_000),
-            })),
+            }),
         );
         assert_eq!(
             lagging,
@@ -346,10 +329,10 @@ mod tests {
         let seen = lost_writes(
             &holder,
             3,
-            Some(Some(ReplicaProgress {
+            Some(ReplicaProgress {
                 applied: Some(2),
                 last_write_ms: Some(150_000),
-            })),
+            }),
         );
         assert_eq!(
             seen,
@@ -359,21 +342,29 @@ mod tests {
         let none = lost_writes(
             &holder,
             3,
-            Some(Some(ReplicaProgress {
+            Some(ReplicaProgress {
                 applied: Some(3),
                 last_write_ms: Some(50_000),
-            })),
+            }),
         );
         assert_eq!(
             none,
             json!({ "entriesSince": 0, "lastWriteAt": 50, "any": false })
         );
-        // The holder hosting the app answers for itself.
+        // The holder hosting the app but behind its group (Bugbot on #5210, "lagging
+        // replica undercounts"): its own count is never read; the majority's furthest is.
         let hosted = json!({
-            "hosted": true, "entriesSince": 2, "lastWriteMs": 120_000, "takenAt": 100,
+            "hosted": true, "entriesSince": 0, "lastWriteMs": null, "takenAt": 100,
         });
         assert_eq!(
-            lost_writes(&hosted, 3, None),
+            lost_writes(
+                &hosted,
+                3,
+                Some(ReplicaProgress {
+                    applied: Some(5),
+                    last_write_ms: Some(120_000),
+                }),
+            ),
             json!({ "entriesSince": 2, "lastWriteAt": 120, "any": true })
         );
     }

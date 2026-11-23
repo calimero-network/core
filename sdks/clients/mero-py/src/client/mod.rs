@@ -29,8 +29,9 @@ use std::collections::HashMap;
 pub(crate) use directory::DirectoryError;
 
 use crate::error::directory_err;
+use crate::visitor::PyVisitor;
 use prelude::*;
-use recover::Nodes;
+use recover::{Credential, Nodes};
 use sealed::{as_response, recoverable, RawRequest, RawResponse, SealedNode};
 use tls::ExtraRoots;
 
@@ -107,12 +108,21 @@ impl Mode {
     }
 }
 
-/// The credential a request carries: the API key, else the node's session.
-async fn credential(api_key: Option<String>, node: &SealedNode) -> Option<String> {
-    match api_key {
-        Some(key) => Some(key),
-        None => node.session().await.map(|s| s.session_token),
+/// The credential a request carries: the API key, a visitor's credential
+/// signed now (fresh for each attempt), else the node's session.
+async fn credential(held: Credential, node: &SealedNode) -> Option<String> {
+    match held {
+        Credential::ApiKey(key) => Some(key),
+        Credential::Visitor(visitor) => Some(visitor.bearer(unix_now())),
+        Credential::Session => node.session().await.map(|s| s.session_token),
     }
+}
+
+/// Now, in Unix seconds.
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Send `req` to `node` once, or, with `retry`, again while it answers `503`
@@ -440,7 +450,7 @@ impl PyCloudClient {
         let repeatable = mode == Mode::Repeatable;
         let nodes = Arc::clone(&self.nodes);
         let op = async |node: Arc<SealedNode>| {
-            let token = credential(nodes.api_key(), &node).await;
+            let token = credential(nodes.credential(), &node).await;
             attempt(&node, &req, token.as_deref(), repeatable, retry_unavailable).await
         };
         let (rt, n) = (Arc::clone(&self.runtime), Arc::clone(&self.nodes));
@@ -512,6 +522,22 @@ impl PyCloudClient {
             c.use_api_key(&key).await;
             Ok(())
         })
+    }
+
+    /// Call as an anonymous visitor through a public link: `link` is its
+    /// token (from the link's URL), `seed` the visitor's own Ed25519 key (32
+    /// bytes; keep it to stay the same visitor). Every request then carries a
+    /// credential signed fresh with that key, and only the instance's
+    /// `#[app::public]` methods answer it. Answers the `Visitor`.
+    fn use_visitor(&self, py: Python<'_>, link: &str, seed: &[u8]) -> PyResult<PyVisitor> {
+        let visitor = PyVisitor::new(link, seed)?;
+        self.nodes.set_visitor(visitor.inner.clone());
+        let (c, v) = (self.client(), visitor.inner.clone());
+        self.block(py, async move {
+            recover::Node::use_visitor(&*c, v).await;
+            Ok(())
+        })?;
+        Ok(visitor)
     }
 
     /// Authenticate with a session returned by `sign_up`/`sign_in`.

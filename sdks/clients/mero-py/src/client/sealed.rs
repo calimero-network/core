@@ -61,7 +61,7 @@ pub(crate) struct RawResponse {
 }
 
 /// Headers the channel sets itself, or that mean nothing inside it: the
-/// credential is the client's own (`use_api_key`, a session), and an encoded
+/// credential is the client's own (`use_api_key`, a session, `use_visitor`), and an encoded
 /// answer would not be decoded.
 const OWN_HEADERS: [&str; 6] = [
     "authorization",
@@ -157,6 +157,10 @@ impl Node for SealedNode {
     }
     async fn use_api_key(&self, key: &str) {
         self.client.use_api_key(key).await;
+    }
+    /// Core's client signs the visitor's credential for the event streams.
+    async fn use_visitor(&self, visitor: calimero_client::visitor::Visitor) {
+        self.client.use_visitor(visitor).await;
     }
     /// Exchange the refresh token on this node's channel, as core's
     /// `Client::refresh` does on its own: the session goes to core's client

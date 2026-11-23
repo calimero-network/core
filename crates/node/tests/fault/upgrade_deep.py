@@ -54,14 +54,6 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
-    ("Deployments", "An instance from a deployment upgraded only to the release its deployment offers "
-     "(`409 OUTSIDE_DEPLOYMENT`, `SystemState::within_deployment`, `UpgradeApp`'s `in_deployment`)",
-     "not seeded yet: `deployment-unit-secrets` makes instances from a deployment, but its packages have one "
-     "release each, so no upgrade inside or outside the offer is tried; the rule changes no stored shape: an "
-     "`UpgradeApp` without `in_deployment` reads and replays as before below cluster version 1.0.0-rc.32 "
-     "(`Feature::UpgradeInDeployment`). `a_deployments_secret_never_reaches_a_package_it_does_not_offer` "
-     "(`component_cluster.rs`) covers it on one build, and `an_instance_from_a_deployment_moves_only_to_what_it_offers` "
-     "(`system::tests`) the replay of an earlier entry"),
     ("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
      "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
      "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
@@ -70,20 +62,11 @@ NOT_COVERED = [
      "`system::tests::only_an_organizations_owner_and_admins_approve_its_upgrades` covers the replay, and "
      "`a_member_needs_the_capability_to_create_apps_or_invite`, `the_leader_checks_upgrade_authority_again` and "
      "`an_upgrade_key_is_an_owners_or_admins_of_the_apps_organization` the refusals on one build"),
-    ("Deployments", "A deployment's customer accepting its offer on the consent page, and `GET /apps/{app}/update` "
-     "of an instance from a deployment (`source: deployment`)",
-     "the page is approved in a browser, and the route reads the state and stores nothing; the deep deployment "
-     "offers one release per package, so no instance has an offer to take (the route on an instance outside a "
-     "deployment is `units`'). `an_instance_shows_its_update_and_who_may_approve_it` (`deployments.rs`) and "
-     "`a_customer_accepts_its_deployments_offer_on_the_page` (`consent_page.rs`) cover it on one build"),
-    ("Apps", "An update the log cannot classify (a part's release uninstalled while another ships its WASM), "
-     "approved first and applied as red with `unclassified` reasons (`Reason::Unclassified` on `ApproveUpgrade` "
-     "and `UpgradeApp`)",
-     "the shape is written only once every node runs 1.0.0-rc.35 (`Feature::UnclassifiedUpdates`), so the old "
-     "release cannot seed one, and an rc.34 node never meets it; an upgrade it logs without a class reads and "
-     "replays as before. `system::tests::an_unclassified_move_is_approved_first_as_red_naming_what_the_log_lacks` "
-     "and `consent_page.rs` (`a_red_update_from_an_uninstalled_release_is_approved_first_and_applied_second`, "
-     "`an_unclassified_update_waits_for_every_node_on_the_release_that_decodes_it`) cover it on one build"),
+    ("Deployments", "A deployment's customer accepting its offer on the consent page",
+     "the page is approved in a browser, and a consent request lives in one node's memory for minutes; what it "
+     "logs is the `UpgradeApp` that `POST /apps/{app}/upgrade` without a version logs, which "
+     "`deployment-offer-upgrades` covers with `GET /apps/{app}/update`'s `source: deployment`. "
+     "`a_customer_accepts_its_deployments_offer_on_the_page` (`consent_page.rs`) covers the page on one build"),
     ("Apps", "A green update applying on its own after its hold (`UpgradeApp::auto`, `lastUpgrade.auto`)",
      "the hold is at least a day (`MIN_HOLD_HOURS`) of logged time from the release's install, which a deep run "
      "cannot wait on either release (the tests move the update clock with a testing hook a release `merod` "
@@ -119,10 +102,19 @@ NOT_COVERED = [
     ("Governance", "Owner-held release approvals and release deadlines",
      "the rolled cluster gives release approvals to the operator (`--release-approvals operator`), as "
      "Calimero Cloud does; the operator's approval of the new release is the rollout's first step"),
-    ("Deployments", "Deployer grants (`/deployers`, `/ops/deployers`) and a granted cluster's installs",
-     "the suite's cluster is open (`--deployments open`), where anyone installs and makes deployments, which "
-     "`deployment-used-secrets` and `deployment-unit-secrets` seed; a grant is an operator-signed decision, or the "
-     "cluster owner's, that an open cluster never asks for. The cluster tests (`deployers.rs`) cover them on one "
+    ("Deployments", "A granted cluster's installs (`--deployments granted`: `403 DEPLOY_NOT_GRANTED`, "
+     "`NOT_A_DEPLOYER` at apply), the one-way switch to it (`SetDeploymentsGranted`, `POST "
+     "/ops/deployments/granted`) and an owner who grants deployers (`--deployers owner`, `SetClusterOwner`, "
+     "`POST /deployers`)",
+     "governance is fixed at genesis and the suite runs one cluster, started open with `--deployers operator`, for "
+     "every case; the switch is one-way and cluster-wide, and from it every install, bundle upload, deployment and "
+     "offer needs a grant, which the cases that write those on the new release do not hold (`kv-package`, "
+     "`packages`, `deployment-offer-upgrades`, `units`, every case seeded after the roll), so switching in any "
+     "phase would turn their steps red; a granted or owner-granting cluster needs a rollout of its own. The "
+     "grants themselves, which an open cluster keeps, are `deployer-grants`'; "
+     "`only_granted_accounts_install_on_a_granted_cluster`, "
+     "`an_open_cluster_installs_as_before_until_the_operator_grants_deployments` and "
+     "`the_cluster_owner_grants_deployers_once_the_operator_names_it` (`deployers.rs`) cover the rest on one "
      "build"),
     ("Packages", "Multi-service packages (`services`) and instances of a named service (`--service`)",
      "not seeded yet: the suite installs the release's single-service kv bundle; `meroctl app pack --service` "

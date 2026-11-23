@@ -62,7 +62,8 @@ client.orgs.updates(org=org)  # every app with an update or an approval waiting
 
 A public link lets anyone with its token call the app's `#[app::public]`
 methods without an account ([Public links](/protocol/organizations/#public-links)).
-Whoever may change the app's access makes one:
+Whoever may change the app's access makes one; the visitor's client signs each
+request with its own key:
 
 ```python
 made = client.apps.public_link_create(app=app, label="Feedback", rate_per_minute=60,
@@ -70,9 +71,17 @@ made = client.apps.public_link_create(app=app, label="Feedback", rate_per_minute
 made.link, made.token  # the token is shown once
 client.apps.public_link_list(app=app)
 client.apps.public_link_revoke(app=app, link=made.link, confirm=passkey)
+
+# The visitor: no sign-in. Keep the seed (new_visitor_seed()) to stay the same visitor.
+from calimero_client_py import Client, new_visitor_seed
+
+visitor_client = Client(base_url)
+visitor = visitor_client.use_visitor(link=made.token, seed=new_visitor_seed())
+visitor.public_key  # how the app names the visitor; visitor.link names the link
+visitor_client.apps.call(app=app, method="submit", args={"text": "Hi"})
 ```
 
-`expires_at` (Unix seconds) is optional. mero-py has no visitor sign-in: a
-visitor signs each request with its own Ed25519 key, as
-[Public links](/protocol/organizations/#public-links) describes, from a client
-that supports it (mero-js's [`useVisitor`](/clients/mero-js/guides/apps/#public-links)).
+`expires_at` (Unix seconds) is optional. `use_visitor` signs every request
+afresh (`Bearer vis1.…`, valid within 5 minutes of the node's clock), and only
+the app's `#[app::public]` methods answer it; `use_api_key` or `use_session`
+replaces it.
