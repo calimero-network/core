@@ -12627,6 +12627,39 @@ fn an_undo_never_returns_to_a_release_that_is_no_longer_installed() {
         m.state.apps["inst"].release.as_ref().unwrap().version,
         "1.0.1"
     );
+    // A seed sent again after the undo moved the app is not refused for a release uninstalled
+    // since: the app already runs it and waits for its restore.
+    let mut m = auto_fixture();
+    for (version, taken) in [("1.0.1", taken_on(1, 3)), ("1.0.2", taken_on(2, 7))] {
+        let mut up = classified_upgrade("cora", version, Some(green()), 50);
+        if let SystemCmd::UpgradeApp {
+            bundle,
+            restore_point,
+            ..
+        } = &mut up
+        {
+            *bundle = "b3".into();
+            *restore_point = Some(taken);
+        }
+        let _ok = m.run_unproven(up).unwrap();
+    }
+    let seeded = |release_installed| SystemCmd::UndoUpgrade {
+        app_id: "inst".into(),
+        apps: serde_json::from_value(json!({ "inst": [2, 1] })).unwrap(),
+        actor: "cora".into(),
+        at: 60,
+        consent: Value::Null,
+        release_installed,
+    };
+    let _ok = m.run_unproven(seeded(true)).unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some("1.0.1".into()),
+            actor: "pam".into(),
+        })
+        .unwrap();
+    let _ok = m.run_unproven(seeded(true)).unwrap();
     // Installed, the release is undone to as ever, flagged or not.
     let mut m = auto_fixture();
     let mut up = classified_upgrade("cora", "1.0.1", Some(green()), 50);

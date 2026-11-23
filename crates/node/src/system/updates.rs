@@ -372,10 +372,8 @@ impl SystemState {
         Ok(())
     }
 
-    /// Whether the release a restore point returns to is still installed and ships its
-    /// bundle: another release may ship the same WASM and keep the bundle after the
-    /// release itself was uninstalled. A restore point of a raw bundle names no release,
-    /// and one already undone has moved the app (a seed sent again is not refused).
+    /// Whether the release a restore point returns to is still installed and ships its bundle
+    /// (another release's WASM may keep the bundle). A raw bundle or an undo already applied passes.
     ///
     /// # Errors
     /// [`UNDO_RELEASE_GONE`].

@@ -5527,11 +5527,8 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
-        /// The release it goes back to must still be installed and ship the bundle
-        /// ([`SystemState::undo_release_installed`]). The API sets it once every node reads it
-        /// ([`cluster_version::Feature::UndoToInstalledRelease`]); absent (`false`) in an earlier
-        /// release's entry, which replays as it applied unless the logged cluster version
-        /// brings the rule.
+        /// The release it returns to must still be installed ([`SystemState::undo_release_installed`]);
+        /// set once every node reads it ([`cluster_version::Feature::UndoToInstalledRelease`]).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         release_installed: bool,
     },

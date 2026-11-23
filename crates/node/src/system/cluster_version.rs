@@ -204,10 +204,8 @@ pub enum Feature {
     /// a part's release no longer installed, approved first and applied as red. rc.34
     /// cannot decode the reason, and a node stops a group on an entry it cannot decode.
     UnclassifiedUpdates,
-    /// `UndoUpgrade { release_installed }`: an undo goes back only to a release that is still
-    /// installed and ships the bundle (`SystemState::undo_release_installed`). An earlier
-    /// release would undo to a release the developer uninstalled while another release's
-    /// WASM kept the bundle, where a later one refuses it.
+    /// `UndoUpgrade { release_installed }`: an undo goes back only to an installed release;
+    /// an earlier release would apply one to a release uninstalled under a shared bundle.
     UndoToInstalledRelease,
 }
 
