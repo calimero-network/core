@@ -89,7 +89,7 @@ Generated from core's `docs/public/openapi.json`.
 | `unlink(app, name, confirm=None)` | `DELETE /apps/{app}/links/{name}` | Detach an app attached to an app. **passkey**. *Refusals:* `404 NOT_ATTACHED`, `409 FEATURE_NOT_ACTIVE` |
 | `update(app)` | `GET /apps/{app}/update` | Whether an update is available for an app |
 | `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 OUTSIDE_DEPLOYMENT`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
-| `upgrade_unit(app, version, confirm=None)` | `POST /apps/{app}/upgrade-unit` | Upgrade an app and the apps it created, in one consent. **passkey**. *Refusals:* `400 NOT_A_UNIT`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 USES_NOT_INSTALLED` |
+| `upgrade_unit(app, version, confirm=None)` | `POST /apps/{app}/upgrade-unit` | Upgrade an app and the apps it created, in one consent. **passkey**. *Refusals:* `400 NOT_A_UNIT`, `400 NO_REGISTRY`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 OUTSIDE_DEPLOYMENT`, `409 USES_NOT_INSTALLED` |
 | `upload_abort(app, upload)` | `DELETE /apps/{app}/files/uploads/{upload}` | Abort an upload |
 | `upload_begin(app, size)` | `POST /apps/{app}/files/uploads` | Begin a file upload. *Refusals:* `429 QUOTA_EXCEEDED` |
 | `upload_complete(app, upload)` | `POST /apps/{app}/files/uploads/{upload}/complete` | Commit an upload. *Refusals:* `409 UPLOAD_INCOMPLETE` |
@@ -273,14 +273,14 @@ Generated from core's `docs/public/openapi.json`.
 | `bundle_put(body)` | `POST /bundles` | Upload a raw component. *Refusals:* `400 BAD_BUNDLE`, `400 UNSUPPORTED_BUNDLE`, `429 QUOTA_EXCEEDED` |
 | `capabilities(package, version, service=…)` | `GET /packages/{package}/{version}/capabilities` | A release's capabilities. *Refusals:* `400 NO_SUCH_SERVICE` |
 | `get(package)` | `GET /packages/{package}` | One package |
-| `install(package, version)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED` |
+| `install(package, version, org=…)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 ORG_REQUIRED`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED` |
 | `list()` | `GET /packages` | Installed packages |
 | `origins_add(package, origin, rp_id=…, served=…, confirm=None)` | `POST /package-origins/{package}` | Register a frontend origin. **passkey**. *Refusals:* `400 BAD_RP_ID`, `429 QUOTA_EXCEEDED` |
 | `origins_list(package)` | `GET /package-origins/{package}` | A package's frontend origins |
 | `origins_remove(package, origin, confirm=None)` | `DELETE /package-origins/{package}` | Remove a frontend origin. **passkey** |
 | `pipelines(package, version)` | `GET /packages/{package}/{version}/pipelines` | A release's pipelines |
 | `uninstall(package)` | `DELETE /packages/{package}` | Uninstall a package |
-| `upload(body)` | `POST /packages` | Upload a signed release. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `403 UPLOADS_DISABLED` |
+| `upload(org=…, body)` | `POST /packages` | Upload a signed release. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 ORG_REQUIRED`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `403 UPLOADS_DISABLED` |
 | `version_uninstall(package, version)` | `DELETE /packages/{package}/{version}` | Uninstall one version |
 
 ## `client.public`

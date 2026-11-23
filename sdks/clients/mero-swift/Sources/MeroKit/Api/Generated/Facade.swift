@@ -485,7 +485,7 @@ extension CalimeroClient {
 
         /// Upgrade an app and the apps it created, in one consent: `POST /apps/{app}/upgrade-unit` (`app_upgrade_unit`).
         ///
-        /// An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.
+        /// An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks. A version the caller may not use answers as one that is not installed, as `POST /apps` installs one (`404 NOT_FOUND`, `400 NO_REGISTRY`), and for an instance from a deployment anything but its offer that still serves `409 OUTSIDE_DEPLOYMENT`, before anything of it is read.
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
@@ -2345,7 +2345,7 @@ extension CalimeroClient {
 
         /// A release's capabilities: `GET /packages/{package}/{version}/capabilities` (`package_capabilities`).
         ///
-        /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+        /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads what its account does (every release of it recorded before releases were public or private). `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
@@ -2371,10 +2371,12 @@ extension CalimeroClient {
 
         /// Install a release from the registry: `POST /packages/install` (`package_install`).
         ///
+        /// For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither.
+        ///
         /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
         @discardableResult
-        public func install(package: Swift.String, version: Swift.String) async throws -> Operations.PackageInstall.Output.Ok.Body.JsonPayload {
-            let input = Operations.PackageInstall.Input(body: .json(.init(package: package, version: version)))
+        public func install(package: Swift.String, version: Swift.String, org: Swift.String? = nil) async throws -> Operations.PackageInstall.Output.Ok.Body.JsonPayload {
+            let input = Operations.PackageInstall.Input(body: .json(.init(package: package, version: version, org: org)))
             return try await client.perform { api in
                 try await api.packageInstall(input).ok.body.json
             }
@@ -2421,12 +2423,12 @@ extension CalimeroClient {
 
         /// Upload a signed release: `POST /packages` (`package_upload`).
         ///
-        /// A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`.
+        /// A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several; in none, it is private to the accounts that install it.
         ///
         /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
         @discardableResult
-        public func upload(body: Data) async throws -> Operations.PackageUpload.Output.Ok.Body.JsonPayload {
-            let input = Operations.PackageUpload.Input(body: .binary(HTTPBody(body)))
+        public func upload(body: Data, org: Swift.String? = nil) async throws -> Operations.PackageUpload.Output.Ok.Body.JsonPayload {
+            let input = Operations.PackageUpload.Input(query: .init(org: org), body: .binary(HTTPBody(body)))
             return try await client.perform { api in
                 try await api.packageUpload(input).ok.body.json
             }
