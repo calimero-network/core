@@ -134,3 +134,36 @@ export async function approve(p) {
   await p.page.waitForURL(/\.localhost:\d+\//);
   return p.page.url();
 }
+
+/**
+ * A client on the cluster's registered passkey origin (`--origins`), signed in with the real
+ * authenticator: `window.n` in the page. For what has no consent sheet (invites, public links,
+ * organization settings), which the owner's passkey approves on the API.
+ */
+export async function nodeClient(p, node = 1) {
+  const origin = 'http://localhost:3000';
+  await p.ctx.route(`${origin}/__client`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: `<!doctype html><title>client</title><body><script>${scripts()}</script></body>`,
+    }),
+  );
+  await p.page.goto(`${origin}/__client`);
+  await advanceCounter(p);
+  await p.page.evaluate(
+    async (base) => {
+      const n = new Mero.CalimeroClient({ baseUrl: base, policy: { allowMock: true } });
+      await n.signIn(Mero.browserPasskey());
+      window.n = n;
+      window.confirm1 = () => ({ confirm: Mero.passkeyConfirm(Mero.browserPasskey()) });
+    },
+    `http://localhost:${ports()[node - 1]}`,
+  );
+}
+
+/** Run `fn(arg)` in the node-origin page, with the authenticator's counter moved ahead first. */
+export async function signedCall(p, fn, arg) {
+  await advanceCounter(p);
+  return p.page.evaluate(fn, arg);
+}
