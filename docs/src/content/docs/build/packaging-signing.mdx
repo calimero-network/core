@@ -147,8 +147,11 @@ detail.
 
      Creating an instance of a release with `create` references first creates
      each of them: in the same organization, by the same owner, from the release
-     its lock pinned (else the newest installed one inside its range; a package
-     with none answers `409 USES_NOT_INSTALLED`), named `<instance>.<name>`. The
+     its lock pinned (else the newest installed one inside its range), among the
+     installed releases the creator may use and those signed by the same key as
+     the instance's own package; a package with none answers
+     `409 USES_NOT_INSTALLED`, as for a package that is not installed at all,
+     named `<instance>.<name>`. The
      instance's record names them (`links`), the create answers them, and an
      `init` that takes a `links` parameter is told their ids:
 

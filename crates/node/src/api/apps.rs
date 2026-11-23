@@ -406,6 +406,10 @@ pub(super) struct CreateAppBody {
     /// unit_offer }`). The node's own, never a client's.
     #[serde(skip)]
     unit_offer: Option<PackageRef>,
+    /// A unit's member, whose release `unit_members` chose for its creator. The node's own,
+    /// never a client's.
+    #[serde(skip)]
+    unit_member: bool,
     /// Asked by a session bound to the package's own frontend through the consent page's
     /// install sheet: it runs a release that frontend sees, as `POST /apps` from that
     /// session does. The node's own, never a client's.
@@ -447,6 +451,7 @@ pub(crate) async fn create_installed(
         metadata: Value::Null,
         deployment: i.deployment,
         unit_offer: None,
+        unit_member: false,
         from_frontend: i.from_frontend,
     };
     create_instance(node, p, owner, body, 0).await
@@ -538,7 +543,7 @@ async fn create_instance(
             // Checked above: a bound session names its own package only. A member from a
             // deployment runs the release its instance's offered release pins, whether or not
             // its owner sees it otherwise, as the instance does.
-            let via = if body.unit_offer.is_some() {
+            let via = if body.unit_offer.is_some() || body.unit_member {
                 Via::Offer
             } else if p.bound_app().is_some() || body.from_frontend {
                 Via::Frontend
@@ -616,7 +621,9 @@ async fn create_instance(
     let mut init_args = body.init_args;
     let links = match &release {
         Some(release) => {
-            let unit = unit_members(node, release).await?;
+            // A deployment's managers chose its releases; any other unit is the creator's.
+            let creator = body.deployment.is_none().then_some(owner.as_str());
+            let unit = unit_members(node, release, creator).await?;
             if unit.is_empty() {
                 BTreeMap::new()
             } else {
@@ -663,6 +670,7 @@ async fn create_instance(
                         metadata: json!({ "unit": { "of": body.name, "as": name } }),
                         deployment: body.deployment.clone(),
                         unit_offer: unit_offer.clone(),
+                        unit_member: true,
                         from_frontend: body.from_frontend,
                     };
                     let made = Box::pin(create_instance(node, p, owner.clone(), member, depth + 1))
@@ -759,11 +767,13 @@ impl Unit {
 
 /// The [`Unit`] of `release`, read from its verified manifest and embedded ABI. Each
 /// member's release is the one its lock pinned (`uses.version`), else the newest installed
-/// release of the package inside its range; a package with none is `409
-/// USES_NOT_INSTALLED`, naming what to install.
+/// release of the package inside its range, among those `creator` may use or the release's
+/// own signer published (any, for `None`); a package with none is `409 USES_NOT_INSTALLED`,
+/// naming what to install.
 pub(crate) async fn unit_members(
     node: &Node,
     release: &crate::system::PackageRef,
+    creator: Option<&str>,
 ) -> Result<Unit, ApiError> {
     let Some(version) = node.sys(|s| {
         s.packages
@@ -801,9 +811,19 @@ pub(crate) async fn unit_members(
         let range = semver::VersionReq::parse(&u.range)
             .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
         let installed: Vec<String> = node.sys(|s| {
+            let own = s.packages.get(&release.package).map(|p| &p.signer_id);
             s.packages
                 .get(&u.package)
-                .map(|p| p.versions.keys().cloned().collect())
+                .map(|p| {
+                    let same_signer = own == Some(&p.signer_id);
+                    p.versions
+                        .iter()
+                        .filter(|(_, v)| {
+                            same_signer || creator.is_none_or(|who| s.sees_release(v, who))
+                        })
+                        .map(|(k, _)| k.clone())
+                        .collect()
+                })
                 .unwrap_or_default()
         });
         let chosen = match &u.version {

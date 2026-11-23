@@ -6732,6 +6732,200 @@ async fn creating_an_instance_creates_the_apps_its_release_uses() {
     assert_eq!(got, json!("hi"));
 }
 
+/// `wasm` with a custom section named `tag`: another module that runs the same.
+fn variant(wasm: &[u8], tag: &str) -> Vec<u8> {
+    let mut out = wasm.to_vec();
+    out.push(0);
+    out.push(u8::try_from(1 + tag.len()).unwrap());
+    out.push(u8::try_from(tag.len()).unwrap());
+    out.extend_from_slice(tag.as_bytes());
+    out
+}
+
+/// A `uses` that creates `package` (0.1.x), pinned to 0.1.0 when `pinned`.
+fn creates_vault(package: &str, pinned: bool) -> Value {
+    let mut vault = json!({ "package": package, "range": "^0.1" });
+    if pinned {
+        vault["version"] = json!("0.1.0");
+    }
+    json!({ "vault": vault })
+}
+
+/// Installs `package` 0.1.0 (the fixture KV, tagged `tag`) signed by `key`, for `org`.
+async fn upload_release(
+    who: &Client,
+    org: Option<&str>,
+    package: &str,
+    key: &ed25519_dalek::SigningKey,
+    tag: &str,
+    uses: Value,
+) {
+    let _ = who
+        .packages()
+        .upload(
+            mpk_using(package, "0.1.0", &variant(&kv_wasm(), tag), key, &[], uses),
+            org,
+        )
+        .await
+        .unwrap();
+}
+
+/// A unit creates a member only from a release its creator may use (or one its own
+/// publisher signed): Bob's package, signed by Bob, that `uses` Acme's private package
+/// with `mode: create` is answered `409 USES_NOT_INSTALLED`, exactly as when Acme's package
+/// is not installed at all, and Bob ends with no instance of it. Both a range and a pinned
+/// version are refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_never_creates_a_member_from_a_private_release_its_creator_cannot_use() {
+    let acme_key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    let bob_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let _acme = new_org(&alice, "Acme").await;
+    let _bobco = new_org(&bob, "Bobco").await;
+    let vault = "com.acme.vault";
+    for (package, pinned) in [("com.bob.ranged", false), ("com.bob.pinned", true)] {
+        upload_release(
+            &bob,
+            None,
+            package,
+            &bob_key,
+            package,
+            creates_vault(vault, pinned),
+        )
+        .await;
+    }
+    let create = |package: &'static str| {
+        bob.apps()
+            .create(typed(json!({ "name": "mine", "package": package })))
+    };
+
+    let mut absent = Vec::new();
+    for package in ["com.bob.ranged", "com.bob.pinned"] {
+        let e = create(package).await.unwrap_err();
+        assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
+        assert!(e.to_string().starts_with("409"), "{e}");
+        absent.push(e.to_string());
+    }
+
+    upload_release(&alice, None, vault, &acme_key, "vault", Value::Null).await;
+    for (package, before) in ["com.bob.ranged", "com.bob.pinned"]
+        .into_iter()
+        .zip(&absent)
+    {
+        let e = create(package).await.unwrap_err();
+        assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
+        assert_eq!(
+            &e.to_string(),
+            before,
+            "a stranger must not learn it exists"
+        );
+    }
+    let mine = bob.apps().list(None, None).await.map(wire).unwrap();
+    assert!(mine["apps"].as_array().unwrap().is_empty(), "{mine}");
+    let _ok = alice
+        .apps()
+        .create(typed(json!({ "name": "acme-vault", "package": vault })))
+        .await
+        .unwrap();
+}
+
+/// The same unit, created by a member of the organization the private package was
+/// installed for, gets its member: the creator may use that release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_member_of_the_org_a_private_release_serves_gets_the_unit_member() {
+    let acme_key = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+    let other_key = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (carol, _c) = signed_up(&c, 1, "carol").await;
+    let acme = new_org(&alice, "Acme").await;
+    join_org(&alice, &mut a, &carol, &acme, "admin").await;
+    upload_release(
+        &alice,
+        None,
+        "com.acme.vault",
+        &acme_key,
+        "vault",
+        Value::Null,
+    )
+    .await;
+    upload_release(
+        &alice,
+        None,
+        "com.other.notes",
+        &other_key,
+        "notes",
+        creates_vault("com.acme.vault", false),
+    )
+    .await;
+    let made = carol
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": "com.other.notes" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let vault = made["links"]["vault"].as_str().unwrap();
+    let record = carol.apps().get(vault).await.map(wire).unwrap();
+    assert_eq!(record["release"]["package"], json!("com.acme.vault"));
+}
+
+/// A publisher composes its own packages: Bob's package, signed by the key that signed
+/// Acme's private package, gets that package as its member although Bob may not use it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_publishers_own_package_is_a_unit_member_wherever_its_other_package_runs() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[45; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let _acme = new_org(&alice, "Acme").await;
+    let _bobco = new_org(&bob, "Bobco").await;
+    upload_release(
+        &alice,
+        None,
+        "com.pub.vault",
+        &publisher,
+        "vault",
+        Value::Null,
+    )
+    .await;
+    upload_release(
+        &bob,
+        None,
+        "com.pub.notes",
+        &publisher,
+        "notes",
+        creates_vault("com.pub.vault", false),
+    )
+    .await;
+    let e = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "direct", "package": "com.pub.vault" }),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.code(),
+        Some("VERSION_REQUIRED"),
+        "Bob may not use it: {e}"
+    );
+    let made = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": "com.pub.notes" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let vault = made["links"]["vault"].as_str().unwrap();
+    let record = bob.apps().get(vault).await.map(wire).unwrap();
+    assert_eq!(record["release"]["package"], json!("com.pub.vault"));
+}
+
 /// A member names the instance that created it: `env::unit_of()` in the member's run answers
 /// the instance's id, and in the instance's own run, or an app created on its own, `None`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

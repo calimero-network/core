@@ -74,7 +74,7 @@ pub(crate) async fn release_unit(node: &Node, at: &PackageRef) -> Result<Unit, A
         if depth >= MAX_UNIT_DEPTH {
             continue;
         }
-        for (name, (package, version)) in unit_members(node, &at).await?.members {
+        for (name, (package, version)) in unit_members(node, &at, None).await?.members {
             let member = PackageRef {
                 package,
                 version,
@@ -193,7 +193,7 @@ pub(crate) async fn update(
         compute: false,
     };
     let moves = if whole_unit {
-        unit_members(node, &target).await?.members
+        unit_members(node, &target, None).await?.members
     } else {
         BTreeMap::new()
     };

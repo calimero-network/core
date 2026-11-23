@@ -961,12 +961,16 @@ is its command line.
   packaging-signing, `uses`): creating an instance of a release whose signed
   manifest has `uses` with `mode: create` first creates each referenced app
   (same organization and owner, the release its lock pinned or the newest
-  installed one in range, else `409 USES_NOT_INSTALLED`; at most
+  installed one in range that the creator may use (`sees_release`) or the
+  instance's own signer published, else `409 USES_NOT_INSTALLED`, answered as for
+  a package not installed; a deployment's units are the managers' choice and skip
+  this; at most
   `MAX_UNIT_DEPTH` deep), then records them on the instance
   (`AppRecord::links`, `Feature::AppLinks`, rc.31) and, when the release's
   `init` takes `links`, passes their ids in `initArgs` (a client's own
   `links` there is refused). A failure after a member was made leaves it in
-  place. Regression: `creating_an_instance_creates_the_apps_its_release_uses`.
+  place. Regressions: `creating_an_instance_creates_the_apps_its_release_uses`,
+  `a_unit_never_creates_a_member_from_a_private_release_its_creator_cannot_use`.
   A unit is one (`Feature::WholeUnits`, rc.32): members of an instance from a deployment
   carry its deployment (billed to its developer, its secret values), their `CreateApp`
   naming the offer of the instance's release that covers them (`unit_offer`, checked at

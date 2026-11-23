@@ -1571,7 +1571,7 @@ pub(crate) async fn unit_plan(
     if node.sys(|s| s.within_deployment(&app, Some(&target), None).is_err()) {
         return Err(crate::node::outside_deployment());
     }
-    let unit = super::apps::unit_members(node, &target).await?;
+    let unit = super::apps::unit_members(node, &target, None).await?;
     if let Some(added) = unit.members.keys().find(|n| !app.links.contains_key(*n)) {
         return Err(ApiError::conflict(&format!(
             "{}@{} creates {added}, which this instance does not have: a unit gains members only when it is created",
