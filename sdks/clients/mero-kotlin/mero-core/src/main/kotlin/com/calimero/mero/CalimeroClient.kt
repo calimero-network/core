@@ -833,16 +833,26 @@ class CalimeroClient(
         }
     }
 
-    /** End this session. */
+    /**
+     * End this session. The client is signed out whether or not the node answers (a
+     * visitor has no session to revoke, and the node refuses the route): the revoke is
+     * tried, and its failure is thrown after the credential is dropped, as in mero-js.
+     */
     suspend fun signOut() {
-        raw(defaultApi.accounts.logoutRequestConfig())
-        dropSession()
+        try {
+            raw(defaultApi.accounts.logoutRequestConfig())
+        } finally {
+            dropSession()
+        }
     }
 
-    /** End every session of the signed-in account, on every device, this one too. */
+    /** End every session of the signed-in account, on every device, this one too; signed out even when the request fails. */
     suspend fun signOutEverywhere() {
-        raw(defaultApi.accounts.logoutAllRequestConfig())
-        dropSession()
+        try {
+            raw(defaultApi.accounts.logoutAllRequestConfig())
+        } finally {
+            dropSession()
+        }
     }
 
     /** Forget the session here without telling the node (it lapses by itself). */

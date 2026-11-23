@@ -222,6 +222,19 @@ class CalimeroClientTest {
         }
 
     @Test
+    fun `signing out drops the visitor even though the node refuses to revoke it`() =
+        runBlocking {
+            // A visitor has no session, so the node refuses the logout; the client must still forget it.
+            val cluster = Cluster({ _, _ -> refused(403, "VISITOR_ONLY") })
+            val client = cluster.client()
+            client.useVisitor("pl_token", ByteArray(32) { 9 })
+            assertTrue(runCatching { client.signOut() }.isFailure)
+            val before = cluster.nodes[0].requests.size
+            runCatching { client.view("app-1", "get") }
+            assertTrue(cluster.nodes[0].requests.drop(before).all { bearer(it.first) == null })
+        }
+
+    @Test
     fun `calls an app's intents with a minted idempotency key, and views with strong consistency`() =
         runBlocking {
             val cluster = Cluster({ _, _ -> json(200, """{"index":7,"result":{"ok":true},"events":[{"kind":"Set","data":1}]}""") })

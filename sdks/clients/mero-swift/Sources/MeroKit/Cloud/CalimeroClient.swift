@@ -672,20 +672,20 @@ public actor CalimeroClient {
         }
     }
 
-    /// End this session.
+    /// End this session. The client is signed out whether or not the node
+    /// answers (a visitor has no session to revoke, and the node refuses the
+    /// route): the revoke is tried, and its failure is thrown after the
+    /// credential is dropped, as in mero-js.
     public func signOut() async throws {
+        defer { forget() }
         _ = try await auth.logout()
-        credential = nil
-        visitor = nil
-        setCurrent(nil)
     }
 
-    /// End every session of the signed-in account, on every device, this one too.
+    /// End every session of the signed-in account, on every device, this one
+    /// too; signed out even when the request fails.
     public func signOutEverywhere() async throws {
+        defer { forget() }
         _ = try await auth.logoutAll()
-        credential = nil
-        visitor = nil
-        setCurrent(nil)
     }
 
     /// Forget the credential without telling the node (it is unreachable, say).

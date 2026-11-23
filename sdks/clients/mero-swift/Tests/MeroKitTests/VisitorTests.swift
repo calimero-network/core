@@ -78,4 +78,23 @@ final class VisitorTests: XCTestCase {
         _ = try? await cloud.view("a1", "get")
         XCTAssertEqual(node.requests.last?.bearer, "cal_key")
     }
+
+    func testSigningOutDropsTheVisitorEvenWhenTheNodeRefuses() async throws {
+        // A visitor has no session, so the node refuses the logout; the client must still forget it.
+        let node = FakeCloudNode { _ in .error(403, "VISITOR_ONLY") }
+        node.install()
+        let cloud = CalimeroClient(
+            CalimeroClientOptions(
+                baseUrl: "https://node.test", policy: CloudPolicy(allowMock: true),
+                session: MockURLProtocol.makeSession(), retry: CloudRetryOptions(retries: 0)),
+            sleep: { _ in })
+        _ = try await cloud.useVisitor(link: "pl_token", seed: Data(repeating: 9, count: 32))
+        do {
+            try await cloud.signOut()
+            XCTFail("expected the node's refusal")
+        } catch {}
+        let before = node.requests.count
+        _ = try? await cloud.view("a1", "get")
+        XCTAssertTrue(node.requests.dropFirst(before).allSatisfy { $0.bearer == nil })
+    }
 }
