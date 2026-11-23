@@ -9,7 +9,7 @@ import time
 import ed25519_sign
 from rv2 import b64url
 from upgrade_deep import (DeepCase, Failed, check, decision, eq, install, join, kv_wasm, new_org, people,
-                          person, same_read, snap, subset, until)
+                          person, refused, same_read, snap, subset, until)
 from upgrade_path import case
 
 
@@ -68,8 +68,9 @@ class ReleaseVisibility(DeepCase):
     area = "Packages"
     seeds = ("kv-b 1.0.0 installed from the registry by an account whose organization holds a second member, "
              "who never installed it (a release recorded before it was public or private)")
-    verifies = ("the release from before keeps its rule: the member lists it on every node and, on the new "
-                "release, creates an instance of it; kv-c installed on the new release, which the registry serves "
+    verifies = ("the release from before keeps exactly its rule: the member lists it on every node and, on the "
+                "new release, creates an instance of it, and an account sharing no organization with its installer "
+                "does not list it on any node; kv-c installed on the new release, which the registry serves "
                 "to anyone, is public: an account in no organization lists it and creates an instance of it")
 
     def populate(self, w):
@@ -84,6 +85,8 @@ class ReleaseVisibility(DeepCase):
         p, v = s["before"]
         for n in w.members():
             check(v in json.dumps(ivo.get(f"packages/{p}", node=n)), f"ivo lists {p}@{v} on node {n}")
+            refused(("NOT_FOUND", "404"), lambda n=n: isla.get(f"packages/{p}", node=n),
+                    f"isla, in no organization of its installer, does not list {p} on node {n}")
         if s["after"]:
             p, v = s["after"]
             check(v in json.dumps(isla.get(f"packages/{p}")), f"isla lists the public {p}@{v}")
