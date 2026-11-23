@@ -289,6 +289,62 @@ class DeploymentNeedsRecovery(DeepCase):
         self.check(w, s)
 
 
+@case
+class DeploymentTransfer(DeepCase):
+    name = "deployment-transfer"
+    area = "Deployments"
+    since = "1.0.0-rc.36"
+    seeds = ("an account's deployment offering a release, with a customer's instance from it, handed to an "
+             "organization with a recovery key: offered by the account, accepted by the organization")
+    verifies = ("the organization owns it (`GET /deployments/{id}`), its offer and the customer's instance stay, the "
+                "previous owner changes nothing (`403`), and the "
+                "customer's `GET /apps/{app}/update` names the new owner and whom it came from; on the new release "
+                "the organization offers it back and cancels the offer, and a second offer waits for none")
+
+    def populate(self, w):
+        tess, uma, vik = people(w, "tess", "uma", "vik")
+        install(tess, w, "kv-o-1.0.0.mpk")
+        d = tess.raw("post", "deployments", {"name": "tess-labs", "owner": {"account": tess.id}})["id"]
+        tess.raw("post", f"deployments/{d}/apps", {"app": "kv", "package": OFFERED, "version": "1.0.0"})
+        customer = new_org(vik, "Transfer Customer Org")
+        app = vik.raw("post", "apps", {"name": "moved-1", "deployment": d, "package": OFFERED,
+                                       "org": customer})["appId"]
+        receiver = new_org(uma, "Transfer Receiver Org")
+        uma.raw("post", f"orgs/{receiver}/recovery", {"publicKey": _recovery_key(b"\x13" * 32)})
+        to = {"org": receiver}
+        tess.raw("post", f"deployments/{d}/transfer", {"to": to})
+        uma.raw("post", f"deployments/{d}/transfer/accept", {"to": to})
+        return {"deployment": d, "app": app, "receiver": receiver}
+
+    def check(self, w, s):
+        tess, uma, vik = people(w, "tess", "uma", "vik")
+        d = s["deployment"]
+        got = vik.get(f"deployments/{d}")
+        eq(got.get("owner"), {"kind": "org", "name": "Transfer Receiver Org"}, "the new owner")
+        eq([(o["app"], o["version"]) for o in got.get("apps", [])], [("kv", "1.0.0")], "the offer stays")
+        eq(vik.get(f"apps/{s['app']}").get("deployment"), d, "the customer's instance stays on it")
+        shown = vik.get(f"apps/{s['app']}/update").get("deployment") or {}
+        eq(shown.get("owner"), {"kind": "org", "name": "Transfer Receiver Org"}, "the update names the new owner")
+        eq((shown.get("transferred") or {}).get("from"), {"kind": "account", "name": "tess"},
+           "the update names whom it came from")
+        refused("FORBIDDEN", lambda: tess.raw("post", f"deployments/{d}/apps",
+                                              {"app": "kv", "package": OFFERED, "version": "1.0.0"}, approve=False),
+                "the previous owner offering in it")
+        eq([x.get("id") for x in uma.get("deployments").get("deployments", [])], [d], "the receiver manages it")
+
+    def exercise(self, w, s):
+        tess, uma = people(w, "tess", "uma")
+        d = s["deployment"]
+        uma.raw("post", f"deployments/{d}/transfer", {"to": {"account": tess.id}})
+        refused("TRANSFER_PENDING", lambda: uma.raw("post", f"deployments/{d}/transfer",
+                                                     {"to": {"account": tess.id}}, approve=False),
+                "a second offer while one waits")
+        eq([x.get("id") for x in tess.get("deployments").get("offered", [])], [d], "the offer waits for tess")
+        uma.raw("delete", f"deployments/{d}/transfer", {})
+        eq(tess.get("deployments").get("offered", []), [], "the cancelled offer")
+        self.check(w, s)
+
+
 def _operator(w, method, path, body=None):
     """An operator decision over the ops route: the node answers `428 OPERATOR_SIGNATURE_REQUIRED`
     with the bytes to sign, and the retry carries the operator key's signature over them."""

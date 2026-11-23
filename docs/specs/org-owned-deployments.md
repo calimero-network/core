@@ -1,11 +1,11 @@
 # Deployments owned by an organization: design proposal
 
-Oct 31, 2026 · Status: **largely implemented**: deployments, offers, deployer grants, the cluster
+Oct 31, 2026 · Status: **implemented**: deployments, offers, deployer grants, the cluster
 owner, `/d/{deployment}/` and per-deployment hosts, `AppRecord::deployment` and
 `GET /deployments/{id}/orgs` (phases 1 to 3; `crates/node/src/system/deployments.rs`,
-`crates/node/src/api/deployments.rs`). The consent page names the deployment, and an organization
-owns one only holding a recovery key (section 9). Decided Nov 23, 2026 and not built yet:
-transfer (section 14). Dropped: migrating
+`crates/node/src/api/deployments.rs`). The consent page names the deployment, an organization owns
+one only holding a recovery key (section 9), and a deployment changes hands by offer and
+acceptance (section 8, "Transfer"), as decided on Nov 23, 2026 (section 14). Dropped: migrating
 old installs into deployments (section 14). Phase 5 is mdma's.
 
 A developer deploys apps from Calimero Cloud: their releases are installed on a
@@ -300,14 +300,19 @@ or org on either side).
   hold a recovery key (section 9).
 - A manager of either side cancels a pending offer (`CancelDeploymentTransfer`).
   Deleting the deployment drops it.
-- The id, name, offers, secrets and customers' instances stay; only the owner
-  changes. There is no rename.
+- The id, name, offers and customers' instances stay; only the owner changes.
+  There is no rename. The previous owner's secret values are dropped: an offer the
+  new owner makes could otherwise declare a secret's name and send its value to a
+  host of its own. The new owner sets its own values.
+- An offer is accepted only while whoever made it still manages the deployment, so
+  removing that person, or recovering the organization, ends their offer.
 - The deployment records the last hand-over (`transferred: { from, at }`).
   Customers are not asked and get no email; the next update sheet of each of
   their instances, when the hand-over came after that instance's creation or last
   upgrade, carries a line naming the new owner ("acme-labs is now run by the
   organization Globex"), so they learn who now chooses their updates before they
-  approve one.
+  approve one. Until a person approves an update of the instance after the
+  hand-over, no update applies to it on its own.
 
 One change at the organization covers its whole deployment; nothing is
 rewritten per app or per deployment.

@@ -538,6 +538,25 @@ below that version replays as it applied, and an organization that already owns
 a deployment without a key is refused nothing until it creates another or would
 remove a key it later sets. An account's deployment needs no key.
 
+**Transfer**: a deployment changes hands in two steps, from any owner to any
+other. A manager of its owner offers it (`POST /deployments/{id}/transfer { to }`,
+`deployment:{id} / __offer_deployment / { to }`); one offer waits at a time
+(`409 TRANSFER_PENDING`). A manager of `to` accepts it within 7 days
+(`POST /deployments/{id}/transfer/accept { to }`, `deployment:{id} /
+__accept_deployment / { to, offeredAt }`, bound to that one offer), and only while
+whoever offered it still manages it (`409 TRANSFER_STALE`: removed, the capability
+withdrawn, or the organization recovered by another owner). The receiver needs a
+live deployer grant of its own where deployments are `granted`, a recovery key if it
+is an organization, and room for one more deployment. A manager of either side
+cancels a waiting offer (`DELETE /deployments/{id}/transfer`); `GET /deployments`
+lists offers waiting for the caller under `offered`. The id, name, offers and
+customers' instances stay; the previous owner's secret values are dropped (the new
+owner sets its own: an offer it makes could otherwise send them to a host of its
+choosing). Customers are not asked: from the hand-over, their update sheets say who
+now runs the deployment and whom it came from, until a person approves an update
+of the instance, and until then no update applies to it on its own
+(`SystemState::handed_over_unseen`). `deploymentTransfer`, 1.0.0-rc.36.
+
 **Instances**: `POST /apps { deployment, package, version?, service?, … }`
 creates an instance from the release the deployment offers for that package
 (`version`, if given, must be it), whether or not the creator sees the

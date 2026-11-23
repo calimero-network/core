@@ -286,7 +286,9 @@ Three kinds serve owner-approved updates (`consent_page/updates.rs`):
   (the policy the instance will follow, the defaults for a new organization),
   and, for an instance from a deployment, which deployment offers it (its name,
   id and owner; the upgrade sheet names it too, since its managers choose the
-  release) and who pays. A frontend asks only for its
+  release) and who pays; on the upgrade sheet, once the deployment changed hands
+  since a person last approved an update of the instance, also who now runs it and
+  whom it came from. A frontend asks only for its
   own installed package (`403` otherwise); the release must be installed
   (`409 NOT_INSTALLED`: the sheet installs nothing). Approving runs `POST /apps`'s
   own code behind an unlogged step-up over `account:<a> / __create_instance /

@@ -388,10 +388,13 @@ cluster; without it the node answers `412 CONFIRM_REQUIRED` and nothing changes.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
-| `deployment list` (`ls`) | `GET /deployments` | The deployments this account manages: its own, and those of organizations where it holds `MANAGE_APPLICATION` org-wide. |
+| `deployment list` (`ls`) | `GET /deployments` | The deployments this account manages: its own, and those of organizations where it holds `MANAGE_APPLICATION` org-wide; under `offered`, those offered to it, waiting for `deployment accept`. |
 | `deployment get DEPLOYMENT` | `GET /deployments/{id}` | Its name, its owner's kind and name, the release each app it offers runs; public, so without a session `DEPLOYMENT` is an id. |
-| `deployment create NAME --owner account\|account:ID\|org:ID [--dev-passkey FILE]` | `POST /deployments` | Create one owned by this account (`account`), or by an organization where it holds `MANAGE_APPLICATION`. Answers its `id` and frontend `host`. |
+| `deployment create NAME --owner account\|account:ID\|org:ID [--dev-passkey FILE]` | `POST /deployments` | Create one owned by this account (`account`), or by an organization where it holds `MANAGE_APPLICATION` and which holds a recovery key (`409 RECOVERY_KEY_REQUIRED` otherwise). Answers its `id` and frontend `host`. |
 | `deployment delete DEPLOYMENT [--dev-passkey FILE]` (`rm`) | `DELETE /deployments/{id}` | Delete one that offers nothing. |
+| `deployment transfer DEPLOYMENT --to account:ID\|org:ID [--dev-passkey FILE]` | `POST /deployments/{id}/transfer` | Offer it to another owner, who accepts within 7 days. One offer waits at a time. |
+| `deployment accept ID --to account\|account:ID\|org:ID [--dev-passkey FILE]` | `POST /deployments/{id}/transfer/accept` | Accept a deployment offered to this account or to an organization where it holds `MANAGE_APPLICATION` (with a recovery key and a deployer grant of its own). The previous owner's secret values are dropped. |
+| `deployment cancel-transfer DEPLOYMENT [--dev-passkey FILE]` | `DELETE /deployments/{id}/transfer` | Drop the waiting offer, from either side. |
 | `deployment offer DEPLOYMENT APP VERSION [--package P] [--dev-passkey FILE]` | `POST /deployments/{id}/apps` | Offer an installed release under the app name `APP` (`meroctl app release` installs it): new instances get it, and the instances made from the deployment are offered it as their update, which each owner approves. `--package` is required for an app the deployment does not offer yet; after that it defaults to the one it offers. |
 | `deployment withdraw DEPLOYMENT APP [--dev-passkey FILE]` | `DELETE /deployments/{id}/apps/{app}` | Stop offering an app; refused while an instance made from the deployment runs it. |
 | `deployment secret list DEPLOYMENT` (`ls`) | `GET /deployments/{id}/secrets` | Each secret its offered releases (or the releases they `use`) declare, or it holds: `set`, and when set its `fingerprint`, `setBy` and `setAt`. Never a value. |

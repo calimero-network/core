@@ -482,8 +482,25 @@ is its command line.
   and later tries to remove it. Regressions:
   `an_organization_owns_a_deployment_only_with_a_recovery_key`,
   `an_organization_deploys_only_holding_a_recovery_key`.
-  Decided, not built: transfer (the spec's section 14); the migration of old
-  installs is dropped. Regressions:
+  Transfer (`Feature::DeploymentTransfer`, rc.36; `Deployment::transfer`,
+  `transferred`, `PendingTransfer`, `TRANSFER_TTL_SECS`): `OfferDeployment`
+  (a manager; `__offer_deployment / { to }`; one live offer, `TRANSFER_PENDING`),
+  `AcceptDeployment { offered_at }` (a manager of `to`; `__accept_deployment / { to,
+  offeredAt }`; the offerer still `acts_for` the owner, else `TRANSFER_STALE`; live
+  at `at`; `SystemState::granted(to)`; `keeps_recoverable(to, true)`; the owner quota;
+  drops `deployment_secrets` and records `transferred`), `CancelDeploymentTransfer`
+  (a manager of either side). Routes `POST|DELETE /deployments/{id}/transfer`,
+  `POST /deployments/{id}/transfer/accept`, `GET /deployments`' `offered`;
+  `meroctl deployment transfer|accept|cancel-transfer`. `deployment_shown` adds
+  `transferred`; `SystemState::handed_over_unseen` (a hand-over at or after the
+  instance's creation or a person's successful upgrade) puts
+  `consent_page::taken_over`'s line on the upgrade sheet and refuses automatic updates
+  (`auto_update_allows`). Regressions:
+  `a_deployment_changes_hands_when_its_receiver_accepts` (`system::tests` and
+  `tests/deployments.rs`),
+  `a_new_owner_reaches_its_customers_on_a_sheet_before_any_update_applies_alone`,
+  `a_customer_accepts_its_deployments_offer_on_the_page`.
+  The migration of old installs is dropped (the spec's section 14). Regressions:
   `tests/deployments.rs`, `deployments_are_their_managers_and_keep_what_they_offer`,
   `deployment_changes_carry_their_managers_consent`,
   `state_from_before_deployments_reads_with_none_and_writes_as_before`,
