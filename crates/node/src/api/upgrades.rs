@@ -371,7 +371,9 @@ pub(crate) async fn upgrade_app(
     // same version and WASM pass for the one approved.
     let manifest = crate::consent_page::target_manifest_hash(
         node,
-        package.as_deref().zip(body.version.as_deref()),
+        release
+            .as_ref()
+            .map(|r| (r.package.as_str(), r.version.as_str())),
         &bundle,
     )
     .await?;
@@ -847,7 +849,7 @@ fn run_targets(
 
 /// Where `version` of the package moves an app (same service): its bundle, that
 /// release's compute component and the release, if installed and the upgrader
-/// may see it ([`upgrade_sees`]).
+/// may use it ([`upgrade_release`]).
 fn target_bundle(
     node: &Node,
     app: &crate::types::AppRecord,
@@ -857,7 +859,6 @@ fn target_bundle(
     let r = node.release_of_app(app)?;
     let service = r.at.service.clone().unwrap_or_default();
     node.sys(|s| {
-        let v = s.packages.get(&r.at.package)?.versions.get(version)?;
         let release = PackageRef {
             package: r.at.package.clone(),
             version: version.to_owned(),
@@ -868,12 +869,9 @@ fn target_bundle(
         // its owner sees: a move that stays on the deployment (its offer that still
         // serves, or a unit member's own package) needs no visibility of the release, as
         // creating from the offer needs none; any other move does.
-        let on_deployment = app.deployment.is_some()
-            && s.within_deployment(app, Some(&release), who.run.as_deref())
-                .is_ok();
-        if !on_deployment && !upgrade_sees(s, v, app, &who.actor, who.by_operator) {
-            return None;
-        }
+        let v = s
+            .release_offered_to(app, &release, who.run.as_deref())
+            .or_else(|| upgrade_release(s, &release, app, &who.actor, who.by_operator))?;
         let bundle = v.app_parts().get(&service).cloned()?;
         Some(Target {
             bundle,
@@ -883,20 +881,21 @@ fn target_bundle(
     })
 }
 
-/// Whether an upgrade may move `app` to release `v`: one the upgrading
-/// account may see, or, for the operator, one it installed or one the app's
-/// owner may see. A release of another organization never reaches an app.
-fn upgrade_sees(
-    s: &SystemState,
-    v: &crate::system::PackageVersion,
+/// The release `to` an upgrade may move `app` to: one the upgrading account may use, or,
+/// for the operator, one it installed or one the app's owner may use. A release of
+/// another organization never reaches an app.
+fn upgrade_release<'s>(
+    s: &'s SystemState,
+    to: &PackageRef,
     app: &crate::types::AppRecord,
     actor: &str,
     by_operator: bool,
-) -> bool {
+) -> Option<&'s crate::system::PackageVersion> {
     if by_operator {
-        s.sees_release(v, crate::system::OPERATOR) || s.sees_release(v, &app.owner)
+        s.release_used(&to.package, &to.version, crate::system::OPERATOR)
+            .or_else(|| s.release_used(&to.package, &to.version, &app.owner))
     } else {
-        s.sees_release(v, actor)
+        s.release_used(&to.package, &to.version, actor)
     }
 }
 
@@ -1422,23 +1421,18 @@ async fn ops_upgrade(
                 .or_else(|| current.as_ref().and_then(|r| r.at.service.clone()))
                 .unwrap_or_default();
             node.sys(|s| {
-                s.packages
-                    .get(&package)
-                    .and_then(|p| p.versions.get(&version))
-                    .filter(|v| upgrade_sees(s, v, &app, crate::system::OPERATOR, true))
-                    .and_then(|v| {
-                        let bundle = v.app_parts().get(&service).cloned()?;
-                        Some(Target {
-                            bundle,
-                            compute_bundle: v.compute.get(&service).cloned(),
-                            release: Some(PackageRef {
-                                package: package.clone(),
-                                version: version.clone(),
-                                service: (!service.is_empty()).then(|| service.clone()),
-                                compute: false,
-                            }),
-                        })
-                    })
+                let release = PackageRef {
+                    package: package.clone(),
+                    version: version.clone(),
+                    service: (!service.is_empty()).then(|| service.clone()),
+                    compute: false,
+                };
+                let v = upgrade_release(s, &release, &app, crate::system::OPERATOR, true)?;
+                Some(Target {
+                    bundle: v.app_parts().get(&service).cloned()?,
+                    compute_bundle: v.compute.get(&service).cloned(),
+                    release: Some(release),
+                })
             })
             .ok_or_else(|| {
                 ApiError::new(
@@ -1557,11 +1551,14 @@ pub(crate) async fn unit_plan(
         service: current.at.service.clone(),
         compute: false,
     };
-    // Nothing of a target the account may not use is read: it answers as a missing release.
-    // An instance from a deployment takes its offer that still serves, used or not.
-    if !node
-        .sys(|s| app.deployment.is_some() && s.within_deployment(&app, Some(&target), None).is_ok())
-    {
+    // Before anything of the target is read, or a passkey asked for: a unit from a
+    // deployment moves only to its offer that still serves, as one app's upgrade does; any
+    // other only to a release the account may use, else answered as a missing one.
+    if app.deployment.is_some() {
+        if node.sys(|s| s.release_offered_to(&app, &target, None).is_none()) {
+            return Err(crate::node::outside_deployment());
+        }
+    } else {
         let _bundle = node
             .resolve_release(
                 &target.package,
@@ -1571,11 +1568,6 @@ pub(crate) async fn unit_plan(
                 Via::Account,
             )
             .await?;
-    }
-    // A unit from a deployment moves only to the release its developer offers:
-    // refused here, before any passkey is asked for, as one app's upgrade is.
-    if node.sys(|s| s.within_deployment(&app, Some(&target), None).is_err()) {
-        return Err(crate::node::outside_deployment());
     }
     let unit =
         super::apps::unit_members(node, &target, &app.owner, app.deployment.as_deref()).await?;

@@ -9926,7 +9926,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Upgrade an app and the apps it created, in one consent",
-        "description": "An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks. A version the caller may not use answers as one that is not installed, as `POST /apps` installs one (`404 NOT_FOUND`, `400 NO_REGISTRY`), and for an instance from a deployment anything but its offer that still serves `409 OUTSIDE_DEPLOYMENT`, before anything of it is read.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -9979,7 +9979,7 @@
             }
           },
           "400": {
-            "description": "`EXPIRED_CHALLENGE`; `NOT_A_UNIT`; `UNKNOWN_CHALLENGE`",
+            "description": "`EXPIRED_CHALLENGE`; `NOT_A_UNIT`; `NO_REGISTRY`; `UNKNOWN_CHALLENGE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -9990,6 +9990,7 @@
             "x-calimero-codes": [
               "EXPIRED_CHALLENGE",
               "NOT_A_UNIT",
+              "NO_REGISTRY",
               "UNKNOWN_CHALLENGE"
             ]
           },
@@ -10019,8 +10020,21 @@
               "FORBIDDEN"
             ]
           },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
           "409": {
-            "description": "`CONFLICT`: the state does not allow it now; `FEATURE_NOT_ACTIVE`; `USES_NOT_INSTALLED`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "description": "`CONFLICT`: the state does not allow it now; `FEATURE_NOT_ACTIVE`; `OUTSIDE_DEPLOYMENT`; `USES_NOT_INSTALLED`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10031,6 +10045,7 @@
             "x-calimero-codes": [
               "CONFLICT",
               "FEATURE_NOT_ACTIVE",
+              "OUTSIDE_DEPLOYMENT",
               "USES_NOT_INSTALLED"
             ],
             "x-calimero-details": {

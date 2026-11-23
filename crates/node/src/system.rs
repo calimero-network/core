@@ -2085,8 +2085,35 @@ impl SystemState {
             .is_some_and(|r| r >= OrgRole::Member)
     }
 
-    /// `package@version` if `who` may use it ([`Self::sees_release`]); for anyone else, as
-    /// if not installed. A route reads a release a client names through this or its kin.
+    // The lookups below are how a route reads a release a client names; anything else
+    // answers as if it were not installed (`tests/release_lookups.rs`).
+
+    /// The releases of `package` that `who` may use ([`Self::sees_release`]); `frontend`: a
+    /// session bound to the package's frontend ([`Self::sees_release_from`]).
+    pub fn releases_used<'a>(
+        &'a self,
+        package: &str,
+        who: &'a str,
+        frontend: bool,
+    ) -> impl Iterator<Item = &'a PackageVersion> + 'a {
+        self.packages
+            .get(package)
+            .into_iter()
+            .flat_map(|p| p.versions.values())
+            .filter(move |v| self.sees_release_from(v, who, frontend))
+    }
+
+    /// `package` if `who` may use one of its releases ([`Self::releases_used`]).
+    #[must_use]
+    pub fn package_used(&self, package: &str, who: &str, frontend: bool) -> Option<&PackageRecord> {
+        let p = self.packages.get(package)?;
+        p.versions
+            .values()
+            .any(|v| self.sees_release_from(v, who, frontend))
+            .then_some(p)
+    }
+
+    /// `package@version` if `who` may use it ([`Self::sees_release`]).
     #[must_use]
     pub fn release_used(&self, package: &str, version: &str, who: &str) -> Option<&PackageVersion> {
         self.packages
@@ -2096,15 +2123,37 @@ impl SystemState {
             .filter(|v| self.sees_release(v, who))
     }
 
-    /// The releases of `p` that `who` may see ([`Self::sees_release`]).
-    pub fn visible_versions<'a>(
-        &'a self,
-        p: &'a PackageRecord,
-        who: &'a str,
-    ) -> impl Iterator<Item = &'a PackageVersion> + 'a {
-        p.versions
-            .values()
-            .filter(move |v| self.sees_release(v, who))
+    /// The newest release of `package` that `who` may use.
+    #[must_use]
+    pub fn newest_used(&self, package: &str, who: &str) -> Option<&PackageVersion> {
+        self.packages
+            .get(package)?
+            .latest_where(|v| self.sees_release(v, who))
+    }
+
+    /// The newest release of `package` whose facts `who` reads ([`Self::reads_release`]); a
+    /// session bound to its frontend (`frontend`) also every release recorded before
+    /// `visibility`.
+    #[must_use]
+    pub fn newest_read(&self, package: &str, who: &str, frontend: bool) -> Option<&PackageVersion> {
+        self.packages
+            .get(package)?
+            .latest_where(|v| (frontend && v.visibility.is_none()) || self.reads_release(v, who))
+    }
+
+    /// `to`, for an instance `app` from a deployment, when the move stays on that deployment
+    /// ([`Self::within_deployment`]: its offer that still serves, or a unit member's target in
+    /// `run`), whether or not its owner may use the release otherwise.
+    #[must_use]
+    pub fn release_offered_to(
+        &self,
+        app: &AppRecord,
+        to: &PackageRef,
+        run: Option<&str>,
+    ) -> Option<&PackageVersion> {
+        app.deployment.as_ref()?;
+        self.within_deployment(app, Some(to), run).ok()?;
+        self.packages.get(&to.package)?.versions.get(&to.version)
     }
 
     /// Whether a WASM of `release`, to be installed under `package` signed by

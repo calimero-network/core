@@ -9968,7 +9968,7 @@ async fn finished_run(who: &Client, org: &str, run: &str) -> Value {
 /// private V 0.1.0 and the unit N 0.1.0 in his own deployment, Bob creates an instance of
 /// each, Mal moves both offers to 0.2.0, and Alice removes Mal from Acme. Neither Bob's
 /// organization run nor his unit's upgrade then takes an instance to 0.2.0, which his unit
-/// is answered as a version that does not exist.
+/// is answered as a version his deployment does not offer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_offer_that_no_longer_serves_moves_no_instance() {
     let key = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
@@ -10061,6 +10061,7 @@ async fn an_offer_that_no_longer_serves_moves_no_instance() {
         .upgrade_unit(&instance, "0.9.0", Some(&mut b))
         .await
         .unwrap_err();
+    assert_eq!(stale.code(), Some("OUTSIDE_DEPLOYMENT"), "{stale}");
     assert_eq!(stale.to_string(), missing.to_string());
     for app in [&single, &instance] {
         let r = bob.apps().get(app).await.map(wire).unwrap();

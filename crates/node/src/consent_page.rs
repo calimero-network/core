@@ -1130,12 +1130,7 @@ async fn manifest_origins(
     account: &str,
     package: &str,
 ) -> Result<BTreeSet<String>, ApiError> {
-    let Some(latest) = node.sys(|s| {
-        s.packages
-            .get(package)?
-            .latest_where(|v| s.reads_release(v, account))
-            .cloned()
-    }) else {
+    let Some(latest) = node.sys(|s| s.newest_read(package, account, false).cloned()) else {
         return Ok(BTreeSet::new());
     };
     let facts = release_facts(node, package, &latest).await?;
@@ -1354,12 +1349,7 @@ async fn package_names(
     account: &str,
     package: &str,
 ) -> (Option<String>, Option<String>) {
-    let Some(latest) = node.sys(|s| {
-        s.packages
-            .get(package)?
-            .latest_where(|v| s.reads_release(v, account))
-            .cloned()
-    }) else {
+    let Some(latest) = node.sys(|s| s.newest_read(package, account, false).cloned()) else {
         return (None, None);
     };
     match release_facts(node, package, &latest).await {
@@ -2480,10 +2470,7 @@ fn outbound_release<'s>(
     account: &str,
     bound: Option<&str>,
 ) -> Option<&'s crate::system::PackageVersion> {
-    let frontend = bound == Some(package);
-    s.packages
-        .get(package)?
-        .latest_where(|v| s.sees_release_from(v, account, frontend) || s.reads_release(v, account))
+    s.newest_read(package, account, bound == Some(package))
 }
 
 async fn outbound_request(
@@ -2652,10 +2639,7 @@ async fn org_app_team(
 ) -> Option<(String, String)> {
     let package = package?;
     let name = node.sys(|s| {
-        let newest = s
-            .packages
-            .get(package)?
-            .latest_where(|v| s.sees_release(v, account))?;
+        let newest = s.newest_used(package, account)?;
         Some(
             newest
                 .metadata

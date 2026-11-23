@@ -608,7 +608,8 @@ runs it). Records from before deployments are not moved into one.
   owner's kind and name, and the apps it offers with their releases. Never its managers or customers.
 - `GET /deployments/{id}/orgs`: for its managers, on fresh state: each
   organization with instances created from it, with its id and name, how many,
-  which of the deployment's apps and the releases they run, and when the
+  which of the deployment's apps and the releases they run (as each instance's
+  record names them, never a release found by its WASM), and when the
   first was created, and `memberCount` and `activeMembers30d` (members whose
   last sign-in or session exchange is within 30 days). Never who the members
   are, teams, instance names or app data; instances in a personal

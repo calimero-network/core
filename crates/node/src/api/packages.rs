@@ -129,11 +129,8 @@ fn package_json(
     who: &str,
     frontend: bool,
 ) -> Option<Value> {
-    let mut versions: Vec<&crate::system::PackageVersion> = p
-        .versions
-        .values()
-        .filter(|v| s.sees_release_from(v, who, frontend))
-        .collect();
+    let mut versions: Vec<&crate::system::PackageVersion> =
+        s.releases_used(&p.name, who, frontend).collect();
     if versions.is_empty() {
         return None;
     }
@@ -189,9 +186,16 @@ async fn package_get(
     let account = principal.account()?;
     let frontend = principal.bound_app() == Some(package.as_str());
     node.sys_fresh_from(principal.sys_index).await;
-    node.sys(|s| package_json(s, s.packages.get(&package)?, &account, frontend))
-        .map(Json)
-        .ok_or_else(|| ApiError::not_found("no such package"))
+    node.sys(|s| {
+        package_json(
+            s,
+            s.package_used(&package, &account, frontend)?,
+            &account,
+            frontend,
+        )
+    })
+    .map(Json)
+    .ok_or_else(|| ApiError::not_found("no such package"))
 }
 
 /// A release's registered pipelines: name to hash, worst-case fuel and canonical JSON.
@@ -206,9 +210,9 @@ async fn package_pipelines(
     node.sys_fresh_from(principal.sys_index).await;
     let refs = node
         .sys(|s| {
-            let v = s.packages.get(&package)?.versions.get(&version)?;
-            s.sees_release_from(v, &account, frontend)
-                .then(|| v.pipelines.clone())
+            s.releases_used(&package, &account, frontend)
+                .find(|v| v.version == version)
+                .map(|v| v.pipelines.clone())
         })
         .ok_or_else(|| ApiError::not_found("no such package version"))?;
     Ok(Json(node.release_pipelines(&refs).await?))
@@ -243,9 +247,9 @@ async fn package_capabilities(
     node.sys_fresh_from(principal.sys_index).await;
     let release = node
         .sys(|s| {
-            let v = s.packages.get(&package)?.versions.get(&version)?;
-            s.sees_release_from(v, &account, frontend)
-                .then(|| v.clone())
+            s.releases_used(&package, &account, frontend)
+                .find(|v| v.version == version)
+                .cloned()
         })
         .ok_or_else(|| ApiError::not_found("no such package version"))?;
     let mut card =
@@ -285,16 +289,11 @@ async fn refuse_unusable(
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let refusal = node.sys(|s| {
-        let Some(pkg) = s.packages.get(package) else {
-            return Some("no such package");
-        };
-        let usable = |v: &crate::system::PackageVersion| s.sees_release(v, &account);
-        if !pkg.versions.values().any(usable) {
+        if s.package_used(package, &account, false).is_none() {
             return Some("no such package");
         }
         version
-            .and_then(|v| pkg.versions.get(v))
-            .is_some_and(|v| !usable(v))
+            .is_some_and(|v| s.release_used(package, v, &account).is_none())
             .then_some("no such version")
     });
     match refusal {

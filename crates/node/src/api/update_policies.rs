@@ -206,21 +206,21 @@ pub(crate) async fn approve_upgrade(
         service: running.service.clone(),
         compute: false,
     };
-    // Before the passkey, a release the approver may not use answers as a missing one; an
-    // instance from a deployment names its offer, though its owner may not use it otherwise.
-    if !node.sys(|s| {
+    // Before the passkey: an instance from a deployment names only its offer that still
+    // serves; any other a release the approver may use, else answered as a missing one.
+    if app.deployment.is_some() {
+        if node.sys(|s| s.release_offered_to(app, &target, None).is_none()) {
+            return Err(crate::node::outside_deployment());
+        }
+    } else if node.sys(|s| {
         s.release_used(&target.package, &target.version, &actor)
-            .is_some()
-            || (app.deployment.is_some() && s.within_deployment(app, Some(&target), None).is_ok())
+            .is_none()
     }) {
         return Err(ApiError::new(
             409,
             "NOT_INSTALLED",
             &format!("{} {} is not installed", target.package, target.version),
         ));
-    }
-    if node.sys(|s| s.within_deployment(app, Some(&target), None).is_err()) {
-        return Err(crate::node::outside_deployment());
     }
     let targets = if unit {
         super::upgrades::unit_plan(node, &actor, &app.app_id, &target.version)

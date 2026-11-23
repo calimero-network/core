@@ -142,12 +142,7 @@ pub(crate) async fn set_outbound_approval(
     // Apply approves the prefixes of the newest release the caller reads: with none, it is
     // answered before the passkey, as for a package that is not installed.
     node.sys_fresh_from(p.sys_index).await;
-    if !node.sys(|s| {
-        s.packages
-            .get(&body.package)
-            .and_then(|r| r.latest_where(|v| s.reads_release(v, &account)))
-            .is_some()
-    }) {
+    if node.sys(|s| s.newest_read(&body.package, &account, false).is_none()) {
         return Err(ApiError::not_found("no such package"));
     }
     let subject = match &scope {

@@ -410,11 +410,8 @@ pub(super) async fn install_request(
         None => {
             let version = node
                 .sys(|s| {
-                    let p = s.packages.get(&package)?;
-                    p.versions
-                        .values()
+                    s.releases_used(&package, account, frontend)
                         .filter(|v| subject.version.as_ref().is_none_or(|w| &v.version == w))
-                        .filter(|v| s.sees_release_from(v, account, frontend))
                         .max_by(|a, b| crate::system::compare_versions(&a.version, &b.version))
                         .map(|v| v.version.clone())
                 })

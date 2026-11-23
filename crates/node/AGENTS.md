@@ -393,7 +393,14 @@ is its command line.
   private, so `GET /apps/{app}/update`'s `running` and the reports never name a private
   sibling to one who only reaches it: regressions
   `reaching_an_app_by_its_bundle_never_names_a_private_sibling`, `report::tests` and
-  `tests/cluster.rs`). For
+  `tests/cluster.rs`). A route
+  (`src/api`, `src/consent_page`) reads a release a client names only through
+  `SystemState`'s lookups: `release_used`, `releases_used` (with a bound session's
+  `frontend`), `package_used`, `newest_used` (use), `newest_read` (read) and
+  `release_offered_to` (a deployment's offer that still serves); the gate
+  `tests/release_lookups.rs` (`routes_read_releases_through_the_rule`) fails on any other
+  read of `packages` or `versions` there unless its `READS_ALLOWED` names the line and why
+  no client names that release. For
   anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages`
   leave it out (`404` by name), `resolve_release` treats it as missing (a
   registry install makes it theirs; an upload answers as a missing release), a
@@ -1067,9 +1074,10 @@ is its command line.
   (`UpgradeRun::target_of`). A member upgraded alone off its instance's range
   is refused at the API (`refuse_off_unit_range`, `409 OUTSIDE_UNIT_RANGE`).
   Regression: `a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range`.
-  `unit_plan` reads nothing of a target its account may not use (for an instance from a
-  deployment, other than the offer that still serves it): it answers as `resolve_release`
-  answers a missing release, before any member, target or passkey (regression
+  `unit_plan` reads nothing of a target its account may not use: it answers as
+  `resolve_release` answers a missing release (for an instance from a deployment, anything
+  but its offer that still serves is `409 OUTSIDE_DEPLOYMENT`), before any member, target
+  or passkey (regression
   `a_unit_upgrade_answers_a_release_its_owner_may_not_use_as_a_missing_one`).
   The consent page's `upgradeUnit { app, toVersion }` (`unit_upgrade_request`)
   builds one model from `api::unit_plan` and each app's `upgrade_request` sheet
@@ -1472,8 +1480,9 @@ is its command line.
   (`StartUpgradeRun` drops any other run's, whatever the entry lists), and its members are
   the instance's `links` (`upgrade_run_apps`). `POST /apps/{app}/upgrade-approvals` answers `approval` in the
   `pendingApprovals` shape (`api::upgrades::approval_json`). A target the approver may not
-  use (`SystemState::release_used`; for an instance from a deployment, its offer that still
-  serves) answers `409 NOT_INSTALLED` as a missing version, before the passkey, and
+  use (`SystemState::release_used`) answers `409 NOT_INSTALLED` as a missing version, and
+  for an instance from a deployment anything but its offer that still serves
+  (`release_offered_to`) `409 OUTSIDE_DEPLOYMENT`, before the passkey, and
   `ApproveUpgrade` refuses it at apply once the logged cluster version brings
   `Feature::PrivateReleases` (regressions
   `a_first_approval_answers_a_release_its_approver_may_not_use_as_a_missing_one`,

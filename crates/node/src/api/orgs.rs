@@ -1416,12 +1416,10 @@ async fn app_teams_scope(
     // Before the passkey, as apply answers it: a package the actor may not use is missing.
     node.sys_fresh_from(p.sys_index).await;
     let unusable = node.sys(|s| {
-        body.apps.iter().flatten().any(|a| {
-            s.packages
-                .get(&a.package)
-                .and_then(|r| r.latest_where(|v| s.sees_release(v, &actor)))
-                .is_none()
-        })
+        body.apps
+            .iter()
+            .flatten()
+            .any(|a| s.package_used(&a.package, &actor, false).is_none())
     });
     if unusable {
         return Err(crate::node::rejected("no such package"));
