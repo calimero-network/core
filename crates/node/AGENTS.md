@@ -1323,9 +1323,11 @@ is its command line.
   `removed`), `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
   unit's moves its direct members as `unit_plan` does. The class decides how it applies:
   under `secondApprover` a red one takes two approvers (C8), under `noDestinations` a
-  green one of a unit with no destination before or after applies on its own (C9).
+  green one of a unit with no destination before or after applies on its own, moving the app alone (C9).
   Regressions: `a_units_destinations_are_judged_over_its_members`
-  (`tests/consent_page.rs`), `calimero_bundle::update::tests`.
+  (`tests/consent_page.rs`), `calimero_bundle::update::tests`,
+  `an_update_whose_members_differ_applies_on_its_own_and_moves_the_instance_alone`
+  (`tests/auto_updates.rs`).
 - **Update classes and policies** (C8; `system/updates.rs`, `api/update_policies.rs`;
   docs: protocol upgrades "The class at apply", "Update policies"): every `UpgradeApp`
   the API writes carries `class` (`types::UpgradeClass`: `egress::update` of that app's
