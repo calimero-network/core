@@ -473,7 +473,7 @@ is its command line.
   An organization owns a deployment only holding a recovery key:
   `CreateDeployment` for one without, and `SetRecoveryKey { None }` while it
   owns one, are `RECOVERY_KEY_REQUIRED` (`409`, refused at the API before the
-  passkey; `SystemState::keeps_recoverable`, `recovery_rule`) when the entry's
+  passkey; `SystemState::keeps_recoverable`, `may_remove_recovery`, `recovery_rule`) when the entry's
   `deployment_needs_recovery` flag is set or the logged version brings
   `Feature::DeploymentNeedsRecovery` (rc.36); earlier entries replay as they
   applied; rotating is allowed, an account's deployment needs none. A deployment an

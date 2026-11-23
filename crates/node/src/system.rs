@@ -2491,6 +2491,14 @@ impl SystemState {
         !self.recovery_rule(flag) || self.orgs.get(o).is_some_and(|o| o.recovery.is_some())
     }
 
+    /// Whether `org`'s recovery key may be removed under the recovery rule (`flag` as in
+    /// [`Self::recovery_rule`]): not while it owns a deployment.
+    #[must_use]
+    pub fn may_remove_recovery(&self, org: &str, flag: bool) -> bool {
+        let owner = Deployer::Org(org.to_owned());
+        !self.recovery_rule(flag) || !self.deployments.values().any(|d| d.owner == owner)
+    }
+
     /// `owner`'s kind (`account` or `org`) and its name, `None` once it is gone.
     #[must_use]
     pub fn deployer_named(&self, owner: &Deployer) -> (&'static str, Option<String>) {
