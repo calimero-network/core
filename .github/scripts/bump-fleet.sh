@@ -5,6 +5,7 @@
 #
 #   bump-fleet.sh --surface cargo --version 0.11.0-rc.26 --dir ../apps --no-lock --dry-run
 #   bump-fleet.sh --surface npm --pkg @calimero-network/mero-ui=1.5.1 --dir ../mero-meet --no-lock --dry-run
+#   bump-fleet.sh --surface mobile --version 1.0.0-rc.36 --dir ../apps --dry-run
 #
 # Fixture tests, no runner or network needed:
 #
@@ -54,7 +55,7 @@ record_change() {
 }
 
 usage() {
-  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
   exit 1
 }
 
@@ -73,7 +74,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$SURFACE" ] || die "--surface is required (cargo|npm|tee)"
+[ -n "$SURFACE" ] || die "--surface is required (cargo|npm|tee|mobile)"
 [ -n "$DIR" ] || die "--dir is required"
 [ -d "$DIR" ] || die "--dir '$DIR' is not a directory"
 
@@ -1680,6 +1681,243 @@ EOF
   done
 }
 
+# ---------------------------------------------------------------------------
+# mobile
+# ---------------------------------------------------------------------------
+#
+# The native apps take the SDKs core publishes with each release: Swift from
+# this repository's tag (the root Package.swift), Kotlin from Maven Central as
+# network.calimero:mero-kotlin(-compose,-testkit). Four kinds of file hold the
+# version, and they are found by what they pin, not by where they sit:
+#
+#   project.yml        XcodeGen: a `packages:` entry whose url is core, with
+#                      `exactVersion: <ver>`
+#   Package.swift      .package(url: ".../core", exact: "<ver>"), one line or
+#                      several
+#   Package.resolved   the pin whose location is core: its `revision` is the
+#                      tag's commit and its `version` the tag. It follows the
+#                      Package.swift beside it, so a held manifest keeps its pin
+#   libs.versions.toml the [versions] key that the mero-kotlin entries'
+#                      `version.ref` names (or an inline `version`)
+#
+# A pin pointing anywhere else (the archived swift-sdk, a fork) is not this
+# release's to move and is left alone. `fleet-bump: hold` on a line keeps it,
+# behind `#` or `//`, as the npm catalog's hold does.
+#
+# Package.resolved may carry an `originHash` (format 3): a hash of the
+# manifest's requirements, which the new `exact:` no longer matches. SwiftPM
+# treats a missing hash as "resolve and check the pins", so the line is
+# dropped rather than left stale; the next resolve writes it back.
+
+CORE_GIT_RE='https://github\.com/calimero-network/core(?:\.git)?'
+MOBILE_HOLD_RE='(?:#|//)\s*fleet-bump:\s*hold\b'
+
+mobile_files() {
+  ( cd "$DIR" && find . \( -name .git -o -name node_modules -o -name .build \
+      -o -name build -o -name DerivedData -o -name .sdk -o -name .gradle \) -prune \
+      -o -type f \( -name project.yml -o -name Package.swift \
+      -o -name Package.resolved -o -name libs.versions.toml \) -print ) \
+    | sed 's|^\./||' | sort
+}
+
+# One pass over one file. Prints `<line>\t<current>\t<hold|>` for every core
+# pin it recognises and, with WRITE=1, rewrites the unheld ones to $NEW in
+# place. For Package.resolved, REV is the commit and FOLLOW the version the
+# sibling manifest asks for (empty: none beside it, so the release's).
+mobile_scan() {
+  local kind="$1" f="$2"
+  KIND="$kind" CORE="$CORE_GIT_RE" HOLD="$MOBILE_HOLD_RE" perl -e '
+    my ($kind, $core, $hold) = @ENV{qw(KIND CORE HOLD)};
+    my ($new, $rev, $write) = ($ENV{NEW} // "", $ENV{REV} // "", $ENV{WRITE} // 0);
+    my $f = shift; local $/; open my $fh, "<", $f or die "$f: $!"; my $s = <$fh>; close $fh;
+    my @out; my $o = $s;
+    my $lineof = sub { 1 + (substr($s, 0, $_[0]) =~ tr/\n//) };
+
+    if ($kind eq "xcodegen") {
+      # A url line naming core, then exactVersion at the same indent before the
+      # entry ends (a line indented less than the url).
+      my @l = split /(?<=\n)/, $s; my ($ind, $held);
+      for my $i (0..$#l) {
+        my $t = $l[$i];
+        if ($t =~ m{^(\s*)url:\s*["\x27]?$core["\x27]?\s*(?:#.*)?$}) {
+          $ind = length $1; $held = ($t =~ /$hold/) ? 1 : 0; next;
+        }
+        next unless defined $ind;
+        next if $t =~ /^\s*(#.*)?$/;
+        $t =~ /^(\s*)/; if (length($1) < $ind) { undef $ind; next }
+        if ($t =~ m{^(\s*exactVersion:\s*["\x27]?)([^"\x27\s#]+)}) {
+          my $v = $2;
+          my $h = ($held || $t =~ /$hold/) ? "hold" : "";
+          push @out, ($i + 1) . "\t$v\t$h";
+          $l[$i] =~ s{^(\s*exactVersion:\s*["\x27]?)[^"\x27\s#]+}{$1$new} if $write && !$h;
+          undef $ind;
+        }
+      }
+      $s = join "", @l;
+    }
+    elsif ($kind eq "swiftpm") {
+      my @hits;
+      while ($s =~ m{\.package\(\s*url:\s*"$core"\s*,\s*exact:\s*"([^"]+)"[^\n]*}g) {
+        my ($v, $start, $vs, $end) = ($1, $-[0], $-[1], $+[0]);
+        my $h = (substr($s, $start, $end - $start) =~ /$hold/) ? "hold" : "";
+        push @out, $lineof->($vs) . "\t$v\t$h";
+        push @hits, [$vs, length $v] if $write && !$h;
+      }
+      substr($s, $_->[0], $_->[1]) = $new for reverse @hits;
+    }
+    elsif ($kind eq "resolved") {
+      my $want = $ENV{FOLLOW} ne "" ? $ENV{FOLLOW} : $new;
+      my @hits;
+      while ($s =~ m{"location"\s*:\s*"$core"\s*,\s*"state"\s*:\s*\{\s*"revision"\s*:\s*"([0-9a-f]*)"\s*,\s*"version"\s*:\s*"([^"]+)"}g) {
+        my ($r, $v, $rs, $vs) = ($1, $2, $-[1], $-[2]);
+        my $h = $want ne $new ? "hold" : "";
+        push @out, $lineof->($vs) . "\t$v\t$h";
+        push @hits, [$rs, length $r, $vs, length $v] if $write && !$h;
+      }
+      for (reverse @hits) {
+        substr($s, $_->[2], $_->[3]) = $new;
+        substr($s, $_->[0], $_->[1]) = $rev;
+      }
+      $s =~ s{^\s*"originHash"\s*:\s*"[^"]*",\n}{}m if $write && @hits;
+    }
+    elsif ($kind eq "gradle") {
+      # The keys the mero-kotlin entries take their version from.
+      my (%keys, @hits);
+      while ($s =~ m{^[^#\n]*module\s*=\s*"network\.calimero:mero-kotlin(?:-compose|-testkit)?"[^\n]*$}mg) {
+        my $e = $&; my $es = $-[0];
+        if ($e =~ m{version\.ref\s*=\s*"([^"]+)"}) { $keys{$1} = 1 }
+        elsif ($e =~ m{\bversion\s*=\s*"([^"]+)"}) {
+          my ($v, $vs) = ($1, $es + $-[1]);
+          my $h = $e =~ /$hold/ ? "hold" : "";
+          push @out, $lineof->($vs) . "\t$v\t$h";
+          push @hits, [$vs, length $v] if $write && !$h;
+        }
+      }
+      if (%keys && $s =~ m{^\[versions\]\s*$}m) {
+        my $from = $+[0];
+        my $rest = substr($s, $from);
+        my $to = $rest =~ m{^\[}m ? $from + $-[0] : length $s;
+        my $sect = substr($s, $from, $to - $from);
+        for my $k (sort keys %keys) {
+          if ($sect =~ m{^[ \t]*\Q$k\E[ \t]*=[ \t]*"([^"]+)"[^\n]*}m) {
+            my ($v, $vs, $line) = ($1, $from + $-[1], $&);
+            my $h = $line =~ /$hold/ ? "hold" : "";
+            push @out, $lineof->($vs) . "\t$v\t$h";
+            push @hits, [$vs, length $v] if $write && !$h;
+          }
+        }
+      }
+      substr($s, $_->[0], $_->[1]) = $new for sort { $b->[0] <=> $a->[0] } @hits;
+    }
+    print "$_\n" for @out;
+    if ($write && $s ne $o) { open my $w, ">", $f or die "$f: $!"; print $w $s; close $w }
+  ' "$f"
+}
+
+mobile_kind() {
+  case "$1" in
+    */project.yml|project.yml) printf 'xcodegen' ;;
+    */Package.swift|Package.swift) printf 'swiftpm' ;;
+    */Package.resolved|Package.resolved) printf 'resolved' ;;
+    *) printf 'gradle' ;;
+  esac
+}
+
+# The version the Package.swift beside a Package.resolved asks core for, once
+# this run has rewritten it. Empty when there is none.
+mobile_follow() {
+  local man
+  man="$(dirname "$DIR/$1")/Package.swift"
+  [ -f "$man" ] || return 0
+  mobile_scan swiftpm "$man" | head -1 | cut -f2
+}
+
+bump_mobile() {
+  local files f kind rows row cur held line
+  local applicable=0 touched=0 rev=""
+  files=$(mobile_files)
+  [ -n "$files" ] || { note "no project.yml, Package.swift or libs.versions.toml — no native app here"; exit 3; }
+
+  head_note "mobile: Swift and Kotlin SDK pins -> $VERSION"
+
+  # Manifests before lockfiles: a Package.resolved follows the Package.swift
+  # beside it, as rewritten.
+  for pass in manifests resolved; do
+    for f in $files; do
+      kind=$(mobile_kind "$f")
+      case "$pass:$kind" in
+        manifests:resolved|resolved:xcodegen|resolved:swiftpm|resolved:gradle) continue ;;
+      esac
+
+      local follow=""
+      if [ "$kind" = resolved ]; then
+        follow=$(mobile_follow "$f")
+      fi
+      rows=$(NEW="$VERSION" FOLLOW="$follow" mobile_scan "$kind" "$DIR/$f")
+      [ -n "$rows" ] || continue
+      applicable=1
+
+      local moving=0
+      while IFS="$(printf '\t')" read -r line cur held; do
+        if [ "$held" = hold ]; then
+          if [ "$kind" = resolved ]; then
+            note "$f:$line: core $cur follows its Package.swift (${follow}) — left"
+          else
+            note "$f:$line: core $cur is held (fleet-bump: hold) — skipped"
+          fi
+        elif [ "$cur" != "$VERSION" ] || [ "$kind" = resolved ]; then
+          moving=1
+        fi
+      done <<EOF
+$rows
+EOF
+      [ "$moving" -eq 1 ] || continue
+
+      if [ "$kind" = resolved ]; then
+        if [ -z "$rev" ]; then
+          rev=$(release_commit)
+          if [ "${#rev}" -ne 40 ]; then
+            [ "$NO_LOCK" -eq 1 ] && { note "$f: the release's commit is unknown — pin left (--no-lock)"; continue; }
+            die "cannot resolve core's $VERSION tag to a commit for $f"
+          fi
+        fi
+        # Already at this tag and commit: nothing to write.
+        if ! printf '%s\n' "$rows" | awk -F'\t' -v v="$VERSION" '$3 != "hold" && $2 != v' | grep -q . \
+            && grep -q "\"revision\" *: *\"$rev\"" "$DIR/$f"; then
+          continue
+        fi
+      fi
+
+      NEW="$VERSION" REV="$rev" FOLLOW="$follow" WRITE=1 mobile_scan "$kind" "$DIR/$f" >/dev/null
+
+      # Re-read: every unheld pin must now say the release, and a lockfile pin
+      # the release's commit.
+      rows=$(NEW="$VERSION" FOLLOW="$follow" mobile_scan "$kind" "$DIR/$f")
+      while IFS="$(printf '\t')" read -r line cur held; do
+        [ "$held" = hold ] && continue
+        [ "$cur" = "$VERSION" ] || die "$f:$line still pins core $cur after the rewrite"
+      done <<EOF
+$rows
+EOF
+      if [ "$kind" = resolved ]; then
+        grep -q "\"revision\" *: *\"$rev\"" "$DIR/$f" || die "$f did not take the release's commit $rev"
+      fi
+      note "$f: core -> $VERSION"
+      record_change "$f"
+      touched=$((touched + 1))
+    done
+  done
+
+  if [ "$applicable" -eq 0 ]; then
+    note "no native project here pins core's Swift or Kotlin SDK"
+    exit 3
+  fi
+  if [ "$touched" -eq 0 ]; then
+    note "every mobile pin is already at $VERSION (or held)"
+    exit 4
+  fi
+}
+
 TMPDIR_RUN=$(mktemp -d)
 
 # Revert on every exit path, not just the happy one: a dry run dying partway
@@ -1706,7 +1944,11 @@ case "$SURFACE" in
     [ -n "$VERSION" ] || die "--surface tee needs --version"
     bump_tee
     ;;
-  *) die "--surface must be cargo, npm or tee (got '$SURFACE')" ;;
+  mobile)
+    [ -n "$VERSION" ] || die "--surface mobile needs --version"
+    bump_mobile
+    ;;
+  *) die "--surface must be cargo, npm, tee or mobile (got '$SURFACE')" ;;
 esac
 
 # Hand the caller exactly the paths to stage; anything else the tooling left

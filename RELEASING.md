@@ -191,7 +191,7 @@ All from `release.yml`, on master only:
 | the `merod` image, multi-arch: `X`, plus `latest` for a final or `prerelease` for a pre-release | `ghcr.io/calimero-network/merod` |
 | a `meroctl` formula bump | a pull request in `calimero-network/homebrew-tap` |
 | the SDKs under `sdks/`, all at `X`: mero-js and mero-react (npm, `next` for a pre-release), mero-py (PyPI), mero-kotlin (Maven Central); mero-swift needs no upload: SwiftPM installs it from this repository at the tag `X` (the root `Package.swift`) | npm, PyPI, Maven Central |
-| SDK pin bumps for consumers (cargo, tee, and npm once the JS SDKs are out) | pull requests opened by `fleet-bump.yml` (below) |
+| SDK pin bumps for consumers (cargo, tee; npm once the JS SDKs are out; mobile once mero-kotlin is on Maven Central) | pull requests opened by `fleet-bump.yml` (below) |
 
 Each binary is `<binary>_<target triple>.tar.gz`, e.g.
 `meroctl_x86_64-unknown-linux-gnu.tar.gz`. `meroctl` builds, packs, signs and
@@ -252,6 +252,12 @@ on the branch `chore/core-X`, as the organization's GitHub App, with
   re-pins `mero-tee/build-inputs.lock.json` from the release's `SHA256SUMS`, and
   cuts a new image version (`chore(image): bundle merod X and cut a new image version`).
   The image itself is released by mero-tee's own workflows.
+- `mobile` surface (apps): once Maven Central serves mero-kotlin `X`, moves the
+  core package's `exactVersion` in XcodeGen `project.yml`, `exact:` in
+  `Package.swift`, the core pin in `Package.resolved` (to the commit `X` is tagged
+  at), and the `libs.versions.toml` version the `network.calimero:mero-kotlin`
+  entries read (`chore(deps): pin the Calimero mobile SDKs to X`). A line marked
+  `fleet-bump: hold` stays.
 - `npm` entries in `fleet.json` are read by mero-js, mero-react and
   design-system, whose own fleet bumps move the npm packages.
 

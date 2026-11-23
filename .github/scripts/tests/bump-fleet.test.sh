@@ -906,6 +906,160 @@ expect_exit 0 "a meroctl of another release is not run" \
 expect_file "$D/apps/kv/app/src/generated/client.ts" 'written by 0.11.0-rc.1' "  ...the client is left"
 expect_file "$UNCLAIMED" 'scripts/install-meroctl.sh && pnpm' "  ...and the report names the meroctl installer"
 
+# ─────────────────────────────────────────────────────────────────────────────
+echo "mobile: the native apps' Swift and Kotlin SDK pins"
+# ─────────────────────────────────────────────────────────────────────────────
+OLD_SHA=1111111111111111111111111111111111111111
+NEW_SHA=2222222222222222222222222222222222222222
+D=$(mkfixture mobile)
+mkdir -p "$D/apps/chat/mobile/ios" "$D/apps/vote/mobile/ios/VoteCore" "$D/apps/held/mobile/ios" \
+  "$D/apps/chat/mobile/android/gradle" "$D/apps/old/mobile/ios" "$D/apps/inline/mobile/android/gradle"
+cat > "$D/apps/chat/mobile/ios/project.yml" <<'YAML'
+name: MeroChat
+packages:
+  MeroKit:
+    url: https://github.com/calimero-network/core
+    exactVersion: 1.0.0-rc.35
+  Other:
+    url: https://github.com/apple/swift-collections
+    exactVersion: 1.1.0
+targets: {}
+YAML
+cat > "$D/apps/held/mobile/ios/project.yml" <<'YAML'
+packages:
+  MeroKit:
+    url: https://github.com/calimero-network/core
+    exactVersion: 1.0.0-rc.30 # fleet-bump: hold
+YAML
+cat > "$D/apps/old/mobile/ios/project.yml" <<'YAML'
+packages:
+  MeroKit:
+    url: https://github.com/calimero-network/swift-sdk
+    exactVersion: 4.1.0
+YAML
+cat > "$D/apps/vote/mobile/ios/VoteCore/Package.swift" <<'SWIFT'
+// swift-tools-version: 5.9
+import PackageDescription
+let package = Package(
+    name: "VoteCore",
+    dependencies: [
+        .package(
+            url: "https://github.com/calimero-network/core",
+            exact: "1.0.0-rc.35"),
+        .package(url: "https://github.com/apple/swift-collections", exact: "1.1.0"),
+    ],
+    targets: [.target(name: "VoteCore", dependencies: [.product(name: "MeroKit", package: "core")])]
+)
+SWIFT
+cat > "$D/apps/vote/mobile/ios/VoteCore/Package.resolved" <<JSON
+{
+  "originHash" : "abc123",
+  "pins" : [
+    {
+      "identity" : "core",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/calimero-network/core",
+      "state" : {
+        "revision" : "$OLD_SHA",
+        "version" : "1.0.0-rc.35"
+      }
+    },
+    {
+      "identity" : "swift-collections",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-collections",
+      "state" : {
+        "revision" : "$OLD_SHA",
+        "version" : "1.1.0"
+      }
+    }
+  ],
+  "version" : 3
+}
+JSON
+cat > "$D/apps/chat/mobile/android/gradle/libs.versions.toml" <<'TOML'
+[versions]
+agp = "8.7.0"
+meroSdk = "1.0.0-rc.35"
+
+[libraries]
+mero-core = { module = "network.calimero:mero-kotlin", version.ref = "meroSdk" }
+mero-compose = { module = "network.calimero:mero-kotlin-compose", version.ref = "meroSdk" }
+mero-testkit = { module = "network.calimero:mero-kotlin-testkit", version.ref = "meroSdk" }
+agp = { module = "com.android.tools.build:gradle", version.ref = "agp" }
+TOML
+cat > "$D/apps/inline/mobile/android/gradle/libs.versions.toml" <<'TOML'
+[libraries]
+mero-core = { module = "network.calimero:mero-kotlin", version = "1.0.0-rc.35" }
+TOML
+commit "$D"
+CH="$ROOT/mobile.changed"; OUT="$ROOT/mobile.out"
+RELEASE_COMMIT="$NEW_SHA" CHANGED_FILES_OUT="$CH" bash "$BUMP" --surface mobile --version 1.0.0-rc.36 --dir "$D" > "$OUT" 2>&1
+expect_exit 0 "the mobile pins move to the release" sh -c "exit $?"
+expect_file "$D/apps/chat/mobile/ios/project.yml" 'exactVersion: 1.0.0-rc.36' "  project.yml: core's exactVersion"
+expect_file "$D/apps/chat/mobile/ios/project.yml" 'exactVersion: 1.1.0' "  ...another package's version is left"
+expect_file "$D/apps/held/mobile/ios/project.yml" 'exactVersion: 1.0.0-rc.30 # fleet-bump: hold' "  a held project.yml pin stays"
+expect_file "$D/apps/old/mobile/ios/project.yml" 'exactVersion: 4.1.0' "  a swift-sdk pin is not core's to move"
+expect_file "$D/apps/vote/mobile/ios/VoteCore/Package.swift" 'exact: "1.0.0-rc.36"),' "  Package.swift over several lines"
+expect_file "$D/apps/vote/mobile/ios/VoteCore/Package.swift" 'swift-collections", exact: "1.1.0"' "  ...another package is left"
+expect_file "$D/apps/vote/mobile/ios/VoteCore/Package.resolved" "\"revision\" : \"$NEW_SHA\"" "  Package.resolved: the tag's commit"
+expect_file "$D/apps/vote/mobile/ios/VoteCore/Package.resolved" '"version" : "1.0.0-rc.36"' "  ...and the tag"
+expect_file "$D/apps/vote/mobile/ios/VoteCore/Package.resolved" "\"revision\" : \"$OLD_SHA\"" "  ...another pin is left"
+expect_absent "$D/apps/vote/mobile/ios/VoteCore/Package.resolved" 'originHash' "  ...and the stale originHash is dropped"
+expect_file "$D/apps/chat/mobile/android/gradle/libs.versions.toml" 'meroSdk = "1.0.0-rc.36"' "  libs.versions.toml: the mero-kotlin version key"
+expect_file "$D/apps/chat/mobile/android/gradle/libs.versions.toml" 'agp = "8.7.0"' "  ...another key is left"
+expect_file "$D/apps/inline/mobile/android/gradle/libs.versions.toml" 'mero-kotlin", version = "1.0.0-rc.36"' "  ...and an inline version"
+expect_file "$OUT" 'is held (fleet-bump: hold)' "  the hold is reported"
+expect_file "$CH" 'apps/vote/mobile/ios/VoteCore/Package.resolved' "  the lockfile is staged"
+expect_absent "$CH" 'apps/old/' "  ...the swift-sdk app is not"
+( cd "$D" && git add -A && git -c user.email=t@t -c user.name=t commit -qm bumped )
+expect_exit 4 "a second run is a no-op" env RELEASE_COMMIT="$NEW_SHA" \
+  bash "$BUMP" --surface mobile --version 1.0.0-rc.36 --dir "$D"
+
+# A held manifest keeps its lockfile pin with it.
+D=$(mkfixture mobile-held-swiftpm); mkdir -p "$D/Core"
+cat > "$D/Core/Package.swift" <<'SWIFT'
+let package = Package(name: "Core", dependencies: [
+    .package(url: "https://github.com/calimero-network/core", exact: "1.0.0-rc.30"), // fleet-bump: hold
+])
+SWIFT
+cat > "$D/Core/Package.resolved" <<JSON
+{
+  "pins" : [
+    {
+      "identity" : "core",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/calimero-network/core",
+      "state" : {
+        "revision" : "$OLD_SHA",
+        "version" : "1.0.0-rc.30"
+      }
+    }
+  ],
+  "version" : 2
+}
+JSON
+commit "$D"
+expect_exit 4 "a held Package.swift and its lockfile stay" env RELEASE_COMMIT="$NEW_SHA" \
+  bash "$BUMP" --surface mobile --version 1.0.0-rc.36 --dir "$D"
+expect_file "$D/Core/Package.resolved" '"version" : "1.0.0-rc.30"' "  ...the lockfile pin follows its manifest"
+
+# The tag cannot be resolved: a lockfile is not left pointing at the old commit.
+D=$(mkfixture mobile-no-commit); mkdir -p "$D/Core"
+sed 's/1.0.0-rc.30"), \/\/ fleet-bump: hold/1.0.0-rc.35"),/' "$ROOT/mobile-held-swiftpm/Core/Package.swift" > "$D/Core/Package.swift"
+sed 's/1.0.0-rc.30/1.0.0-rc.35/' "$ROOT/mobile-held-swiftpm/Core/Package.resolved" > "$D/Core/Package.resolved"
+commit "$D"
+expect_exit 1 "an unresolvable tag stops the bump" \
+  bash "$BUMP" --surface mobile --version 1.0.0-rc.36 --dir "$D"
+
+D=$(mkfixture mobile-none); mkdir -p "$D/ios"
+cp "$ROOT/mobile/apps/old/mobile/ios/project.yml" "$D/ios/project.yml"; commit "$D"
+expect_exit 3 "only swift-sdk pins: nothing for this surface" \
+  bash "$BUMP" --surface mobile --version 1.0.0-rc.36 --dir "$D"
+D=$(mkfixture mobile-empty); touch "$D/README.md"; commit "$D"
+expect_exit 3 "no native project at all" \
+  bash "$BUMP" --surface mobile --version 1.0.0-rc.36 --dir "$D"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
