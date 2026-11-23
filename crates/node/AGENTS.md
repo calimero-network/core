@@ -1448,13 +1448,14 @@ is its command line.
   (`Node::seed_undo` -> `seed_undo_here` -> `seed_restore`, in its own task, once a fresh
   system read shows it the undo: it may be a follower behind the commit; regression: the
   `restore-points-undo` upgrade case) and waits
-  `UNDO_WAIT`; `GET /apps/{app}/undo` (`lostWrites` from `restore_point_here`: entries
-  since, last write, `any`; `hosted: false` there, the node no longer hosting the app,
-  reads them from the current replicas, `Node::group_progress` over `internal/last-write`'s
-  `appliedIndex`: every replica asked, the furthest of a majority, `furthest_progress`; an
-  index below the restore point's, none, or no majority is `null`, `any` included, never
-  `0`/`false`: `api::undo::lost_writes`; regressions `api::undo::tests`,
-  `node::group_progress_tests`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
+  `UNDO_WAIT`; `GET /apps/{app}/undo` (`lostWrites`: entries since, last write, `any`,
+  read from the app's current replicas whether or not the restore point's node still
+  hosts it (it may be behind its group; `restore_point_here` gives only `takenAt`),
+  `Node::group_progress` over `internal/last-write`'s `appliedIndex`: every replica asked,
+  the furthest of a majority, `furthest_progress`; an index below the restore point's,
+  none, or no majority is `null`, `any` included, never `0`/`false`:
+  `api::undo::lost_writes`; regressions `api::undo::tests`, `node::group_progress_tests`,
+  `access_gate::an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_node_lags`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
   `UNDO_NOT_AS_NAMED`, `409 RESTORE_POINT_UNAVAILABLE`. Regressions: `system::tests`
   (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`,
   `an_upgrade_is_undone_within_a_week_back_to_its_restore_point`,
