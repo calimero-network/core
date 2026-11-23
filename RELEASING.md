@@ -252,7 +252,7 @@ on the branch `chore/core-X`, as the organization's GitHub App, with
   re-pins `mero-tee/build-inputs.lock.json` from the release's `SHA256SUMS`, and
   cuts a new image version (`chore(image): bundle merod X and cut a new image version`).
   The image itself is released by mero-tee's own workflows.
-- `mobile` surface (apps): once Maven Central serves mero-kotlin `X`, moves the
+- `mobile` surface (apps, mero-tag, mero-ar): once Maven Central serves mero-kotlin `X`, moves the
   core package's `exactVersion` in XcodeGen `project.yml`, `exact:` in
   `Package.swift`, the core pin in `Package.resolved` (to the commit `X` is tagged
   at), and the `libs.versions.toml` version the `network.calimero:mero-kotlin`
