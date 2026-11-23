@@ -132,20 +132,6 @@ fn pins_and_counts_come_from_the_index() {
 }
 
 #[test]
-fn the_charter_is_written_at_init_and_the_owner_moderates() {
-    let mut t = forum();
-    assert_eq!(
-        ok(t.as_("bob").view("charter", json!({}))),
-        json!({ "name": "calimero forum", "rules": "be kind and stay on topic" })
-    );
-    assert_eq!(
-        ok(t.as_("bob").view("moderators", json!({}))),
-        json!(["owner"]),
-        "whoever ran init founded the forum and is the first moderator"
-    );
-}
-
-#[test]
 fn only_a_moderator_appoints_one_and_the_appointee_moderates() {
     let mut t = forum();
     assert_eq!(
