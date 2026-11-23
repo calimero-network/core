@@ -541,7 +541,7 @@ fn outgoing_http_traps_in_views_and_is_recorded_in_calls() {
         "{:?}",
         out.status
     );
-    // A call may send (D76); with no gate the request is refused (the guest's response
+    // A call may send; with no gate the request is refused (the guest's response
     // future holds the error), and the entry records the attempt.
     let out = fx.engine.invoke(
         &app,
@@ -618,9 +618,8 @@ fn cache_files(dir: &Path, component: &[u8]) -> Vec<PathBuf> {
     files
 }
 
-/// C3 (S8, Ruling 38): a party that can write the cache directory rewrites both the
-/// artifact and the file beside it, putting another component's compiled code (with its
-/// own, valid check file) under this component's name. The node must not load it.
+/// A party that can write the cache directory swaps in another component's compiled code, with its own valid check file.
+/// The node must not load it.
 #[test]
 fn an_artifact_rewritten_with_its_check_file_is_not_loaded() {
     let fx = fixture();
@@ -698,8 +697,8 @@ fn ten_thousand_and_one_writes_trap() {
     assert_eq!(out.diff.len(), 10_000);
 }
 
-/// C2 (Ruling 37): writes past the run's 1 MiB are refused at the host call, so a guest
-/// cannot pile values into host memory until the entry check after the run.
+/// Writes past the run's 1 MiB are refused at the host call, so a guest
+/// cannot pile values into host memory before the entry check.
 #[test]
 fn writes_past_the_run_cap_trap_host_denied_at_the_call() {
     let fx = fixture();
@@ -736,8 +735,7 @@ fn writes_past_the_run_cap_trap_host_denied_at_the_call() {
         started.elapsed()
     );
 
-    // N1 (Ruling 43): event audiences count too; 100 events naming a 1 MiB account each
-    // stop at the first.
+    // Event audiences count too; 100 events naming a 1 MiB account each stop at the first.
     let out = fx.engine.invoke(
         &app,
         host(InvocationKind::Call, "shout", b""),
@@ -792,8 +790,6 @@ fn leb(bytes: &[u8]) -> (usize, usize) {
     }
     panic!("bad leb")
 }
-
-// --- fix round 1 regressions --------------------------------------------------------
 
 #[test]
 fn an_undrained_http_body_cannot_wedge_a_node_thread() {

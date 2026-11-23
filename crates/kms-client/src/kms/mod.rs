@@ -1,11 +1,5 @@
-//! KMS client for fetching storage encryption keys.
-//!
-//! This module handles communication with KMS services to obtain storage
-//! encryption keys using TDX attestation, from mero-kms running as a TDX cluster.
-//!
-//! When MERO_KMS_RELEASE_TAG, MERO_KMS_VERSION, or MERO_TEE_VERSION is set,
-//! merod verifies the KMS via POST /attest before requesting keys, using
-//! policy fetched from the release.
+//! KMS client for fetching storage encryption keys with TDX attestation.
+//! With a release tag or version set, merod verifies the KMS via POST /attest first.
 
 use crate::config::{normalize_attestation_measurement, KmsAttestationConfig, KmsConfig};
 use base64::Engine;
@@ -65,9 +59,7 @@ struct KmsGetKeyRequest {
 }
 
 /// Response body from the KMS get-key endpoint.
-///
-/// A KMS that predates sealed release answers with `key` alone; that answer is
-/// refused, because the key in it was readable by whatever terminated TLS.
+/// A key-only answer (no sealed release) is refused: whatever terminated TLS could read it.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct KmsGetKeyResponse {
@@ -172,9 +164,8 @@ struct Transport {
     rollback: bool,
 }
 
-/// The binding an `/attest` answer's quote must carry after the nonce, and
-/// whether that KMS keeps rollback counters: a v2 binding commits to the
-/// capabilities, so a relay that strips them breaks the quote.
+/// The binding an `/attest` quote must carry after the nonce, and whether the KMS keeps counters.
+/// A v2 binding commits to the capabilities, so a relay that strips them breaks the quote.
 fn transport_binding(
     binding: &[u8; 32],
     kms_public: &[u8; 32],
@@ -269,9 +260,7 @@ const MAX_KMS_REPORT_DATA_HEX_LEN: usize = 1024;
 const MAX_KMS_CHALLENGE_ID_LEN: usize = 512;
 const MAX_KMS_NONCE_B64_LEN: usize = 2048;
 const MAX_KMS_KEY_HEX_LEN: usize = 4096;
-/// A v2 release's sealed record (base64): the key's hex plus the counters and
-/// the session, well under this.
-const MAX_KMS_RECORD_B64_LEN: usize = 16 * 1024;
+const MAX_KMS_RECORD_B64_LEN: usize = 16 * 1024; // a v2 sealed record: key hex, counters and session
 const MIN_KMS_KEY_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -498,23 +487,8 @@ pub async fn probe_storage_key(
     }
 }
 
-/// Fetch the storage encryption key from the configured KMS.
-///
-/// When `policy` is provided (from release-policy env vars), verifies the KMS
-/// via POST /attest before requesting keys.
-///
-/// Returns an error if no KMS is configured (incomplete TEE configuration) or
-/// if key fetching fails.
-///
-/// In builds without `mock-attestation` it also refuses, before any request, a
-/// KMS that nothing pins: no `policy` and no enabled config allowlists
-/// (`attestation.enabled` with `accept_mock = false`).
-///
-/// # Arguments
-/// * `kms` - The `[tee.kms]` configuration, if any
-/// * `peer_id` - The peer ID string (base58 encoded)
-/// * `identity` - Local node identity keypair used to sign challenge payloads
-/// * `policy` - Optional attestation policy fetched from a release version
+/// Fetch the storage encryption key from the configured KMS, attesting it first when `policy` is given.
+/// Without `mock-attestation`, refuses before any request a KMS that nothing pins (no policy, no config allowlists).
 pub async fn fetch_storage_key(
     kms: Option<&KmsConfig>,
     peer_id: &str,
@@ -586,9 +560,8 @@ where
 /// No `Debug`: it holds the key.
 pub struct ReleasedKey {
     pub key: Vec<u8>,
-    /// What the TD verified of the KMS: `Some` whenever the signed release
-    /// policy verified it, `None` on the config-allowlist path (air-gapped
-    /// deployments, which name no release to report).
+    /// What the TD verified of the KMS: `Some` when the signed release policy verified it,
+    /// `None` on the config-allowlist path.
     pub evidence: Option<KmsEvidence>,
     /// This node's rollback counters, when asked for (`rollback_node`) and the
     /// KMS keeps them; `None` from a KMS that predates them.
@@ -749,11 +722,8 @@ where
         .map_err(map_probe_get_key_failure)
 }
 
-/// Verify KMS via POST /attest using policy fetched from release.
-///
-/// Calls KMS /attest, verifies the quote, and enforces measurement policy.
-/// Answers the KMS's attested transport key and the record of the quote that
-/// passed, which the node reports in its own attestation.
+/// Verify KMS via POST /attest using the release policy and enforce its measurement allowlists.
+/// Answers the attested transport key and the record of the quote that passed.
 async fn verify_kms_attestation_from_release_policy(
     kms: &KmsConfig,
     policy: &KmsAttestationPolicy,
@@ -903,22 +873,14 @@ fn unix_now() -> u64 {
 }
 
 /// How an attestation policy is enforced.
-///
-/// The release-policy and config-policy verifiers share the same measurement and
-/// TCB-status checks but differ in strictness and in the config-key names used in
-/// error messages. Routing both through a single enforcement helper keyed on this
-/// mode keeps the two call sites from silently diverging.
+/// One helper keyed on this mode serves both verifiers so their strictness cannot silently diverge.
 #[derive(Debug, Clone, Copy)]
 enum PolicyEnforcementMode {
-    /// Release-fetched, Sigstore-verified policy: unconditionally strict.
-    ///
-    /// Required allowlists are always enforced and every measurement must be in
-    /// its allowlist. A missing TCB status is tolerated only when the quote is a
-    /// (development-gated) mock quote.
+    /// Release-fetched, Sigstore-verified policy: always strict.
+    /// A missing TCB status is tolerated only for development-gated mock quotes.
     ReleaseStrict { allow_missing_tcb_status: bool },
-    /// Config-derived policy: strict unless `accept_mock` relaxes it
-    /// (development/testing only). When relaxed, empty allowlists are skipped
-    /// instead of being required.
+    /// Config-derived policy: strict unless `accept_mock` relaxes it (development only).
+    /// When relaxed, empty allowlists are skipped.
     Config { accept_mock: bool },
 }
 
@@ -976,15 +938,7 @@ impl<'a> AttestationAllowlists<'a> {
 }
 
 /// Enforce the measurement and TCB-status allowlists against a verified KMS quote.
-///
-/// This is the single enforcement point shared by both KMS verification paths:
-/// the release-policy path (always strict) and the config-policy path (strict
-/// unless `accept_mock`). `mode` selects the strictness and the config-key names
-/// used in error messages, so the two call sites can no longer silently diverge.
-///
-/// Defense in depth: release-policy verification can run on paths that do not
-/// rely on startup config validation, so under strict mode we re-check that the
-/// required allowlists are present before enforcing measurement and TCB matching.
+/// Strict mode re-checks that required allowlists are present, as release verification may skip config validation.
 fn enforce_attestation_policy(
     allowlists: &AttestationAllowlists<'_>,
     verification_result: &VerificationResult,
@@ -1022,11 +976,7 @@ fn enforce_attestation_policy(
 }
 
 /// Enforce the TCB-status allowlist.
-///
-/// The release path waives a missing TCB status only for (dev-gated) mock quotes;
-/// the config path additionally skips the check entirely when running in relaxed
-/// mock mode with an empty allowlist. The two paths intentionally keep distinct
-/// control flow and error strings, so they are matched per mode.
+/// A missing status is waived only for dev-gated mock quotes (and in relaxed config mode with an empty list).
 fn enforce_tcb_status_allowlist(
     allowed_tcb_statuses: &[String],
     verification_result: &VerificationResult,
@@ -1080,10 +1030,7 @@ fn enforce_tcb_status_allowlist(
 }
 
 /// Enforce a single measurement allowlist.
-///
-/// Empty allowlists are skipped (only reachable in relaxed config mock mode; the
-/// strict paths require them to be non-empty first). The error format differs per
-/// mode to preserve the exact messages each verification path previously produced.
+/// Empty allowlists are skipped only in relaxed config mock mode; strict paths require them non-empty first.
 fn enforce_measurement_allowlist(
     label: &str,
     actual_measurement: &str,
@@ -1156,23 +1103,8 @@ fn enforce_required_measurement_allowlist_non_empty(
     Ok(())
 }
 
-/// Fetch the storage encryption key from mero-kms.
-///
-/// This function:
-/// 1. Requests a one-time challenge nonce from KMS
-/// 2. Generates a TDX attestation with challenge nonce in report_data[0..32]
-///    and a commitment to the peer id and a one-time seal key in [32..64]
-/// 3. Signs challenge + quote hash with node identity key
-/// 4. Sends the signed attestation request to KMS
-/// 5. Opens the key the KMS sealed to that one-time key (see [`sealed`])
-///
-/// # Arguments
-/// * `kms` - KMS configuration
-/// * `peer_id` - The peer ID string (base58 encoded)
-/// * `identity` - Local node identity keypair used to sign challenge payloads
-///
-/// # Returns
-/// The storage encryption key bytes (hex-decoded from KMS response).
+/// Fetch the storage encryption key from mero-kms: challenge, attested quote, signed request, open the sealed key.
+/// The quote commits to the nonce, the peer id and a one-time seal key, so the key is readable only by this node.
 async fn fetch_from_kms<F>(
     kms: &KmsConfig,
     peer_id: &str,
@@ -1317,11 +1249,8 @@ where
 
 fn build_kms_http_client(kms: &KmsConfig) -> Result<reqwest::Client> {
     let uses_https = kms.url.scheme().eq_ignore_ascii_case("https");
-    // `tee.kms.url` may be a DNS name resolving to every replica of the KMS
-    // cluster, and a dead replica can stay in that record for about a minute.
-    // reqwest/hyper-util divides the connect timeout evenly across the resolved
-    // addresses, so with five replicas each gets ~2s before the next is tried,
-    // instead of one dead address consuming the whole request timeout.
+    // `tee.kms.url` may resolve to every KMS replica and a dead one can linger in DNS;
+    // the connect timeout is split across addresses so one dead address cannot consume the whole timeout.
     let mut builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30));
@@ -1332,9 +1261,8 @@ fn build_kms_http_client(kms: &KmsConfig) -> Result<reqwest::Client> {
         builder = builder.no_proxy();
     }
 
-    // Keep TLS invariants here even though startup config validation checks the
-    // same constraints. This preserves fail-closed behavior if config is edited
-    // between validation and client construction.
+    // Re-check TLS invariants here so client construction stays fail-closed
+    // if config is edited after startup validation.
     if let Some(ca_cert_path) = kms.tls.ca_cert_path.as_deref() {
         if !uses_https {
             bail!(
@@ -1490,10 +1418,8 @@ async fn verify_kms_attestation(
     })
 }
 
-/// The KMS's transport key with its quote left unverified, for a config with
-/// attestation disabled (development only). The key is still sealed, so a
-/// passive observer of the connection learns nothing, but nothing proves the
-/// transport key belongs to a genuine KMS — so neither is the key it releases.
+/// The KMS's transport key with its quote left unverified (attestation disabled, development only).
+/// Nothing proves the key belongs to a genuine KMS, so the key it releases is not trusted either.
 async fn request_unverified_transport_key(
     client: &reqwest::Client,
     base_url: &Url,
@@ -1652,9 +1578,8 @@ pub(crate) fn resolve_effective_attestation_config(
                 default_binding_b64: None,
             });
 
-        // Explicit `Some([])` from external policy intentionally clears the
-        // base allowlist (rather than "unset"), then validation enforces
-        // required production fields such as allowed_mrtd and allowed_rtmr0..3.
+        // An explicit `Some([])` from external policy clears the base allowlist;
+        // validation then enforces the required production fields.
         merge_external_allowlist(
             &mut effective_config.allowed_tcb_statuses,
             external_policy.allowed_tcb_statuses,
@@ -2016,12 +1941,8 @@ fn build_signature_payload(
     serde_json::to_vec(&payload).context("Failed to serialize challenge signature payload")
 }
 
-/// Ensure URL has a trailing slash to prevent `Url::join` from replacing the last path segment.
-///
-/// `Url::join` has counter-intuitive behavior: if the base URL lacks a trailing slash,
-/// it replaces the last path segment. For example:
-/// - `http://host/api/v1`.join("get-key") => `http://host/api/get-key` (wrong!)
-/// - `http://host/api/v1/`.join("get-key") => `http://host/api/v1/get-key` (correct)
+/// Ensure URL has a trailing slash: `Url::join` replaces the last path segment without one.
+/// `http://host/api/v1`.join("get-key") gives `http://host/api/get-key`.
 fn ensure_trailing_slash(url: &Url) -> Url {
     let mut url = url.clone();
     if !url.path().ends_with('/') {
@@ -2033,13 +1954,8 @@ fn ensure_trailing_slash(url: &Url) -> Url {
 /// What the KMS URL's scheme has to prove, given what else protects the key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KmsTransportRule {
-    /// The KMS is verified against the signed release policy before anything is
-    /// asked of it, and the key comes back sealed to a one-time key this node's
-    /// quote commits to, authenticated by the KMS's attested key
-    /// (`open_released_key`, which refuses an unsealed key). An on-path attacker
-    /// can neither read the key nor pass as the KMS, so TLS adds nothing, and a
-    /// VPC-internal name such as `<cluster>.kms.mdma.internal` has no public CA
-    /// to certify it anyway. Plain HTTP is allowed.
+    /// Release-policy verified and the key comes back sealed to a quote-committed key, so TLS adds nothing.
+    /// Plain HTTP is allowed; VPC-internal names have no public CA anyway.
     AttestedAndSealed,
     /// Attestation from local config only: keep TLS as a second line.
     Strict,
@@ -3251,9 +3167,8 @@ mod tests {
         Url::parse(&format!("http://{addr}/")).unwrap()
     }
 
-    /// A v2 release returns the node's counters sealed with the key, and the
-    /// sealed session moves them; a relay that strips the capabilities leaves
-    /// the node with the key and no counters, which the node then judges.
+    /// A v2 release returns the counters sealed with the key; a relay that strips the capabilities
+    /// leaves the node with the key and no counters, which the node then judges.
     #[tokio::test]
     #[cfg(feature = "mock-attestation")]
     async fn a_v2_release_carries_the_counters_and_a_session_that_raises_them() {
@@ -3340,10 +3255,8 @@ mod tests {
             .expect("mock verification result should be created")
     }
 
-    /// A key fetch records the KMS quote it accepted: the registers and hash
-    /// of the very quote that passed, the signed policy's release and profile,
-    /// and the host it dialled. The node reports this record in its own
-    /// attestation, so it has to be what was verified, not what was asked.
+    /// A key fetch records the KMS quote it accepted, which the node reports in its own attestation,
+    /// so it has to be what was verified, not what was asked.
     #[tokio::test]
     #[cfg(feature = "mock-attestation")]
     async fn the_kms_a_key_fetch_accepted_is_recorded() {
@@ -3590,9 +3503,8 @@ mod tests {
     #[test]
     #[cfg(feature = "mock-attestation")]
     fn test_enforce_config_policy_measurement_allowlist_gated_by_mock_mode() {
-        // The same disallowed MRTD is rejected under strict config, but accepted
-        // once accept_mock relaxes the (now-empty) allowlist. This pins the mock
-        // gate to the consolidated enforcement helper.
+        // The same disallowed MRTD is rejected under strict config but accepted once
+        // accept_mock relaxes the empty allowlist.
         let mut verification_result = make_mock_verification_result();
         let strict_policy = make_strict_runtime_policy(&verification_result);
         verification_result.quote.body.mrtd = "ab".repeat(48);
