@@ -2204,7 +2204,8 @@ impl SystemState {
 
     /// Whether `who` may name the bundle `hash` for an app: it must be
     /// recorded, and if a package release ships it, one such release must be
-    /// visible to `who`, or `who` uploaded the same WASM as a raw bundle.
+    /// visible to `who`; `uploaded_by` counts only beside a release recorded before
+    /// `visibility`, as a release's first installer is recorded there too.
     #[must_use]
     pub fn sees_bundle(&self, hash: &str, who: &str) -> bool {
         let Some(b) = self.bundles.get(hash) else {
@@ -2220,8 +2221,9 @@ impl SystemState {
             .filter(|v| v.app_parts().values().any(|h| h == hash))
             .peekable();
         shipped.peek().is_none()
-            || b.uploaded_by == who
-            || shipped.any(|v| self.sees_release(v, who))
+            || shipped.any(|v| {
+                self.sees_release(v, who) || (v.visibility.is_none() && b.uploaded_by == who)
+            })
     }
 
     /// [`Self::approved_releases`] for an app of `org`, before it exists.

@@ -7490,6 +7490,22 @@ async fn a_private_release_is_used_only_in_the_organizations_it_was_installed_fo
         .unwrap();
     assert_eq!(listed(&alice).await, BTreeMap::new(), "removed from Bobco");
     assert_eq!(listed(&bob).await, tool_listed);
+    // Its WASM's hash is no way back in for its first installer.
+    let hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(variant(
+        &kv_wasm(),
+        "tool",
+    )));
+    let by_hash = alice
+        .apps()
+        .create(typed(json!({ "name": "t", "bundle": hash })))
+        .await
+        .unwrap_err();
+    let unknown = alice
+        .apps()
+        .create(typed(json!({ "name": "t", "bundle": "00".repeat(32) })))
+        .await
+        .unwrap_err();
+    assert_eq!(by_hash.to_string(), unknown.to_string());
 }
 
 /// Reaching an instance reads it and the release it runs, never uses that release: Bob,

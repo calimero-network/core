@@ -373,7 +373,9 @@ is its command line.
   anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages`
   leave it out (`404` by name), `resolve_release` treats it as missing (a
   registry install makes it theirs; an upload answers as a missing release), a
-  bundle hash it ships is an unknown bundle (`sees_bundle`), outbound approval
+  bundle hash it ships is an unknown bundle (`sees_bundle`; its uploader, which a
+  release's first installer is too, counts only beside a release recorded before
+  `visibility`), outbound approval
   (`POST /orgs/{org}/outbound`, the consent page's `outbound`) answers `404` unless
   the caller reads the latest release, whose prefixes it approves and shows, and upgrade runs skip it (`api::upgrade_sees`; the operator's:
   its own or the app owner's). Frontends stay public by name. Regressions:

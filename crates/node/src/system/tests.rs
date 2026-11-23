@@ -750,6 +750,10 @@ fn a_private_release_is_used_only_in_the_organizations_it_was_installed_for() {
             .remove("alice");
     }
     assert!(!seen(&m, "alice") && seen(&m, "carol") && seen(&m, "bob"));
+    assert!(
+        !m.state.sees_bundle("b1", "alice"),
+        "its first installer, by hash"
+    );
 
     // Served to anyone, it is public, and a private install never takes that back.
     let _ok = m.run_authorized(install("dave", &[], "public")).unwrap();
@@ -794,10 +798,15 @@ fn a_release_recorded_before_visibility_keeps_the_rule_from_before() {
         .unwrap()
         .members
         .insert("bob".into(), OrgRole::Member);
+    let _ok = m.run_authorized(raw_bundle("carol", "b1", 1)).unwrap();
     let _ok = m.run_authorized(entry).unwrap();
     assert_eq!(
         serde_json::to_value(&m.state.packages["p"].versions["1.0.0"]).unwrap(),
         old
+    );
+    assert!(
+        m.state.sees_bundle("b1", "carol"),
+        "its raw uploader, as before"
     );
     let seen = |m: &SystemMachine, who: &str| {
         m.state
