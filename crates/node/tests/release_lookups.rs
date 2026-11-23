@@ -33,7 +33,6 @@ const READS_ALLOWED: &[(&str, &str, &str)] = &[
     ("api/apps.rs", "s.packages.get(&r.package).and_then(|p| p.versions.get(&r.version)).cloned()", "instance_org_of: a release the create resolved"),
     ("api/apps.rs", "let v = s.packages.get(&r.package)?.versions.get(&r.version)?;", "chosen_parts: the member unit_members chose"),
     ("api/apps.rs", "s.packages.get(&release.package).and_then(|p| p.versions.get(&release.version))", "unit_members: a release its callers resolved"),
-    ("api/apps.rs", "let own = s.packages.get(&release.package)", "unit_members: that release's signer"),
     ("api/apps.rs", "s.packages.get(&u.package).map(|p| {", "unit_members: the member rule itself"),
     ("api/apps.rs", "p.versions.iter().filter(|(k, v)| same_signer || s.sees_release(v, creator) || offered(k, v))", "unit_members: the member rule itself"),
     ("api/packages.rs", "s.packages.values().filter_map(|p| {", "package_list: package_json lists the releases used"),

@@ -2831,20 +2831,23 @@ impl SystemState {
         })
     }
 
-    /// The installed releases `v` references (`PackageVersion::uses`), each with its
-    /// package: every installed release of a referenced package inside the reference's
-    /// range (the one its lock pinned among them), which is what an app it creates may run,
-    /// then and after an upgrade within the range. A range that does not parse reaches none,
-    /// nor does a release no one acting for `d`'s owner may use ([`Self::offer_serves`]).
+    /// The installed releases `v` of `package` references (`PackageVersion::uses`), each
+    /// with its package: every installed release of a referenced package inside the
+    /// reference's range (the one its lock pinned among them), which is what an app it
+    /// creates may run, then and after an upgrade within the range. A range that does not
+    /// parse reaches none, nor does a release no one acting for `d`'s owner may use
+    /// ([`Self::offer_serves`]) unless `package`'s signer signs it ([`Self::same_signer`]).
     pub fn used_releases<'a>(
         &'a self,
         d: &'a Deployment,
+        package: &'a str,
         v: &'a PackageVersion,
     ) -> impl Iterator<Item = (&'a str, &'a PackageVersion)> + 'a {
         // Gated so earlier log entries replay as they applied.
         let private = self.cluster_brings(cluster_version::Feature::PrivateReleases);
         v.uses.values().flat_map(move |u| {
             let range = semver::VersionReq::parse(&u.range).ok();
+            let same_signer = self.same_signer(package, &u.package);
             self.packages
                 .get(&u.package)
                 .into_iter()
@@ -2852,10 +2855,20 @@ impl SystemState {
                 .filter(move |r| {
                     range.as_ref().is_some_and(|range| {
                         semver::Version::parse(&r.version).is_ok_and(|ver| range.matches(&ver))
-                    }) && (!private || self.offer_serves(d, r))
+                    }) && (!private || same_signer || self.offer_serves(d, r))
                 })
                 .map(move |r| (u.package.as_str(), r))
         })
+    }
+
+    /// Whether packages `a` and `b` are pinned to one signer: a publisher composing its own
+    /// packages, whose unit takes a member of either whoever may use it (`unit_members`).
+    #[must_use]
+    pub fn same_signer(&self, a: &str, b: &str) -> bool {
+        matches!(
+            (self.packages.get(a), self.packages.get(b)),
+            (Some(a), Some(b)) if a.signer_id == b.signer_id
+        )
     }
 
     /// Whether a release that a release `d` offers references
@@ -2865,7 +2878,7 @@ impl SystemState {
     pub fn deployment_uses_declare(&self, d: &Deployment, name: &str) -> bool {
         d.apps.values().any(|o| {
             self.offered_release(o).is_some_and(|v| {
-                self.used_releases(d, v)
+                self.used_releases(d, &o.package, v)
                     .any(|(_, r)| r.secrets.contains_key(name))
             })
         })
@@ -2881,7 +2894,8 @@ impl SystemState {
             let Some(v) = self.offered_release(o) else {
                 continue;
             };
-            let reached = std::iter::once((o.package.as_str(), v)).chain(self.used_releases(d, v));
+            let reached = std::iter::once((o.package.as_str(), v))
+                .chain(self.used_releases(d, &o.package, v));
             for (package, r) in reached {
                 for name in r.secrets.keys() {
                     let row = out.entry(name.clone()).or_default();
@@ -2905,9 +2919,10 @@ impl SystemState {
     pub fn deployment_covers(&self, d: &Deployment, package: &str) -> bool {
         d.apps.values().any(|o| {
             o.package == package
-                || self
-                    .offered_release(o)
-                    .is_some_and(|v| self.used_releases(d, v).any(|(p, _)| p == package))
+                || self.offered_release(o).is_some_and(|v| {
+                    self.used_releases(d, &o.package, v)
+                        .any(|(p, _)| p == package)
+                })
         })
     }
 

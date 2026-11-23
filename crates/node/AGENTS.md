@@ -589,10 +589,12 @@ is its command line.
   without it is judged by the offers alone, as before):
   `SystemState::deployment_uses_declare` over `used_releases` (every installed
   release of each `PackageVersion::uses` package inside its range that someone acting
-  for the deployment's owner may use, `offer_serves`, once the logged cluster version
+  for the deployment's owner may use, `offer_serves`, or that the offered package's signer
+  signs, `same_signer`, as `unit_members` admits a member, once the logged cluster version
   brings `Feature::PrivateReleases`; regressions
   `a_deployments_secrets_never_name_a_used_release_its_owner_may_not_use`,
-  `system::tests::a_used_release_its_owner_may_not_use_declares_no_deployment_secret`). `uses`
+  `system::tests::a_used_release_its_owner_may_not_use_declares_no_deployment_secret`,
+  `system::tests::a_member_of_its_offers_signer_reads_the_deployments_secret`). `uses`
   (`system::ReleaseUse`: package, range, version) is recorded by
   `InstallPackage` only once the feature is active (`record_release` drops it
   before; `SystemCmd::features` names it), and installing the same `.mpk`

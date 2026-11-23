@@ -9728,6 +9728,54 @@ fn a_deployment_holds_secrets_the_releases_its_offers_use_declare() {
     assert!(filled("notes-1", "notes").is_empty());
 }
 
+/// A unit member a deployment's instance creates from a release of its offer's own signer
+/// (`api::apps::unit_members`) reads the deployment's secret, though no one acting for the
+/// deployment's owner may use that release.
+#[test]
+fn a_member_of_its_offers_signer_reads_the_deployments_secret() {
+    use super::{cluster_version::Feature, Deployer, Deployments, Visibility};
+    let mut m = deploying(Deployments::Open);
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    let uses = json!({ "inference": { "package": "pi", "range": "*" } });
+    for cmd in [
+        install_release("pi", "1.0.0", &["PI_KEY"], Value::Null),
+        install_release("notes", "1.0.0", &["PI_KEY"], uses),
+        create_deployment("a", Deployer::Account("alice".into()), "alice"),
+        SystemCmd::OfferApp {
+            deployment: "a".into(),
+            app: "notes".into(),
+            package: "notes".into(),
+            version: "1.0.0".into(),
+            actor: "alice".into(),
+            at: 10,
+            consent: Value::Null,
+        },
+        set_secret("a", "PI_KEY", "devs-key", "alice"),
+    ] {
+        let _ok = m.run_unproven(cmd).unwrap();
+    }
+    // pi becomes private to an organization alice is not in; its signer is notes'.
+    if let Some(v) = m
+        .state
+        .packages
+        .get_mut("pi")
+        .and_then(|p| p.versions.get_mut("1.0.0"))
+    {
+        v.visibility = Some(Visibility::Private);
+        v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+    }
+    let _prev = m.state.apps.insert(
+        "member".into(),
+        serde_json::from_value(json!({
+            "appId": "member", "name": "member", "group": 2, "bundle": "b-pi-1.0.0",
+            "owner": "bob", "org": p("bob"), "replicas": [1], "createdAt": 10,
+            "deployment": "a", "release": { "package": "pi", "version": "1.0.0" },
+        }))
+        .unwrap(),
+    );
+    assert!(m.state.deployment_secrets_of("member", "pi").is_some());
+}
+
 /// A deployment holds no secret a used release declares that no one acting for its owner
 /// may use, from the logged version that brings private releases; below it, as it applied.
 #[test]
@@ -9759,15 +9807,13 @@ fn a_used_release_its_owner_may_not_use_declares_no_deployment_secret() {
             consent: Value::Null,
         })
         .unwrap();
-    // pi becomes private to an organization alice is not in.
-    if let Some(v) = m
-        .state
-        .packages
-        .get_mut("pi")
-        .and_then(|p| p.versions.get_mut("1.0.0"))
-    {
-        v.visibility = Some(Visibility::Private);
-        v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+    // pi, another publisher's, becomes private to an organization alice is not in.
+    if let Some(pi) = m.state.packages.get_mut("pi") {
+        pi.signer_id = "did:key:other".into();
+        if let Some(v) = pi.versions.get_mut("1.0.0") {
+            v.visibility = Some(Visibility::Private);
+            v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+        }
     }
     let mut old = SystemMachine {
         state: m.state.clone(),

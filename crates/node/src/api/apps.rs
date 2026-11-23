@@ -834,7 +834,7 @@ pub(crate) async fn unit_members(
         let range = semver::VersionReq::parse(&u.range)
             .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
         let installed: Vec<String> = node.sys(|s| {
-            let own = s.packages.get(&release.package).map(|p| &p.signer_id);
+            let same_signer = s.same_signer(&release.package, &u.package);
             let offers = deployment.and_then(|d| s.deployments.get(d));
             let offered = |version: &str, v: &crate::system::PackageVersion| {
                 offers.is_some_and(|d| {
@@ -847,7 +847,6 @@ pub(crate) async fn unit_members(
             s.packages
                 .get(&u.package)
                 .map(|p| {
-                    let same_signer = own == Some(&p.signer_id);
                     p.versions
                         .iter()
                         .filter(|(k, v)| same_signer || s.sees_release(v, creator) || offered(k, v))
