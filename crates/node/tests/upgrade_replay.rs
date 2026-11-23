@@ -48,6 +48,19 @@ const SIGNATURES: &[&str] = &["signature"];
 /// only move forward from what the release answered.
 const LOG_POSITIONS: &[&str] = &["index"];
 
+/// Whether a dated grant (an invite, a public link) has passed its `expiresAt`, worked
+/// out when it is read (`expiresAt <= now`): a replay a week after the release wrote
+/// the fixture finds its invites expired. It must agree with `expiresAt` and the
+/// replay's clock rather than the release's answer.
+const EXPIRED: &str = "expired";
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -122,6 +135,16 @@ fn holds(got: &Value, want: &Value, path: &str) -> Result<(), String> {
                 if path.ends_with(".receipt") && SIGNATURES.contains(&k.as_str()) {
                     if !gv.is_string() {
                         return Err(format!("{at} is {gv}, was a signature"));
+                    }
+                    continue;
+                }
+                if k == EXPIRED && w.contains_key("expiresAt") {
+                    let want = g
+                        .get("expiresAt")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|at| at <= now_secs());
+                    if gv.as_bool() != Some(want) {
+                        return Err(format!("{at} is {gv}, expiresAt says {want}"));
                     }
                     continue;
                 }
@@ -314,4 +337,26 @@ async fn replay(fixture: &Path) {
     .await;
     assert_eq!(body["result"], json!(name), "{name}");
     r.stop().await;
+}
+
+#[test]
+fn an_invite_the_release_answered_open_reads_expired_once_its_time_passes() {
+    // The release answered `expired: false` before its `expiresAt` (1); a replay
+    // after it must read `true`, and nothing else.
+    let want = json!({ "expiresAt": 1, "expired": false });
+    holds(&json!({ "expiresAt": 1, "expired": true }), &want, "invite").unwrap();
+    assert!(holds(
+        &json!({ "expiresAt": 1, "expired": false }),
+        &want,
+        "invite"
+    )
+    .is_err());
+    let later = json!({ "expiresAt": u64::MAX, "expired": false });
+    holds(&later, &later, "invite").unwrap();
+    assert!(holds(
+        &json!({ "expiresAt": 2, "expired": false }),
+        &want,
+        "invite"
+    )
+    .is_err());
 }

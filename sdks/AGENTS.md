@@ -41,8 +41,10 @@ sdks/
   the method list) comes from the node's API document,
   `docs/public/openapi.json`, through the SDK's `generate` command
   (`python3 scripts/sdks.py generate [name]`). Never edit generated files by
-  hand; change the server (or the generator) and regenerate. The hand-written,
-  ergonomic layer is everything else.
+  hand; change the server (or the generator) and regenerate. The one command
+  works on macOS and Linux: with no `swift` installed, mero-swift generates in a
+  pinned `swift` Docker image (`SDKS_GENERATE_IN_CONTAINER=1` forces that).
+  The hand-written, ergonomic layer is everything else.
 - **Docs**: a client's guides and reference are pages of core's docs site,
   `docs/src/content/docs/clients/<name>/` (the Clients section), built and
   link-checked with the rest of `docs/`; no SDK keeps a docs site of its own.

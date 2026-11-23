@@ -505,6 +505,21 @@ impl PyCloudClient {
         self.nodes.api_key().is_some()
     }
 
+    /// Whether requests carry a public link's visitor (`use_visitor`).
+    #[getter]
+    fn has_visitor(&self) -> bool {
+        matches!(self.nodes.credential(), Credential::Visitor(_))
+    }
+
+    /// Carry no credential from now on (`sign_out`'s local half).
+    fn forget(&self, py: Python<'_>) -> PyResult<()> {
+        let nodes = Arc::clone(&self.nodes);
+        self.block(py, async move {
+            nodes.forget().await;
+            Ok(())
+        })
+    }
+
     /// Exchange the refresh token for a new session, on the node in use (any
     /// node of the cluster takes it). One at a time with the refreshes the
     /// client makes on its own after a `401`: a refresh token is used once.
