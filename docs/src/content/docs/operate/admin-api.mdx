@@ -157,8 +157,8 @@ with `details` when there is more to say (for example `leaderUrl` with
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
 | `POST /bundles` | installer | Upload raw WASM (16 MiB at most). Only with `--allow-unsigned-bundles` or `--dev`. | `app install --path X.wasm` |
-| `POST /packages?org=` | installer | Upload a signed `.mpk`, private to `org` (else the caller's only organization). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. | `app install --path X.mpk [--org ORG]` |
-| `POST /packages/install` | installer | `{ package, version, org? }` from the registry, for `org` (else the caller's only organization); public when the registry serves it to anyone, else private to that organization | `app install P@V [--org ORG]` |
+| `POST /packages?org=` | installer | Upload a signed `.mpk`, private to `org` (else the caller's only organization; in none, to the accounts that install it). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. | `app install --path X.mpk [--org ORG]` |
+| `POST /packages/install` | installer | `{ package, version, org? }` from the registry, for `org` (else the caller's only organization); public when the registry serves it to anyone, else private to that organization (in none, to the accounts that install it) | `app install P@V [--org ORG]` |
 | `GET /packages` | signed in | Installed packages, only the releases the caller may see ([who sees a release](/protocol/applications/#who-sees-a-release)) | `app list` |
 | `GET /packages/{package}` | signed in | One package and the versions the caller may see; `404` when none | `app get`, `app versions`, `app get-latest-version` |
 | `DELETE /packages/{package}` | account holder | Uninstall every version; refused while an app runs one | `app uninstall` |

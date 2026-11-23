@@ -169,6 +169,9 @@ A release is visible, which is the right to use it (`SystemState::sees_release`)
 - every account, for a public release;
 - a member of an organization a private release was installed for (an installer
   only while such a member), each install for another organization adding it;
+- the accounts that installed a private release installed for no organization
+  (an account in none installs for none), until an install for an organization
+  adds one;
 - the operator, for the releases it installed; it sees no account's releases.
 
 A session opened on the package's own frontend sees what its account sees.

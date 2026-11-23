@@ -29412,7 +29412,7 @@
         ],
         "x-calimero-group": "packages",
         "summary": "Upload a signed release",
-        "description": "A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several, `409 NO_ORGANIZATION` in none.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
+        "description": "A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several; in none, it is private to the accounts that install it.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
         "security": [
           {
             "session": []
@@ -29549,19 +29549,6 @@
               "NOT_FOUND"
             ]
           },
-          "409": {
-            "description": "`NO_ORGANIZATION`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "NO_ORGANIZATION"
-            ]
-          },
           "413": {
             "description": "`TOO_LARGE`",
             "content": {
@@ -29667,7 +29654,7 @@
         ],
         "x-calimero-group": "packages",
         "summary": "Install a release from the registry",
-        "description": "For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; with no organization it is `409 NO_ORGANIZATION`. `404` when the registry serves it to neither.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
+        "description": "For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
         "security": [
           {
             "session": []
@@ -29804,19 +29791,6 @@
             },
             "x-calimero-codes": [
               "NOT_FOUND"
-            ]
-          },
-          "409": {
-            "description": "`NO_ORGANIZATION`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "NO_ORGANIZATION"
             ]
           },
           "421": {

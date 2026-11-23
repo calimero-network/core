@@ -1286,19 +1286,19 @@ fn operations() -> Vec<Op> {
             .ok("{ hash: string }")
             .errors(&[(400, "BAD_BUNDLE"), (400, "UNSUPPORTED_BUNDLE"), (403, "FORBIDDEN"), (413, "TOO_LARGE"), (429, "QUOTA_EXCEEDED")]),
         post("/packages", "package_upload", Installer, "Upload a signed release")
-            .about("A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several, `409 NO_ORGANIZATION` in none.")
+            .about("A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several; in none, it is private to the accounts that install it.")
             .query::<super::UploadQuery>("{ org?: string }")
             .raw("application/octet-stream", "the `.mpk`")
             .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "ORG_REQUIRED"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (409, "NO_ORGANIZATION"), (413, "TOO_LARGE")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "ORG_REQUIRED"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (413, "TOO_LARGE")]),
         get("/packages", "package_list", SignedIn, "Installed packages")
             .about("Only the releases the caller may see.")
             .ok("{ packages: #Package[] }"),
         post("/packages/install", "package_install", Installer, "Install a release from the registry")
-            .about("For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; with no organization it is `409 NO_ORGANIZATION`. `404` when the registry serves it to neither.")
+            .about("For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither.")
             .json::<super::AccountInstallBody>("{ package: string, version: string, org?: string }")
             .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "NO_REGISTRY"), (400, "ORG_REQUIRED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (409, "NO_ORGANIZATION")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "NO_REGISTRY"), (400, "ORG_REQUIRED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND")]),
         get("/packages/{package}", "package_get", SignedIn, "One package")
             .about("The versions the caller may see; `404` when none.")
             .ok("#Package")

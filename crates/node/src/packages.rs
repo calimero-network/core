@@ -210,14 +210,12 @@ impl Node {
 
     /// `package@version` for an install by `actor`, and whether it is public: served without
     /// the registry's credential, it is; else it is fetched with the credential, naming the
-    /// installing account (none for the operator), and is private. An account installs a
-    /// private release only for an organization (`org`).
+    /// installing account (none for the operator), and is private.
     async fn fetch_for_install(
         &self,
         package: &str,
         version: &str,
         actor: &str,
-        org: Option<&String>,
     ) -> Result<(Arc<[u8]>, Visibility), ApiError> {
         if let Some(mpk) = Self::fetch_from(self.registry(false)?, package, version).await? {
             return Ok((mpk, Visibility::Public));
@@ -226,11 +224,6 @@ impl Node {
         if url.username().is_empty() && url.password().is_none() {
             return Err(ApiError::not_found(&format!(
                 "the registry has no {package}@{version}"
-            )));
-        }
-        if actor != OPERATOR && org.is_none() {
-            return Err(crate::api::apps::no_organization(&format!(
-                "the registry serves no public {package}@{version}, and a private one is installed for an organization you are in"
             )));
         }
         let mut registry = self.registry(true)?;
@@ -248,7 +241,8 @@ impl Node {
     }
 
     /// The organization `actor` installs for: `named`, which it must be a member of, else
-    /// its only one (`None`: it is in none). The operator installs for none.
+    /// its only one (`None`: it is in none, and a private release is then its installers'
+    /// alone). The operator installs for none.
     async fn install_org(
         &self,
         actor: &str,
@@ -284,9 +278,7 @@ impl Node {
             .sys(|s| s.packages.get(package).map(|p| p.signer_id.clone()))
             .unwrap_or_default();
         self.refuse_stalled_install(actor, &pinned)?;
-        let (mpk, visibility) = self
-            .fetch_for_install(package, version, actor, org.as_ref())
-            .await?;
+        let (mpk, visibility) = self.fetch_for_install(package, version, actor).await?;
         let mut verified = self
             .verify_release(mpk, BundleSource::Registry, actor)
             .await?;
@@ -332,7 +324,8 @@ impl Node {
         Err(crate::node::not_a_deployer())
     }
 
-    /// Install an uploaded `.mpk`, private to `org` (named, else the installer's only one).
+    /// Install an uploaded `.mpk`, private to `org` (named, else the installer's only one;
+    /// in none, to its installers).
     pub async fn install_upload(
         &self,
         mpk: Arc<[u8]>,
@@ -341,11 +334,6 @@ impl Node {
     ) -> Result<Value, ApiError> {
         self.refuse_undeployable(actor).await?;
         let org = self.install_org(actor, org).await?;
-        if actor != OPERATOR && org.is_none() {
-            return Err(crate::api::apps::no_organization(
-                "an upload is private to an organization you are in",
-            ));
-        }
         let mut verified = self
             .verify_release(Arc::clone(&mpk), BundleSource::Upload, actor)
             .await?;

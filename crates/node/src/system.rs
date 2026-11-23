@@ -2006,7 +2006,8 @@ impl SystemState {
     /// Whether `who` (an account, or [`OPERATOR`]) may use the release `v`: list it,
     /// install, create, upgrade to or offer it. Everyone, for a release the operator
     /// installed (the cluster's own catalog); the operator, only those. A public release:
-    /// everyone. A private one: a member of an organization it was installed for. A release
+    /// everyone. A private one: a member of an organization it was installed for; installed
+    /// for none (its installers were in none), its installing accounts. A release
     /// recorded before either (`visibility` absent): whoever installed it, an account
     /// sharing an organization with an installing account, and an account that reaches an
     /// app running one of its services. Anyone else is answered as if it were not installed.
@@ -2020,6 +2021,7 @@ impl SystemState {
         }
         match v.visibility {
             Some(Visibility::Public) => true,
+            Some(Visibility::Private) if v.orgs.is_empty() => v.installed_by_any(who),
             Some(Visibility::Private) => v.orgs.iter().any(|o| self.member_of(o, who)),
             None => {
                 v.installed_by_any(who)

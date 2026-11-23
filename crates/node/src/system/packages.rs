@@ -122,11 +122,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !s.modules_installed(&release) {
                 return Err("a module the pipelines use is no longer installed");
             }
-            let private_for_none =
-                release.visibility == Some(Visibility::Private) && release.orgs.is_empty();
-            if (private_for_none && !by_operator)
-                || release.orgs.iter().any(|o| !s.member_of(o, &actor))
-            {
+            if release.orgs.iter().any(|o| !s.member_of(o, &actor)) {
                 return Err(NOT_AN_ORG_MEMBER);
             }
             if let Some(p) = s.packages.get(&package) {

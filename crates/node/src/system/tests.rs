@@ -706,10 +706,6 @@ fn a_private_release_is_used_only_in_the_organizations_it_was_installed_for() {
         m.run_authorized(install("carol", &["bob"], "private")),
         Err(NOT_AN_ORG_MEMBER)
     );
-    assert_eq!(
-        m.run_authorized(install("carol", &[], "private")),
-        Err(NOT_AN_ORG_MEMBER)
-    );
     let _ok = m
         .run_authorized(install("alice", &["bob"], "private"))
         .unwrap();
@@ -763,6 +759,44 @@ fn a_private_release_is_used_only_in_the_organizations_it_was_installed_for() {
     let v = &m.state.packages["p"].versions["1.0.0"];
     assert_eq!(v.visibility, Some(Visibility::Public));
     assert!(seen(&m, "dave") && seen(&m, "alice"));
+}
+
+/// A private release installed for no organization (its installer is in none) is its
+/// installing accounts' alone; an install for an organization adds it, and from then on
+/// the organization's members use it, an installer only while one.
+#[test]
+fn a_private_release_for_no_organization_is_its_installers_alone() {
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob", "carol"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    let install = |by: &str, orgs: &[String]| SystemCmd::InstallPackage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        release: serde_json::from_value(json!({
+            "version": "1.0.0", "mpk": "ab", "mpkSize": 1, "source": "upload",
+            "services": { "": "b1" }, "installedBy": by, "installedAt": 1,
+            "visibility": "private", "orgs": orgs,
+        }))
+        .unwrap(),
+    };
+    let seen = |m: &SystemMachine, who: &str| {
+        m.state
+            .sees_release(&m.state.packages["p"].versions["1.0.0"], who)
+    };
+    let _ok = m.run_authorized(install("alice", &[])).unwrap();
+    assert!(seen(&m, "alice"));
+    assert!(!seen(&m, "bob") && !seen(&m, "carol") && !seen(&m, OPERATOR));
+    let _ok = m.run_authorized(install("bob", &[])).unwrap();
+    assert!(seen(&m, "bob") && !seen(&m, "carol"));
+
+    let _ok = m.run_authorized(install("carol", &[p("carol")])).unwrap();
+    assert!(seen(&m, "carol"));
+    assert!(
+        !seen(&m, "alice") && !seen(&m, "bob"),
+        "the organization's rule now"
+    );
 }
 
 /// A package's first installer uninstalls (and manages the origins of) only the releases it

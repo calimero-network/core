@@ -18,7 +18,7 @@ On a cluster a release is one of three kinds, and core records which:
 Two rights are judged apart:
 
 - **Use** a release: list it, read its versions, pipelines and capability card, install it, create an instance of it, upgrade to it, offer it in a deployment, name it as a pipeline module or a unit member.
-  For a private release: only a member of an organization it was installed for (an installer too only while such a member), and the operator for its own installs.
+  For a private release: only a member of an organization it was installed for (an installer too only while such a member), its installing accounts for one installed for no organization, and the operator for its own installs.
 - **Read the facts** of the release an instance runs (its name and version in reports and update notices, the instance's ABI): whoever reaches that instance, as today.
   An organization that makes an instance reachable (grants, guests, public links, a deployment's customers) shares that instance, never the release.
 
@@ -54,6 +54,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
 - **C2. An install names its organization.**
   `POST /packages/install { package, version, org }` and `POST /apps { package }` (which installs first, into the instance's org) record `PackageVersion::orgs`, added to on each install for another org.
   The caller is a member of `org` (judged again at apply); `org` is required when the caller belongs to more than one.
+  A caller in no organization installs for none: the release is recorded private with no `orgs` and is its installing accounts' alone, so development flows (`meroctl local dev`, pushes) keep working; an install for an organization later adds it, and the organization rule then holds.
   A member of the package's Cloud org may install it for any cluster org they belong to: nothing maps Cloud orgs to cluster orgs, and that is the member's own deliberate share.
 - **C3. Kind and the two rights.**
   `InstallPackage` records `PackageVersion::visibility: public | private`.
@@ -93,7 +94,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
 
 ## Tests
 
-- Core: the two repro tests turn green; red-first tests for exposures 3, 4 and 5 (5 also through a deployment's offer) and for C6 (member, guest, invite holder, deployment customer, stranger); a stranger's frontend create of a public registry package still works; a customer of a deployment still reads its instance's release name; a release from before keeps today's rule (`DeepCase`); an install for org B by a member of A and B is used in B only; an installer who left the org loses it.
+- Core: the two repro tests turn green; red-first tests for exposures 3, 4 and 5 (5 also through a deployment's offer) and for C6 (member, guest, invite holder, deployment customer, stranger); a stranger's frontend create of a public registry package still works; a customer of a deployment still reads its instance's release name; a release from before keeps today's rule (`DeepCase`); an install for org B by a member of A and B is used in B only; an installer who left the org loses it; a private install for no organization is its installers' alone until an install for an organization adds one.
 - app-registry: authorize forwards `account` and caches per account.
 - mdma: authorize with a verified member, an unverified account, a non-member, no account before and after M1 recorded it, a product package; a cluster below the core release gets no credential.
 

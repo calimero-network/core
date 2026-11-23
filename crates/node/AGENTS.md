@@ -294,8 +294,12 @@ is its command line.
   `Node::fetch_for_install`): the registry URL's credential (userinfo) is left out
   first, and a release served so is public; else it is fetched with the credential
   and `x-calimero-install-account: <account>` (`INSTALL_ACCOUNT_HEADER`; none for the
-  operator) and is private, which needs an organization (`409 NO_ORGANIZATION`). An
-  upload is private. `PackageVersion::orgs` gains the organization of each install;
+  operator) and is private. An upload is private. An account in no organization
+  installs for none (`orgs` empty): such a private release is its installing
+  accounts' alone (`sees_release`, `installed_by_any`) until an install for an
+  organization adds one, and then the organization rule holds (regressions
+  `a_private_release_for_no_organization_is_its_installers_alone`, `system::tests`
+  and `tests/cluster.rs`). `PackageVersion::orgs` gains the organization of each install;
   `InstallPackage` refuses one the actor is not a member of (`NOT_AN_ORG_MEMBER`). A
   reinstall the registry serves to anyone makes a release public, never private again.
   `release_mpk` fetches a public release without the credential, any other with it
@@ -368,7 +372,8 @@ is its command line.
   (`SystemState::sees_release`, the right to use it): everyone for a release the
   operator installed (the catalog), and the operator for its own installs only; a
   public release (`visibility: public`): everyone; a private one: the members of an
-  organization in `PackageVersion::orgs` (an installer only while such a member). A
+  organization in `PackageVersion::orgs` (an installer only while such a member), or
+  with `orgs` empty, its installing accounts. A
   release recorded before `visibility` keeps the earlier rule: its installers
   (`installed_by`, `PackageVersion::installers`), accounts sharing an organization
   with an installing account, accounts that reach an app running it, and a session

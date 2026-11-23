@@ -7588,6 +7588,50 @@ async fn reaching_an_instance_reads_its_release_but_does_not_use_it() {
         .unwrap();
 }
 
+/// An account in no organization uploads a release for none: it is private to its
+/// installer, who lists and runs it, and nobody else sees it; once a member installs it for
+/// an organization, that organization's members use it, and the first installer, in none
+/// of them, no longer does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_private_release_for_no_organization_is_its_installers_alone() {
+    let c = Cluster::start(3).await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
+    let (dev, _d) = signed_up(&c, 0, "dev").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let acme = new_org(&carol, "Acme").await;
+    let tool = || {
+        mpk(
+            "com.dev.tool",
+            "1.0.0",
+            &variant(&kv_wasm(), "dev-tool"),
+            &publisher,
+        )
+    };
+    let _ok = dev.packages().upload(tool(), None).await.unwrap();
+    let tool_listed = BTreeMap::from([("com.dev.tool".to_owned(), vec!["1.0.0".to_owned()])]);
+    assert_eq!(listed(&dev).await, tool_listed);
+    assert_eq!(listed(&bob).await, BTreeMap::new());
+    assert_eq!(listed(&carol).await, BTreeMap::new());
+    let _mine = dev
+        .apps()
+        .create(typed(
+            json!({ "name": "t", "package": "com.dev.tool", "version": "1.0.0" }),
+        ))
+        .await
+        .unwrap();
+    let e = bob.packages().get("com.dev.tool").await.unwrap_err();
+    assert!(e.to_string().starts_with("404"), "{e}");
+
+    let _ok = carol.packages().upload(tool(), Some(&acme)).await.unwrap();
+    assert_eq!(listed(&carol).await, tool_listed);
+    assert_eq!(
+        listed(&dev).await,
+        BTreeMap::new(),
+        "the organization's rule now"
+    );
+}
+
 /// A package's first installer uninstalls only the releases it may use: Bob installed the
 /// public 1.0.0 first, and Alice's private 2.0.0 for Acme answers him as a missing version,
 /// so he neither removes it nor learns it exists; uninstalling the whole package takes only
