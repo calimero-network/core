@@ -16,7 +16,6 @@ unmaintained = "workspace"
 # when the rustls bump below carried aws-lc-sys to 0.45.0 and rustls-webpki to
 # 0.103.15; keep pruning them as they stop matching.
 ignore = [
-    { id = "RUSTSEC-2026-0118", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
     { id = "RUSTSEC-2026-0119", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
     { id = "RUSTSEC-2026-0097", reason = "rand, transitive; pending upstream upgrade" },
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, transitive; no upstream fix available" },
