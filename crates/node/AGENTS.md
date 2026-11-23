@@ -2368,7 +2368,17 @@ API and system group:
   with integrity, keyed by mero-kms and opened inside the TD), since tantivy writes its
   files as they are; otherwise in memory. One on disk is never trusted to be current: it
   is compared with the state on its first use, and one under another schema or format is
-  made anew; `drop_app` removes its files. Regressions:
+  made anew; `drop_app` removes its files. A tantivy writer holds three threads
+  (indexing, segment updater, merges) and an arena of up to
+  `calimero_search::index::WRITER_MEMORY` while it indexes, so only the apps refreshed
+  last keep theirs between refreshes, `MAX_OPEN_WRITERS` (16) across every app's tables
+  (`Writers`, least recently refreshed released first, the latest app kept whatever its
+  count; an app whose indexes a refresh or query holds is put back first in line, never
+  waited for); a released writer
+  finishes its merges on a thread of its own (`ContextIndex::release_writer`), and the
+  app's next refresh opens it again. A batch that fails releases its writer at once, so
+  its uncommitted changes never reach a later commit. Regressions:
+  `at_most_max_open_writers_stay_open_across_every_apps_indexes`,
   `preparing_a_views_search_indexes_nothing_until_it_queries`,
   `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`,
   `an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps`,
