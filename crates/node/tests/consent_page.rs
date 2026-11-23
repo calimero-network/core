@@ -800,8 +800,12 @@ async fn a_bundle_swapped_under_the_same_version_is_refused() {
         .unwrap();
 }
 
-/// Alice's private v1 and v2 of `PACKAGE`, v2 declaring `secret_prefix`, and an instance
-/// of v1 that anyone reaches; Alice and Bob each in an organization of their own.
+/// The prefix v1 of [`reached_v1_private_v2`] declares.
+const OPEN_PREFIX: &str = "https://open.example/api/";
+
+/// Alice's private v1 and v2 of `PACKAGE`, v1 declaring [`OPEN_PREFIX`] and v2
+/// `secret_prefix`, and an instance of v1 that anyone reaches; Alice and Bob each in an
+/// organization of their own.
 async fn reached_v1_private_v2(
     c: &Cluster,
     secret_prefix: &str,
@@ -815,13 +819,13 @@ async fn reached_v1_private_v2(
     let _o = alice.orgs().create("Acme", None, None).await.unwrap();
     let _o = bob.orgs().create("Bobco", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
-    for (version, outbound) in [("1.0.0", &[][..]), ("2.0.0", &[secret_prefix][..])] {
+    for (version, outbound) in [("1.0.0", OPEN_PREFIX), ("2.0.0", secret_prefix)] {
         let (mpk, _) = release(
             version,
             &kv_wasm(),
             &publisher,
             &Declares {
-                outbound,
+                outbound: &[outbound],
                 ..Declares::default()
             },
         );
@@ -838,46 +842,44 @@ async fn reached_v1_private_v2(
     (alice, bob, bob_pk)
 }
 
-/// Reaching an instance of v1 shows no outbound sheet of the private v2: the page answers
-/// as for a package that is not installed, whatever prefixes are named.
+/// Reaching an instance of v1 shows the outbound sheet of v1, the newest release Bob reads,
+/// never the private v2: v2's prefix is answered as one no release declares.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_outbound_sheet_never_shows_a_release_its_asker_cannot_read() {
     const SECRET: &str = "https://internal.acme.example/secret-api/";
     let c = Cluster::start(3).await;
     let (_alice, bob, _b) = reached_v1_private_v2(&c, SECRET).await;
-    for prefixes in [
-        Value::Null,
-        json!([SECRET]),
-        json!(["https://guess.example/"]),
-    ] {
-        let mut subject = json!({ "package": PACKAGE });
-        if !prefixes.is_null() {
-            subject["prefixes"] = prefixes.clone();
-        }
-        let made = bob
-            .consent()
-            .page_create(typed(json!({
-                "kind": "outbound",
-                "scope": "account",
-                "subject": subject,
-                "returnTo": format!("{ORIGIN}/settings"),
-            })))
+    let sheet = |subject: Value| {
+        bob.consent().page_create(typed(json!({
+            "kind": "outbound",
+            "scope": "account",
+            "subject": subject,
+            "returnTo": format!("{ORIGIN}/settings"),
+        })))
+    };
+    let made = sheet(json!({ "package": PACKAGE }))
+        .await
+        .map(wire)
+        .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    assert_eq!(model["outbound"]["release"], "1.0.0", "{model}");
+    assert_eq!(
+        model["outbound"]["declared"],
+        json!([OPEN_PREFIX]),
+        "{model}"
+    );
+    assert!(!model.to_string().contains(SECRET), "{model}");
+    for prefix in [SECRET, "https://guess.example/"] {
+        let e = sheet(json!({ "package": PACKAGE, "prefixes": [prefix] }))
             .await
-            .map(wire);
-        let e = match made {
-            Ok(made) => {
-                let model = Page::new(made["url"].as_str().unwrap()).model().await;
-                panic!("{prefixes}: a sheet for Bob: {model}");
-            }
-            Err(e) => e,
-        };
-        assert!(e.to_string().starts_with("404"), "{prefixes}: {e}");
+            .unwrap_err();
+        assert_eq!(e.code(), Some("NOT_DECLARED"), "{prefix}: {e}");
     }
 }
 
-/// Approving a package's outbound hosts approves its latest release's prefixes: Bob, who
-/// reaches only an instance of v1, is answered as for a package that is not installed,
-/// before any passkey, and never learns the private v2's prefixes.
+/// Approving a package's outbound hosts approves the prefixes of the newest release its
+/// approver reads: Bob, who reaches only an instance of v1, approves v1's and never learns
+/// the private v2's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_outbound_approval_never_reads_a_release_its_approver_cannot_read() {
     const SECRET: &str = "https://internal.acme.example/secret-api/";
@@ -894,10 +896,10 @@ async fn an_outbound_approval_never_reads_a_release_its_approver_cannot_read() {
             Some(&mut bob_pk),
         )
         .await
-        .map(wire);
-    let e = got.expect_err("Bob may not approve what he cannot read");
-    assert!(e.to_string().starts_with("404"), "{e}");
-    assert!(!e.to_string().contains(SECRET), "{e}");
+        .map(wire)
+        .unwrap();
+    assert_eq!(got["approval"]["prefixes"], json!([OPEN_PREFIX]), "{got}");
+    assert!(!got.to_string().contains(SECRET), "{got}");
 }
 
 /// A session bound to a package learns nothing of a release its account may not read: Bob,

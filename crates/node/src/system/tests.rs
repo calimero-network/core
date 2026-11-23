@@ -1054,6 +1054,75 @@ fn a_private_module_is_pinned_only_into_a_release_private_to_its_organizations()
     );
 }
 
+/// An outbound approval approves the prefixes of the newest release its approver reads, from
+/// the logged version that brings private releases: another organization's private newer
+/// release neither blocks it nor lends it its prefixes; one with none it reads is a missing
+/// package. An entry logged below that version approves the newest release's, as it did.
+#[test]
+fn an_outbound_approval_takes_the_newest_release_its_approver_reads() {
+    use super::cluster_version::Feature;
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    let _ok = m.run_authorized(account("alice")).unwrap();
+    let _prev = m
+        .state
+        .orgs
+        .insert("org".into(), org(&[("alice", "owner")], &[], &[]));
+    let release = |version: &str, visibility: &str, prefix: &str| {
+        json!({
+            "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+            "services": { "": format!("b-{version}") }, "installedBy": "bob",
+            "installedAt": 1, "visibility": visibility, "orgs": ["elsewhere"],
+            "outbound": [prefix]
+        })
+    };
+    let _prev = m.state.packages.insert(
+        "p".into(),
+        serde_json::from_value(json!({
+            "name": "p", "signerId": "did:key:z", "owner": "bob", "versions": {
+                "1.0.0": release("1.0.0", "public", "https://open.example/"),
+                "2.0.0": release("2.0.0", "private", "https://secret.example/"),
+            }
+        }))
+        .unwrap(),
+    );
+    let outbound = SystemCmd::SetOutboundApproval {
+        scope: ReleaseScope::Org { org: "org".into() },
+        package: "p".into(),
+        selection: calimero_primitives::outbound::OutboundSelection::Manifest,
+        replace: false,
+        actor: "alice".into(),
+        consent: Value::Null,
+    };
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let got = old.run_unproven(outbound.clone()).unwrap();
+    assert_eq!(
+        got["approval"]["prefixes"],
+        json!(["https://secret.example/"]),
+        "as it applied"
+    );
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    let got = m.run_unproven(outbound.clone()).unwrap();
+    assert_eq!(
+        got["approval"]["prefixes"],
+        json!(["https://open.example/"])
+    );
+    let v1 = m
+        .state
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .get_mut("1.0.0")
+        .unwrap();
+    v1.visibility = Some(super::Visibility::Private);
+    assert_eq!(m.run_unproven(outbound), Err("no such package".to_owned()));
+}
+
 /// A release recorded before `visibility` keeps the rule from before: whoever shares an
 /// organization with an installer, or reaches an app of it, uses it. Its entry writes back
 /// byte for byte; a private install of it again leaves that rule, a public one replaces it.

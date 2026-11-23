@@ -388,8 +388,12 @@ is its command line.
   bundle hash it ships is an unknown bundle (`sees_bundle`; its uploader, which a
   release's first installer is too, counts only beside a release recorded before
   `visibility`), outbound approval
-  (`POST /orgs/{org}/outbound`, the consent page's `outbound`) answers `404` unless
-  the caller reads the latest release, whose prefixes it approves and shows, and upgrade runs skip it (`api::upgrade_sees`; the operator's:
+  (`POST /orgs/{org}/outbound`, the consent page's `outbound`) approves and shows the
+  prefixes of the newest release the caller reads (`PackageRecord::latest_where`;
+  `SetOutboundApproval` at apply once the logged cluster version brings
+  `Feature::PrivateReleases`), `404` with none; the page's `requestedBy` and its
+  `returnTo` origins read that release too (regression
+  `an_outbound_approval_takes_the_newest_release_its_approver_reads`), and upgrade runs skip it (`api::upgrade_sees`; the operator's:
   its own or the app owner's). Frontends stay public by name; the newest release's
   display name and author reach a session bound to the package (the consent page's
   `requestedBy`) only when its account reads that release, an app team (`ScopeApps`,

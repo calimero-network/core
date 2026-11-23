@@ -186,9 +186,12 @@ upgrading an app from it resolves as for a missing release: without a version,
 the newest release the caller sees; with one, the release is installed from
 the registry first, which makes a registry release the caller's too, and
 answers what a missing release answers when the registry lacks it (an upload).
-Naming its WASM by hash answers as an unknown bundle, and approving outbound
-hosts for a package whose latest release the caller may not read (the release
-whose prefixes the approval takes) answers `404`, on the API and the consent page. An
+Naming its WASM by hash answers as an unknown bundle. Approving outbound hosts
+takes the prefixes of the newest release the caller reads (a newer private
+release of another organization neither blocks it nor shows), and answers `404`
+when it reads none, on the API and the consent page; the page's requesting app
+name and author and the frontend origins it may return to come from that release
+too. An
 organization's upgrade run moves an app only to a release its upgrader sees;
 the operator's, to one it installed or the app's owner sees.
 

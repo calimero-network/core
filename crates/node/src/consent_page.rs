@@ -1078,11 +1078,16 @@ fn local_host(u: &Url) -> bool {
 }
 
 /// `raw`, if the app may be sent back there: a package-bound session to its
-/// package's served frontend origin, or an origin its latest signed manifest
-/// names (`links.frontend`, `frontendAliases`); an unbound session to one of
+/// package's served frontend origin, or an origin the newest signed manifest `account`
+/// reads names (`links.frontend`, `frontendAliases`); an unbound session to one of
 /// the cluster's configured origins. Anything else would make the node an
 /// open redirect, a phishing aid that names a trusted page.
-async fn allowed_return_to(node: &Node, package: Option<&str>, raw: &str) -> Result<Url, ApiError> {
+async fn allowed_return_to(
+    node: &Node,
+    account: &str,
+    package: Option<&str>,
+    raw: &str,
+) -> Result<Url, ApiError> {
     let refuse =
         |why: &str| ApiError::bad_request("RETURN_TO_NOT_ALLOWED", &format!("returnTo {why}"));
     if raw.len() > MAX_RETURN_TO_BYTES {
@@ -1106,7 +1111,7 @@ async fn allowed_return_to(node: &Node, package: Option<&str>, raw: &str) -> Res
             .any(|o| o.trim_end_matches('/') == origin),
         Some(p) => {
             crate::api::app_origin(node, &origin).is_some_and(|a| a.package == p)
-                || manifest_origins(node, p).await?.contains(&origin)
+                || manifest_origins(node, account, p).await?.contains(&origin)
         }
     };
     if allowed {
@@ -1119,9 +1124,18 @@ async fn allowed_return_to(node: &Node, package: Option<&str>, raw: &str) -> Res
     }
 }
 
-/// The frontend origins `package`'s newest release signs for.
-async fn manifest_origins(node: &Node, package: &str) -> Result<BTreeSet<String>, ApiError> {
-    let Some(latest) = node.sys(|s| s.packages.get(package)?.latest().cloned()) else {
+/// The frontend origins the newest release of `package` that `account` reads signs for.
+async fn manifest_origins(
+    node: &Node,
+    account: &str,
+    package: &str,
+) -> Result<BTreeSet<String>, ApiError> {
+    let Some(latest) = node.sys(|s| {
+        s.packages
+            .get(package)?
+            .latest_where(|v| s.reads_release(v, account))
+            .cloned()
+    }) else {
         return Ok(BTreeSet::new());
     };
     let facts = release_facts(node, package, &latest).await?;
@@ -1158,7 +1172,7 @@ pub async fn create(
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
     let body = match body.into_org_ask() {
         Ok((ask, return_to)) => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = orgs::request(&node, &account, ask).await?;
             return hold(&node, account, package, Action::Org(action), model, to).await;
         }
@@ -1170,23 +1184,23 @@ pub async fn create(
             subject,
             return_to,
         } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = release_request(&node, &account, &scope, subject).await?;
             (action, model, to)
         }
         CreateBody::Upgrade { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) =
                 upgrade_request(&node, &p, &account, subject, Part::Alone).await?;
             (action, model, to)
         }
         CreateBody::UpgradeUnit { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = unit_upgrade_request(&node, &p, &account, subject).await?;
             (action, model, to)
         }
         CreateBody::Delegate { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = delegate_request(&node, &p, &account, subject).await?;
             (action, model, to)
         }
@@ -1195,39 +1209,39 @@ pub async fn create(
             subject,
             return_to,
         } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) =
                 outbound_request(&node, &account, package.as_deref(), &scope, subject).await?;
             (action, model, to)
         }
         CreateBody::CreateOrg { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) =
                 create_org_request(&node, &account, subject, package.as_deref()).await?;
             (action, model, to)
         }
         CreateBody::CreateInvite { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = create_invite_request(&node, &account, subject).await?;
             (action, model, to)
         }
         CreateBody::AcceptInvite { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = accept_invite_request(&node, &account, subject)?;
             (action, model, to)
         }
         CreateBody::Install { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = updates::install_request(&node, &p, &account, *subject).await?;
             (action, model, to)
         }
         CreateBody::UpdatePolicy { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = updates::policy_request(&node, &p, &account, subject).await?;
             (action, model, to)
         }
         CreateBody::Updates { subject, return_to } => {
-            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let to = allowed_return_to(&node, &account, package.as_deref(), &return_to).await?;
             let (action, model) = updates::updates_request(&node, &account, subject)?;
             (action, model, to)
         }
@@ -1333,16 +1347,18 @@ pub fn confirmation_code(request_id: &str) -> String {
     out
 }
 
-/// A package's display name and author, from its newest release's signed
-/// manifest; `None` for what it does not name, cannot be read now, or `account` may not read.
+/// A package's display name and author, from the signed manifest of its newest release
+/// `account` reads; `None` for what it does not name, cannot be read now, or with none.
 async fn package_names(
     node: &Node,
     account: &str,
     package: &str,
 ) -> (Option<String>, Option<String>) {
     let Some(latest) = node.sys(|s| {
-        let v = s.packages.get(package)?.latest()?;
-        s.reads_release(v, account).then(|| v.clone())
+        s.packages
+            .get(package)?
+            .latest_where(|v| s.reads_release(v, account))
+            .cloned()
     }) else {
         return (None, None);
     };
@@ -2456,6 +2472,20 @@ async fn delegate_request(
     ))
 }
 
+/// The release whose prefixes an outbound approval of `package` by `account` (a session
+/// bound to `bound`) shows: the newest one it reads.
+fn outbound_release<'s>(
+    s: &'s crate::system::SystemState,
+    package: &str,
+    account: &str,
+    bound: Option<&str>,
+) -> Option<&'s crate::system::PackageVersion> {
+    let frontend = bound == Some(package);
+    s.packages
+        .get(package)?
+        .latest_where(|v| s.sees_release_from(v, account, frontend) || s.reads_release(v, account))
+}
+
 async fn outbound_request(
     node: &Node,
     account: &str,
@@ -2480,12 +2510,7 @@ async fn outbound_request(
         }
     };
     let latest = node
-        .sys(|s| {
-            let latest = s.packages.get(&package)?.latest()?;
-            let frontend = bound == Some(package.as_str());
-            (s.sees_release_from(latest, account, frontend) || s.reads_release(latest, account))
-                .then(|| latest.clone())
-        })
+        .sys(|s| outbound_release(s, &package, account, bound).cloned())
         .ok_or_else(|| ApiError::not_found("no such package"))?;
     let (scope, scope_json) = scope_of(node, account, scope)?;
     let facts = release_facts(node, &package, &latest).await?;
@@ -3346,8 +3371,8 @@ struct ApproveBody {
 
 /// The facts the page showed, checked again before the passkey is asked and
 /// before the approval is written.
-fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
-    match action {
+fn still_current(node: &Node, req: &ConsentRequest) -> Result<(), ApiError> {
+    match &req.action {
         // The routes judge these on fresh state when they run.
         Action::Release { .. }
         | Action::CreateOrg { .. }
@@ -3439,7 +3464,10 @@ fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
             latest_mpk,
             ..
         } => {
-            let latest = node.sys(|s| s.packages.get(package)?.latest().map(|v| v.mpk.clone()));
+            let latest = node.sys(|s| {
+                outbound_release(s, package, &req.account, req.package.as_deref())
+                    .map(|v| v.mpk.clone())
+            });
             if latest.as_ref() == Some(latest_mpk) {
                 Ok(())
             } else {
@@ -3469,7 +3497,7 @@ async fn approve(node: &Arc<Node>, id: &str, body: &[u8]) -> Result<Value, ApiEr
         ));
     }
     let (sys_index, _caught_up) = node.sys_fresh_index().await;
-    still_current(node, &req.action)?;
+    still_current(node, &req)?;
     let confirmed = body.confirm.is_some();
     // One approval at a time: the passkey's answer is taken once.
     if confirmed {
