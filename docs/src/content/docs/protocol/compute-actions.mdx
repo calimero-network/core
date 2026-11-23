@@ -241,7 +241,7 @@ A run keeps no log.
 A module's stdout, stderr and `log` lines may hold user data, which neither Calimero nor the operator may see, so the job node seals none and the leader asks for none; a report that names one does not hold up, and the attempt runs again elsewhere.
 Up to 1.0.0-rc.35 a run kept its final attempt's log as a sealed file of the app; a final that earlier release logged still applies as it did, its log held with the last 256 run records and then collected, but no route answers it: the files export does not know it.
 `GET /apps/{app}/runs/{run}/logs` is deprecated and answers `{ logs: [] }`, to the app's owner and its organization's members only.
-To read a compute method's log lines, run it on your own machine with `meroctl local compute run`.
+To read a compute method's log lines, run it on your own machine with `meroctl local compute run`, which prints them on stderr as `log: <line>`, a failed run's included. A job node never collects them: its host drops every line as the module writes it.
 
 ## Restarts, cancel and caps
 

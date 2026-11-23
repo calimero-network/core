@@ -113,12 +113,21 @@ reports progress (`compute::progress(percent, step)`).
 
 ## Logging
 
-`env::log(message)` writes a line to the run's log (the component's stderr). The
-host keeps 64 KiB per run. A cluster keeps none of it: neither Calimero nor the
-operator may see user data, and an app's log lines can hold some, so no log entry,
-job node or route stores or answers them (a call's and a timer's entry, and a compute
-run, drop them). To read them, run the method on your own machine:
-`meroctl local compute run` for a compute method, or a test of the app.
+`env::log(message)` writes a line to the run's log (the component's stderr), as do
+the component's own stdout and stderr. Logs are a development tool. Neither Calimero
+nor the operator may see user data, and an app's log lines can hold some, so a
+production node does not collect them at all: every line is dropped as the app writes
+it, and no log entry, job node or route stores or answers one.
+
+Where you read them:
+
+- a development node (`merod --dev`, which `meroctl local up` runs) prints each line
+  to its own log, tagged with the app, the invocation kind and the method (target
+  `app_log`), up to 64 KiB per run;
+- `meroctl local compute run` prints a compute method's lines on stderr as
+  `log: <line>`, a failed run's included.
+
+To diagnose a production app, reproduce the call on a development node.
 
 ## The world underneath
 

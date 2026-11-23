@@ -367,6 +367,7 @@ fn execute(job: &JobNode, run: &Arc<Run>) -> eyre::Result<Phase> {
                 wall_secs: a.budget.wall_secs,
                 result: String::new(),
             },
+            keep_logs: false,
         },
         Arc::new(files),
         progress,
