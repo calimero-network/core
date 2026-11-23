@@ -105,7 +105,7 @@ class AppFiles(DeepCase):
         self.check(w, s)
 
 
-GRANT_TTL = 7 * 24 * 3600  # seconds: outlives the roll
+GRANT_TTL = 86_400  # seconds: the host's cap, far longer than the roll
 
 
 def _download(w, app, blob, grant, node):

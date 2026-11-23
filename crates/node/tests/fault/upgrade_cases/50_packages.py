@@ -76,6 +76,10 @@ class Services(DeepCase):
         body = {"name": f"svc-{service}", "package": s["package"], "version": s["version"]}
         return p.raw("post", "apps", {**body, "service": service} if service else body)
 
+    def _instances(self, s):
+        """`(app, service)` of every instance the case made."""
+        return [(a, sv) for sv, a in s["apps"].items()] + [(a, "beta") for a in s.get("extra", [])]
+
     def _decisions(self, w, s):
         mel = person(w, "mel")
         return decisions({"no service": lambda: self._create(mel, s, None),
@@ -96,14 +100,14 @@ class Services(DeepCase):
     def _record(self, w, s):
         mel = person(w, "mel")
         s["read"] = snap(mel, f"packages/{s['package']}")
-        s["records"] = {a: snap(mel, f"apps/{a}") for a in s["apps"].values()}
-        for service, a in s["apps"].items():
+        s["records"] = {a: snap(mel, f"apps/{a}") for a, _ in self._instances(s)}
+        for a, service in self._instances(s):
             check(service in json.dumps(s["records"][a]["release"]), f"{a}'s release names {service}: {s['records'][a]}")
 
     def check(self, w, s):
         mel = person(w, "mel")
         same_read(mel, f"packages/{s['package']}", s["read"], "the package")
-        for service, a in s["apps"].items():
+        for a, service in self._instances(s):
             same_read(mel, f"apps/{a}", s["records"][a], f"the {service} instance")
             eq(mel.result(a, "get", {"key": "service"}), service, f"the {service} instance's data")
         same_decisions(self._decisions(w, s), s["decisions"], "an instance's service")
@@ -118,7 +122,7 @@ class Services(DeepCase):
             eq(card["service"], service, "the capability card's service")
         refused("NO_SUCH_SERVICE", lambda: mel.get(f"packages/{s['package']}/{s['version']}/capabilities"),
                 "the card of a release with several services, naming none")
-        s["apps"]["late"] = late
+        s["extra"] = [late]
         self._record(w, s)
 
 
