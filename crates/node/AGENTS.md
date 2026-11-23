@@ -396,6 +396,7 @@ is its command line.
   `reaching_an_app_by_its_bundle_never_names_a_private_sibling`,
   `the_app_list_never_names_a_private_sibling_sharing_the_wasm`,
   `an_outbound_approval_never_reads_another_packages_release_of_the_same_wasm`,
+  `the_app_list_filters_by_the_package_an_instance_runs`,
   `system::tests::reaching_an_instance_never_reads_another_packages_release_of_its_wasm`,
   `report::tests` and
   `tests/cluster.rs`). A route
@@ -404,7 +405,9 @@ is its command line.
   `frontend`), `package_used`, `newest_used` (use), `newest_read` (read) and
   `release_offered_to` (a deployment's offer that still serves); the gate
   `tests/release_lookups.rs` (`routes_read_releases_through_the_rule`) fails on any other
-  read of `packages` or `versions` there unless its `READS_ALLOWED` names the line and why
+  read of `packages` or `versions` there, or of a bundle record's release (`bundles`, which
+  names the release its WASM was first recorded from; filter by `report::release_of_app`),
+  unless its `READS_ALLOWED` names the line and why
   no client names that release. For
   anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages`
   leave it out (`404` by name), `resolve_release` treats it as missing (a

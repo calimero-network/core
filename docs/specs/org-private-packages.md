@@ -68,7 +68,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
   A deployment's offer serves only while someone who acts for its owner may use the release: for a create, any upgrade (one app, an organization's, the operator's or a unit's run), an update on its own and the update an instance is shown.
   A deployment's secrets reach a release its offers use only while someone who acts for its owner may use that release.
   An install again that would leave its installer a release it may not use is refused before it is logged.
-  A route reads a release a client names only through the state's lookups for the two rights (`release_used` and its kin), and a gate test (`tests/release_lookups.rs`) fails on any other read of the package table under `api/` and `consent_page`.
+  A route reads a release a client names only through the state's lookups for the two rights (`release_used` and its kin), and a gate test (`tests/release_lookups.rs`) fails on any other read of the package table, or of the release a bundle record names, under `api/` and `consent_page`.
   Apply judges the rules it can from the logged version that brings `Feature::PrivateReleases`, so earlier entries replay as they applied.
 - **C4. The registry learns who installs.**
   A private install's fetch sends the installing account (`x-calimero-install-account: <account id>`) with the cluster credential; `calimero-app-downloader`'s `HttpRegistry` takes the header.

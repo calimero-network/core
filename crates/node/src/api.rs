@@ -1989,9 +1989,7 @@ async fn scope_report(
             in_scope
                 && (s.may_reach(a, Some(account)) || s.may_upgrade(a, account, owner_approves))
                 && bound.is_none_or(|pkg| {
-                    s.bundles
-                        .get(&a.bundle)
-                        .and_then(|b| b.package.as_ref())
+                    report::release_of_app(s, a, Reader::Account(account))
                         .is_some_and(|r| r.package == pkg)
                 })
                 && key_apps.is_none_or(|apps| apps.contains(&a.app_id))

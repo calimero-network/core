@@ -1,8 +1,9 @@
 //! A route reads a release a client names only through `SystemState`'s lookups
 //! (`release_used`, `releases_used`, `package_used`, `newest_used`, `newest_read`,
 //! `release_offered_to`), which answer anyone the rule leaves out as if the release were not
-//! installed. This gate fails on a direct read of the package table under `src/api` or
-//! `src/consent_page` that `READS_ALLOWED` does not name.
+//! installed. This gate fails on a direct read of the package table, or of the release a
+//! bundle record names, under `src/api` or `src/consent_page` that `READS_ALLOWED` does not
+//! name.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,10 @@ const DIRECT_READS: &[&str] = &[
     ".versions.iter(",
     ".versions.keys(",
     ".latest()",
+    // A bundle record names the release its WASM was first recorded from, not the one an
+    // instance runs (`report::release_of_app`).
+    "bundles.get(",
+    "b.package",
 ];
 
 /// (file under `src/`, a fragment of exactly one joined line, why no client names the release).

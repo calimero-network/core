@@ -935,31 +935,21 @@ async fn app_list(
         .as_ref()
         .and_then(|p| p.caller.account().map(str::to_owned));
     let bound = p.as_ref().and_then(|p| p.bound_app().map(str::to_owned));
+    let reader = crate::report::Reader::Account(account.as_deref().unwrap_or_default());
     let apps: Vec<Value> = node.sys(|s| {
         s.apps
             .values()
-            .filter(|a| {
-                bound.as_ref().is_none_or(|pkg| {
-                    s.bundles
-                        .get(&a.bundle)
-                        .and_then(|b| b.package.as_ref())
-                        .is_some_and(|r| r.package == *pkg)
-                })
-            })
             .filter(|a| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
             .filter(|a| s.may_reach(a, account.as_deref()))
             .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
-            .filter(|a| {
-                q.package.as_ref().is_none_or(|p| {
-                    s.bundles
-                        .get(&a.bundle)
-                        .and_then(|b| b.package.as_ref())
-                        .is_some_and(|r| r.package == *p)
+            .map(|a| (a, crate::report::release_of_app(s, a, reader)))
+            // Releases may share a WASM: filter by the release the row names, not the bundle's.
+            .filter(|(_, release)| {
+                [&bound, &q.package].into_iter().flatten().all(|pkg| {
+                    release.as_ref().is_some_and(|r| r.package == *pkg)
                 })
             })
-            .map(|a| {
-                let reader = crate::report::Reader::Account(account.as_deref().unwrap_or_default());
-                let release = crate::report::release_of_app(s, a, reader);
+            .map(|(a, release)| {
                 json!({
                     "appId": a.app_id,
                     "name": a.name,

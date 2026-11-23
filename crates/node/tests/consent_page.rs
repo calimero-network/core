@@ -1074,6 +1074,72 @@ async fn the_app_list_never_names_a_private_sibling_sharing_the_wasm() {
     assert!(!listed.to_string().contains("2.0.0"), "{listed}");
 }
 
+/// The app list filters by the package an instance runs, never by the package its WASM was
+/// first recorded under: Bob's instance of the operator's `notes@1.0.0` shares its WASM with
+/// Acme's private `secret@1.0.0`, installed first, and lists under notes only, to his account
+/// and to a session bound to the notes frontend, in `GET /apps` and the account's report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_app_list_filters_by_the_package_an_instance_runs() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, bob_key) = signed_up(&c, 1, "bob").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
+    let (mpk, _) = release_of(
+        "com.test.secret",
+        "1.0.0",
+        &kv_wasm(),
+        &publisher,
+        &Declares::default(),
+    );
+    let _ = alice.packages().upload(mpk, None).await.unwrap();
+    let (mpk, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops.ops().package_upload(mpk).await.unwrap();
+    let app = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "n", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .unwrap()
+        .app_id;
+    let ids = |listed: Value| -> Vec<Value> {
+        listed["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["appId"].clone())
+            .collect()
+    };
+    let list = |package| bob.apps().list(package, None);
+    let secret = ids(list(Some("com.test.secret")).await.map(wire).unwrap());
+    let missing = ids(list(Some("com.test.missing")).await.map(wire).unwrap());
+    let notes = ids(list(Some(PACKAGE)).await.map(wire).unwrap());
+    assert_eq!(secret, missing);
+    assert_eq!(notes, vec![json!(app)]);
+
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(1);
+    let mut bob_in_app = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut bob_in_app).await.unwrap();
+    let bound = ids(in_app.apps().list(None, None).await.map(wire).unwrap());
+    assert_eq!(bound, vec![json!(app)]);
+    let report = in_app
+        .auth()
+        .account_apps(None, None)
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(report["apps"][0]["app"], json!(app), "{report}");
+    assert_eq!(report["apps"].as_array().unwrap().len(), 1, "{report}");
+}
+
 /// Release and outbound requests through the page, a person's own account
 /// as the scope; the bounds a request is held to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
