@@ -212,6 +212,41 @@ class DeploymentOfferUpgrades(DeepCase):
         self.check(w, s)
 
 
+@case
+class DeploymentNamedToCustomers(DeepCase):
+    name = "deployment-named-to-customers"
+    area = "Deployments"
+    since = "1.0.0-rc.36"
+    seeds = "a deployment offering a release, and a customer's instance from it"
+    verifies = ("`GET /apps/{app}/update` names the instance's deployment with its id and its owner's kind and name "
+                "(names are not unique), as `GET /deployments/{id}` names the owner; on the new release a second "
+                "instance from it is named the same way")
+
+    def populate(self, w):
+        drew, cass = people(w, "drew", "cass")
+        install(drew, w, "kv-o-1.0.0.mpk")
+        d = drew.raw("post", "deployments", {"name": "drew-labs", "owner": {"account": drew.id}})["id"]
+        drew.raw("post", f"deployments/{d}/apps", {"app": "kv", "package": OFFERED, "version": "1.0.0"})
+        org = new_org(cass, "Named Customer Org")
+        app = cass.raw("post", "apps", {"name": "named-1", "deployment": d, "package": OFFERED, "org": org})["appId"]
+        return {"deployment": d, "org": org, "apps": [app]}
+
+    def check(self, w, s):
+        drew, cass = people(w, "drew", "cass")
+        d = s["deployment"]
+        owner = drew.get(f"deployments/{d}")["owner"]
+        eq(owner.get("kind"), "account", "the deployment's owner kind")
+        for app in s["apps"]:
+            eq(cass.get(f"apps/{app}/update").get("deployment"), {"id": d, "name": "drew-labs", "owner": owner},
+               f"instance {app}'s update names its deployment and owner")
+
+    def exercise(self, w, s):
+        cass = person(w, "cass")
+        s["apps"].append(cass.raw("post", "apps", {"name": "named-2", "deployment": s["deployment"],
+                                                   "package": OFFERED, "org": s["org"]})["appId"])
+        self.check(w, s)
+
+
 def _operator(w, method, path, body=None):
     """An operator decision over the ops route: the node answers `428 OPERATOR_SIGNATURE_REQUIRED`
     with the bytes to sign, and the retry carries the operator key's signature over them."""

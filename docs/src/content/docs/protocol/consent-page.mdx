@@ -284,7 +284,9 @@ Three kinds serve owner-approved updates (`consent_page/updates.rs`):
   where data can go over that whole unit ("Your data stays in Calimero." or
   "This app can send data to: *hosts*."), that updates wait for an approval
   (the policy the instance will follow, the defaults for a new organization),
-  and, for an instance from a deployment, who pays. A frontend asks only for its
+  and, for an instance from a deployment, which deployment offers it (its name,
+  id and owner; the upgrade sheet names it too, since its managers choose the
+  release) and who pays. A frontend asks only for its
   own installed package (`403` otherwise); the release must be installed
   (`409 NOT_INSTALLED`: the sheet installs nothing). Approving runs `POST /apps`'s
   own code behind an unlogged step-up over `account:<a> / __create_instance /
