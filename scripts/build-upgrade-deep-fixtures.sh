@@ -12,13 +12,13 @@
 # Writes OUT/deep/: kv-dev.wasm (the release's kv fixture component from its
 # kv-store-test-fixture.mpk, as a dev bundle of its own), files.wasm, and the signed
 # packages kv-a-1.0.0.mpk, kv-a-1.1.0.mpk, kv-b-1.0.0.mpk, kv-c-1.0.0.mpk,
-# kv-u-1.0.0.mpk, kv-u-1.1.0.mpk, kv-o-1.0.0.mpk to kv-o-1.3.0.mpk (four releases of one
+# kv-u-1.0.0.mpk, kv-u-1.1.0.mpk, kv-r-1.0.0.mpk, kv-o-1.0.0.mpk to kv-o-1.3.0.mpk (four releases of one
 # package, a deployment's offer moving between them) (com.calimero.upgrade.kv-*), notes-1.0.0.mpk and notes-2.0.0.mpk
 # (com.calimero.upgrade.notes, apps/fixture-notes-v1 and fixture-notes-v2), and, from a
 # release that has the units examples, calendar-0.1.0.mpk, calendar-0.1.1.mpk,
 # planner-0.1.0.mpk, planner-0.2.0.mpk and booking-0.1.0.mpk (com.calimero.example.*); from
 # one whose meroctl packs them, kv-guest-1.0.0.mpk (`guests: allowed`), kv-secret-1.0.0.mpk
-# (it declares a secret, `secrets`) and kv-unit-1.0.0.mpk (`uses` kv-secret, `mode = "create"`).
+# (it declares a secret, `secrets`), kv-svc-1.0.0.mpk (two services, from 1.0.0-rc.25) and kv-unit-1.0.0.mpk (`uses` kv-secret, `mode = "create"`).
 set -euo pipefail
 
 OUT=$(cd "${1:?usage: build-upgrade-deep-fixtures.sh OUT}" && pwd -P)
@@ -34,7 +34,7 @@ mkdir -p "$DEEP"
 # The release's kv component, as components of their own (one custom section each):
 # kv-dev.wasm, every account's dev bundle, and one per package below
 # (scripts/upgrade-dev-bundle.py says why).
-python3 -I "$(dirname "$0")/upgrade-dev-bundle.py" "$OUT/kv-store-test-fixture.mpk" "$DEEP" dev a b c u o unit guest secret
+python3 -I "$(dirname "$0")/upgrade-dev-bundle.py" "$OUT/kv-store-test-fixture.mpk" "$DEEP" dev a b c u o r unit guest secret m1 m2
 
 for app in files notes-v1 notes-v2; do
   # An older release keeps its test fixtures under apps/v2-fixtures/.
@@ -51,12 +51,21 @@ pack "$DEEP/kv-a.wasm" com.calimero.upgrade.kv-a 1.1.0 kv-a-1.1.0.mpk
 pack "$DEEP/kv-b.wasm" com.calimero.upgrade.kv-b 1.0.0 kv-b-1.0.0.mpk
 pack "$DEEP/kv-c.wasm" com.calimero.upgrade.kv-c 1.0.0 kv-c-1.0.0.mpk
 pack "$DEEP/kv-u.wasm" com.calimero.upgrade.kv-u 1.0.0 kv-u-1.0.0.mpk
+pack "$DEEP/kv-r.wasm" com.calimero.upgrade.kv-r 1.0.0 kv-r-1.0.0.mpk
 pack "$DEEP/kv-u.wasm" com.calimero.upgrade.kv-u 1.1.0 kv-u-1.1.0.mpk
 for v in 1.0.0 1.1.0 1.2.0 1.3.0; do
   pack "$DEEP/kv-o.wasm" com.calimero.upgrade.kv-o "$v" "kv-o-$v.mpk"
 done
 pack "$DEEP/notes-v1.wasm" com.calimero.upgrade.notes 1.0.0 notes-1.0.0.mpk
 pack "$DEEP/notes-v2.wasm" com.calimero.upgrade.notes 2.0.0 notes-2.0.0.mpk
+
+# A package of two services (`--service NAME=PATH`, from 1.0.0-rc.25): kv-svc-1.0.0.mpk.
+if "$PACK" --help 2>/dev/null | grep -q -- '--service'; then
+  "$PACK" --package com.calimero.upgrade.kv-svc --app-version 1.0.0 \
+    --service alpha="$DEEP/kv-m1.wasm" --service beta="$DEEP/kv-m2.wasm" --out "$DEEP/kv-svc-1.0.0.mpk"
+else
+  echo "note: this meroctl has no --service (before 1.0.0-rc.25): kv-svc is not packed" >&2
+fi
 
 # A release that admits guests (`guests: allowed`); a release that declares a secret its
 # outbound requests name (`secrets`); and a kv unit: kv-unit's release `uses` kv-secret with

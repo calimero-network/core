@@ -4,10 +4,13 @@ roll, and a deleted blob (the representative set covers uploaded blobs and files
 from __future__ import annotations
 
 import hashlib
+import json
 import random
+import urllib.error
+import urllib.parse
 import urllib.request
 
-from upgrade_deep import DeepCase, check, eq, fixture, kv_wasm, person, refused, scratch, until
+from upgrade_deep import DeepCase, check, eq, fixture, kv_wasm, new_org, person, refused, scratch, until
 from upgrade_path import case
 
 
@@ -100,3 +103,86 @@ class AppFiles(DeepCase):
         out = fay.call(s["fapp"], "putFile", {"len": str(1024 * 1024 + 1), "seed": "9"}, timeout=180)["result"]
         s["written"]["new"] = {"id": out["id"], "sha256": out["sha256"], "size": str(1024 * 1024 + 1)}
         self.check(w, s)
+
+
+GRANT_TTL = 7 * 24 * 3600  # seconds: outlives the roll
+
+
+def _download(w, app, blob, grant, node):
+    """The status of `blob` fetched on `node` with `grant` and no session, and its bytes when served."""
+    url = w.fleet.url(node) + f"apps/{app}/blobs/{blob}?grant={urllib.parse.quote(grant)}"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, b""
+
+
+def _ref(v):
+    return v if isinstance(v, str) else v["id"]
+
+
+@case
+class BlobGrants(DeepCase):
+    name = "published-blob-grants"
+    area = "Blobs and files"
+    since = "1.0.0-rc.31"
+    seeds = ("a compute output published as a plain blob; a download grant of it, the owner's revoke, and a grant "
+             "made after the revoke")
+    verifies = ("on every node the grant from before the revoke is refused `404` and the one after it serves the "
+                "blob's bytes; on the new release a new grant serves, a second revoke ends every earlier grant "
+                "and a grant made after it serves")
+
+    def _grant(self, rey, s):
+        return _ref(rey.call(s["app"], "share", {"id": s["blob"], "ttl": GRANT_TTL})["result"])
+
+    def _judge(self, w, s):
+        for node in w.members():
+            for grant in s["revoked"]:
+                eq(_download(w, s["app"], s["blob"], grant, node)[0], 404, f"a revoked grant on node {node}")
+            status, data = _download(w, s["app"], s["blob"], s["live"], node)
+            eq(status, 200, f"the live grant on node {node}")
+            eq(hashlib.sha256(data).hexdigest(), s["sha256"], f"the blob through node {node}")
+
+    def _revoke_and_grant(self, rey, s):
+        rey.raw("post", f"apps/{s['app']}/blobs/{s['blob']}/revoke")
+        s["revoked"].append(s["live"])
+        s["live"] = self._grant(rey, s)
+
+    def populate(self, w):
+        rey = person(w, "rey")
+        package, version = w.registry.publish(w.fixtures["compute_from"])
+        rey.raw("post", "packages/install", {"package": package, "version": version})
+        org = new_org(rey, "Grant Org")
+        app = rey.raw("post", "apps", {"name": "grants", "package": package, "version": version, "org": org})["appId"]
+        data = random.Random(11).randbytes(100_000)
+        file_id = rey.a.upload_file(app, data)["id"]
+        run = rey.call(app, "startDigest", {"inputs": [file_id]}, timeout=60)["result"]
+
+        def finished():
+            outcome = rey.result(app, "outcome", {"run": run})
+            check(outcome, "the run has no outcome yet")
+            return json.loads(outcome)
+
+        outcome = until("the compute run ends", finished, 240)
+        check(outcome["status"] == "done" and outcome["outputs"] == 1, f"the run: {outcome}")
+        output = rey.get(f"apps/{app}/runs/{run}")["final"]["outputs"][0]
+        blob = _ref(rey.call(app, "publish", {"output": output["id"]})["result"])
+        s = {"app": app, "blob": blob, "revoked": []}
+        s["live"] = self._grant(rey, s)
+        status, bytes_ = _download(w, app, blob, s["live"], w.members()[0])
+        eq(status, 200, "the first grant before any revoke")
+        s["sha256"] = hashlib.sha256(bytes_).hexdigest()
+        self._revoke_and_grant(rey, s)
+        self._judge(w, s)
+        return s
+
+    def check(self, w, s):
+        until("the grants hold on every node", lambda: self._judge(w, s), 30)
+
+    def exercise(self, w, s):
+        rey = person(w, "rey")
+        s["live"] = self._grant(rey, s)
+        self._judge(w, s)
+        self._revoke_and_grant(rey, s)
+        self._judge(w, s)

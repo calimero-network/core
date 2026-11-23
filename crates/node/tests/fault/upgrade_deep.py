@@ -124,15 +124,6 @@ NOT_COVERED = [
      "`an_open_cluster_installs_as_before_until_the_operator_grants_deployments` and "
      "`the_cluster_owner_grants_deployers_once_the_operator_names_it` (`deployers.rs`) cover the rest on one "
      "build"),
-    ("Packages", "Multi-service packages (`services`) and instances of a named service (`--service`)",
-     "not seeded yet: the suite installs the release's single-service kv bundle; `meroctl app pack --service` "
-     "writes one from components now, and the node's install of a named service is covered on one build "
-     "(`component_packages.rs`)"),
-    ("Packages", "Registered web origins of a package (`/package-origins`)",
-     "not seeded yet: an origin is added with its manager's passkey approval and is read only by the "
-     "served-frontend path above"),
-    ("Blobs and files", "Revoking a published blob's grants (`/blobs/{id}/revoke`)",
-     "not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow"),
     ("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
      "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
      "is covered, the stream itself by the cluster tests"),

@@ -8,8 +8,8 @@ import time
 
 import ed25519_sign
 from rv2 import b64url
-from upgrade_deep import (DeepCase, Failed, check, decision, eq, install, join, kv_wasm, new_org, people,
-                          person, same_read, snap, subset, until)
+from upgrade_deep import (DeepCase, Failed, app_label, check, decision, decisions, eq, install, join, kv_wasm, new_org, ops,
+                          people, person, refused, same_decisions, same_read, snap, subset, until)
 from upgrade_path import case
 
 
@@ -60,6 +60,127 @@ class Packages(DeepCase):
         eq((card["package"], card["version"]), (s["package"], s["v1"]), "the release's capability card")
         check({"get", "set"} <= set(card["abi"]["methods"]), f"the card's ABI lacks the kv methods: {card['abi']}")
         self._record(w, s)
+
+
+@case
+class Services(DeepCase):
+    name = "package-services"
+    area = "Packages"
+    since = "1.0.0-rc.25"
+    seeds = "a package of two services (`alpha`, `beta`) installed; an instance of each, written to"
+    verifies = ("the package and each instance's release naming its service, each instance answering with its own "
+                "data, an instance naming no service or an unknown one refused; on the new release a new instance "
+                "of a named service, and the capability card of each service")
+
+    def _create(self, p, s, service):
+        body = {"name": f"svc-{service}", "package": s["package"], "version": s["version"]}
+        return p.raw("post", "apps", {**body, "service": service} if service else body)
+
+    def _decisions(self, w, s):
+        mel = person(w, "mel")
+        return decisions({"no service": lambda: self._create(mel, s, None),
+                             "unknown service": lambda: self._create(mel, s, "gamma")})
+
+    def populate(self, w):
+        mel = person(w, "mel")
+        package, version = install(mel, w, "kv-svc-1.0.0.mpk")
+        s = {"package": package, "version": version, "apps": {}}
+        for service in ("alpha", "beta"):
+            s["apps"][service] = self._create(mel, s, service)["appId"]
+            mel.call(s["apps"][service], "set", {"key": "service", "value": service})
+        s["decisions"] = self._decisions(w, s)
+        check("ok" not in s["decisions"].values(), f"a missing or unknown service was accepted: {s['decisions']}")
+        self._record(w, s)
+        return s
+
+    def _record(self, w, s):
+        mel = person(w, "mel")
+        s["read"] = snap(mel, f"packages/{s['package']}")
+        s["records"] = {a: snap(mel, f"apps/{a}") for a in s["apps"].values()}
+        for service, a in s["apps"].items():
+            check(service in json.dumps(s["records"][a]["release"]), f"{a}'s release names {service}: {s['records'][a]}")
+
+    def check(self, w, s):
+        mel = person(w, "mel")
+        same_read(mel, f"packages/{s['package']}", s["read"], "the package")
+        for service, a in s["apps"].items():
+            same_read(mel, f"apps/{a}", s["records"][a], f"the {service} instance")
+            eq(mel.result(a, "get", {"key": "service"}), service, f"the {service} instance's data")
+        same_decisions(self._decisions(w, s), s["decisions"], "an instance's service")
+
+    def exercise(self, w, s):
+        mel = person(w, "mel")
+        late = self._create(mel, s, "beta")["appId"]
+        mel.call(late, "set", {"key": "service", "value": "beta"})
+        eq(mel.result(late, "get", {"key": "service"}), "beta", "a new instance of a named service")
+        for service in s["apps"]:
+            card = mel.get(f"packages/{s['package']}/{s['version']}/capabilities?service={service}")
+            eq(card["service"], service, "the capability card's service")
+        refused("NO_SUCH_SERVICE", lambda: mel.get(f"packages/{s['package']}/{s['version']}/capabilities"),
+                "the card of a release with several services, naming none")
+        s["apps"]["late"] = late
+        self._record(w, s)
+
+
+@case
+class PackageOrigins(DeepCase):
+    name = "package-origins"
+    area = "Packages"
+    since = "1.0.0-rc.16"
+    seeds = ("two web origins registered for a package by its manager: one plain and one the cluster serves "
+             "(a custom domain)")
+    verifies = ("the manager's list as they read it; the operator's served-origins list naming the package's host "
+                "label; a stranger refused the list and the registration; on the new release one origin removed "
+                "and another registered")
+
+    def _path(self, s):
+        return f"package-origins/{s['package']}"
+
+    def _decisions(self, w, s):
+        otto = person(w, "otto")
+        return decisions({"stranger lists": lambda: otto.get(self._path(s)),
+                             "stranger registers": lambda: otto.raw("post", self._path(s),
+                                                                    {"origin": "https://otto.example.test"})})
+
+    def _served(self, w, s):
+        listed = [o["origin"] for o in ops(w, "GET", "ops/served-origins")["origins"]
+                  if o["label"] == app_label(s["package"])]
+        return sorted(listed)
+
+    def _read(self, w, s):
+        s["read"] = snap(person(w, "ora"), self._path(s))
+        s["origins"] = sorted(o["origin"] for o in s["read"]["origins"])
+
+    def populate(self, w):
+        ora = person(w, "ora")
+        package, _ = install(ora, w, "kv-r-1.0.0.mpk")
+        s = {"package": package, "plain": "https://plain-ora.example.test", "served": "https://served-ora.example.test"}
+        ora.raw("post", self._path(s), {"origin": s["plain"]})
+        ora.raw("post", self._path(s), {"origin": s["served"], "served": True})
+        s["decisions"] = self._decisions(w, s)
+        check("ok" not in s["decisions"].values(), f"a stranger handled the origins: {s['decisions']}")
+        self._read(w, s)
+        eq(s["origins"], sorted([s["plain"], s["served"]]), "the registered origins")
+        eq(until("the served origin is listed", lambda: self._served(w, s)), [s["served"]], "the operator's served list")
+        return s
+
+    def check(self, w, s):
+        ora = person(w, "ora")
+        until("the origins read back", lambda: same_read(ora, self._path(s), s["read"], "the package's origins"), 15)
+        eq(until("the served origin is listed", lambda: self._served(w, s)), [s["served"]], "the operator's served list")
+        same_decisions(self._decisions(w, s), s["decisions"], "a stranger and the origins")
+
+    def exercise(self, w, s):
+        ora = person(w, "ora")
+        ora.raw("delete", self._path(s), {"origin": s["plain"]})
+        s["plain"] = "https://plain-ora-2.example.test"
+        ora.raw("post", self._path(s), {"origin": s["plain"]})
+        ora.raw("post", self._path(s), {"origin": "https://served-ora-2.example.test", "served": True})
+        s["served"] = "https://served-ora-2.example.test"
+        ora.raw("delete", self._path(s), {"origin": "https://served-ora.example.test"})
+        self._read(w, s)
+        eq(s["origins"], sorted([s["plain"], s["served"]]), "the origins after the new release changed them")
+        self.check(w, s)
 
 
 def _did_key(pub: bytes) -> str:
