@@ -105,3 +105,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
 - mdma trusts the account named under the cluster credential; a node-signed proof would remove that trust.
 - A package made private after a cluster installed it as public stays public there.
 - Receipts and run results stay limited to those who handle the app's files.
+- `/.well-known/calimero.json` on a package's frontend host lists its versions; it goes with the sign-in gate (C6).
+- A frontend-bound session's `POST /apps` for a package that is not installed answers `403`, which tells it apart from a private one; also with C6.
+- On a `--dev` cluster, uploading under a taken package name answers the signer-pin message, naming the pinned signer.
+- A registry credential placed anywhere but the registry URL's userinfo is not left out of the anonymous first fetch.
