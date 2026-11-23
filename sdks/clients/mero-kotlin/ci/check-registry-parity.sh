@@ -26,6 +26,7 @@ EXCLUDED=(
   forget             # local only: drops the session without a request
   useApiKey          # credential plumbing, not a request
   useSession         # ditto
+  useVisitor         # ditto (a public link's visitor)
   onSessionChange    # ditto
   events             # SSE stream — consumed live by the chat screen, not a form
   presenceStream     # SSE stream, as events

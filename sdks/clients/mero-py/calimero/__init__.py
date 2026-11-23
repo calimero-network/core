@@ -21,7 +21,9 @@ from calimero_client_py import (
     FeatureNotActive,
     LoginRequired,
     SoftPasskey,
+    Visitor,
     WrongNode,
+    new_visitor_seed,
 )
 
 __all__ = [
@@ -31,5 +33,7 @@ __all__ = [
     "FeatureNotActive",
     "LoginRequired",
     "SoftPasskey",
+    "Visitor",
     "WrongNode",
+    "new_visitor_seed",
 ]

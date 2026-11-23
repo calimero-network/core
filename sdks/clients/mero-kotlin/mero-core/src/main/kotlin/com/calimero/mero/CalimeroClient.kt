@@ -174,6 +174,9 @@ class CalimeroClient(
 
     @Volatile private var credential: String? = null
 
+    /** A public link's visitor ([useVisitor]): a credential signed fresh for each request, in place of [credential]. */
+    @Volatile private var visitor: Visitor? = null
+
     @Volatile private var current: CalimeroSession? = null
     private var refreshing: Deferred<CalimeroSession>? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -331,14 +334,33 @@ class CalimeroClient(
 
     /** Authenticate every request with an API key (`cal_…`, or an operator token). */
     fun useApiKey(key: String) {
+        visitor = null
         credential = key
         current = null
     }
 
     /** Use a session kept from before (an `onSession` callback's). */
     fun useSession(session: CalimeroSession) {
+        visitor = null
         credential = session.sessionToken
         current = session
+    }
+
+    /**
+     * Call as an anonymous visitor through a public link ([link]: its token, from the link's URL),
+     * with the visitor's own Ed25519 key ([seed]: 32 bytes, from [newVisitorSeed], kept to stay the
+     * same visitor). Each request is signed fresh; only the instance's `#[app::public]` methods
+     * answer. Answers the [Visitor] (its `link` and `publicKey`, how the app names it).
+     */
+    fun useVisitor(
+        link: String,
+        seed: ByteArray,
+    ): Visitor {
+        val v = Visitor(link, seed)
+        credential = null
+        current = null
+        visitor = v
+        return v
     }
 
     @Volatile private var observer: ((CalimeroSession?) -> Unit)? = options.onSession
@@ -354,6 +376,7 @@ class CalimeroClient(
     }
 
     private fun dropSession() {
+        visitor = null
         credential = null
         current = null
         observer?.invoke(null)
@@ -380,7 +403,7 @@ class CalimeroClient(
             source?.let { if (it.options.now() >= it.due) reread() }
             val url = nodeUrl
             val builder = Request.Builder().url("$url/$path")
-            credential?.let { builder.header("authorization", "Bearer $it") }
+            (visitor?.bearer() ?: credential)?.let { builder.header("authorization", "Bearer $it") }
             val payload = body?.let { it.bytes.toRequestBody(it.contentType.toMediaType()) }
             when (method) {
                 "GET" -> builder.get()

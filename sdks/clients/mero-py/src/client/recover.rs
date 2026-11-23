@@ -48,6 +48,7 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use calimero_client::visitor::Visitor;
 use calimero_client::{Error, Session};
 
 /// What the recovery needs of one node's client. [`SealedNode`](super::sealed::SealedNode)
@@ -56,7 +57,21 @@ pub(crate) trait Node: Send + Sync {
     async fn session(&self) -> Option<Session>;
     async fn use_session(&self, session: Session);
     async fn use_api_key(&self, key: &str);
+    async fn use_visitor(&self, visitor: Visitor);
     async fn refresh(&self) -> Result<Session, Error>;
+}
+
+/// What a request carries: the node's session, an API key, or a public
+/// link's visitor (a credential signed fresh for each request).
+#[derive(Clone, Debug, Default)]
+pub(crate) enum Credential {
+    /// The session `use_session`, a sign-in or a refresh left on the node.
+    #[default]
+    Session,
+    /// The API key last given to `use_api_key`.
+    ApiKey(String),
+    /// The visitor last given to `use_visitor` (boxed: its signing key is large).
+    Visitor(Box<Visitor>),
 }
 
 /// A listing of the cluster's nodes, in the order to use them, and how long
@@ -119,9 +134,9 @@ struct Refresh<N> {
 /// The nodes of one cluster a client may use, the one in use, and its credential.
 pub(crate) struct Nodes<N> {
     state: RwLock<State<N>>,
-    /// The API key last given to `use_api_key`, or `None` while a session is
-    /// the credential. A request made with an API key is never refreshed.
-    api_key: std::sync::Mutex<Option<String>>,
+    /// The credential requests carry. Only a session is ever refreshed: a
+    /// request made with an API key or as a visitor is not.
+    credential: std::sync::Mutex<Credential>,
     /// Held for a refresh: whoever comes next sees the session it made.
     refreshing: tokio::sync::Mutex<()>,
     directory: Option<Refresh<N>>,
@@ -145,7 +160,7 @@ impl<N: Node> Nodes<N> {
                 list: nodes.into_iter().map(|(u, n)| (u, Arc::new(n))).collect(),
                 at: 0,
             }),
-            api_key: std::sync::Mutex::new(None),
+            credential: std::sync::Mutex::new(Credential::Session),
             refreshing: tokio::sync::Mutex::new(()),
             directory: None,
         }
@@ -199,23 +214,45 @@ impl<N: Node> Nodes<N> {
         self.read().list.len()
     }
 
+    /// The credential requests carry now.
+    pub(crate) fn credential(&self) -> Credential {
+        self.credential
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The API key requests carry, if they carry one.
     pub(crate) fn api_key(&self) -> Option<String> {
-        self.api_key.lock().ok().and_then(|k| k.clone())
+        match self.credential() {
+            Credential::ApiKey(key) => Some(key),
+            Credential::Session | Credential::Visitor(_) => None,
+        }
+    }
+
+    fn set_credential(&self, credential: Credential) {
+        *self
+            .credential
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = credential;
     }
 
     /// Record the credential: `Some(key)` for an API key, `None` for a session.
     pub(crate) fn set_api_key(&self, key: Option<String>) {
-        if let Ok(mut k) = self.api_key.lock() {
-            *k = key;
-        }
+        self.set_credential(key.map_or(Credential::Session, Credential::ApiKey));
+    }
+
+    /// Record the credential: `visitor`, through its public link.
+    pub(crate) fn set_visitor(&self, visitor: Visitor) {
+        self.set_credential(Credential::Visitor(Box::new(visitor)));
     }
 
     /// The session token a request sent to `node` now carries, if it carries one.
     async fn session_token(&self, node: &N) -> Option<String> {
-        if self.api_key().is_some() {
-            return None;
+        match self.credential() {
+            Credential::Session => node.session().await.map(|s| s.session_token),
+            Credential::ApiKey(_) | Credential::Visitor(_) => None,
         }
-        node.session().await.map(|s| s.session_token)
     }
 
     /// Move on from `from` (the node that refused or failed) to the next,
@@ -234,10 +271,14 @@ impl<N: Node> Nodes<N> {
                 _ => return true,
             }
         };
-        if let Some(key) = self.api_key() {
-            next.use_api_key(&key).await;
-        } else if let Some(session) = from.session().await {
-            next.use_session(session).await;
+        match self.credential() {
+            Credential::ApiKey(key) => next.use_api_key(&key).await,
+            Credential::Visitor(visitor) => next.use_visitor(*visitor).await,
+            Credential::Session => {
+                if let Some(session) = from.session().await {
+                    next.use_session(session).await;
+                }
+            }
         }
         let mut s = self.write();
         if s.at == i && s.list.get(i).is_some_and(|(_, n)| Arc::ptr_eq(n, from)) {
@@ -441,6 +482,8 @@ mod tests {
     struct Stand {
         session: RwLock<Option<Session>>,
         api_key: RwLock<Option<String>>,
+        /// The public key of the visitor this node was handed.
+        visitor: RwLock<Option<String>>,
         valid: Vec<&'static str>,
         refuse: Option<(u16, &'static str)>,
         refuse_refresh: Option<(u16, &'static str)>,
@@ -459,6 +502,9 @@ mod tests {
         }
         async fn use_api_key(&self, key: &str) {
             *self.api_key.write().await = Some(key.to_owned());
+        }
+        async fn use_visitor(&self, visitor: Visitor) {
+            *self.visitor.write().await = Some(visitor.public_key());
         }
         async fn refresh(&self) -> Result<Session, Error> {
             let _ = self.refreshes.fetch_add(1, Ordering::SeqCst);
@@ -635,6 +681,37 @@ mod tests {
         let e = nodes.run(async |n| n.ask().await).await.unwrap_err();
         assert!(unauthenticated(&e), "{e}");
         assert_eq!(nodes.current().1.refreshes.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_visitor_is_not_refreshed() {
+        let nodes = signed_in(vec![issuer_lost()]).await;
+        nodes.set_visitor(Visitor::new("pl_token", [9; 32]));
+        assert!(nodes.api_key().is_none());
+        let e = nodes.run(async |n| n.ask().await).await.unwrap_err();
+        assert!(unauthenticated(&e), "{e}");
+        assert_eq!(nodes.current().1.refreshes.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn wrong_node_hands_the_next_node_the_visitor() {
+        let nodes = signed_in(vec![
+            Stand {
+                refuse: Some((421, "WRONG_NODE")),
+                ..Stand::default()
+            },
+            Stand::default(),
+        ])
+        .await;
+        let visitor = Visitor::new("pl_token", [9; 32]);
+        nodes.set_visitor(visitor.clone());
+        let _ = nodes.run(async |n| n.ask().await).await;
+        assert_eq!(nodes.url(), "http://node-1");
+        assert_eq!(
+            nodes.node(1).visitor.read().await.as_deref(),
+            Some(visitor.public_key().as_str())
+        );
+        assert!(nodes.node(1).session().await.is_none());
     }
 
     #[tokio::test]

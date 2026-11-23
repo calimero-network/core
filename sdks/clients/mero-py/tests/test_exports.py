@@ -19,7 +19,9 @@ CLIENT = {
     "FeatureNotActive",
     "LoginRequired",
     "SoftPasskey",
+    "Visitor",
     "WrongNode",
+    "new_visitor_seed",
 }
 
 V1 = {

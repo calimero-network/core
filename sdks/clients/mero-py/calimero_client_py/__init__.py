@@ -17,7 +17,7 @@ from ._native import (
     SoftPasskey,
     WrongNode,
 )
-from .client import Client, CloudClient
+from .client import Client, CloudClient, Visitor, new_visitor_seed
 
 __all__ = [
     "Client",
@@ -26,6 +26,8 @@ __all__ = [
     "FeatureNotActive",
     "LoginRequired",
     "SoftPasskey",
+    "Visitor",
     "WrongNode",
     "VERSION",
+    "new_visitor_seed",
 ]
