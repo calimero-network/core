@@ -1,9 +1,13 @@
-"""Deep cases: app instances: state and full history, access kinds, xcall, search, presence,
-transfer and move, usage and storage figures."""
+"""Deep cases: app instances: state and full history, access kinds, public links and their
+visitors, xcall, search, presence, transfer and move, usage and storage figures."""
 
 from __future__ import annotations
 
-from upgrade_deep import (VOLATILE, DeepCase, Failed, anyone, check, decision, decisions, eq, events, host,
+import hashlib
+import time
+
+import ed25519_sign
+from upgrade_deep import (VOLATILE, _http, DeepCase, Failed, anyone, check, decision, decisions, eq, events, host,
                           hosts, join, kv_wasm, new_org, people, person, same_decisions, same_read, scrub, snap, subset,
                           team_id, until)
 from upgrade_path import case
@@ -254,6 +258,98 @@ class TeamDeletedKeepingApps(DeepCase):
         eq(out.get("apps"), [app], "the default deletes the instance only the team admitted")
 
 
+class Visitor:
+    """A visitor of a public link: its own Ed25519 key (`seed`), proving each request over the
+    link's key, its own and the time (`proof::visitor_message`) in a `vis1.` bearer credential."""
+
+    def __init__(self, token: str, seed: int):
+        self.token = token
+        self.seed = bytes([seed]) * 32
+        self.key = ed25519_sign.public_key(self.seed).hex()
+
+    @property
+    def link(self) -> str:
+        """`proof::public_link_key`: the public key of the token's seed."""
+        seed = hashlib.sha256(b"calimero.public-link.v1\0" + self.token.encode()).digest()
+        return ed25519_sign.public_key(seed).hex()
+
+    def name(self) -> str:
+        return f"visitor:{self.link}:{self.key}"
+
+    def bearer(self) -> str:
+        at = int(time.time())
+        msg = b"calimero.visitor.v1\0" + self.link.encode() + b"\0" + self.key.encode() + b"\0" + str(at).encode()
+        return f"vis1.{self.token}.{self.key}.{at}.{ed25519_sign.sign(self.seed, msg).hex()}"
+
+    def call(self, w, app, method, args, node):
+        return _http("POST", w.fleet.url(node) + f"apps/{app}/intents", {"method": method, "args": args},
+                     self.bearer(), 60)["result"]
+
+    def view(self, w, app, method, args, node):
+        return _http("POST", w.fleet.url(node) + f"apps/{app}/views", {"method": method, "args": args},
+                     self.bearer(), 60)["result"]
+
+
+@case
+class PublicLinks(DeepCase):
+    name = "public-links"
+    area = "Apps"
+    since = "1.0.0-rc.33"
+    seeds = ("an organization's private instance with a public link (label, rate) and a revoked one; a visitor "
+             "with a key of its own signed the guestbook (a `#[app::public]` method) through the link")
+    verifies = ("the instance's links as its owner lists them (never the token); the visitor, named by link and key "
+                "(`Caller::Visitor`), calls the public view through every node and is refused a method that is not "
+                "public; the revoked link's visitor is refused; what the visitor wrote, as the owner reads it; on "
+                "the new release the visitor signs again and a link made there admits a visitor of its own")
+
+    def populate(self, w):
+        pella = person(w, "pella")
+        org = new_org(pella, "Links Org")
+        app = pella.deploy(kv_wasm(w), "guestbook", org=org)
+        made = pella.raw("post", f"apps/{app}/public-links", {"label": "Survey", "ratePerMinute": 60})
+        gone = pella.raw("post", f"apps/{app}/public-links", {"label": "Old"})
+        pella.raw("delete", f"apps/{app}/public-links/{gone['link']}")
+        v = Visitor(made["token"], 1)
+        eq(v.link, made["link"], "the link's key, from its token")
+        s = {"org": org, "app": app, "links": {made["token"]: 1}, "revoked": gone["token"], "notes": {}}
+        self._sign(w, s, v, "hello")
+        s["refused"] = decision(lambda: v.call(w, app, "set", {"key": "k", "value": "v"}, w.members()[0]))
+        check(s["refused"] != "ok", "a visitor called a method that is not public")
+        s["listed"] = scrub(pella.get(f"apps/{app}/public-links"))
+        check(made["token"] not in str(s["listed"]), "a listing carries the token")
+        eq([x.get("label") for x in s["listed"].get("links") or []], ["Survey"], "the links listed")
+        return s
+
+    def _sign(self, w, s, v, note):
+        n = w.members()[0]
+        eq(v.call(w, s["app"], "signGuestbook", {"note": note}, n), v.name(), "the guestbook's signer")
+        s["notes"][v.name()] = note
+
+    def check(self, w, s):
+        pella = person(w, "pella")
+        subset(scrub(pella.get(f"apps/{s['app']}/public-links")), s["listed"], "the instance's links")
+        for token, seed in s["links"].items():
+            v = Visitor(token, seed)
+            for n in w.members():
+                eq(v.view(w, s["app"], "whoamiPublic", {}, n), v.name(), f"the visitor through node {n}")
+            eq(decision(lambda v=v: v.call(w, s["app"], "set", {"key": "k", "value": "v"}, w.members()[0])),
+               s["refused"], "a visitor calling a method that is not public")
+        for who, note in s["notes"].items():
+            eq(pella.result(s["app"], "get", {"key": f"sign:{who}"}), note, "what the visitor wrote")
+        gone = Visitor(s["revoked"], 3)
+        check(decision(lambda: gone.view(w, s["app"], "whoamiPublic", {}, w.members()[0])) != "ok",
+              "the revoked link's visitor was let in")
+
+    def exercise(self, w, s):
+        pella = person(w, "pella")
+        token = next(iter(s["links"]))
+        self._sign(w, s, Visitor(token, 1), "again, on the new release")
+        made = pella.raw("post", f"apps/{s['app']}/public-links", {"label": "New"})
+        s["links"][made["token"]] = 2
+        self._sign(w, s, Visitor(made["token"], 2), "through the new link")
+        s["listed"] = scrub(pella.get(f"apps/{s['app']}/public-links"))
+
+
 def _xcalls(w, s, node=None):
     """`GET /apps/{a}/xcalls`, from a node that holds the app (only one answers it)."""
     return scrub(person(w, "xia").get(f"apps/{s['a']}/xcalls", node=node or host(w, s["a"])))
@@ -316,6 +412,44 @@ class Xcall(DeepCase):
 
     def exercise(self, w, s):
         self._relay(w, s, "new")
+
+
+@case
+class XcallBatch(DeepCase):
+    name = "xcall-batch"
+    area = "Apps"
+    since = "1.0.0-rc.31"
+    seeds = ("three apps of an organization; a run that calls two of them together (`app::join!`, one `xcall.batch`) "
+             "twice")
+    verifies = ("each target's count and the answers of the joined calls; the batch runs again in the mixed cluster "
+                "(its targets may sit on different releases) and on the new release, each target counting once per run")
+
+    def populate(self, w):
+        bix = person(w, "bix")
+        org = new_org(bix, "Batch Org")
+        s = {"org": org, "count": 0, **{k: bix.deploy(kv_wasm(w), f"batch-{k}", org=org) for k in ("a", "b", "c")}}
+        for _ in range(2):
+            self._bump(w, s)
+        return s
+
+    def _bump(self, w, s):
+        got = person(w, "bix").call(s["a"], "bumpBoth", {"a": s["b"], "b": s["c"], "key": "n", "spins": 1})["result"]
+        s["count"] += 1
+        eq(got, [s["count"], s["count"]], "the joined calls' answers")
+
+    def check(self, w, s):
+        bix = person(w, "bix")
+        for k in ("b", "c"):
+            eq(bix.result(s[k], "get", {"key": "n"}), str(s["count"]), f"batch-{k}'s count")
+
+    def during_mix(self, w, s):
+        self.check(w, s)
+        self._bump(w, s)
+        self.check(w, s)
+
+    def exercise(self, w, s):
+        self._bump(w, s)
+        self.check(w, s)
 
 
 @case

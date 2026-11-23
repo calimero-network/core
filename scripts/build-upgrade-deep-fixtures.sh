@@ -13,7 +13,11 @@
 # kv-store-test-fixture.mpk, as a dev bundle of its own), files.wasm, and the signed
 # packages kv-a-1.0.0.mpk, kv-a-1.1.0.mpk, kv-b-1.0.0.mpk, kv-c-1.0.0.mpk,
 # kv-u-1.0.0.mpk, kv-u-1.1.0.mpk (com.calimero.upgrade.kv-*), notes-1.0.0.mpk and notes-2.0.0.mpk
-# (com.calimero.upgrade.notes, apps/fixture-notes-v1 and fixture-notes-v2).
+# (com.calimero.upgrade.notes, apps/fixture-notes-v1 and fixture-notes-v2), and, from a
+# release that has the units examples, calendar-0.1.0.mpk, calendar-0.1.1.mpk,
+# planner-0.1.0.mpk, planner-0.2.0.mpk and booking-0.1.0.mpk (com.calimero.example.*); from
+# one whose meroctl packs them, kv-guest-1.0.0.mpk (`guests: allowed`), kv-secret-1.0.0.mpk
+# (it declares a secret, `secrets`) and kv-unit-1.0.0.mpk (`uses` kv-secret, `mode = "create"`).
 set -euo pipefail
 
 OUT=$(cd "${1:?usage: build-upgrade-deep-fixtures.sh OUT}" && pwd -P)
@@ -29,7 +33,7 @@ mkdir -p "$DEEP"
 # The release's kv component, as components of their own (one custom section each):
 # kv-dev.wasm, every account's dev bundle, and one per package below
 # (scripts/upgrade-dev-bundle.py says why).
-python3 -I "$(dirname "$0")/upgrade-dev-bundle.py" "$OUT/kv-store-test-fixture.mpk" "$DEEP" dev a b c u
+python3 -I "$(dirname "$0")/upgrade-dev-bundle.py" "$OUT/kv-store-test-fixture.mpk" "$DEEP" dev a b c u unit guest secret
 
 for app in files notes-v1 notes-v2; do
   # An older release keeps its test fixtures under apps/v2-fixtures/.
@@ -49,5 +53,85 @@ pack "$DEEP/kv-u.wasm" com.calimero.upgrade.kv-u 1.0.0 kv-u-1.0.0.mpk
 pack "$DEEP/kv-u.wasm" com.calimero.upgrade.kv-u 1.1.0 kv-u-1.1.0.mpk
 pack "$DEEP/notes-v1.wasm" com.calimero.upgrade.notes 1.0.0 notes-1.0.0.mpk
 pack "$DEEP/notes-v2.wasm" com.calimero.upgrade.notes 2.0.0 notes-2.0.0.mpk
+
+# A release that admits guests (`guests: allowed`); a release that declares a secret its
+# outbound requests name (`secrets`); and a kv unit: kv-unit's release `uses` kv-secret with
+# `mode = "create"`. Each declared in a crate's metadata as an app's author would (no lock:
+# kv-unit is packed unpinned, so the newest installed release in range is created), by a
+# release whose meroctl writes them (secrets and `uses` from 1.0.0-rc.31; `--guests` from
+# 1.0.0-rc.33). Each is packed when the pinned meroctl can; a case whose package is missing
+# then fails to seed, so a pin that cannot pack one says so here.
+if "$PACK" --help 2>/dev/null | grep -q -- '--guests'; then
+  "$PACK" --wasm "$DEEP/kv-guest.wasm" --package com.calimero.upgrade.kv-guest --app-version 1.0.0 \
+    --guests allowed --out "$DEEP/kv-guest-1.0.0.mpk"
+else
+  echo "note: this meroctl has no --guests (before 1.0.0-rc.33): kv-guest is not packed" >&2
+fi
+if (
+  set -e
+  secret_dir="$DEEP/kv-secret-crate"
+  rm -rf "$secret_dir" && mkdir -p "$secret_dir"
+  cat >"$secret_dir/Cargo.toml" <<'TOML'
+[package]
+name = "kv-secret"
+version = "1.0.0"
+edition = "2021"
+
+[package.metadata.calimero]
+package = "com.calimero.upgrade.kv-secret"
+outbound = ["https://api.example.com/"]
+
+[package.metadata.calimero.secrets.API_KEY]
+hosts = ["api.example.com"]
+description = "The example API's key"
+required = true
+TOML
+  "$PACK" "$secret_dir" --wasm "$DEEP/kv-secret.wasm" --app-version 1.0.0 --out "$DEEP/kv-secret-1.0.0.mpk"
+  unit_dir="$DEEP/kv-unit-crate"
+  rm -rf "$unit_dir" && mkdir -p "$unit_dir"
+  cat >"$unit_dir/Cargo.toml" <<'TOML'
+[package]
+name = "kv-unit"
+version = "1.0.0"
+edition = "2021"
+
+[package.metadata.calimero]
+package = "com.calimero.upgrade.kv-unit"
+
+[package.metadata.calimero.uses]
+member = { package = "com.calimero.upgrade.kv-secret", range = "^1", mode = "create" }
+TOML
+  "$PACK" "$unit_dir" --wasm "$DEEP/kv-unit.wasm" --app-version 1.0.0 --out "$DEEP/kv-unit-1.0.0.mpk"
+); then :; else
+  echo "note: this meroctl cannot pack a release's secrets or uses (before 1.0.0-rc.31): kv-secret and kv-unit are not packed" >&2
+fi
+
+# The units examples (a release from 1.0.0-rc.31 on ships them): calendar, planner (its
+# release `uses` the calendar with `mode = "create"`) and booking (`mode = "attach"`, with
+# the `methods` it calls as the person), packed from each crate's `[package.metadata.calimero]`
+# and `calimero.lock` by the release's meroctl, as their authors pack them. Two releases of
+# each package a unit upgrade moves: calendar 0.1.1 and planner 0.2.0, whose lock pins it.
+if [ -d "$SRC/apps/planner" ] && [ -d "$SRC/apps/booking" ] && [ -d "$SRC/apps/calendar" ]; then
+  for app in calendar planner booking; do
+    (cd "$SRC" && "$BUILD" "apps/$app" --out "$DEEP/$app.wasm")
+  done
+  unit() { # DIR WASM VERSION OUT
+    "$PACK" "$1" --wasm "$2" --app-version "$3" --out "$DEEP/$4"
+  }
+  unit "$SRC/apps/calendar" "$DEEP/calendar.wasm" 0.1.0 calendar-0.1.0.mpk
+  unit "$SRC/apps/calendar" "$DEEP/calendar.wasm" 0.1.1 calendar-0.1.1.mpk
+  unit "$SRC/apps/planner" "$DEEP/planner.wasm" 0.1.0 planner-0.1.0.mpk
+  unit "$SRC/apps/booking" "$DEEP/booking.wasm" 0.1.0 booking-0.1.0.mpk
+  # planner 0.2.0: the same crate, its lock pinning calendar 0.1.1 (the same ABI).
+  next="$DEEP/planner-next"
+  rm -rf "$next" && mkdir -p "$next"
+  cp -R "$SRC/apps/planner/Cargo.toml" "$SRC/apps/planner/calimero" "$next/"
+  sed 's/^version = "0\.1\.0"$/version = "0.1.1"/' "$SRC/apps/planner/calimero.lock" >"$next/calimero.lock"
+  grep -q '^version = "0.1.1"$' "$next/calimero.lock" ||
+    { echo "build-upgrade-deep-fixtures: planner's calimero.lock does not pin calendar 0.1.0" >&2; exit 1; }
+  unit "$next" "$DEEP/planner.wasm" 0.2.0 planner-0.2.0.mpk
+else
+  echo "build-upgrade-deep-fixtures: $(git -C "$SRC" describe --tags --always) has no units examples (apps/planner, booking, calendar)" >&2
+fi
 echo "build-upgrade-deep-fixtures: $DEEP from $(git -C "$SRC" describe --tags --always)" >&2
 ls -l "$DEEP" >&2
