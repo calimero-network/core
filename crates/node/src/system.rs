@@ -341,6 +341,17 @@ pub enum BundleSource {
     Upload,
 }
 
+/// Who may use a release an account installed ([`SystemState::sees_release`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Visibility {
+    /// The registry serves it to anyone: everyone here may use it.
+    Public,
+    /// A private registry package, or an upload: members of the organizations it was
+    /// installed for ([`PackageVersion::orgs`]).
+    Private,
+}
+
 /// A package: one publisher key, any number of releases.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -485,6 +496,15 @@ pub struct PackageVersion {
     /// (`Node::release_guests`) and apply takes as `forbidden`. Left out when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guests: Option<calimero_bundle::GuestPolicy>,
+    /// Public or private, as the registry served it (an upload is private). Recorded only
+    /// once every node keeps it (`Feature::PrivateReleases`); absent in a release recorded
+    /// before, which keeps the rule from before ([`SystemState::sees_release`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<Visibility>,
+    /// The organizations it was installed for, one more with each install for another
+    /// (`Feature::PrivateReleases`). Left out when empty.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub orgs: BTreeSet<OrgId>,
 }
 
 impl PackageVersion {
@@ -1408,6 +1428,11 @@ impl DeployerGrant {
 /// DEPLOY_NOT_GRANTED` (`node::rejected`).
 pub const NOT_A_DEPLOYER: &str = "This cluster only lets Calimero Cloud deployers install apps; ask the cluster's owner or operator for a deployer grant.";
 
+/// A refusal: a release is installed for an organization its installer is not a member of,
+/// or an account installs a private release for none.
+pub const NOT_AN_ORG_MEMBER: &str =
+    "an account installs a private release for an organization it is a member of";
+
 /// How many deployer grants a cluster keeps.
 pub const MAX_DEPLOYERS: usize = 10_000;
 
@@ -1978,30 +2003,65 @@ impl SystemState {
         }
     }
 
-    /// Whether `who` (an account, or [`OPERATOR`]) may see and use the
-    /// release `v`: whoever installed it; everyone, for a release the
-    /// operator installed (the cluster's own catalog, which it upgrades apps
-    /// to); an account sharing an organization with an account that installed
-    /// it; and an account that reaches an app running one of its services.
-    /// The operator sees only the releases it installed. Anyone else is
-    /// answered as if it were not installed.
+    /// Whether `who` (an account, or [`OPERATOR`]) may use the release `v`: list it,
+    /// install, create, upgrade to or offer it. Everyone, for a release the operator
+    /// installed (the cluster's own catalog); the operator, only those. A public release:
+    /// everyone. A private one: a member of an organization it was installed for. A release
+    /// recorded before either (`visibility` absent): whoever installed it, an account
+    /// sharing an organization with an installing account, and an account that reaches an
+    /// app running one of its services. Anyone else is answered as if it were not installed.
     #[must_use]
     pub fn sees_release(&self, v: &PackageVersion, who: &str) -> bool {
-        if v.installed_by_any(who) || v.installed_by_any(OPERATOR) {
+        if v.installed_by_any(OPERATOR) {
             return true;
         }
         if who == OPERATOR {
             return false;
         }
-        let shares_org = v.installing_accounts().any(|installer| {
-            self.orgs
-                .values()
-                .any(|o| o.role(installer).is_some() && o.role(who).is_some())
-        });
-        shares_org
-            || self.apps.values().any(|a| {
-                v.app_parts().values().any(|h| *h == a.bundle) && self.may_reach(a, Some(who))
-            })
+        match v.visibility {
+            Some(Visibility::Public) => true,
+            Some(Visibility::Private) => v.orgs.iter().any(|o| self.member_of(o, who)),
+            None => {
+                v.installed_by_any(who)
+                    || v.installing_accounts().any(|installer| {
+                        self.orgs
+                            .values()
+                            .any(|o| o.role(installer).is_some() && o.role(who).is_some())
+                    })
+                    || self.reaches_release(v, who)
+            }
+        }
+    }
+
+    /// Whether `who` may read the facts of the release `v` (its name and version where an
+    /// instance runs it): [`Self::sees_release`], or `who` reaches an app running it.
+    #[must_use]
+    pub fn reads_release(&self, v: &PackageVersion, who: &str) -> bool {
+        self.sees_release(v, who) || (who != OPERATOR && self.reaches_release(v, who))
+    }
+
+    /// Whether `who` reaches an app running one of `v`'s services.
+    fn reaches_release(&self, v: &PackageVersion, who: &str) -> bool {
+        self.apps
+            .values()
+            .any(|a| v.app_parts().values().any(|h| *h == a.bundle) && self.may_reach(a, Some(who)))
+    }
+
+    /// [`Self::sees_release`] for a session bound to the package's frontend (`frontend`):
+    /// a release recorded before `visibility` keeps the rule from before, every release of
+    /// it; any other, what the account sees.
+    #[must_use]
+    pub fn sees_release_from(&self, v: &PackageVersion, who: &str, frontend: bool) -> bool {
+        (frontend && v.visibility.is_none()) || self.sees_release(v, who)
+    }
+
+    /// Whether `who` is a member (or above) of `org`.
+    #[must_use]
+    pub fn member_of(&self, org: &str, who: &str) -> bool {
+        self.orgs
+            .get(org)
+            .and_then(|o| o.role(who))
+            .is_some_and(|r| r >= OrgRole::Member)
     }
 
     /// The releases of `p` that `who` may see ([`Self::sees_release`]).

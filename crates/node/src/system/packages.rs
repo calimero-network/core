@@ -122,6 +122,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !s.modules_installed(&release) {
                 return Err("a module the pipelines use is no longer installed");
             }
+            let private_for_none =
+                release.visibility == Some(Visibility::Private) && release.orgs.is_empty();
+            if (private_for_none && !by_operator)
+                || release.orgs.iter().any(|o| !s.member_of(o, &actor))
+            {
+                return Err(NOT_AN_ORG_MEMBER);
+            }
             if let Some(p) = s.packages.get(&package) {
                 if p.signer_id != signer_id {
                     return Err("the package is published under another key");
@@ -142,6 +149,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     let fill_mode = v.instance_org.is_none() && release.instance_org.is_some();
                     // And whether it takes guests (`Feature::Guests`).
                     let fill_guests = v.guests.is_none() && release.guests.is_some();
+                    // The registry serving it to anyone makes it public; nothing makes it
+                    // private again, and a private install leaves a record from before as it is.
+                    let now_public = release.visibility == Some(Visibility::Public);
                     if let Some(v) = s
                         .packages
                         .get_mut(&package)
@@ -159,6 +169,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                         if fill_guests {
                             v.guests = release.guests;
                         }
+                        if now_public {
+                            v.visibility = release.visibility;
+                        }
+                        v.orgs.extend(release.orgs);
                     }
                     return Ok(json!({ "package": package, "version": release.version }));
                 }

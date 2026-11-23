@@ -204,10 +204,14 @@ pub enum Feature {
     /// a part's release no longer installed, approved first and applied as red. rc.34
     /// cannot decode the reason, and a node stops a group on an entry it cannot decode.
     UnclassifiedUpdates,
+    /// `InstallPackage` whose release carries `visibility` or `orgs`: who may use it. An
+    /// earlier release drops both and would let anyone sharing an organization with an
+    /// installer, or reaching an app of it, use a private release.
+    PrivateReleases,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 46] = [
+pub const FEATURES: [Feature; 47] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -254,6 +258,7 @@ pub const FEATURES: [Feature; 46] = [
     Feature::AutoUpdates,
     Feature::RestorePoints,
     Feature::UnclassifiedUpdates,
+    Feature::PrivateReleases,
 ];
 
 impl Feature {
@@ -307,6 +312,7 @@ impl Feature {
             Self::AutoUpdates => "autoUpdates",
             Self::RestorePoints => "restorePoints",
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
+            Self::PrivateReleases => "privateReleases",
         }
     }
 
@@ -358,6 +364,7 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
+            Self::PrivateReleases => "1.0.0-rc.36",
         }
     }
 }
@@ -757,6 +764,9 @@ impl SystemCmd {
                 if release.guests.is_some() {
                     f.push(Feature::Guests);
                 }
+                if release.visibility.is_some() || !release.orgs.is_empty() {
+                    f.push(Feature::PrivateReleases);
+                }
                 f
             }
             Self::CreateApp { app, unit_offer } => {
@@ -932,6 +942,7 @@ mod tests {
     const RC33: &str = "1.0.0-rc.33";
     const RC34: &str = "1.0.0-rc.34";
     const RC35: &str = "1.0.0-rc.35";
+    const RC36: &str = "1.0.0-rc.36";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1179,6 +1190,9 @@ mod tests {
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
                     "member": null, "package": "p", "version": "1.0.0" }] } })),
+            Feature::PrivateReleases => {
+                install(json!({ "visibility": "private", "orgs": ["org"] }))
+            }
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1466,7 +1480,10 @@ mod tests {
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES.iter().partition(|f| {
-            ![RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35].contains(&f.since())
+            ![
+                RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
+            ]
+            .contains(&f.since())
         });
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
@@ -1550,8 +1567,10 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC32);
         let (rc33, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC33);
-        let (rc34, rc35): (Vec<Feature>, Vec<Feature>) =
+        let (rc34, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC34);
+        let (rc35, rc36): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC35);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -1739,6 +1758,27 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc35 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.36's (who may use a release: public, or private to the organizations it was
+        // installed for) for every node on rc.36: an rc.35 node drops both fields.
+        assert_eq!(rc36, [Feature::PrivateReleases]);
+        for &feature in &rc36 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC35))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC36;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC36.into(),
+            nodes: (1..=3).map(|id| (id, RC36.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc36 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

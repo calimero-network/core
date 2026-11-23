@@ -468,6 +468,8 @@ impl Node {
                 // Every release says, absent being `either`.
                 instance_org: Some(manifest.instance_org.unwrap_or_default()),
                 guests: Some(manifest.guests.unwrap_or_default()),
+                visibility: None,
+                orgs: BTreeSet::new(),
             },
             wasm: wasm_by_hash,
         })
@@ -508,6 +510,16 @@ impl Node {
             .is_err()
         {
             v.release.guests = None;
+        }
+        // And who may use it: an older node drops both, so the release keeps the rule from
+        // before; a later install the registry serves to anyone makes it public.
+        if self
+            .require_features(&[crate::system::cluster_version::Feature::PrivateReleases])
+            .await
+            .is_err()
+        {
+            v.release.visibility = None;
+            v.release.orgs.clear();
         }
         self.refuse_stalled_install(&v.release.installed_by, &v.signer_id)?;
         // An older node drops `components` and would apply the release as an app's, and drops

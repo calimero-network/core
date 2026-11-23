@@ -668,6 +668,171 @@ fn a_release_from_before_installers_reads_and_records_who_installs_it_again() {
     assert!(seen(&old_state, "alice") && !seen(&old_state, "bob"));
 }
 
+/// A private release is used by the members of the organizations it was installed for,
+/// each install for another adding it, and by no one else, an installer or a reader of an
+/// instance running it included; a public one by everyone, never private again.
+#[test]
+fn a_private_release_is_used_only_in_the_organizations_it_was_installed_for() {
+    use super::{Visibility, NOT_AN_ORG_MEMBER};
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob", "carol", "dave"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    // A (alice's) holds carol and dave as a guest; B (bob's) holds alice.
+    let join = |m: &mut SystemMachine, org: &str, who: &str, role: OrgRole| {
+        let _prev = m
+            .state
+            .orgs
+            .get_mut(&p(org))
+            .unwrap()
+            .members
+            .insert(who.into(), role);
+    };
+    join(&mut m, "alice", "carol", OrgRole::Member);
+    join(&mut m, "alice", "dave", OrgRole::Guest);
+    join(&mut m, "bob", "alice", OrgRole::Member);
+    let install = |by: &str, orgs: &[&str], visibility: &str| SystemCmd::InstallPackage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        release: serde_json::from_value(json!({
+            "version": "1.0.0", "mpk": "ab", "mpkSize": 1, "source": "registry",
+            "services": { "": "b1" }, "installedBy": by, "installedAt": 1,
+            "visibility": visibility, "orgs": orgs.iter().map(|o| p(o)).collect::<Vec<_>>(),
+        }))
+        .unwrap(),
+    };
+    assert_eq!(
+        m.run_authorized(install("carol", &["bob"], "private")),
+        Err(NOT_AN_ORG_MEMBER)
+    );
+    assert_eq!(
+        m.run_authorized(install("carol", &[], "private")),
+        Err(NOT_AN_ORG_MEMBER)
+    );
+    let _ok = m
+        .run_authorized(install("alice", &["bob"], "private"))
+        .unwrap();
+    let seen = |m: &SystemMachine, who: &str| {
+        m.state
+            .sees_release(&m.state.packages["p"].versions["1.0.0"], who)
+    };
+    assert!(seen(&m, "alice") && seen(&m, "bob"));
+    assert!(!seen(&m, "carol"), "sharing A with its installer is not B");
+    assert!(!seen(&m, "dave") && !seen(&m, OPERATOR));
+
+    // Carol reaches an instance of it: she reads the release it runs, never uses it.
+    let app: crate::types::AppRecord = serde_json::from_value(json!({
+        "appId": "x", "name": "x", "group": 2, "bundle": "b1", "owner": "bob",
+        "org": p("bob"), "replicas": [1], "createdAt": 0, "grants": [{ "kind": "anyone" }],
+        "release": { "package": "p", "version": "1.0.0" },
+    }))
+    .unwrap();
+    let _prev = m.state.apps.insert("x".into(), app);
+    let v = m.state.packages["p"].versions["1.0.0"].clone();
+    assert!(m.state.may_reach(&m.state.apps["x"], Some("carol")));
+    assert!(m.state.reads_release(&v, "carol") && !m.state.sees_release(&v, "carol"));
+    assert!(!m.state.reads_release(&v, OPERATOR));
+
+    // Installed again for A: A's members use it too, a guest does not.
+    let _ok = m
+        .run_authorized(install("alice", &["alice"], "private"))
+        .unwrap();
+    assert!(seen(&m, "carol") && !seen(&m, "dave"));
+    // An installer who leaves loses it with the rest of the organization.
+    for org in ["alice", "bob"] {
+        let _gone = m
+            .state
+            .orgs
+            .get_mut(&p(org))
+            .unwrap()
+            .members
+            .remove("alice");
+    }
+    assert!(!seen(&m, "alice") && seen(&m, "carol") && seen(&m, "bob"));
+
+    // Served to anyone, it is public, and a private install never takes that back.
+    let _ok = m.run_authorized(install("dave", &[], "public")).unwrap();
+    let _ok = m
+        .run_authorized(install("bob", &["bob"], "private"))
+        .unwrap();
+    let v = &m.state.packages["p"].versions["1.0.0"];
+    assert_eq!(v.visibility, Some(Visibility::Public));
+    assert!(seen(&m, "dave") && seen(&m, "alice"));
+}
+
+/// A release recorded before `visibility` keeps the rule from before: whoever shares an
+/// organization with an installer, or reaches an app of it, uses it. Its entry writes back
+/// byte for byte; a private install of it again leaves that rule, a public one replaces it.
+#[test]
+fn a_release_recorded_before_visibility_keeps_the_rule_from_before() {
+    use super::{PackageVersion, Visibility};
+    let old = json!({
+        "version": "1.0.0", "mpk": "ab", "mpkSize": 1, "source": "registry",
+        "services": { "": "b1" }, "metadata": null, "outbound": [],
+        "installedBy": "alice", "installedAt": 1,
+    });
+    let release: PackageVersion = serde_json::from_value(old.clone()).unwrap();
+    assert!(release.visibility.is_none() && release.orgs.is_empty());
+    assert_eq!(serde_json::to_value(&release).unwrap(), old);
+    let entry = SystemCmd::InstallPackage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        release: release.clone(),
+    };
+    assert!(entry.features().is_empty());
+
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob", "carol"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    let _prev = m
+        .state
+        .orgs
+        .get_mut(&p("alice"))
+        .unwrap()
+        .members
+        .insert("bob".into(), OrgRole::Member);
+    let _ok = m.run_authorized(entry).unwrap();
+    assert_eq!(
+        serde_json::to_value(&m.state.packages["p"].versions["1.0.0"]).unwrap(),
+        old
+    );
+    let seen = |m: &SystemMachine, who: &str| {
+        m.state
+            .sees_release(&m.state.packages["p"].versions["1.0.0"], who)
+    };
+    assert!(seen(&m, "alice") && seen(&m, "bob") && !seen(&m, "carol"));
+    assert!(m
+        .state
+        .sees_release_from(&m.state.packages["p"].versions["1.0.0"], "carol", true));
+
+    let again = |visibility: Visibility| SystemCmd::InstallPackage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        release: PackageVersion {
+            installed_by: "bob".into(),
+            visibility: Some(visibility),
+            orgs: [p("bob")].into(),
+            ..release.clone()
+        },
+    };
+    let _ok = m.run_authorized(again(Visibility::Private)).unwrap();
+    let v = &m.state.packages["p"].versions["1.0.0"];
+    assert!(v.visibility.is_none() && seen(&m, "bob"));
+    let _ok = m.run_authorized(again(Visibility::Public)).unwrap();
+    assert!(seen(&m, "carol"));
+    assert!(!m.state.sees_release_from(
+        &PackageVersion {
+            visibility: Some(Visibility::Private),
+            ..release
+        },
+        "carol",
+        true
+    ));
+}
+
 /// A release's compute component is recorded as the compute part of its service: no app
 /// runs it, the app's record carries it next to `bundle` on create and upgrade, and
 /// uninstalling the release takes it with the service.
@@ -706,6 +871,8 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             min_runtime_version: None,
             instance_org: None,
             guests: None,
+            visibility: None,
+            orgs: BTreeSet::new(),
         },
     };
     let _ok = m
@@ -812,6 +979,8 @@ fn a_compute_release_is_charged_each_parts_own_size() {
             min_runtime_version: None,
             instance_org: None,
             guests: None,
+            visibility: None,
+            orgs: BTreeSet::new(),
         },
     };
     let _ok = m.run_authorized(release("1.0.0", "m1", "j1")).unwrap();
@@ -856,6 +1025,8 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             min_runtime_version: None,
             instance_org: None,
             guests: None,
+            visibility: None,
+            orgs: BTreeSet::new(),
         },
     };
     let _ok = m.run_authorized(install("1.0.0", "m1", "j1")).unwrap();
