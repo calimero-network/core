@@ -986,3 +986,190 @@ async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
     );
     assert_eq!(rounds(&c), before, "the call must run no round of its own");
 }
+
+/// A signed single-service `.mpk` of `com.test.undo` at `version` running `wasm`.
+fn undo_release(version: &str, wasm: &[u8]) -> Vec<u8> {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[46; 32]);
+    let sha = |b: &[u8]| hex::encode(calimero_identity::sha256(b));
+    let manifest = calimero_bundle::BundleManifest {
+        version: "1.0".to_owned(),
+        package: "com.test.undo".to_owned(),
+        app_version: version.to_owned(),
+        signer_id: Some(calimero_bundle::derive_signer_id_did_key(
+            key.verifying_key().as_bytes(),
+        )),
+        min_runtime_version: "0.1.0".to_owned(),
+        metadata: None,
+        handlers: None,
+        build_info: None,
+        interfaces: None,
+        wasm: Some(calimero_bundle::BundleArtifact {
+            path: "app.wasm".to_owned(),
+            hash: sha(wasm),
+            size: wasm.len() as u64,
+        }),
+        abi: None,
+        compute: None,
+        links: None,
+        frontend: None,
+        frontend_aliases: Vec::new(),
+        outbound: Vec::new(),
+        secrets: None,
+        uses: None,
+        upgrades: None,
+        instance_org: None,
+        guests: None,
+        services: None,
+        pipelines: Vec::new(),
+        signature: None,
+    };
+    let mut manifest = serde_json::to_value(&manifest).unwrap();
+    calimero_bundle::sign_manifest_json(&mut manifest, &key).unwrap();
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::default(),
+    ));
+    for (name, bytes) in [
+        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+        ("app.wasm", wasm.to_vec()),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(name).unwrap();
+        header.set_size(bytes.len() as u64);
+        header.set_cksum();
+        tar.append(&header, bytes.as_slice()).unwrap();
+    }
+    tar.into_inner().unwrap().finish().unwrap()
+}
+
+/// Bugbot on #5210 ("lagging replica undercounts"): the node that took an upgrade's
+/// restore point may still host the app and be behind its group. What an undo would lose
+/// is then read from a majority of the app's replicas, the furthest counting, as where
+/// that node no longer hosts it, never from its own applied index alone: a write it has
+/// not applied yet is still a write the undo takes back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_node_lags() {
+    let c = ProxiedCluster::start().await;
+    let (alice, mut pk) = signed_up(&c, c.system_leader(), "alice").await;
+    let org = alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The second release runs the same module under another custom section.
+    let mut v11 = kv_wasm();
+    v11.extend_from_slice(&[0, 4, 3, b'v', b'1', b'1']);
+    for (version, wasm) in [("1.0.0", kv_wasm()), ("1.1.0", v11)] {
+        let _ = alice
+            .packages()
+            .upload(undo_release(version, &wasm))
+            .await
+            .unwrap();
+    }
+    let app = alice
+        .apps()
+        .create(typed(json!({
+            "name": "notes", "package": "com.test.undo", "version": "1.0.0", "org": org,
+        })))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut leader = None;
+    for _ in 0..200 {
+        leader = (0..3).find(|i| {
+            c.nodes[*i]
+                .node
+                .hosted(&app)
+                .is_some_and(|g| g.status().is_leader)
+        });
+        if leader.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let leader = leader.expect("the app's group elects a leader");
+    let holder = (0..3).find(|i| *i != leader).unwrap();
+
+    // Upgraded through a follower, which takes the restore point itself.
+    let at_holder = c.client(holder);
+    let _s = at_holder.sign_in(&mut pk).await.unwrap();
+    let at_leader = c.client(leader);
+    let _s = at_leader.sign_in(&mut pk).await.unwrap();
+    let _up = at_holder
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.1.0" })), Some(&mut pk))
+        .await
+        .unwrap();
+    let holder_node = &c.nodes[holder].node;
+    let mut point = None;
+    for _ in 0..200 {
+        point = holder_node.sys(|s| {
+            s.apps
+                .get(&app)
+                .and_then(|a| a.restore_point.clone())
+                .and_then(|p| p.file)
+        });
+        if point.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let point = point.expect("the upgrade logged a restore point");
+    assert_eq!(point.node, holder as u64 + 1, "taken on the holder");
+    // The holder applied the upgrade, and the system log has settled, before it is held.
+    let holder_group = holder_node.hosted(&app).unwrap();
+    let leader_group = c.nodes[leader].node.hosted(&app).unwrap();
+    for _ in 0..200 {
+        let leaders = leader_group.read_local(|m, _| m.state.last_index);
+        if holder_group.read_local(|m, _| m.state.last_index) == leaders {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Held, the holder misses a write the other two commit.
+    c.hold[holder].send_replace(true);
+    let _r = at_leader
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "after" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        holder_group.read_local(|m, _| m.last_write_ms()).is_none(),
+        "the holder must not have applied the write"
+    );
+
+    let plan = at_holder
+        .transport()
+        .json(calimero_client::Request::new(
+            reqwest::Method::GET,
+            format!("apps/{app}/undo").as_str(),
+        ))
+        .await;
+    c.hold[holder].send_replace(false);
+    let plan: serde_json::Value = plan.unwrap();
+    assert_eq!(plan["available"], true, "{plan}");
+    let lost = &plan["apps"][0]["lostWrites"];
+    assert_eq!(
+        lost["any"], true,
+        "the write the holder has not applied is lost all the same: {plan}"
+    );
+    assert!(
+        lost["entriesSince"].as_u64().is_some_and(|n| n >= 2),
+        "the upgrade and the write since the restore point: {plan}"
+    );
+}
