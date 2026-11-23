@@ -224,9 +224,10 @@ The passkey ceremonies are two routes each, with the passkey in between:
 | `use_session(session)` | Authenticates with a session from `sign_up` / `sign_in`. |
 | `use_api_key(key)` | Authenticates every request with a `cal_...` key. |
 | `use_visitor(link, seed)` | Calls as a public link's visitor (`link`: its token; `seed`: 32 bytes, `new_visitor_seed()`), signing every request; answers the `Visitor` (`link`, `public_key`, `bearer(at=None)`). |
+| `sign_out()` / `sign_out_everywhere()` | Ends this session (every session of the account) and drops the credential, even when the node refuses or cannot be reached; the failure is raised after. For a visitor the node answers `403 VISITOR_ONLY`. |
 | `session()` | The session in use, or `None`. |
 
-Signing out, the account's sessions and its passkeys are routes:
+The account's sessions and its passkeys are routes:
 `client.auth.logout()`, `logout_all()`, `sessions_list()`,
 `session_revoke(session=...)`, `passkey_label(cred=..., label=...)`,
 `passkey_remove(cred=...)`.
