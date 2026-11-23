@@ -1,15 +1,22 @@
-"""Deep cases: deployments (a deployment's secrets for the apps its offered releases use)."""
+"""Deep cases: deployments (a deployment's secrets for the apps its offered releases use, its offer
+moving and its customers' instances kept to it) and the operator's deployer grants."""
 
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
 import io
 import json
 import tarfile
+import urllib.parse
 from pathlib import Path
 
-from upgrade_deep import DeepCase, check, eq, kv_wasm, people, person, refused, scratch, until
+import ed25519_sign
+from rollout import OPERATOR_SEED
+from rv2 import HttpError
+from upgrade_deep import (DeepCase, check, eq, install, kv_wasm, new_org, ops, people, person, refused, scratch,
+                          subset, until)
 from upgrade_path import case
 
 USED = "com.calimero.upgrade.used-secrets"
@@ -113,4 +120,158 @@ class DeploymentUsedSecrets(DeepCase):
         set_ = dex.raw("put", f"deployments/{s['deployment']}/secrets/NEAR_AI_API_KEY", {"value": "dex-key-2"})
         check(set_["fingerprint"] != s["fingerprint"], f"a new value has a new fingerprint: {set_}")
         s["fingerprint"] = set_["fingerprint"]
+        self.check(w, s)
+
+
+OFFERED = "com.calimero.upgrade.kv-o"
+# The releases of the offered package the fixtures pack (kv-o-<v>.mpk): the deployment offers
+# 1.0.0, then 1.1.0 (on the old release), then 1.2.0 (on the new one); 1.3.0 is never offered.
+OFFERED_VERSIONS = ("1.0.0", "1.1.0", "1.2.0", "1.3.0")
+
+
+def _update(p, app):
+    """`GET /apps/{app}/update` as `p` reads it: the update offered, who approves it."""
+    u = p.get(f"apps/{app}/update")
+    a = u.get("available")
+    return {"available": a and {k: a.get(k) for k in ("package", "version", "source")},
+            "mayApprove": u.get("mayApprove"), "approvers": u.get("approvers")}
+
+
+@case
+class DeploymentOfferUpgrades(DeepCase):
+    name = "deployment-offer-upgrades"
+    area = "Deployments"
+    since = "1.0.0-rc.32"
+    seeds = ("a deployment offering release 1.0.0 of a package whose 1.1.0, 1.2.0 and 1.3.0 are installed too, and a "
+             "customer's two instances from it; the customer's owner refused an upgrade outside the offer "
+             "(`409 OUTSIDE_DEPLOYMENT`), then, the deployment offering 1.1.0, accepting it on one instance without "
+             "naming a version")
+    verifies = ("the deployment's offer; each instance's release and data, on the deployment; `GET /apps/{app}/update` "
+                "(`available` with `source: deployment` where the instance runs another release than the offer, none "
+                "where it runs the offer; `mayApprove` and `approvers` for the owner); every installed release but "
+                "the offer and the one it runs refused `OUTSIDE_DEPLOYMENT` to each instance; on the new release the "
+                "other instance takes the offer naming its version, the deployment offers 1.2.0 and the first "
+                "instance accepts it naming none")
+
+    def populate(self, w):
+        dawn, cato = people(w, "dawn", "cato")
+        for v in OFFERED_VERSIONS:
+            install(dawn, w, f"kv-o-{v}.mpk")
+        d = dawn.raw("post", "deployments", {"name": "dawn-offers", "owner": {"account": dawn.id}})["id"]
+        dawn.raw("post", f"deployments/{d}/apps", {"app": "kv", "package": OFFERED, "version": "1.0.0"})
+        org = new_org(cato, "Offer Customer Org")
+        s = {"deployment": d, "org": org, "offer": "1.0.0", "apps": {}, "running": {}}
+        for k in ("early", "late"):
+            app = cato.raw("post", "apps", {"name": f"offer-{k}", "deployment": d, "package": OFFERED,
+                                            "org": org})["appId"]
+            cato.call(app, "set", {"key": "made", "value": k})
+            s["apps"][k], s["running"][k] = app, "1.0.0"
+        self.check(w, s)
+        dawn.raw("post", f"deployments/{d}/apps", {"app": "kv", "package": OFFERED, "version": "1.1.0"})
+        s["offer"] = "1.1.0"
+        cato.raw("post", f"apps/{s['apps']['early']}/upgrade", {})
+        s["running"]["early"] = "1.1.0"
+        return s
+
+    def check(self, w, s):
+        dawn, cato = people(w, "dawn", "cato")
+        d = s["deployment"]
+        offers = [(o["app"], o["package"], o["version"]) for o in dawn.get(f"deployments/{d}").get("apps", [])]
+        eq(offers, [("kv", OFFERED, s["offer"])], "the deployment's offer")
+        for k, app in s["apps"].items():
+            rec = cato.get(f"apps/{app}")
+            eq(rec.get("deployment"), d, f"the {k} instance on the deployment")
+            eq((rec.get("release") or {}).get("version"), s["running"][k], f"the {k} instance's release")
+            eq(cato.result(app, "get", {"key": "made"}), k, f"the {k} instance's data")
+            want = None
+            if s["running"][k] != s["offer"]:
+                want = {"package": OFFERED, "version": s["offer"], "source": "deployment"}
+            eq(_update(cato, app), {"available": want, "mayApprove": True, "approvers": "owner-and-admins"},
+               f"the {k} instance's update as its owner reads it")
+            for v in OFFERED_VERSIONS:
+                if v in (s["offer"], s["running"][k]):
+                    continue
+                refused("OUTSIDE_DEPLOYMENT", lambda app=app, v=v: cato.raw("post", f"apps/{app}/upgrade",
+                                                                            {"version": v}),
+                        f"the {k} instance upgraded to {v}, which the deployment does not offer")
+
+    def exercise(self, w, s):
+        dawn, cato = people(w, "dawn", "cato")
+        late = s["apps"]["late"]
+        cato.raw("post", f"apps/{late}/upgrade", {"version": s["offer"]})
+        s["running"]["late"] = s["offer"]
+        dawn.raw("post", f"deployments/{s['deployment']}/apps", {"app": "kv", "package": OFFERED, "version": "1.2.0"})
+        s["offer"] = "1.2.0"
+        early = s["apps"]["early"]
+        eq(_update(cato, early)["available"], {"package": OFFERED, "version": "1.2.0", "source": "deployment"},
+           "the new offer, before it is accepted")
+        cato.raw("post", f"apps/{early}/upgrade", {})
+        s["running"]["early"] = "1.2.0"
+        self.check(w, s)
+
+
+def _operator(w, method, path, body=None):
+    """An operator decision over the ops route: the node answers `428 OPERATOR_SIGNATURE_REQUIRED`
+    with the bytes to sign, and the retry carries the operator key's signature over them."""
+    try:
+        return ops(w, method, path, body)
+    except HttpError as e:
+        if e.status != 428 or not isinstance(e.body, dict):
+            raise
+        details = e.body["details"]
+    seed = bytes.fromhex(OPERATOR_SEED)
+    sig = ed25519_sign.sign(seed, base64.b64decode(details["message"])).hex()
+    return ops(w, method, path, {**(body or {}), "operatorProof": {"nonce": details["nonce"], "signature": sig}})
+
+
+def _grants(w, node=None):
+    """`GET /deployers` as the operator, each grant without its time of granting."""
+    got = ops(w, "GET", "deployers", node=node)
+    got["grants"] = sorted(({k: g.get(k) for k in ("key", "deployer", "until", "grantedBy")} for g in got["grants"]),
+                           key=lambda g: g["key"])
+    return got
+
+
+@case
+class DeployerGrants(DeepCase):
+    name = "deployer-grants"
+    area = "Deployments"
+    seeds = ("the operator's deployer grants on the open cluster (`POST /ops/deployers`, signed with the operator "
+             "key): an account's without an end, an organization's until a date, and an account's revoked again "
+             "(`DELETE /ops/deployers/{key}`)")
+    verifies = ("`GET /deployers` as the operator on every node: `deployments: open`, `deployers: operator`, no "
+                "owner, and each grant (key, deployer, end, `operator`); an account refused the list and the owner's "
+                "grant route, a grant without the operator's signature answered `428`; on the new release the "
+                "organization's grant revoked and another account's granted")
+
+    def populate(self, w):
+        grey, hank, iris = people(w, "grey", "hank", "iris")
+        org = new_org(iris, "Deployer Org")
+        _operator(w, "POST", "ops/deployers", {"deployer": {"account": grey.id}})
+        _operator(w, "POST", "ops/deployers", {"deployer": {"org": org}, "until": "2099-01-01T00:00:00Z"})
+        _operator(w, "POST", "ops/deployers", {"deployer": {"account": hank.id}})
+        _operator(w, "DELETE", "ops/deployers/" + urllib.parse.quote(f"account:{hank.id}", safe=""))
+        s = {"org": org, "read": _grants(w)}
+        eq({(g["key"], g["until"]) for g in s["read"]["grants"]},
+           {(f"account:{grey.id}", None), (f"org:{org}", "2099-01-01T00:00:00Z")}, "the grants as made")
+        return s
+
+    def check(self, w, s):
+        grey, hank = people(w, "grey", "hank")
+        for n in w.members():
+            subset(_grants(w, n), s["read"], f"the deployer grants on node {n}")
+        subset(s["read"], {"deployments": "open", "deployers": "operator", "owner": None}, "the deployer rules")
+        refused("FORBIDDEN", lambda: grey.get("deployers"), "a granted account reads the deployers")
+        refused("FORBIDDEN", lambda: grey.raw("post", "deployers", {"deployer": {"account": hank.id}}),
+                "an account grants a deployer where the operator grants them")
+        refused("OPERATOR_SIGNATURE_REQUIRED", lambda: ops(w, "POST", "ops/deployers",
+                                                           {"deployer": {"account": hank.id}}),
+                "a grant without the operator's signature")
+
+    def exercise(self, w, s):
+        jett = person(w, "jett")
+        _operator(w, "DELETE", "ops/deployers/" + urllib.parse.quote(f"org:{s['org']}", safe=""))
+        _operator(w, "POST", "ops/deployers", {"deployer": {"account": jett.id}, "until": "2098-06-01T00:00:00Z"})
+        s["read"] = _grants(w)
+        eq(len(s["read"]["grants"]), 2, f"the grants after a revocation and a grant: {s['read']['grants']}")
         self.check(w, s)
