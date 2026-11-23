@@ -319,18 +319,18 @@ def _job_nodes(w):
     return sorted(n["id"] for n in ops(w, "GET", "ops/placement")["nodes"] if str(n.get("role")).lower() == "job")
 
 
-def _attested(w, node=None):
-    """`{job node: its attestation answer}` as the system leader's check reports it: each must be admitted."""
+def _attested(w, states=("admitted",)):
+    """`{job node: its attestation answer}` as the node's check reports it: each in one of `states`."""
     got = {}
     for job in _job_nodes(w):
-        got[job] = until(f"job node {job} is attested", lambda job=job: _admitted(ops(
-            w, "GET", f"ops/job-nodes/{job}/attestation", node=node), job), 30)
+        got[job] = until(f"job node {job} is attested", lambda job=job: _in_states(
+            ops(w, "GET", f"ops/job-nodes/{job}/attestation"), job, states), 30)
     check(got, "no job node is registered")
     return got
 
 
-def _admitted(answer, job):
-    check(answer.get("state") == "admitted" and answer.get("node") == job, f"job node {job}: {answer}")
+def _in_states(answer, job, states):
+    check(answer.get("state") in states and answer.get("node") == job, f"job node {job}: {answer}")
     return answer
 
 
@@ -348,9 +348,13 @@ class JobNodeAttestation(DeepCase):
         _attested(w)
         return {}
 
-    def check(self, w, s):
-        _attested(w)
+    def check(self, w, s, states=("admitted",)):
+        _attested(w, states)
         replica = w.members()[0]
         refused(("NOT_FOUND", "404"), lambda: ops(w, "GET", f"ops/job-nodes/{replica}/attestation"),
                 "the attestation of a replica node")
+
+    def during_mix(self, w, s):
+        # The pipelines case stops the old job node before the roll, so it is still registered and unreachable.
+        self.check(w, s, ("admitted", "unreachable"))
 
