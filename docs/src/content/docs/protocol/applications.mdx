@@ -172,7 +172,9 @@ A release is visible, which is the right to use it (`SystemState::sees_release`)
   only while such a member), each install for another organization adding it;
 - the accounts that installed a private release installed for no organization
   (an account in none installs for none), until an install for an organization
-  adds one;
+  adds one; an account in none installing again a release already private to some
+  organization is refused `404` before anything is recorded, as the registry
+  answers an account it does not serve;
 - the operator, for the releases it installed; it sees no account's releases.
 
 A session opened on the package's own frontend sees what its account sees, the display name and author of the package's newest release included; a sign-up there names the package by its id unless that release is public or the operator's.

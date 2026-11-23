@@ -7638,6 +7638,44 @@ async fn reaching_an_app_by_its_bundle_never_names_a_private_sibling() {
     assert!(!update.to_string().contains("com.acme.secret"), "{update}");
 }
 
+/// An account in no organization installing again a private release that already has
+/// organizations would get nothing it may use: it is refused before anything is logged, as
+/// the registry answers an account it does not serve, and the release records nothing new.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_install_its_installer_could_not_use_is_refused_and_records_nothing() {
+    let c = Cluster::start(3).await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[15; 32]);
+    let (dev, _d) = signed_up(&c, 0, "dev").await;
+    let (carol, _c) = signed_up(&c, 1, "carol").await;
+    let _acme = new_org(&carol, "Acme").await;
+    let tool = || {
+        mpk(
+            "com.acme.tool",
+            "1.0.0",
+            &variant(&kv_wasm(), "acme-tool"),
+            &publisher,
+        )
+    };
+    let _ok = carol.packages().upload(tool(), None).await.unwrap();
+    let installers = || {
+        c.nodes[0].as_ref().unwrap().node.sys(|s| {
+            let v = &s.packages["com.acme.tool"].versions["1.0.0"];
+            (v.installed_by.clone(), v.installers.clone(), v.orgs.clone())
+        })
+    };
+    let before = installers();
+
+    let e = dev.packages().upload(tool(), None).await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    assert!(
+        e.to_string()
+            .contains("the registry has no com.acme.tool@1.0.0 for this account"),
+        "{e}"
+    );
+    assert_eq!(installers(), before, "nothing recorded");
+    assert_eq!(listed(&dev).await, BTreeMap::new());
+}
+
 /// An account in no organization uploads a release for none: it is private to its
 /// installer, who lists and runs it, and nobody else sees it; once a member installs it for
 /// an organization, that organization's members use it, and the first installer, in none

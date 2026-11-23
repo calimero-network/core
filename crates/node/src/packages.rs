@@ -250,9 +250,7 @@ impl Node {
         }
         match Self::fetch_from(registry, package, version).await? {
             Some(mpk) => Ok((mpk, Visibility::Private)),
-            None => Err(ApiError::not_found(&format!(
-                "the registry has no {package}@{version} for this account; a private package needs this cluster account linked to its Calimero Cloud developer in the console"
-            ))),
+            None => Err(not_for_this_account(package, version)),
         }
     }
 
@@ -557,6 +555,18 @@ impl Node {
             ),
             None => (Some(visibility), orgs.clone(), BTreeMap::new()),
         };
+        // An install again that would leave the release one its installer may not use (an
+        // account in no organization, of a release private to some) is refused, as the
+        // registry refuses an account it does not serve.
+        if let Some(v) = &kept {
+            let mut merged = v.clone();
+            merged.visibility = after;
+            merged.orgs.clone_from(&orgs_after);
+            let _new = merged.installers.insert(actor.to_owned());
+            if !self.sys(|s| s.sees_release(&merged, actor)) {
+                return Err(not_for_this_account(&package, &manifest.app_version));
+            }
+        }
         let private_for = (after == Some(Visibility::Private)).then_some(&orgs_after);
         let modules = self
             .resolve_modules(
@@ -887,6 +897,13 @@ impl Node {
             .map(|b| (b, compute.get(key).cloned(), release));
         found.ok_or_else(|| no_such_service(package, &version, key, &services))
     }
+}
+
+/// `404`: the registry does not serve `package@version` to this account.
+fn not_for_this_account(package: &str, version: &str) -> ApiError {
+    ApiError::not_found(&format!(
+        "the registry has no {package}@{version} for this account; a private package needs this cluster account linked to its Calimero Cloud developer in the console"
+    ))
 }
 
 /// `503`: the registry did not serve a fetch.

@@ -301,7 +301,12 @@ is its command line.
   organization adds one, and then the organization rule holds (regressions
   `a_private_release_for_no_organization_is_its_installers_alone`, `system::tests`
   and `tests/cluster.rs`). `PackageVersion::orgs` gains the organization of each install;
-  `InstallPackage` refuses one the actor is not a member of (`NOT_AN_ORG_MEMBER`). A
+  `InstallPackage` refuses one the actor is not a member of (`NOT_AN_ORG_MEMBER`). An
+  install again that would leave the release one its installer may not use (an account
+  in no organization, of a release private to some) is refused before it is logged, `404`
+  as the registry answers an account it does not serve (`not_for_this_account`), and
+  records nothing (regression
+  `an_install_its_installer_could_not_use_is_refused_and_records_nothing`). A
   reinstall the registry serves to anyone makes a release public, never private again.
   `release_mpk` fetches a public release without the credential, any other with it
   and no account, pinned by the recorded hash. Before `InstallPackage` is logged the
