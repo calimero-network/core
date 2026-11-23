@@ -49,3 +49,6 @@ export function newAccount(label) {
   syncCounter(account);
   return account;
 }
+
+/** The version of the release instance `app` runs now, as the node's record says. */
+export const runningVersion = (account, app) => ctl(account, ['raw', 'get', `apps/${app}`]).release?.version;
