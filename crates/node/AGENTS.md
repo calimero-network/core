@@ -1427,7 +1427,9 @@ is its command line.
   `UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that
   actor); apply judges `SystemState::auto_update_gate`: policy, green class (and
   `check_class`), newer release of its package, not a unit member, the logged unit with
-  no destination before or after, the hold (`at` >= `installedAt`, or the deployment
+  no destination before or after, a release that keeps the unit's members where they
+  are (`moves_members` over `release_of_use`, which `unit_members` picks with too;
+  `UpgradeApp { members_stay }`, `Feature::AutoUpdateMembersStay`, rc.36), the hold (`at` >= `installedAt`, or the deployment
   offer's `addedAt`, + `holdHours`), a restore point
   (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `RESTORE_POINT_REQUIRED`;
   `UpgradeRecord::auto`). Every update decision's time is `types::update_now`

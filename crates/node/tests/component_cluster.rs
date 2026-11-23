@@ -4127,6 +4127,7 @@ async fn the_leader_checks_upgrade_authority_again() {
                     owner_approves: false,
                     class: None,
                     auto: false,
+                    members_stay: false,
                     restore_point: None,
                 })
                 .await

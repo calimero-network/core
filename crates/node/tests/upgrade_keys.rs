@@ -470,6 +470,7 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
             owner_approves: false,
             class: None,
             auto: false,
+            members_stay: false,
             restore_point: None,
         })
         .unwrap()

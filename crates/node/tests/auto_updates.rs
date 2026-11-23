@@ -858,3 +858,101 @@ async fn a_green_update_that_drops_a_method_waits_for_a_person() {
     assert_eq!(waiting["mayApprove"], true, "{waiting}");
     shift_update_clock(0);
 }
+
+/// An update that would move the unit's members waits for a person: an update on its own
+/// moves the instance alone, so `notes` 0.2.0, whose lock pins its member `kv` at 0.1.1,
+/// never applies on its own while `kv` runs 0.1.0, and a release below it that keeps
+/// `kv` where it is still does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_update_that_would_move_the_units_members_waits_for_a_person() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
+    let (notes, kv) = ("com.test.unit-notes", "com.test.unit-kv");
+    let kv_at =
+        |version: &str| json!({ "kv": { "package": kv, "range": "^0.1", "version": version } });
+    for mpk in [
+        release_using(kv, "0.1.0", &kv_wasm(), &publisher, Value::Null),
+        release_using(
+            kv,
+            "0.1.1",
+            &variant(&kv_wasm(), "kv011"),
+            &publisher,
+            Value::Null,
+        ),
+        release_using(notes, "0.1.0", &kv_wasm(), &publisher, kv_at("0.1.0")),
+    ] {
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let org = home_org(&alice).await;
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": notes, "version": "0.1.0", "org": org }),
+        ))
+        .await
+        .unwrap()
+        .app_id;
+    let created = get(&alice, &format!("apps/{app}")).await.unwrap();
+    let member = created["links"]["kv"]
+        .as_str()
+        .expect("the unit's member")
+        .to_owned();
+    assert_eq!(running(&alice, &member).await, "0.1.0");
+
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    for mpk in [
+        release_using(
+            notes,
+            "0.1.5",
+            &variant(&kv_wasm(), "n015"),
+            &publisher,
+            kv_at("0.1.0"),
+        ),
+        release_using(
+            notes,
+            "0.2.0",
+            &variant(&kv_wasm(), "n020"),
+            &publisher,
+            kv_at("0.1.1"),
+        ),
+    ] {
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let update = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
+        u["available"]["version"] == "0.2.0"
+    })
+    .await;
+    assert_eq!(update["available"]["class"], "green", "{update}");
+    assert_eq!(update["unit"], true, "{update}");
+
+    // Past the hold, 0.1.5 applies on its own and 0.2.0 never does.
+    shift_update_clock(DAY + 600);
+    passes_until(
+        &c,
+        || async { running(&alice, &app).await == "0.1.5" },
+        "the release that keeps the members never applied",
+    )
+    .await;
+    for _ in 0..3 {
+        assert_eq!(
+            pass(&c).await,
+            0,
+            "an update that moves the members applied on its own"
+        );
+    }
+    assert_eq!(running(&alice, &app).await, "0.1.5");
+    assert_eq!(running(&alice, &member).await, "0.1.0");
+    let waiting = get(&alice, &format!("apps/{app}/update")).await.unwrap();
+    assert_eq!(waiting["available"]["version"], "0.2.0", "{waiting}");
+    shift_update_clock(0);
+}

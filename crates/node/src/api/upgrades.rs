@@ -528,13 +528,20 @@ async fn run_upgrade(
     let begun = crate::types::update_now();
     let has_compute = compute_bundle.is_some();
     let class = run_class(node, &app_id, release.as_ref(), who.run.as_deref()).await;
+    let members_stay = who.auto && members_stay_rule(node).await;
     // Who may, and where to: judged here, for every path (one app, an
     // organization's run, a publisher's run), before anything runs on the
     // app's group; `UpgradeApp` judges both again.
     let refusal = node.sys(|s| {
         let a = s.apps.get(&app_id)?;
         if who.auto {
-            if let Err(why) = s.auto_update_allows(a, release.as_ref(), class.as_ref(), begun) {
+            if let Err(why) = s.auto_update_allows(
+                a,
+                release.as_ref(),
+                class.as_ref(),
+                begun,
+                s.members_stay(members_stay),
+            ) {
                 return Some(crate::node::rejected(why));
             }
         } else if !who.by_operator && !s.may_upgrade(a, &who.actor, who.owner_approves) {
@@ -688,6 +695,7 @@ async fn run_upgrade(
             owner_approves: who.owner_approves,
             class,
             auto: who.auto,
+            members_stay,
             restore_point,
         })
         .await?;
@@ -740,6 +748,14 @@ pub(crate) async fn auto_upgrade(
         },
     )
     .await
+}
+
+/// Whether an update on its own carries `members_stay` (every node reads it,
+/// [`Feature::AutoUpdateMembersStay`]).
+async fn members_stay_rule(node: &Node) -> bool {
+    node.require_features(&[Feature::AutoUpdateMembersStay])
+        .await
+        .is_ok()
 }
 
 /// Whether upgrades take restore points ([`Feature::RestorePoints`]): once every node
@@ -1044,6 +1060,7 @@ async fn start_run_with(
                             owner_approves: who.owner_approves,
                             class,
                             auto: false,
+                            members_stay: false,
                             restore_point: restore_points_rule(&node)
                                 .await
                                 .then(crate::types::TakenRestorePoint::default),

@@ -204,10 +204,14 @@ pub enum Feature {
     /// a part's release no longer installed, approved first and applied as red. rc.34
     /// cannot decode the reason, and a node stops a group on an entry it cannot decode.
     UnclassifiedUpdates,
+    /// `UpgradeApp { auto, members_stay }`: an update on its own moves the instance alone,
+    /// so it is refused where its release would move the unit's members
+    /// (`SystemState::moves_members`). An earlier release would apply it and leave them behind.
+    AutoUpdateMembersStay,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 46] = [
+pub const FEATURES: [Feature; 47] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -254,6 +258,7 @@ pub const FEATURES: [Feature; 46] = [
     Feature::AutoUpdates,
     Feature::RestorePoints,
     Feature::UnclassifiedUpdates,
+    Feature::AutoUpdateMembersStay,
 ];
 
 impl Feature {
@@ -307,6 +312,7 @@ impl Feature {
             Self::AutoUpdates => "autoUpdates",
             Self::RestorePoints => "restorePoints",
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
+            Self::AutoUpdateMembersStay => "autoUpdateMembersStay",
         }
     }
 
@@ -358,6 +364,7 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
+            Self::AutoUpdateMembersStay => "1.0.0-rc.36",
         }
     }
 }
@@ -610,12 +617,14 @@ impl SystemCmd {
                 owner_approves,
                 class,
                 auto,
+                members_stay,
                 restore_point,
                 ..
             } if *in_deployment
                 || *owner_approves
                 || class.is_some()
                 || *auto
+                || *members_stay
                 || restore_point.is_some() =>
             {
                 let mut f = Vec::new();
@@ -633,6 +642,9 @@ impl SystemCmd {
                 }
                 if *auto {
                     f.push(Feature::AutoUpdates);
+                }
+                if *members_stay {
+                    f.push(Feature::AutoUpdateMembersStay);
                 }
                 if restore_point.is_some() {
                     f.push(Feature::RestorePoints);
@@ -932,6 +944,7 @@ mod tests {
     const RC33: &str = "1.0.0-rc.33";
     const RC34: &str = "1.0.0-rc.34";
     const RC35: &str = "1.0.0-rc.35";
+    const RC36: &str = "1.0.0-rc.36";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1175,6 +1188,9 @@ mod tests {
                 "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true })),
             Feature::RestorePoints => entry(json!({ "op": "undoUpgrade",
                 "app_id": "app", "apps": { "app": [1] }, "actor": "alice", "at": 1 })),
+            Feature::AutoUpdateMembersStay => entry(json!({ "op": "upgradeApp",
+                "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true,
+                "members_stay": true })),
             Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
@@ -1466,7 +1482,10 @@ mod tests {
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES.iter().partition(|f| {
-            ![RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35].contains(&f.since())
+            ![
+                RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
+            ]
+            .contains(&f.since())
         });
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
@@ -1519,10 +1538,10 @@ mod tests {
         // first it needs: an unclassified approval for `upgradePolicies`).
         for &feature in &last {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
-            let first = if feature == Feature::UnclassifiedUpdates {
-                Feature::UpgradePolicies
-            } else {
-                feature
+            let first = match feature {
+                Feature::UnclassifiedUpdates => Feature::UpgradePolicies,
+                Feature::AutoUpdateMembersStay => Feature::AutoUpdates,
+                _ => feature,
             };
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1550,8 +1569,10 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC32);
         let (rc33, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC33);
-        let (rc34, rc35): (Vec<Feature>, Vec<Feature>) =
+        let (rc34, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC34);
+        let (rc35, rc36): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC35);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -1739,6 +1760,27 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc35 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.36's (an update on its own that keeps the unit's members) for every node on
+        // rc.36: an rc.35 node would apply what a later one refuses.
+        assert_eq!(rc36, [Feature::AutoUpdateMembersStay]);
+        for &feature in &rc36 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC35))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC36;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC36.into(),
+            nodes: (1..=3).map(|id| (id, RC36.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc36 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));
