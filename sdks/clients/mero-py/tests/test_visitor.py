@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from calimero_client_py import CloudClient, Visitor, new_visitor_seed
+from calimero_client_py import CloudClient, CloudError, Visitor, new_visitor_seed
 
 LINK = "d4205f1ac7bb3fe43278131b6e621ebf952f0a5f51a38505327572d863c46c42"
 KEY = "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"
@@ -64,4 +64,16 @@ def test_use_visitor_answers_the_visitor_in_place_of_a_key():
     v = client.use_visitor("pl_token", bytes([9] * 32))
     assert (v.link, v.public_key) == (LINK, KEY)
     assert not client._native.has_api_key
+    assert client.session() is None
+
+
+def test_sign_out_drops_the_visitor_even_when_the_revoke_fails():
+    # The node is out of reach, so the revoke fails; the credential still goes,
+    # as in mero-js, mero-swift and mero-kotlin.
+    client = CloudClient("https://127.0.0.1:9", allow_mock=True)
+    client.use_visitor("pl_token", bytes([9] * 32))
+    assert client._native.has_visitor
+    with pytest.raises(CloudError):
+        client.sign_out()
+    assert not client._native.has_visitor
     assert client.session() is None
