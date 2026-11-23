@@ -231,7 +231,8 @@ class CalimeroClientTest {
             assertTrue(runCatching { client.signOut() }.isFailure)
             val before = cluster.nodes[0].requests.size
             runCatching { client.view("app-1", "get") }
-            assertTrue(cluster.nodes[0].requests.drop(before).all { bearer(it.first) == null })
+            val after = cluster.nodes[0].requests.drop(before)
+            assertTrue(after.all { bearer(it.first) == null })
         }
 
     @Test
