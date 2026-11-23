@@ -91,7 +91,7 @@ WORKFLOWS = {
             "scripts/check-app-lockfiles.py",
             "scripts/tests/check-app-lockfiles-test.py",
             "scripts/fetch-release-app.py",
-            # the release `Apps of the previous release` fetches its kv bundle from
+            "scripts/tests/fetch-release-app-test.py",
             ".github/upgrade-from",
             "scripts/fetch-release.sh",
             "scripts/build-release-fixtures.sh",
