@@ -4526,16 +4526,31 @@ async fn a_replica_move_onto_lower_id_nodes_never_forms_a_second_group() {
         .await;
         assert_eq!(v, json!(format!("v{i}")), "k{i}");
     }
-    // Every replica holds every key.
+    // Every replica holds every key. The move commits on nodes 3 and 1, so
+    // node 2 may still be catching up when it answers.
+    let want = c.nodes[2]
+        .as_ref()
+        .unwrap()
+        .node
+        .hosted(&app)
+        .unwrap()
+        .status()
+        .applied;
     for n in 0..3 {
-        let applied = c.nodes[n]
-            .as_ref()
-            .unwrap()
-            .node
-            .hosted(&app)
-            .unwrap()
-            .status();
-        assert_eq!(applied.voters, vec![1, 2, 3], "node {}: {applied:?}", n + 1);
+        let g = c.nodes[n].as_ref().unwrap().node.hosted(&app).unwrap();
+        let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
+        let mut st = g.status();
+        while (st.voters != [1, 2, 3] || st.applied < want)
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            st = g.status();
+        }
+        assert!(
+            st.voters == [1, 2, 3] && st.applied >= want,
+            "node {} never caught up to node 3's applied {want}: {st:?}",
+            n + 1
+        );
     }
     let replicas = alice.apps().get(&app).await.map(wire).unwrap()["replicas"].clone();
     assert_eq!(
