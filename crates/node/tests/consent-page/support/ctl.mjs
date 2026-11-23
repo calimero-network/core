@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { MEROCTL, ports, runDir } from './env.mjs';
 import { bump } from './counter.mjs';
@@ -36,10 +37,9 @@ function syncCounter(account) {
   bump(Math.max(1, used - bump(0) + 1));
 }
 
-let accounts = 0;
 /** Sign up a new account on node 1: its passkey file and meroctl home live in the run dir. */
 export function newAccount(label) {
-  const name = `${label}${++accounts}`;
+  const name = `${label}-${randomBytes(3).toString('hex')}`;
   const account = {
     name,
     file: path.join(runDir(), `${name}.json`),
