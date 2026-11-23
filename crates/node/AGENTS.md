@@ -775,7 +775,9 @@ is its command line.
   "Upgrade keys", cloud "Deploy from CI"): `POST /auth/apikeys { upgrades: { app,
   package? } }` (passkey consent; `api_key_args` states `upgrades` only when set, so
   other keys' consents read as before) makes a key bound to one app, its package and
-  that package's pinned signer, plus the public half of an Ed25519 key derived from the
+  that package's pinned signer (a package with no release the account may use is `404 no
+  such package`, as a missing one, before the passkey; regression
+  `an_upgrade_key_never_names_a_package_its_maker_may_not_use`), plus the public half of an Ed25519 key derived from the
   key (`proof::api_key_public`). `api::principal` refuses it everywhere (`403
   UPGRADE_KEY_ONLY`); only `app_upgrade` takes it (`api::credential`), for `{ version }`
   of its package (`SystemState::key_may_upgrade`), signing the statement in place of
