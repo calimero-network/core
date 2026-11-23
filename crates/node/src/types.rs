@@ -513,6 +513,10 @@ pub struct AppRecord {
     /// The last upgrade tried on this app, done or failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_upgrade: Option<UpgradeRecord>,
+    /// When a person's own upgrade of it last applied after its deployment changed hands
+    /// (`SystemState::handed_over_unseen`); set only once a deployment has. Left out when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_seen_at: Option<u64>,
     /// The deployment it was created from (`system::Deployment`), at a
     /// release that deployment offered then. Absent (a record from before,
     /// or an instance made from a release directly): none, and it is left

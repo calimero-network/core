@@ -589,7 +589,8 @@ async fn deployment_delete(
     ))
 }
 
-/// Offer a deployment the caller manages to another owner, with a passkey assertion over
+/// Offer a deployment the caller may hand over (its owner account, or an owner or admin of
+/// its organization) to another owner, with a passkey assertion over
 /// `deployment:{id} / __offer_deployment / { to }`; one offer waits at a time.
 async fn deployment_transfer_offer(
     State(node): State<Arc<Node>>,
@@ -602,6 +603,9 @@ async fn deployment_transfer_offer(
     node.require_features(&[crate::system::cluster_version::Feature::DeploymentTransfer])
         .await?;
     let d = managed_deployment(&node, &p, &id).await?;
+    if !node.sys(|s| s.hands_over(&d.owner, &account)) {
+        return Err(crate::node::rejected(crate::system::NOT_HANDING_OVER));
+    }
     if !node.sys(|s| s.exists(&body.to)) {
         return Err(ApiError::not_found("no such account or organization"));
     }
@@ -666,7 +670,7 @@ async fn deployment_transfer_accept(
             .as_ref()
             .filter(|t| t.to == body.to)
             .ok_or_else(|| crate::node::rejected(crate::system::NO_TRANSFER))?;
-        if !s.acts_for(&d.owner, &t.offered_by) {
+        if !s.hands_over(&d.owner, &t.offered_by) {
             return Err(crate::node::rejected(crate::system::TRANSFER_STALE));
         }
         if !t.live(at) {
@@ -780,9 +784,11 @@ async fn deployment_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> A
             .deployments
             .values()
             .filter(|d| {
-                d.transfer
-                    .as_ref()
-                    .is_some_and(|t| t.live(now) && s.acts_for(&t.to, &account))
+                d.transfer.as_ref().is_some_and(|t| {
+                    t.live(now)
+                        && s.acts_for(&t.to, &account)
+                        && s.hands_over(&d.owner, &t.offered_by)
+                })
             })
             .map(|d| offered_json(s, d))
             .collect();

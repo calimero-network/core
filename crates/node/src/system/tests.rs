@@ -13347,12 +13347,8 @@ fn cancel_transfer(deployment: &str, actor: &str) -> SystemCmd {
     }
 }
 
-/// A deployment changes hands in two steps: a manager of its owner offers it to another
-/// owner, and a manager of that owner accepts it before the offer lapses. The receiver
-/// needs a live deployer grant where deployments are granted and, as an organization, a
-/// recovery key; one offer waits at a time; either side cancels. Afterwards only the new
-/// owner's managers act, the deployment records whom it came from, and its offers,
-/// secrets and instances stay.
+/// A deployment changes hands when its owner offers it and a manager of the receiver accepts
+/// in time; see `governance.mdx`, "Transfer", for every rule this walks through.
 #[test]
 fn a_deployment_changes_hands_when_its_receiver_accepts() {
     use super::{
@@ -13527,15 +13523,33 @@ fn a_deployment_changes_hands_when_its_receiver_accepts() {
         Err(RECOVERY_KEY_REQUIRED.to_owned())
     );
 
-    // An offer outlives nobody's authority: carol offers it, then loses her capability (as
-    // a removal or the organization's recovery would end it), and the offer is stale.
+    // Managing an organization's deployment is not handing it over: carol, who holds
+    // MANAGE_APPLICATION, cannot move it to her own account; an owner or admin can.
     let now = at + TRANSFER_TTL_SECS + 1;
-    let _ok = m
-        .run_unproven(offer_deployment("d", dave(), "carol", now))
-        .unwrap();
+    let carol = || Deployer::Account("carol".into());
+    let _ok = m.run_unproven(grant(carol())).unwrap();
+    assert_eq!(
+        m.run_unproven(offer_deployment("d", carol(), "carol", now)),
+        Err(super::NOT_HANDING_OVER.to_owned())
+    );
+    // An offer outlives nobody's authority: bob, an admin, offers it, then is made a plain
+    // member again, though one who still manages its apps (as a removal or the
+    // organization's recovery would end it too), and the offer is stale.
     if let Some(o) = m.state.orgs.get_mut("org") {
-        let _caps = o.capabilities.remove("carol");
+        let _prev = o
+            .capabilities
+            .insert("bob".into(), crate::types::caps::MANAGE_APPLICATION);
     }
+    let role = |m: &mut SystemMachine, r: OrgRole| {
+        if let Some(o) = m.state.orgs.get_mut("org") {
+            let _prev = o.members.insert("bob".into(), r);
+        }
+    };
+    role(&mut m, OrgRole::Admin);
+    let _ok = m
+        .run_unproven(offer_deployment("d", dave(), "bob", now))
+        .unwrap();
+    role(&mut m, OrgRole::Member);
     assert_eq!(
         m.run_unproven(accept_deployment("d", dave(), now, "dave", now + 1)),
         Err(TRANSFER_STALE.to_owned())
@@ -13602,42 +13616,41 @@ fn a_new_owner_reaches_its_customers_on_a_sheet_before_any_update_applies_alone(
     );
     assert_eq!(m.run(up), Err(AUTO_UPDATE_REFUSED.to_owned()));
 
-    // Only a person's upgrade that applied after the hand-over counts as seen.
-    let record = |auto: bool, ok: bool, undo: bool| crate::types::UpgradeRecord {
-        from: "b1".into(),
-        to: "b2".into(),
-        at: 1600,
-        by: "cora".into(),
-        ok,
-        error: Value::Null,
-        run: None,
-        api_key: None,
-        from_release: None,
-        to_release: None,
-        class: None,
-        reasons: Vec::new(),
-        approved_by: None,
-        auto,
-        undo,
-    };
-    for (auto, ok, undo) in [
-        (true, true, false),
-        (false, false, false),
-        (false, true, true),
-    ] {
-        if let Some(a) = m.state.apps.get_mut("inst") {
-            a.last_upgrade = Some(record(auto, ok, undo));
-        }
-        assert!(
-            m.state.handed_over_unseen(&m.state.apps["inst"]),
-            "{auto} {ok} {undo}"
-        );
+    // A person's own upgrade after the hand-over is seen, and stays seen after an update
+    // that then applies on its own.
+    assert_eq!(m.state.apps["inst"].owner_seen_at, None);
+    let mut by_cora = classified_upgrade("cora", "1.0.1", Some(green()), 1600);
+    if let SystemCmd::UpgradeApp { bundle, .. } = &mut by_cora {
+        *bundle = "b3".into();
     }
-    if let Some(a) = m.state.apps.get_mut("inst") {
-        a.last_upgrade = Some(record(false, true, false));
-    }
+    let _ok = m.run_unproven(by_cora).unwrap();
+    assert_eq!(m.state.apps["inst"].owner_seen_at, Some(1600));
     assert!(!m.state.handed_over_unseen(&m.state.apps["inst"]));
-    assert!(ready(&m));
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        a.owner_seen_at = Some(1501);
+        a.bundle = "b1".into();
+        a.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.0.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m
+        .run(auto_upgrade(
+            "1.0.1",
+            "b3",
+            Some(green()),
+            after_hold,
+            Some(taken_on(1, 5)),
+        ))
+        .unwrap();
+    assert_eq!(
+        m.state.apps["inst"].owner_seen_at,
+        Some(1501),
+        "an update on its own"
+    );
+    assert!(!m.state.handed_over_unseen(&m.state.apps["inst"]));
 }
 
 /// A deployment written before transfers has neither a pending offer nor a hand-over,

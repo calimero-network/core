@@ -407,6 +407,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
             s.manages_deployment(d, &actor)?;
+            if !s.hands_over(&d.owner, &actor) {
+                return Err(NOT_HANDING_OVER);
+            }
             if !s.exists(&to) {
                 return Err("no such account or organization");
             }
@@ -444,7 +447,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .as_ref()
                 .filter(|t| t.to == to && t.offered_at == offered_at)
                 .ok_or(NO_TRANSFER)?;
-            if !s.acts_for(&d.owner, &t.offered_by) {
+            if !s.hands_over(&d.owner, &t.offered_by) {
                 return Err(TRANSFER_STALE);
             }
             if !t.live(at) {

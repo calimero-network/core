@@ -538,7 +538,17 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 actor
             };
             let org = s.apps.get(&app_id).map(|a| a.org.clone());
+            // A person who upgraded it themselves saw who runs its deployment now; an update
+            // on its own, a key's, a run's or the operator's did not.
+            let person_saw = !auto
+                && !by_operator
+                && run.is_none()
+                && crate::proof::key_proof_id(&consent).is_none();
+            let handed_over = s.apps.get(&app_id).and_then(|a| s.transferred_at(a));
             if let Some(a) = s.apps.get_mut(&app_id) {
+                if person_saw && handed_over.is_some() {
+                    a.owner_seen_at = Some(at);
+                }
                 a.last_upgrade = Some(crate::types::UpgradeRecord {
                     from: a.bundle.clone(),
                     to: bundle.clone(),

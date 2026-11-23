@@ -1795,6 +1795,9 @@ pub struct App {
     #[serde(rename = "lastUpgrade")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_upgrade: Option<Upgrade>,
+    #[serde(rename = "ownerSeenAt")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_seen_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

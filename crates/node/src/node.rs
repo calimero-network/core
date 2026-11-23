@@ -959,6 +959,8 @@ pub fn rejected(reason: &str) -> ApiError {
         ApiError::new(409, "TRANSFER_LAPSED", reason)
     } else if reason == crate::system::NO_TRANSFER {
         ApiError::new(404, "NO_TRANSFER", reason)
+    } else if reason == crate::system::NOT_HANDING_OVER {
+        ApiError::forbidden(reason)
     } else if reason == crate::system::TRANSFER_STALE {
         ApiError::new(409, "TRANSFER_STALE", reason)
     } else if reason == crate::system::PERSONAL_ORG_EXISTS {

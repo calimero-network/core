@@ -1290,10 +1290,14 @@ pub const TRANSFER_LAPSED: &str =
 /// Why an acceptance or a cancel finds nothing to act on.
 pub const NO_TRANSFER: &str = "this deployment is not offered to that owner";
 
-/// Why an acceptance is refused once whoever offered the deployment no longer manages it
-/// (removed, their capability withdrawn, or the organization recovered by another owner).
+/// Why a manager who is not its organization's owner or an admin may not offer a deployment
+/// to another owner ([`SystemState::hands_over`]).
+pub const NOT_HANDING_OVER: &str = "an organization's deployment is offered to another owner by the organization's owner or an admin";
+
+/// Why an acceptance is refused once whoever offered the deployment may no longer hand it
+/// over (removed, their role lowered, or the organization recovered by another owner).
 pub const TRANSFER_STALE: &str =
-    "whoever offered this deployment no longer manages it; ask its owner to offer it again";
+    "whoever offered this deployment may no longer hand it over; ask its owner to offer it again";
 
 /// How many deployments a cluster keeps.
 pub const MAX_DEPLOYMENTS: usize = 10_000;
@@ -2504,26 +2508,31 @@ impl SystemState {
         !self.recovery_rule(flag) || !self.deployments.values().any(|d| d.owner == owner)
     }
 
-    /// Whether `app`'s deployment changed hands since a person last saw it on a sheet: since
-    /// the instance was created or a person's upgrade of it applied. An update that applied
-    /// on its own, failed or was undone shows no sheet, so it does not count. Times are whole
-    /// seconds, so the same second counts as after.
+    /// Whether `app`'s deployment changed hands since a person last saw its owner: since the
+    /// instance was created or a person's own upgrade of it applied after a hand-over
+    /// (`AppRecord::owner_seen_at`). Times are whole seconds, so the same second counts as after.
     #[must_use]
     pub fn handed_over_unseen(&self, app: &AppRecord) -> bool {
-        let Some(t) = app
-            .deployment
-            .as_ref()
-            .and_then(|d| self.deployments.get(d))
-            .and_then(|d| d.transferred.as_ref())
-        else {
-            return false;
-        };
-        let seen = app
-            .last_upgrade
-            .as_ref()
-            .filter(|u| u.ok && !u.auto && !u.undo)
-            .map_or(app.created_at, |u| u.at.max(app.created_at));
-        t.at >= seen
+        self.transferred_at(app)
+            .is_some_and(|at| at >= app.owner_seen_at.unwrap_or(app.created_at))
+    }
+
+    /// When `app`'s deployment last changed hands, if it ever did.
+    #[must_use]
+    pub fn transferred_at(&self, app: &AppRecord) -> Option<u64> {
+        let d = self.deployments.get(app.deployment.as_ref()?)?;
+        d.transferred.as_ref().map(|t| t.at)
+    }
+
+    /// Whether `actor` may hand `owner`'s deployment to another owner: the account itself,
+    /// or an owner or admin of the organization (more than managing it, which
+    /// `MANAGE_APPLICATION` gives).
+    #[must_use]
+    pub fn hands_over(&self, owner: &Deployer, actor: &str) -> bool {
+        match owner {
+            Deployer::Account(a) => a == actor,
+            Deployer::Org(o) => self.is_org_admin(o, actor),
+        }
     }
 
     /// `owner`'s kind (`account` or `org`) and its name, `None` once it is gone.

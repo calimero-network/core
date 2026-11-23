@@ -484,16 +484,18 @@ is its command line.
   `an_organization_deploys_only_holding_a_recovery_key`.
   Transfer (`Feature::DeploymentTransfer`, rc.36; `Deployment::transfer`,
   `transferred`, `PendingTransfer`, `TRANSFER_TTL_SECS`): `OfferDeployment`
-  (a manager; `__offer_deployment / { to }`; one live offer, `TRANSFER_PENDING`),
+  (the owner account, or an org owner or admin, `SystemState::hands_over`,
+  `NOT_HANDING_OVER`; `__offer_deployment / { to }`; one live offer, `TRANSFER_PENDING`),
   `AcceptDeployment { offered_at }` (a manager of `to`; `__accept_deployment / { to,
-  offeredAt }`; the offerer still `acts_for` the owner, else `TRANSFER_STALE`; live
+  offeredAt }`; the offerer still `hands_over`, else `TRANSFER_STALE`; live
   at `at`; `SystemState::granted(to)`; `keeps_recoverable(to, true)`; the owner quota;
   drops `deployment_secrets` and records `transferred`), `CancelDeploymentTransfer`
   (a manager of either side). Routes `POST|DELETE /deployments/{id}/transfer`,
   `POST /deployments/{id}/transfer/accept`, `GET /deployments`' `offered`;
   `meroctl deployment transfer|accept|cancel-transfer`. `deployment_shown` adds
   `transferred`; `SystemState::handed_over_unseen` (a hand-over at or after the
-  instance's creation or a person's successful upgrade) puts
+  instance's creation or `AppRecord::owner_seen_at`, which `UpgradeApp` sets only for a
+  person's own upgrade after a hand-over: not auto, a key, a run or the operator) puts
   `consent_page::taken_over`'s line on the upgrade sheet and refuses automatic updates
   (`auto_update_allows`). Regressions:
   `a_deployment_changes_hands_when_its_receiver_accepts` (`system::tests` and
