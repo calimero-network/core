@@ -1398,6 +1398,64 @@ async fn on_a_granted_cluster_deploying_needs_a_grant() {
         .unwrap();
 }
 
+/// On a granted cluster a customer creates instances only from an offer: the release
+/// its instance runs, which it now sees, makes no instance outside the deployment.
+/// A deployer still creates one of its own release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn on_a_granted_cluster_a_customer_creates_only_from_an_offer() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.governance.deployments = Deployments::Granted;
+    })
+    .await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let (bob, _bob_pk) = signed_up(&c, 1, "bob").await;
+    let _ok = ops_signed(
+        &ops,
+        "ops/deployers",
+        json!({ "deployer": { "account": alice_id } }),
+    )
+    .await
+    .unwrap();
+    let _ok = alice
+        .packages()
+        .upload(release("com.test.notes", "1.0.0"))
+        .await
+        .unwrap();
+    let d = deploy(
+        &alice,
+        &mut alice_pk,
+        "alpha",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &d,
+        "notes",
+        "com.test.notes",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
+    let _from_offer = instance(&bob, &d, "com.test.notes", None, None)
+        .await
+        .unwrap();
+
+    let outside = || AppCreateRequest {
+        name: Some("outside".to_owned()),
+        package: Some("com.test.notes".to_owned()),
+        version: Some("1.0.0".to_owned()),
+        ..AppCreateRequest::default()
+    };
+    let e = bob.apps().create(outside()).await.unwrap_err();
+    assert_eq!(e.code(), Some("DEPLOY_NOT_GRANTED"), "{e}");
+    let _own = alice.apps().create(outside()).await.unwrap();
+}
+
 /// The value of `metric{labels}` in Prometheus text, if the series is there.
 fn sample(text: &str, metric: &str, labels: &str) -> Option<f64> {
     let head = format!("{metric}{{{labels}}} ");

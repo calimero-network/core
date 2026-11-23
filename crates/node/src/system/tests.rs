@@ -734,6 +734,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             .unwrap(),
         ),
         unit_offer: None,
+        offers_only: false,
     }
     };
     let e = m.run_unproven(with_compute("bad", "j2")).unwrap_err();
@@ -870,6 +871,7 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             .unwrap(),
         ),
         unit_offer: None,
+        offers_only: false,
     };
     let _ok = m.run_unproven(app).unwrap();
     let uninstall = |version: &str| SystemCmd::UninstallPackage {
@@ -6637,6 +6639,7 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
             .unwrap(),
         ),
         unit_offer: None,
+        offers_only: false,
     };
     let upgrade = |id: &str, actor: &str, at: u64| SystemCmd::UpgradeApp {
         compute_bundle: None,
@@ -6946,6 +6949,7 @@ fn a_publisher_approves_the_releases_of_every_instance_of_its_packages() {
             .unwrap(),
         ),
         unit_offer: None,
+        offers_only: false,
     };
     let e = m.run_unproven(create("second", "b1")).unwrap_err();
     assert!(e.starts_with(super::DEADLINE_PREFIX), "{e}");
@@ -7871,6 +7875,77 @@ fn on_a_granted_cluster_only_deployers_install() {
     }
 }
 
+/// Where deployments are granted, an instance from no deployment is a deployer's, or of a
+/// release the operator installed; judged at apply when the entry says so or the logged
+/// cluster version brings the rule, so an entry from before replays as it applied.
+#[test]
+fn on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers() {
+    use super::{cluster_version::Feature, Deployments, PackageRef, NOT_A_DEPLOYER, OPERATOR};
+    let outside = |id: &str, owner: &str, version: &str, offers_only: bool| {
+        let mut cmd = instance(id, owner, &format!("b-{version}"), None);
+        if let SystemCmd::CreateApp {
+            app,
+            offers_only: flag,
+            ..
+        } = &mut cmd
+        {
+            app.release = Some(PackageRef {
+                package: "p".into(),
+                version: version.into(),
+                service: None,
+                compute: false,
+            });
+            *flag = offers_only;
+        }
+        cmd
+    };
+    let mut m = deploying(Deployments::Granted);
+    let _ok = m
+        .run_unproven(grant(account_deployer("alice"), None, OPERATOR))
+        .unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+    let _ok = m.run_unproven(install_at(OPERATOR, "0.9.0", 5)).unwrap();
+
+    assert_eq!(
+        m.run_unproven(outside("b1", "bob", "1.0.0", true))
+            .unwrap_err(),
+        NOT_A_DEPLOYER
+    );
+    let _ok = m
+        .run_unproven(outside("a1", "alice", "1.0.0", true))
+        .unwrap();
+    let _ok = m.run_unproven(outside("b2", "bob", "0.9.0", true)).unwrap();
+    let _ok = m
+        .run_unproven(outside("b3", "bob", "1.0.0", false))
+        .unwrap();
+
+    m.state.cluster_version = Some(Feature::OffersOnly.since().into());
+    assert_eq!(
+        m.run_unproven(outside("b4", "bob", "1.0.0", false))
+            .unwrap_err(),
+        NOT_A_DEPLOYER,
+        "bob shares org with alice, the installer, and still needs an offer"
+    );
+    let _ok = m
+        .run_unproven(SystemCmd::RevokeDeployer {
+            deployer: account_deployer("alice"),
+            at: 6,
+            actor: OPERATOR.into(),
+            proof: None,
+            consent: None,
+        })
+        .unwrap();
+    let _ok = m
+        .run_unproven(outside("a2", "alice", "1.0.0", false))
+        .unwrap();
+
+    let mut open = deploying(Deployments::Open);
+    let _ok = open.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+    let _ok = open
+        .run_unproven(outside("b1", "bob", "1.0.0", true))
+        .unwrap();
+}
+
 /// Where deployments are open, installs go on exactly as before.
 #[test]
 fn on_an_open_cluster_anyone_installs() {
@@ -8146,6 +8221,7 @@ fn instance(id: &str, owner: &str, bundle: &str, deployment: Option<&str>) -> Sy
             .unwrap(),
         ),
         unit_offer: None,
+        offers_only: false,
     }
 }
 

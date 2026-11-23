@@ -314,7 +314,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
     let index = m.index;
     let s = &mut m.state;
     match cmd {
-        SystemCmd::CreateApp { app, unit_offer } => {
+        SystemCmd::CreateApp {
+            app,
+            unit_offer,
+            offers_only,
+        } => {
             let mut app = *app;
             if !s.bundles.contains_key(&app.bundle) {
                 return Err("unknown bundle");
@@ -362,6 +366,15 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 }
             } else if unit_offer.is_some() {
                 return Err("a unit's offer comes with the deployment that makes it");
+            } else if (offers_only || s.cluster_brings(cluster_version::Feature::OffersOnly))
+                && !s.creates_outside_offers(
+                    &app.owner,
+                    app.release.as_ref(),
+                    &app.bundle,
+                    app.created_at,
+                )
+            {
+                return Err(NOT_A_DEPLOYER);
             }
             {
                 let o = s.orgs.get(&app.org);

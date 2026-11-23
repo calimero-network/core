@@ -2390,6 +2390,33 @@ impl SystemState {
         })
     }
 
+    /// Whether `account` may create, at `at`, an instance of `bundle` (from `release`) from
+    /// no deployment's offer: whoever [may deploy](Self::may_deploy), whoever installed the
+    /// release or uploaded the raw bundle, and anyone for a release the operator installed.
+    #[must_use]
+    pub fn creates_outside_offers(
+        &self,
+        account: &str,
+        release: Option<&PackageRef>,
+        bundle: &str,
+        at: u64,
+    ) -> bool {
+        if self.may_deploy(account, at) {
+            return true;
+        }
+        match release {
+            Some(r) => self
+                .packages
+                .get(&r.package)
+                .and_then(|p| p.versions.get(&r.version))
+                .is_some_and(|v| v.installed_by_any(account) || v.installed_by_any(OPERATOR)),
+            None => self
+                .bundles
+                .get(bundle)
+                .is_some_and(|b| b.uploaded_by == account),
+        }
+    }
+
     /// The owner that grants deployers: the cluster's owner where governance
     /// says `deployers: owner` and the operator has named it; `None` while
     /// the operator grants them.
@@ -5384,6 +5411,11 @@ pub enum SystemCmd {
         /// Absent in an entry an earlier release logged, whose members carry no deployment.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         unit_offer: Option<PackageRef>,
+        /// Where deployments are granted, an instance from no deployment is a deployer's
+        /// ([`SystemState::creates_outside_offers`]). Set once every node reads it
+        /// ([`cluster_version::Feature::OffersOnly`]); absent in an earlier entry.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        offers_only: bool,
     },
     UpgradeApp {
         app_id: AppId,
