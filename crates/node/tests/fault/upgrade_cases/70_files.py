@@ -139,7 +139,7 @@ class BlobGrants(DeepCase):
     def _judge(self, w, s):
         for node in w.members():
             for grant in s["revoked"]:
-                eq(_download(w, s["app"], s["blob"], grant, node)[0], 200, f"a revoked grant on node {node}")
+                eq(_download(w, s["app"], s["blob"], grant, node)[0], 404, f"a revoked grant on node {node}")
             status, data = _download(w, s["app"], s["blob"], s["live"], node)
             eq(status, 200, f"the live grant on node {node}")
             eq(hashlib.sha256(data).hexdigest(), s["sha256"], f"the blob through node {node}")
