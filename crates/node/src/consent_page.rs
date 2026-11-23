@@ -1975,19 +1975,35 @@ enum Part {
 /// The sheet's line naming the deployment an instance comes from
 /// ([`crate::system::SystemState::deployment_shown`]): its name, id and owner together.
 fn offered_by(d: &Value) -> String {
-    let kind = if d["owner"]["kind"] == "org" {
+    format!(
+        "Offered by {} (deployment {}), run by {}.",
+        d["name"].as_str().unwrap_or_default(),
+        d["id"].as_str().unwrap_or_default(),
+        party(&d["owner"])
+    )
+}
+
+/// The sheet's line telling a customer their deployment changed hands since they last
+/// approved anything for the instance.
+fn taken_over(d: &Value) -> String {
+    format!(
+        "{} is now run by {}, who took it over from {}: they now choose its updates.",
+        d["name"].as_str().unwrap_or_default(),
+        party(&d["owner"]),
+        party(&d["transferred"]["from"])
+    )
+}
+
+/// An owner as `deployment_shown` names it (`{ kind, name }`), in words.
+fn party(who: &Value) -> String {
+    let kind = if who["kind"] == "org" {
         "organization"
     } else {
         "account"
     };
-    let owner = d["owner"]["name"].as_str().map_or_else(
+    who["name"].as_str().map_or_else(
         || format!("an {kind} no longer on this cluster"),
         |n| format!("the {kind} {n}"),
-    );
-    format!(
-        "Offered by {} (deployment {}), run by {owner}.",
-        d["name"].as_str().unwrap_or_default(),
-        d["id"].as_str().unwrap_or_default()
     )
 }
 
@@ -2161,6 +2177,23 @@ async fn upgrade_request(
         .and_then(|d| node.sys(|s| s.deployment_shown(d)));
     if let Some(d) = &shown {
         points.push(json!(offered_by(d)));
+    }
+    // Changed hands since the instance's creation or last upgrade (the same second counts:
+    // times are whole seconds): the person may never have seen this owner on a sheet.
+    let seen_at = app
+        .last_upgrade
+        .as_ref()
+        .map_or(app.created_at, |u| u.at.max(app.created_at));
+    let handed_over = app.deployment.as_ref().is_some_and(|d| {
+        node.sys(|s| {
+            s.deployments
+                .get(d)
+                .and_then(|d| d.transferred.as_ref())
+                .is_some_and(|t| t.at >= seen_at)
+        })
+    });
+    if let (true, Some(d)) = (handed_over, &shown) {
+        points.push(json!(taken_over(d)));
     }
     let mut attention = upgrade_attention(&sheet);
     if let Some(c) = &unit {
@@ -3799,6 +3832,12 @@ mod tests {
         assert_eq!(
             offered_by(&shown(json!({ "kind": "account", "name": null }))),
             "Offered by acme (deployment d1), run by an account no longer on this cluster."
+        );
+        let mut d = shown(json!({ "kind": "org", "name": "Globex" }));
+        d["transferred"] = json!({ "from": { "kind": "account", "name": "dev" }, "at": "x" });
+        assert_eq!(
+            taken_over(&d),
+            "acme is now run by the organization Globex, who took it over from the account dev: they now choose its updates."
         );
     }
 

@@ -209,10 +209,13 @@ pub enum Feature {
     /// (`SystemState::keeps_recoverable`). An earlier release ignores the field. Apply also
     /// reads the logged version, so an entry before it replays as it applied.
     DeploymentNeedsRecovery,
+    /// `OfferDeployment`, `AcceptDeployment` and `CancelDeploymentTransfer`: an earlier
+    /// release cannot read them, so its replicas would keep the deployment's owner.
+    DeploymentTransfer,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 47] = [
+pub const FEATURES: [Feature; 48] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -260,6 +263,7 @@ pub const FEATURES: [Feature; 47] = [
     Feature::RestorePoints,
     Feature::UnclassifiedUpdates,
     Feature::DeploymentNeedsRecovery,
+    Feature::DeploymentTransfer,
 ];
 
 impl Feature {
@@ -314,6 +318,7 @@ impl Feature {
             Self::RestorePoints => "restorePoints",
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
             Self::DeploymentNeedsRecovery => "deploymentNeedsRecovery",
+            Self::DeploymentTransfer => "deploymentTransfer",
         }
     }
 
@@ -365,7 +370,7 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
-            Self::DeploymentNeedsRecovery => "1.0.0-rc.36",
+            Self::DeploymentNeedsRecovery | Self::DeploymentTransfer => "1.0.0-rc.36",
         }
     }
 }
@@ -712,6 +717,9 @@ impl SystemCmd {
                 deployment_needs_recovery: true,
                 ..
             } => vec![Feature::DeploymentNeedsRecovery],
+            Self::OfferDeployment { .. }
+            | Self::AcceptDeployment { .. }
+            | Self::CancelDeploymentTransfer { .. } => vec![Feature::DeploymentTransfer],
             Self::ScopeApps {
                 apps, by_release, ..
             } => {
@@ -1195,6 +1203,8 @@ mod tests {
             Feature::DeploymentNeedsRecovery => entry(json!({ "op": "createDeployment",
                 "id": "d", "name": "acme", "owner": { "org": "org" }, "actor": "alice", "at": 1,
                 "deployment_needs_recovery": true })),
+            Feature::DeploymentTransfer => entry(json!({ "op": "offerDeployment",
+                "deployment": "d", "to": { "org": "org" }, "actor": "alice", "at": 1 })),
             Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
@@ -1766,9 +1776,16 @@ mod tests {
         for &feature in &rc35 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.36's (an organization owns a deployment only with a recovery key) for every node
-        // on rc.36: an rc.35 node ignores the flag and would create what rc.36 refuses.
-        assert_eq!(rc36, [Feature::DeploymentNeedsRecovery]);
+        // rc.36's (an organization owns a deployment only with a recovery key; a deployment
+        // changes hands) for every node on rc.36: an rc.35 node ignores the flag and would
+        // create what rc.36 refuses, and cannot read a transfer.
+        assert_eq!(
+            rc36,
+            [
+                Feature::DeploymentNeedsRecovery,
+                Feature::DeploymentTransfer
+            ]
+        );
         for &feature in &rc36 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(

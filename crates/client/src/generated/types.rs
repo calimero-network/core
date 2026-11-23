@@ -2335,7 +2335,30 @@ pub struct DeploymentAppsItem {
     pub extra: Map<String, Value>,
 }
 
-/// A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentTransfer {
+    pub to: Deployer,
+    #[serde(rename = "offeredBy")]
+    pub offered_by: String,
+    #[serde(rename = "offeredAt")]
+    pub offered_at: String,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentTransferred {
+    pub from: Deployer,
+    pub at: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339. `transfer`: the offer of it to another owner waiting for acceptance (`expiresAt`: 7 days after `offeredAt`), else `null`; `transferred`: whom it came from at its last hand-over, else `null`. `ownerName`: only in `offered`, the current owner's name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Deployment {
     pub id: String,
@@ -2347,6 +2370,15 @@ pub struct Deployment {
     pub created_by: String,
     #[serde(rename = "createdAt")]
     pub created_at: String,
+    pub transfer: Option<DeploymentTransfer>,
+    pub transferred: Option<DeploymentTransferred>,
+    #[serde(rename = "ownerName")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub owner_name: Option<Option<String>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -2399,12 +2431,70 @@ pub struct DeploymentShownOwner {
     pub extra: Map<String, Value>,
 }
 
-/// The deployment an instance comes from, as its customers are shown it: names are not unique, so always with its id and its owner's kind and name (`null` once the owner is gone).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DeploymentShownTransferredFromKind {
+    /// `account`.
+    Account,
+    /// `org`.
+    Org,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl DeploymentShownTransferredFromKind {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Account => "account",
+            Self::Org => "org",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for DeploymentShownTransferredFromKind {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeploymentShownTransferredFromKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "account" => Self::Account,
+            "org" => Self::Org,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentShownTransferredFrom {
+    pub kind: DeploymentShownTransferredFromKind,
+    pub name: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentShownTransferred {
+    pub from: DeploymentShownTransferredFrom,
+    pub at: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The deployment an instance comes from, as its customers are shown it: names are not unique, so always with its id and its owner's kind and name (`null` once the owner is gone); once it changed hands, whom it came from and when (`transferred`, RFC 3339).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentShown {
     pub id: String,
     pub name: String,
     pub owner: DeploymentShownOwner,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transferred: Option<DeploymentShownTransferred>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -2832,6 +2922,27 @@ pub struct DeploymentRecordAppsValue {
     pub extra: Map<String, Value>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentRecordTransfer {
+    pub to: Deployer,
+    #[serde(rename = "offeredBy")]
+    pub offered_by: String,
+    #[serde(rename = "offeredAt")]
+    pub offered_at: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentRecordTransferred {
+    pub from: Deployer,
+    pub at: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// A deployment as the directory records it: the release it offers by app name (`addedAt` Unix seconds), who created it and when (Unix seconds).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentRecord {
@@ -2843,6 +2954,10 @@ pub struct DeploymentRecord {
     pub created_by: String,
     #[serde(rename = "createdAt")]
     pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<DeploymentRecordTransfer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transferred: Option<DeploymentRecordTransferred>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -5559,6 +5674,7 @@ pub struct DeploymentCreateResponse {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentListResponse {
     pub deployments: Vec<Deployment>,
+    pub offered: Vec<Deployment>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -5752,6 +5868,45 @@ pub struct DeploymentSecretSetResponse {
 pub struct DeploymentSecretClearResponse {
     pub deployment: String,
     pub name: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentTransferOfferResponseTransfer {
+    pub to: Deployer,
+    #[serde(rename = "offeredBy")]
+    pub offered_by: String,
+    #[serde(rename = "offeredAt")]
+    pub offered_at: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentTransferOfferResponse {
+    pub deployment: String,
+    pub transfer: DeploymentTransferOfferResponseTransfer,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentTransferCancelResponse {
+    pub deployment: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentTransferAcceptResponse {
+    pub deployment: String,
+    pub owner: Deployer,
+    pub from: Deployer,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

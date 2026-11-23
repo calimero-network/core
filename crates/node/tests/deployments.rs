@@ -370,6 +370,141 @@ async fn an_organization_deploys_only_holding_a_recovery_key() {
         .unwrap();
 }
 
+/// A deployment changes hands in two steps: its owner offers it, a manager of the
+/// receiving owner accepts it. Only the receiver's managers accept, an organization only
+/// with a recovery key; afterwards only the new owner's managers change it, its offers and
+/// customers' instances stay, and a customer's update names the new owner and whom it
+/// came from. The old owner may cancel an offer, and a cancelled offer is not accepted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_deployment_changes_hands_when_its_receiver_accepts() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = account_of(&alice).await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let (carol, mut carol_pk) = signed_up(&c, 2, "carol").await;
+    let _ok = alice
+        .packages()
+        .upload(release("com.test.notes", "1.0.0"))
+        .await
+        .unwrap();
+    let d = deploy(
+        &alice,
+        &mut alice_pk,
+        "acme",
+        json!({ "account": alice_id }),
+    )
+    .await;
+    let _ok = offer(
+        &alice,
+        &mut alice_pk,
+        &d,
+        "notes",
+        "com.test.notes",
+        "1.0.0",
+    )
+    .await
+    .unwrap();
+    let globex = org(&carol, "Globex").await;
+    let inst = instance(&carol, &d, "com.test.notes", None, Some(&globex))
+        .await
+        .unwrap();
+    let bee = org(&bob, "Bee Labs").await;
+    let to_bee = || typed(json!({ "org": bee }));
+
+    // Offered, then cancelled by its owner: nothing to accept.
+    let _ok = alice
+        .deployments()
+        .transfer_offer(&d, to_bee(), Some(&mut alice_pk))
+        .await
+        .unwrap();
+    let e = alice
+        .deployments()
+        .transfer_offer(&d, to_bee(), Some(&mut alice_pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("TRANSFER_PENDING"), "{e}");
+    let _ok = alice
+        .deployments()
+        .transfer_cancel(&d, Some(&mut alice_pk))
+        .await
+        .unwrap();
+    let e = bob
+        .deployments()
+        .transfer_accept(&d, to_bee(), Some(&mut bob_pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NO_TRANSFER"), "{e}");
+
+    // Offered again: the receiver lists it; a stranger does not accept it, and an
+    // organization without a recovery key is refused before the passkey.
+    let _ok = alice
+        .deployments()
+        .transfer_offer(&d, to_bee(), Some(&mut alice_pk))
+        .await
+        .unwrap();
+    let listed = bob.deployments().list().await.map(wire).unwrap();
+    assert_eq!(listed["offered"][0]["id"], json!(d), "{listed}");
+    assert_eq!(listed["deployments"], json!([]), "{listed}");
+    forbidden(
+        &carol
+            .deployments()
+            .transfer_accept(&d, to_bee(), Some(&mut carol_pk))
+            .await
+            .unwrap_err(),
+    );
+    let e = bob
+        .deployments()
+        .transfer_accept(&d, to_bee(), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("RECOVERY_KEY_REQUIRED"), "{e}");
+    recoverable(&bob, &mut bob_pk, &bee, [7; 32]).await;
+    let _ok = bob
+        .deployments()
+        .transfer_accept(&d, to_bee(), Some(&mut bob_pk))
+        .await
+        .unwrap();
+
+    // Bee Labs owns it now: its offers and the customer's instance stay.
+    let got = carol.deployments().get(&d).await.map(wire).unwrap();
+    assert_eq!(
+        got["owner"],
+        json!({ "kind": "org", "name": "Bee Labs" }),
+        "{got}"
+    );
+    assert_eq!(got["apps"][0]["version"], json!("1.0.0"), "{got}");
+    forbidden(
+        &offer(
+            &alice,
+            &mut alice_pk,
+            &d,
+            "notes",
+            "com.test.notes",
+            "1.0.0",
+        )
+        .await
+        .unwrap_err(),
+    );
+    let listed = bob.deployments().list().await.map(wire).unwrap();
+    assert_eq!(listed["deployments"][0]["id"], json!(d), "{listed}");
+    assert_eq!(
+        listed["deployments"][0]["transferred"]["from"],
+        json!({ "account": alice_id }),
+        "{listed}"
+    );
+    let u = update_of(&carol, &inst).await;
+    assert_eq!(
+        u["deployment"]["owner"],
+        json!({ "kind": "org", "name": "Bee Labs" }),
+        "{u}"
+    );
+    assert_eq!(
+        u["deployment"]["transferred"]["from"],
+        json!({ "kind": "account", "name": "alice" }),
+        "{u}"
+    );
+}
+
 /// An account owns a deployment it alone changes; an organization owns one
 /// its `MANAGE_APPLICATION` holders change, each with their own passkey.
 /// Anyone else, a member without the capability, and a manager whose

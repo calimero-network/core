@@ -317,6 +317,16 @@ pub(super) struct DeploymentBody {
     confirm: Option<ConfirmBody>,
 }
 
+/// An offer of a deployment to another owner, or its acceptance, naming the receiver.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DeploymentTransferBody {
+    to: Deployer,
+    /// The manager's passkey, once the node asked for it (`412`).
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct OfferBody {
@@ -364,6 +374,18 @@ fn deployment_json(node: &Node, d: &Deployment) -> Value {
         })).collect::<Vec<_>>(),
         "createdBy": d.created_by,
         "createdAt": crate::system::rfc3339(d.created_at),
+        "transfer": d.transfer.as_ref().map(|t| json!({
+            "to": t.to,
+            "offeredBy": t.offered_by,
+            "offeredAt": crate::system::rfc3339(t.offered_at),
+            "expiresAt": crate::system::rfc3339(
+                t.offered_at.saturating_add(crate::system::TRANSFER_TTL_SECS)
+            ),
+        })),
+        "transferred": d.transferred.as_ref().map(|t| json!({
+            "from": t.from,
+            "at": crate::system::rfc3339(t.at),
+        })),
     })
 }
 
@@ -545,21 +567,203 @@ async fn deployment_delete(
     ))
 }
 
+/// Offer a deployment the caller manages to another owner, with a passkey assertion over
+/// `deployment:{id} / __offer_deployment / { to }`; one offer waits at a time.
+async fn deployment_transfer_offer(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<DeploymentTransferBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    node.require_features(&[crate::system::cluster_version::Feature::DeploymentTransfer])
+        .await?;
+    let d = managed_deployment(&node, &p, &id).await?;
+    if !node.sys(|s| s.exists(&body.to)) {
+        return Err(ApiError::not_found("no such account or organization"));
+    }
+    if body.to == d.owner {
+        return Err(ApiError::bad_request(
+            "SAME_OWNER",
+            "the deployment is that owner's already",
+        ));
+    }
+    let at = now_secs();
+    if d.transfer.as_ref().is_some_and(|t| t.live(at)) {
+        return Err(crate::node::rejected(crate::system::TRANSFER_PENDING));
+    }
+    let consent = consent(
+        &node,
+        &p,
+        &format!("deployment:{id}"),
+        "__offer_deployment",
+        &json!({ "to": body.to }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::OfferDeployment {
+            deployment: id,
+            to: body.to,
+            actor: account,
+            at,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+/// Accept a deployment offered to `to`, an owner the caller acts for, with a passkey
+/// assertion over `deployment:{id} / __accept_deployment / { to }`: `to` becomes its owner.
+/// Judged first as apply judges it, so no passkey is asked for what would be refused.
+async fn deployment_transfer_accept(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<DeploymentTransferBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    node.require_features(&[crate::system::cluster_version::Feature::DeploymentTransfer])
+        .await?;
+    let _caught_up = node.sys_fresh_from(p.sys_index).await;
+    let at = now_secs();
+    node.sys(|s| {
+        let d = s
+            .deployments
+            .get(&id)
+            .ok_or_else(|| ApiError::not_found("no such deployment"))?;
+        if !s.acts_for(&body.to, &account) {
+            return Err(ApiError::forbidden(
+                "a deployment is accepted by the account it is offered to, or by MANAGE_APPLICATION in that organization",
+            ));
+        }
+        let t = d
+            .transfer
+            .as_ref()
+            .filter(|t| t.to == body.to)
+            .ok_or_else(|| crate::node::rejected(crate::system::NO_TRANSFER))?;
+        if !t.live(at) {
+            return Err(crate::node::rejected(crate::system::TRANSFER_LAPSED));
+        }
+        if !s.granted(&body.to, at) {
+            return Err(crate::node::not_a_deployer());
+        }
+        if !s.keeps_recoverable(&body.to, true) {
+            return Err(crate::node::rejected(crate::system::RECOVERY_KEY_REQUIRED));
+        }
+        Ok(())
+    })?;
+    let consent = consent(
+        &node,
+        &p,
+        &format!("deployment:{id}"),
+        "__accept_deployment",
+        &json!({ "to": body.to }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::AcceptDeployment {
+            deployment: id,
+            to: body.to,
+            actor: account,
+            at,
+            consent,
+        })
+        .await?,
+    ))
+}
+
+/// Drop the offer of a deployment, as a manager of its owner or of the owner it is
+/// offered to, with a passkey assertion over
+/// `deployment:{id} / __cancel_deployment_transfer / {}`.
+async fn deployment_transfer_cancel(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    node.require_features(&[crate::system::cluster_version::Feature::DeploymentTransfer])
+        .await?;
+    let _caught_up = node.sys_fresh_from(p.sys_index).await;
+    node.sys(|s| {
+        let d = s
+            .deployments
+            .get(&id)
+            .ok_or_else(|| ApiError::not_found("no such deployment"))?;
+        let receiver = d
+            .transfer
+            .as_ref()
+            .is_some_and(|t| s.acts_for(&t.to, &account));
+        if !s.acts_for(&d.owner, &account) && !receiver {
+            return Err(ApiError::forbidden(
+                "an offer of a deployment is cancelled by a manager of its owner or of the owner it is offered to",
+            ));
+        }
+        if d.transfer.is_none() {
+            return Err(crate::node::rejected(crate::system::NO_TRANSFER));
+        }
+        Ok(())
+    })?;
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let consent = consent(
+        &node,
+        &p,
+        &format!("deployment:{id}"),
+        "__cancel_deployment_transfer",
+        &json!({}),
+        confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::CancelDeploymentTransfer {
+            deployment: id,
+            actor: account,
+            consent,
+        })
+        .await?,
+    ))
+}
+
 /// The deployments the caller manages: its own account's, and those of the
-/// organizations where it holds `MANAGE_APPLICATION` org-wide.
+/// organizations where it holds `MANAGE_APPLICATION` org-wide; and, in `offered`, those
+/// offered to an owner it acts for, waiting for its acceptance.
 async fn deployment_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
     p.unbound()?;
     let account = p.account()?;
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
-    let deployments: Vec<Value> = node.sys(|s| {
-        s.deployments
+    let now = now_secs();
+    let (deployments, offered): (Vec<Value>, Vec<Value>) = node.sys(|s| {
+        let managed = s
+            .deployments
             .values()
             .filter(|d| s.acts_for(&d.owner, &account))
             .map(|d| deployment_json(&node, d))
-            .collect()
+            .collect();
+        let offered = s
+            .deployments
+            .values()
+            .filter(|d| {
+                d.transfer
+                    .as_ref()
+                    .is_some_and(|t| t.live(now) && s.acts_for(&t.to, &account))
+            })
+            .map(|d| {
+                let mut v = deployment_json(&node, d);
+                v["ownerName"] = json!(s.deployer_named(&d.owner).1);
+                v
+            })
+            .collect();
+        (managed, offered)
     });
-    Ok(Json(json!({ "deployments": deployments })))
+    Ok(Json(
+        json!({ "deployments": deployments, "offered": offered }),
+    ))
 }
 
 /// A deployment as anyone may read it, by id: its name, its owner's kind
@@ -850,6 +1054,14 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/deployments/{id}/apps", post(deployment_offer))
         .route("/deployments/{id}/apps/{app}", delete(deployment_withdraw))
         .route("/deployments/{id}/orgs", get(deployment_orgs))
+        .route(
+            "/deployments/{id}/transfer",
+            post(deployment_transfer_offer).delete(deployment_transfer_cancel),
+        )
+        .route(
+            "/deployments/{id}/transfer/accept",
+            post(deployment_transfer_accept),
+        )
         .route("/deployments/{id}/secrets", get(deployment_secrets))
         .route(
             "/deployments/{id}/secrets/{name}",

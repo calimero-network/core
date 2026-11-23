@@ -1229,6 +1229,38 @@ pub struct Deployment {
     pub apps: BTreeMap<String, Offer>,
     pub created_by: AccountId,
     pub created_at: u64,
+    /// An offer to hand it to another owner, waiting for that owner's acceptance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<PendingTransfer>,
+    /// Its last hand-over: its customers' next update sheet names the new owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transferred: Option<Transferred>,
+}
+
+/// A deployment offered to `to` ([`SystemCmd::OfferDeployment`]), accepted before
+/// [`TRANSFER_TTL_SECS`] after `offered_at`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingTransfer {
+    pub to: Deployer,
+    pub offered_by: AccountId,
+    pub offered_at: u64,
+}
+
+impl PendingTransfer {
+    /// Whether it may still be accepted at `at`, the accepting command's own time.
+    #[must_use]
+    pub const fn live(&self, at: u64) -> bool {
+        at <= self.offered_at.saturating_add(TRANSFER_TTL_SECS)
+    }
+}
+
+/// Whom a deployment came from, and when it changed hands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Transferred {
+    pub from: Deployer,
+    pub at: u64,
 }
 
 /// One app a deployment offers: the release new instances of it run.
@@ -1243,6 +1275,20 @@ pub struct Offer {
 
 /// How many deployments one owner keeps.
 pub const MAX_DEPLOYMENTS_PER_OWNER: usize = 16;
+
+/// How long an offer of a deployment to another owner waits for its acceptance: 7 days.
+pub const TRANSFER_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Why a second offer of a deployment is refused while one waits.
+pub const TRANSFER_PENDING: &str =
+    "this deployment is offered to another owner already; cancel that offer first";
+
+/// Why an acceptance is refused past [`TRANSFER_TTL_SECS`].
+pub const TRANSFER_LAPSED: &str =
+    "the offer of this deployment lapsed; ask its owner to offer it again";
+
+/// Why an acceptance or a cancel finds nothing to act on.
+pub const NO_TRANSFER: &str = "this deployment is not offered to that owner";
 
 /// How many deployments a cluster keeps.
 pub const MAX_DEPLOYMENTS: usize = 10_000;
@@ -2416,6 +2462,17 @@ impl SystemState {
         }
     }
 
+    /// Whether `owner` itself holds a live deployer grant at `now`, or deployments are open:
+    /// what a deployment's receiver needs ([`SystemCmd::AcceptDeployment`]).
+    #[must_use]
+    pub fn granted(&self, owner: &Deployer, now: u64) -> bool {
+        self.governance().deployments == Deployments::Open
+            || self
+                .deployers
+                .get(&owner.key())
+                .is_some_and(|g| g.live(now))
+    }
+
     /// Whether the recovery rule judges an entry: its `flag` says so, or the logged version
     /// brings [`cluster_version::Feature::DeploymentNeedsRecovery`].
     #[must_use]
@@ -2444,12 +2501,20 @@ impl SystemState {
     }
 
     /// Deployment `id` as a customer is shown it: names are not unique, so never its
-    /// name alone, but with its id and its owner (`{ id, name, owner: { kind, name } }`).
+    /// name alone, but with its id and its owner (`{ id, name, owner: { kind, name } }`),
+    /// and, once it changed hands, whom it came from and when (`transferred`).
     #[must_use]
     pub fn deployment_shown(&self, id: &str) -> Option<Value> {
         let d = self.deployments.get(id)?;
         let (kind, name) = self.deployer_named(&d.owner);
-        Some(json!({ "id": d.id, "name": d.name, "owner": { "kind": kind, "name": name } }))
+        let mut shown =
+            json!({ "id": d.id, "name": d.name, "owner": { "kind": kind, "name": name } });
+        if let Some(t) = &d.transferred {
+            let (kind, name) = self.deployer_named(&t.from);
+            shown["transferred"] =
+                json!({ "from": { "kind": kind, "name": name }, "at": rfc3339(t.at) });
+        }
+        Some(shown)
     }
 
     /// Whether the cluster's sign-up policy lets an account in with `invite`
@@ -2605,7 +2670,8 @@ impl SystemState {
     }
 
     /// Whether `deployer` is an account or organization that exists.
-    fn exists(&self, deployer: &Deployer) -> bool {
+    #[must_use]
+    pub fn exists(&self, deployer: &Deployer) -> bool {
         match deployer {
             Deployer::Account(a) => self.accounts.contains_key(a),
             Deployer::Org(o) => self.orgs.contains_key(o),
@@ -4924,6 +4990,9 @@ impl SystemCmd {
             Self::AddPackageOrigin { .. } => Area::Packages,
             Self::RemovePackageOrigin { .. } => Area::Packages,
             Self::DeleteDeployment { .. } => Area::Deployments,
+            Self::OfferDeployment { .. }
+            | Self::AcceptDeployment { .. }
+            | Self::CancelDeploymentTransfer { .. } => Area::Deployments,
             Self::SetDeploymentSecret { .. } => Area::Deployments,
             Self::ClearDeploymentSecret { .. } => Area::Deployments,
             Self::SetOutboundApproval { .. } => Area::Approvals,
@@ -6286,6 +6355,34 @@ pub enum SystemCmd {
     RemovePackageOrigin {
         package: String,
         origin: String,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// A manager of `deployment` offers it to `to`, another owner
+    /// (`deployment:{id} / __offer_deployment / { to }`); one offer waits at a time.
+    OfferDeployment {
+        deployment: String,
+        to: Deployer,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// A manager of `to` accepts the offer of `deployment` to it
+    /// (`deployment:{id} / __accept_deployment / { to }`): `to` becomes its owner.
+    AcceptDeployment {
+        deployment: String,
+        to: Deployer,
+        actor: AccountId,
+        at: u64,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// A manager of either side drops the offer of `deployment`
+    /// (`deployment:{id} / __cancel_deployment_transfer / {}`).
+    CancelDeploymentTransfer {
+        deployment: String,
         actor: AccountId,
         #[serde(default)]
         consent: Value,

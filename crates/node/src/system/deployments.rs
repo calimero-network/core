@@ -109,6 +109,45 @@ pub(super) fn authorize(
             )?;
             Ok(Some(used))
         }
+        SystemCmd::OfferDeployment {
+            deployment,
+            to,
+            actor,
+            consent,
+            ..
+        }
+        | SystemCmd::AcceptDeployment {
+            deployment,
+            to,
+            actor,
+            consent,
+            ..
+        } => {
+            let method = if matches!(cmd, SystemCmd::OfferDeployment { .. }) {
+                "__offer_deployment"
+            } else {
+                "__accept_deployment"
+            };
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            proofs.states(&st, &format!("deployment:{deployment}"), method, &|a| {
+                a["to"] == json!(to)
+            })?;
+            Ok(Some(used))
+        }
+        SystemCmd::CancelDeploymentTransfer {
+            deployment,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            proofs.states(
+                &st,
+                &format!("deployment:{deployment}"),
+                "__cancel_deployment_transfer",
+                &|_| true,
+            )?;
+            Ok(Some(used))
+        }
         SystemCmd::DeleteDeployment {
             deployment,
             actor,
@@ -272,6 +311,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 apps: BTreeMap::new(),
                 created_by: actor,
                 created_at: at,
+                transfer: None,
+                transferred: None,
             };
             let out = json!({ "id": id, "deployment": d });
             let _prev = s.deployments.insert(id, d);
@@ -346,6 +387,88 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 let _gone = d.apps.remove(&app);
             }
             Ok(json!({ "deployment": deployment, "app": app }))
+        }
+        SystemCmd::OfferDeployment {
+            deployment,
+            to,
+            actor,
+            at,
+            consent: _,
+        } => {
+            let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
+            s.manages_deployment(d, &actor)?;
+            if !s.exists(&to) {
+                return Err("no such account or organization");
+            }
+            if to == d.owner {
+                return Err("the deployment is that owner's already");
+            }
+            if d.transfer.as_ref().is_some_and(|t| t.live(at)) {
+                return Err(TRANSFER_PENDING);
+            }
+            let t = PendingTransfer {
+                to,
+                offered_by: actor,
+                offered_at: at,
+            };
+            let out = json!({ "deployment": deployment, "transfer": t });
+            if let Some(d) = s.deployments.get_mut(&deployment) {
+                d.transfer = Some(t);
+            }
+            Ok(out)
+        }
+        SystemCmd::AcceptDeployment {
+            deployment,
+            to,
+            actor,
+            at,
+            consent: _,
+        } => {
+            let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
+            let t = d
+                .transfer
+                .as_ref()
+                .filter(|t| t.to == to)
+                .ok_or(NO_TRANSFER)?;
+            if !s.acts_for(&to, &actor) {
+                return Err("a deployment is accepted by the account it is offered to, or by MANAGE_APPLICATION in that organization");
+            }
+            if !t.live(at) {
+                return Err(TRANSFER_LAPSED);
+            }
+            if !s.granted(&to, at) {
+                return Err(NOT_A_DEPLOYER);
+            }
+            if !s.keeps_recoverable(&to, true) {
+                return Err(RECOVERY_KEY_REQUIRED);
+            }
+            if s.deployments.values().filter(|d| d.owner == to).count() >= MAX_DEPLOYMENTS_PER_OWNER
+            {
+                return Err("quota exceeded: deployments per owner");
+            }
+            let from = d.owner.clone();
+            let out = json!({ "deployment": deployment, "owner": to, "from": from });
+            if let Some(d) = s.deployments.get_mut(&deployment) {
+                d.owner = to;
+                d.transfer = None;
+                d.transferred = Some(Transferred { from, at });
+            }
+            Ok(out)
+        }
+        SystemCmd::CancelDeploymentTransfer {
+            deployment,
+            actor,
+            consent: _,
+        } => {
+            let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
+            let t = d.transfer.as_ref().ok_or(NO_TRANSFER)?;
+            if !s.acts_for(&d.owner, &actor) && !s.acts_for(&t.to, &actor) {
+                return Err("an offer of a deployment is cancelled by a manager of its owner or of the owner it is offered to");
+            }
+            if let Some(d) = s.deployments.get_mut(&deployment) {
+                d.transfer = None;
+            }
+            Ok(json!({ "deployment": deployment }))
         }
         SystemCmd::DeleteDeployment {
             deployment,

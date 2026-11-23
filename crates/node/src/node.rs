@@ -953,6 +953,12 @@ pub fn rejected(reason: &str) -> ApiError {
         not_a_deployer()
     } else if reason == crate::system::RECOVERY_KEY_REQUIRED {
         ApiError::new(409, "RECOVERY_KEY_REQUIRED", reason)
+    } else if reason == crate::system::TRANSFER_PENDING {
+        ApiError::new(409, "TRANSFER_PENDING", reason)
+    } else if reason == crate::system::TRANSFER_LAPSED {
+        ApiError::new(409, "TRANSFER_LAPSED", reason)
+    } else if reason == crate::system::NO_TRANSFER {
+        ApiError::new(404, "NO_TRANSFER", reason)
     } else if reason == crate::system::PERSONAL_ORG_EXISTS {
         ApiError::new(409, PERSONAL_ORG_EXISTS, reason)
     } else if reason == crate::system::GUESTS_NOT_ALLOWED {
