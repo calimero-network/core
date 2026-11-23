@@ -150,7 +150,7 @@ check lints them) and to what counts as breaking.
 ### How a release is cut
 
 - **Version.** The one version of every public crate, `merod` and `meroctl` is `version` under `[workspace.metadata.workspaces]` in the root
-  `Cargo.toml` (`1.0.0-rc.34` at the time of writing). Nothing else holds it.
+  `Cargo.toml` (`1.0.0-rc.35` at the time of writing). Nothing else holds it.
 - **Release pull request.** `chore(release): cut X` sets that version to `X`,
   and the SDKs' root `VERSION` to the same (`python3 scripts/sdks.py version-sync`
   then writes it into every SDK's version files; the `SDK scope` job fails while
