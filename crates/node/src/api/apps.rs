@@ -491,10 +491,9 @@ async fn outside_offers(
     node: &Node,
     owner: &str,
     release: Option<&PackageRef>,
-    bundle: &str,
     now: u64,
 ) -> Result<bool, ApiError> {
-    let may = || node.sys(|s| s.creates_outside_offers(owner, release, bundle, now));
+    let may = || node.sys(|s| s.creates_outside_offers(owner, release, now));
     if !may() {
         let _caught_up = node.sys_fresh().await;
         if !may() {
@@ -564,7 +563,7 @@ async fn create_instance(
         }
     };
     let offers_only = match body.deployment {
-        None => outside_offers(node, &owner, release.as_ref(), &bundle, now).await?,
+        None => outside_offers(node, &owner, release.as_ref(), now).await?,
         Some(_) => false,
     };
     // The executor is decided once, here, from the WASM the bundle names (a

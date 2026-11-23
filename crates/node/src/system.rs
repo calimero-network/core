@@ -2390,31 +2390,23 @@ impl SystemState {
         })
     }
 
-    /// Whether `account` may create, at `at`, an instance of `bundle` (from `release`) from
-    /// no deployment's offer: whoever [may deploy](Self::may_deploy), whoever installed the
-    /// release or uploaded the raw bundle, and anyone for a release the operator installed.
+    /// Whether `account` may create, at `at`, an instance of `release` from no deployment's
+    /// offer: whoever [may deploy](Self::may_deploy) then, and anyone for a release the
+    /// operator installed. Having installed the release is not enough: a revoked grant ends it.
     #[must_use]
     pub fn creates_outside_offers(
         &self,
         account: &str,
         release: Option<&PackageRef>,
-        bundle: &str,
         at: u64,
     ) -> bool {
-        if self.may_deploy(account, at) {
-            return true;
-        }
-        match release {
-            Some(r) => self
-                .packages
-                .get(&r.package)
-                .and_then(|p| p.versions.get(&r.version))
-                .is_some_and(|v| v.installed_by_any(account) || v.installed_by_any(OPERATOR)),
-            None => self
-                .bundles
-                .get(bundle)
-                .is_some_and(|b| b.uploaded_by == account),
-        }
+        self.may_deploy(account, at)
+            || release.is_some_and(|r| {
+                self.packages
+                    .get(&r.package)
+                    .and_then(|p| p.versions.get(&r.version))
+                    .is_some_and(|v| v.installed_by_any(OPERATOR))
+            })
     }
 
     /// Whether `actor` may move `app` to `bundle` (from `release`) at `at`: an instance
@@ -2441,7 +2433,7 @@ impl SystemState {
             let b = self.bundles.get(bundle)?;
             b.package.as_ref().map(|r| r.package.as_str())
         });
-        (from.is_some() && from == to) || self.creates_outside_offers(actor, release, bundle, at)
+        (from.is_some() && from == to) || self.creates_outside_offers(actor, release, at)
     }
 
     /// The owner that grants deployers: the cluster's owner where governance

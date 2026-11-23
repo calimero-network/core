@@ -367,12 +367,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             } else if unit_offer.is_some() {
                 return Err("a unit's offer comes with the deployment that makes it");
             } else if (offers_only || s.cluster_brings(cluster_version::Feature::OffersOnly))
-                && !s.creates_outside_offers(
-                    &app.owner,
-                    app.release.as_ref(),
-                    &app.bundle,
-                    app.created_at,
-                )
+                && !s.creates_outside_offers(&app.owner, app.release.as_ref(), app.created_at)
             {
                 return Err(NOT_A_DEPLOYER);
             }

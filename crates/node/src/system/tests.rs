@@ -7935,9 +7935,12 @@ fn on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers() {
             consent: None,
         })
         .unwrap();
-    let _ok = m
-        .run_unproven(outside("a2", "alice", "1.0.0", false))
-        .unwrap();
+    assert_eq!(
+        m.run_unproven(outside("a2", "alice", "1.0.0", false))
+            .unwrap_err(),
+        NOT_A_DEPLOYER,
+        "a revoked deployer, though it installed the release"
+    );
 
     let mut open = deploying(Deployments::Open);
     let _ok = open.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
@@ -7984,6 +7987,7 @@ fn on_a_granted_cluster_an_instance_outside_every_deployment_keeps_out_of_a_depl
     create(&mut m, "early", "bob", "b-q", ("q", "1.0.0"));
     create(&mut m, "late", "bob", "b-q", ("q", "1.0.0"));
     create(&mut m, "own", "alice", "b-1.0.0", ("p", "1.0.0"));
+    create(&mut m, "alice-q", "alice", "b-q", ("q", "1.0.0"));
 
     let _ok = m
         .run_unproven(upgrade_to("early", "bob", "b-1.0.0", Some(("p", "1.0.0"))))
@@ -8000,6 +8004,30 @@ fn on_a_granted_cluster_an_instance_outside_every_deployment_keeps_out_of_a_depl
         .unwrap();
     let _ok = m
         .run_unproven(upgrade_to("own", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
+        .unwrap();
+
+    // Revoked, alice enters her own package no more; within one she still moves.
+    let _ok = m
+        .run_unproven(SystemCmd::RevokeDeployer {
+            deployer: account_deployer("alice"),
+            at: 6,
+            actor: OPERATOR.into(),
+            proof: None,
+            consent: None,
+        })
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(upgrade_to(
+            "alice-q",
+            "alice",
+            "b-1.1.0",
+            Some(("p", "1.1.0"))
+        ))
+        .unwrap_err(),
+        NOT_A_DEPLOYER
+    );
+    let _ok = m
+        .run_unproven(upgrade_to("own", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
         .unwrap();
 }
 

@@ -402,10 +402,10 @@ is its command line.
   DEPLOY_NOT_GRANTED`); `apply` refuses again (`system::NOT_A_DEPLOYER`). So
   does `POST /apps` (and an upgrade run, the consent page) where it would
   install a release from the registry first. An instance from no deployment
-  is a deployer's, or of a release its creator installed (a raw bundle it
-  uploaded), or of the operator's catalog (`SystemState::creates_outside_offers`):
-  anyone else, a customer who sees a release through an instance included,
-  creates only from an offer (`POST /apps` `403 DEPLOY_NOT_GRANTED`; `CreateApp
+  is a live deployer's, or of the operator's catalog
+  (`SystemState::creates_outside_offers`): anyone else, a revoked deployer of
+  a release it installed and a customer who sees a release through an
+  instance included, creates only from an offer (`POST /apps` `403 DEPLOY_NOT_GRANTED`; `CreateApp
   { offers_only }` at apply, `Feature::OffersOnly`, rc.36, or the logged
   cluster version bringing it; earlier entries replay as they applied). Such an
   instance moves into another package only as its upgrader could create one
