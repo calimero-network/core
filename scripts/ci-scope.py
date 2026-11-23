@@ -81,6 +81,7 @@ WORKFLOWS = {
             "scripts/tests/path-dep-closure-test.py",
             "scripts/install.sh",
             "scripts/tests/install-test.sh",
+            "scripts/tests/fetch-release-test.sh",
             # calimero-node's openapi test compares it with what the registry builds.
             "docs/public/openapi.json",
             "scripts/check-api-compat.py",
