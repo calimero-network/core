@@ -321,7 +321,7 @@ def _attested(w, states=("admitted",)):
 
 
 def _in_states(answer, job, states):
-    check(answer.get("state") in states and answer.get("node") == job, f"job node {job}: {answer}")
+    check(answer.get("state") == "refused" and answer.get("node") == job, f"job node {job}: {answer}")
     return answer
 
 
