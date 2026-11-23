@@ -11,14 +11,15 @@ from typing import cast
 from typing import cast, Union
 
 if TYPE_CHECKING:
-    from ..models.pending_approval import PendingApproval
     from ..models.app_update_response_200_running_type_0 import (
         AppUpdateResponse200RunningType0,
     )
+    from ..models.deployment_shown import DeploymentShown
+    from ..models.app_update_response_200_policy import AppUpdateResponse200Policy
+    from ..models.pending_approval import PendingApproval
     from ..models.app_update_response_200_available_type_0 import (
         AppUpdateResponse200AvailableType0,
     )
-    from ..models.app_update_response_200_policy import AppUpdateResponse200Policy
 
 
 T = TypeVar("T", bound="AppUpdateResponse200")
@@ -36,6 +37,7 @@ class AppUpdateResponse200:
         approvers (AppUpdateResponse200Approvers):
         policy (AppUpdateResponse200Policy):
         pending_approvals (list['PendingApproval']):
+        deployment (Union['DeploymentShown', None]):
     """
 
     app: str
@@ -46,17 +48,19 @@ class AppUpdateResponse200:
     approvers: AppUpdateResponse200Approvers
     policy: "AppUpdateResponse200Policy"
     pending_approvals: list["PendingApproval"]
+    deployment: Union["DeploymentShown", None]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.pending_approval import PendingApproval
         from ..models.app_update_response_200_running_type_0 import (
             AppUpdateResponse200RunningType0,
         )
+        from ..models.deployment_shown import DeploymentShown
+        from ..models.app_update_response_200_policy import AppUpdateResponse200Policy
+        from ..models.pending_approval import PendingApproval
         from ..models.app_update_response_200_available_type_0 import (
             AppUpdateResponse200AvailableType0,
         )
-        from ..models.app_update_response_200_policy import AppUpdateResponse200Policy
 
         app = self.app
 
@@ -85,6 +89,12 @@ class AppUpdateResponse200:
             pending_approvals_item = pending_approvals_item_data.to_dict()
             pending_approvals.append(pending_approvals_item)
 
+        deployment: Union[None, dict[str, Any]]
+        if isinstance(self.deployment, DeploymentShown):
+            deployment = self.deployment.to_dict()
+        else:
+            deployment = self.deployment
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -97,6 +107,7 @@ class AppUpdateResponse200:
                 "approvers": approvers,
                 "policy": policy,
                 "pendingApprovals": pending_approvals,
+                "deployment": deployment,
             }
         )
 
@@ -104,14 +115,15 @@ class AppUpdateResponse200:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.pending_approval import PendingApproval
         from ..models.app_update_response_200_running_type_0 import (
             AppUpdateResponse200RunningType0,
         )
+        from ..models.deployment_shown import DeploymentShown
+        from ..models.app_update_response_200_policy import AppUpdateResponse200Policy
+        from ..models.pending_approval import PendingApproval
         from ..models.app_update_response_200_available_type_0 import (
             AppUpdateResponse200AvailableType0,
         )
-        from ..models.app_update_response_200_policy import AppUpdateResponse200Policy
 
         d = dict(src_dict)
         app = d.pop("app")
@@ -167,6 +179,21 @@ class AppUpdateResponse200:
 
             pending_approvals.append(pending_approvals_item)
 
+        def _parse_deployment(data: object) -> Union["DeploymentShown", None]:
+            if data is None:
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                deployment_type_0 = DeploymentShown.from_dict(data)
+
+                return deployment_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union["DeploymentShown", None], data)
+
+        deployment = _parse_deployment(d.pop("deployment"))
+
         app_update_response_200 = cls(
             app=app,
             running=running,
@@ -176,6 +203,7 @@ class AppUpdateResponse200:
             approvers=approvers,
             policy=policy,
             pending_approvals=pending_approvals,
+            deployment=deployment,
         )
 
         app_update_response_200.additional_properties = d

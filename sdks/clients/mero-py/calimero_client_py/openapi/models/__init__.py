@@ -325,6 +325,9 @@ from .deployment_secrets_response_200_secrets_additional_property import (
 from .deployment_secrets_response_200_secrets_additional_property_declared_by_item import (
     DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem,
 )
+from .deployment_shown import DeploymentShown
+from .deployment_shown_owner import DeploymentShownOwner
+from .deployment_shown_owner_kind import DeploymentShownOwnerKind
 from .deployment_withdraw_response_200 import DeploymentWithdrawResponse200
 from .error import Error
 from .exports_export_body import ExportsExportBody
@@ -1054,6 +1057,9 @@ __all__ = (
     "DeploymentSecretsResponse200Secrets",
     "DeploymentSecretsResponse200SecretsAdditionalProperty",
     "DeploymentSecretsResponse200SecretsAdditionalPropertyDeclaredByItem",
+    "DeploymentShown",
+    "DeploymentShownOwner",
+    "DeploymentShownOwnerKind",
     "DeploymentWithdrawResponse200",
     "Error",
     "ExportsExportBody",

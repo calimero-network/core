@@ -2352,6 +2352,64 @@ pub struct Deployment {
     pub extra: Map<String, Value>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DeploymentShownOwnerKind {
+    /// `account`.
+    Account,
+    /// `org`.
+    Org,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl DeploymentShownOwnerKind {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Account => "account",
+            Self::Org => "org",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for DeploymentShownOwnerKind {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeploymentShownOwnerKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "account" => Self::Account,
+            "org" => Self::Org,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentShownOwner {
+    pub kind: DeploymentShownOwnerKind,
+    pub name: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The deployment an instance comes from, as its customers are shown it: names are not unique, so always with its id and its owner's kind and name (`null` once the owner is gone).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentShown {
+    pub id: String,
+    pub name: String,
+    pub owner: DeploymentShownOwner,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// A cross-app call that was never delivered: its sequence number, the target app and method, why, and when (`atMs`, Unix milliseconds).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeadLetter {
@@ -4021,6 +4079,7 @@ pub struct AppUpdateResponse {
     pub policy: AppUpdateResponsePolicy,
     #[serde(rename = "pendingApprovals")]
     pub pending_approvals: Vec<PendingApproval>,
+    pub deployment: Option<DeploymentShown>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
