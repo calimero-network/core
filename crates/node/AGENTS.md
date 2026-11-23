@@ -1410,7 +1410,9 @@ is its command line.
   `MAX_AUTO_UPDATE_CLASSES_PER_PASS` a pass) and runs each app's first green one through
   `api::upgrades::auto_upgrade` -> `run_upgrade` (`Upgrader::auto`, `Caller::System`,
   actor `system::AUTO_UPDATE`): a release red only by its code (state version, delegated
-  methods) never holds back a green one below it. Only the release's own failure is
+  methods) never holds back a green one below it, and a green one that drops a method
+  (`removed_methods`, read from the leader's verdict, `api::upgrades::move_verdict`) waits
+  for a person as a red one does: another app may call it. Only the release's own failure is
   noted (`UpgradeFailed`: the group ran it and it failed or refused it); one before
   anything ran (refusal, restore point, runtime, no leader) is not, and the leader
   retries that move after a backoff (`node::auto_updates::AutoUpdateMemory`, in memory:

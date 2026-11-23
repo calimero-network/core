@@ -393,8 +393,10 @@ Refusals: `409 AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`,
 a newer red one, whether the log shows it (its destinations or signer) or only
 the leader's classification does (a state version that changed, a new way to
 act as the person), waits for an owner or admin and does not hold back a quiet
-one below it. It never takes one an update to failed or an undo left: an owner
-or admin decides on those. Only the release's own failure counts: the app's
+one below it. So does a green one that drops a method (`removedMethods`): another
+app may call it, and nothing records which, so a person decides on it. It never
+takes one an update to failed or an undo left: an owner or admin decides on those.
+Only the release's own failure counts: the app's
 group ran the upgrade and it failed or refused it (`lastUpgrade.ok: false`),
 and not when another move of the app won meanwhile: an update on its own names
 the release it began from (`UpgradeFailed { fromRelease }`), and apply notes

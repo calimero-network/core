@@ -29,10 +29,21 @@ const DAY: u64 = 24 * 3600;
 
 /// A signed single-service `.mpk` of `PACKAGE` at `version`, declaring no destination.
 fn release(version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
+    release_using(PACKAGE, version, wasm, key, Value::Null)
+}
+
+/// [`release`] of `package`, its signed manifest also declaring `uses` (`null`: none).
+fn release_using(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    uses: Value,
+) -> Vec<u8> {
     let sha = |b: &[u8]| hex::encode(calimero_identity::sha256(b));
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
-        package: PACKAGE.to_owned(),
+        package: package.to_owned(),
         app_version: version.to_owned(),
         signer_id: Some(calimero_bundle::derive_signer_id_did_key(
             key.verifying_key().as_bytes(),
@@ -63,6 +74,9 @@ fn release(version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
+    if !uses.is_null() {
+        manifest["uses"] = uses;
+    }
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
     let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
         Vec::new(),
@@ -134,6 +148,39 @@ fn state_version(wasm: &[u8], version: u64) -> Vec<u8> {
         }
     }
     panic!("no state version to change in the fixture's ABI");
+}
+
+/// `wasm` whose embedded ABI no longer lists method `from` and lists `to` (same length)
+/// instead: to the node and the classifier, a release that removed `from`.
+fn rename_method(wasm: &[u8], from: &str, to: &str) -> Vec<u8> {
+    assert_eq!(
+        from.len(),
+        to.len(),
+        "a same-length edit keeps the section's size"
+    );
+    let data = wasmparser::Parser::new(0)
+        .parse_all(wasm)
+        .find_map(|p| match p {
+            Ok(wasmparser::Payload::CustomSection(s)) if s.name() == "calimero:abi" => {
+                let at = usize::try_from(s.data_offset()).unwrap();
+                Some(at..at + s.data().len())
+            }
+            _ => None,
+        })
+        .expect("the fixture embeds its ABI");
+    let (from, to) = (format!("\"{from}\""), format!("\"{to}\""));
+    let edited = String::from_utf8(wasm[data.clone()].to_vec())
+        .unwrap()
+        .replace(&from, &to);
+    let abi: Value = serde_json::from_str(&edited).unwrap();
+    assert!(
+        abi["methods"].get(from.trim_matches('"')).is_none(),
+        "{abi}"
+    );
+    assert!(abi["methods"].get(to.trim_matches('"')).is_some(), "{abi}");
+    let mut out = wasm.to_vec();
+    out[data].copy_from_slice(edited.as_bytes());
+    out
 }
 
 #[allow(
@@ -712,5 +759,102 @@ async fn a_pass_off_the_system_leader_moves_nothing() {
         0,
         "a node that does not lead the system group upgraded an app"
     );
+    shift_update_clock(0);
+}
+
+/// A green update that drops a method waits for a person: another app may call it (here
+/// the plugin's `askWho` calls the calendar's `whoView`), so it never applies on its own,
+/// and a quiet release below it still does. A person may still approve it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_green_update_that_drops_a_method_waits_for_a_person() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[47; 32]);
+    let uses = json!({
+        "cal": { "package": PACKAGE, "range": "^1", "mode": "attach", "methods": ["whoView"] },
+    });
+    for mpk in [
+        release("1.0.0", &kv_wasm(), &publisher),
+        release_using("com.test.plugin", "1.0.0", &kv_wasm(), &publisher, uses),
+    ] {
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let org = home_org(&alice).await;
+    let create = |name: &str, package: &str| {
+        typed(json!({ "name": name, "package": package, "version": "1.0.0", "org": org }))
+    };
+    let calendar = alice
+        .apps()
+        .create(create("calendar", PACKAGE))
+        .await
+        .unwrap()
+        .app_id;
+    let plugin = alice
+        .apps()
+        .create(create("plugin", "com.test.plugin"))
+        .await
+        .unwrap()
+        .app_id;
+    let ask = || {
+        alice.apps().call(
+            &plugin,
+            "askWho",
+            Some(json!({ "app": calendar })),
+            None,
+            None,
+        )
+    };
+    assert_eq!(ask().await.unwrap().result, json!(format!("app:{plugin}")));
+
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    let dropped = rename_method(&kv_wasm(), "whoView", "whoVieX");
+    for mpk in [
+        release("1.0.1", &variant(&kv_wasm(), "v101"), &publisher),
+        release("1.1.0", &dropped, &publisher),
+    ] {
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let update = get_until(&alice, &format!("apps/{calendar}/update"), 15, |u| {
+        u["available"]["version"] == "1.1.0"
+    })
+    .await;
+    assert_eq!(update["available"]["class"], "green", "{update}");
+    assert_eq!(
+        update["available"]["removedMethods"],
+        json!(["whoView"]),
+        "{update}"
+    );
+
+    // Past the hold, the quiet 1.0.1 applies on its own and 1.1.0 never does.
+    shift_update_clock(DAY + 600);
+    passes_until(
+        &c,
+        || async { running(&alice, &calendar).await == "1.0.1" },
+        "the release below it never applied",
+    )
+    .await;
+    for _ in 0..3 {
+        assert_eq!(
+            pass(&c).await,
+            0,
+            "a release that drops a method applied on its own"
+        );
+    }
+    assert_eq!(running(&alice, &calendar).await, "1.0.1");
+    assert_eq!(ask().await.unwrap().result, json!(format!("app:{plugin}")));
+    let waiting = get(&alice, &format!("apps/{calendar}/update"))
+        .await
+        .unwrap();
+    assert_eq!(waiting["available"]["version"], "1.1.0", "{waiting}");
+    assert_eq!(waiting["mayApprove"], true, "{waiting}");
     shift_update_clock(0);
 }

@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use calimero_bundle::update::Class;
 use tracing::{info, warn};
 
 use super::Node;
@@ -209,9 +210,12 @@ impl Node {
                     break 'apps;
                 }
                 classified += 1;
-                let class = crate::api::upgrades::move_class(self, &app.app_id, Some(&to)).await;
-                match &class {
-                    Some(c) if c.is_green() => {}
+                let verdict =
+                    crate::api::upgrades::move_verdict(self, &app.app_id, Some(&to)).await;
+                match &verdict {
+                    // A green move that drops a method waits for a person too: another app
+                    // may call it, and no record says which (plain xcalls declare nothing).
+                    Some(c) if c.class == Class::Green && c.removed_methods.is_empty() => {}
                     // Red: remembered, so later passes reach the apps after it.
                     Some(_) => {
                         let _r = self.with_auto_update_memory(|mem| {
