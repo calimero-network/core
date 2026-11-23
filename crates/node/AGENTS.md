@@ -470,8 +470,17 @@ is its command line.
   instance's deployment with its id and owner (`SystemState::deployment_shown`,
   `consent_page::offered_by`; names are not unique; read-only, no log change;
   regression `a_customer_accepts_its_deployments_offer_on_the_page`).
-  Decided, not built: the recovery-key guard, transfer (the spec's section 14);
-  the migration of old installs is dropped. Regressions:
+  An organization owns a deployment only holding a recovery key:
+  `CreateDeployment` for one without, and `SetRecoveryKey { None }` while it
+  owns one, are `RECOVERY_KEY_REQUIRED` (`409`, refused at the API before the
+  passkey; `SystemState::keeps_recoverable`, `recovery_rule`) when the entry's
+  `deployment_needs_recovery` flag is set or the logged version brings
+  `Feature::DeploymentNeedsRecovery` (rc.36); earlier entries replay as they
+  applied; rotating is allowed, an account's deployment needs none. Regressions:
+  `an_organization_owns_a_deployment_only_with_a_recovery_key`,
+  `an_organization_deploys_only_holding_a_recovery_key`.
+  Decided, not built: transfer (the spec's section 14); the migration of old
+  installs is dropped. Regressions:
   `tests/deployments.rs`, `deployments_are_their_managers_and_keep_what_they_offer`,
   `deployment_changes_carry_their_managers_consent`,
   `state_from_before_deployments_reads_with_none_and_writes_as_before`,
