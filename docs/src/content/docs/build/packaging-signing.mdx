@@ -258,9 +258,14 @@ detail.
    checks it against the package's own compute methods and the cluster's pools:
    the module is `self` (or left out) or another installed package by its exact
    name, optionally pinned (`module: com.acme.pdf@0.1.0`; without a version, the
-   newest release the installer sees). That package must ship a compute component;
-   its methods and caps are the ones the step is checked against, a module the
-   installer cannot see or that has none is `UNKNOWN_MODULE`, and the release
+   newest release the installer may pin). That package must ship a compute component;
+   its methods and caps are the ones the step is checked against. A module is pinned
+   only from a release the installer may use that is public or the operator's, signed
+   by the package's own signer, or, for a release installed private, private to every
+   organization the release is for; anything else, or a module with no compute
+   component, is `UNKNOWN_MODULE`. An install of the same release again (for another
+   organization, or public) keeps its pins and is refused the same way when a pin no
+   longer meets that rule, so it never widens who runs a private module. The release
    keeps running the module release it was installed against until the pipeline's
    own package is released again. The module's package cannot be uninstalled while
    such a release exists (`409 MODULE_IN_USE`). The step's files, payer and usage

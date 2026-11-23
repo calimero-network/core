@@ -972,6 +972,88 @@ fn an_app_team_reads_only_the_releases_its_actor_may_use() {
     assert_eq!(team_name(&m, "dst", "p").as_deref(), Some("Open"));
 }
 
+/// A release of another signer's package pins a private module only while it is private to
+/// the module's own organizations, judged at apply on the release as the install leaves it
+/// (an install again for another organization included), from the logged version that
+/// brings private releases; an entry logged below it applies as it did.
+#[test]
+fn a_private_module_is_pinned_only_into_a_release_private_to_its_organizations() {
+    use super::cluster_version::Feature;
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["vic", "mia"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    for (id, members) in [
+        ("v", &[("vic", "owner"), ("mia", "member")][..]),
+        ("a", &[("mia", "owner")][..]),
+    ] {
+        let mut o = org(members, &[], &[]);
+        id.clone_into(&mut o.org_id);
+        let _prev = m.state.orgs.insert(id.into(), o);
+    }
+    let install = |package: &str, signer: &str, by: &str, org: &str, extra: Value| {
+        let mut release = json!({
+            "version": "1.0.0", "mpk": package, "mpkSize": 1, "source": "upload",
+            "services": {}, "installedBy": by, "installedAt": 1,
+            "visibility": "private", "orgs": [org],
+        });
+        release
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        SystemCmd::InstallPackage {
+            package: package.into(),
+            signer_id: signer.into(),
+            release: serde_json::from_value(release).unwrap(),
+        }
+    };
+    let module = install(
+        "m",
+        "did:key:victim",
+        "vic",
+        "v",
+        json!({ "compute": { "": "c" } }),
+    );
+    let _ok = m.run_authorized(module).unwrap();
+    let q = |org: &str| {
+        install(
+            "q",
+            "did:key:attacker",
+            "mia",
+            org,
+            json!({
+                "compute": { "": "cq" },
+                "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1", "modules": {
+                    "m@1.0.0": { "package": "m", "version": "1.0.0", "compute": "c" }
+                } } }
+            }),
+        )
+    };
+
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let _ok = old.run_authorized(q("a")).expect("replayed as it applied");
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(
+        m.run_authorized(q("a")),
+        Err("a module the pipelines use is no longer installed")
+    );
+    assert!(!m.state.packages.contains_key("q"));
+    let _ok = m.run_authorized(q("v")).unwrap();
+    assert_eq!(
+        m.run_authorized(q("a")),
+        Err("a module the pipelines use is no longer installed")
+    );
+    assert_eq!(
+        m.state.packages["q"].versions["1.0.0"].orgs,
+        BTreeSet::from(["v".to_owned()])
+    );
+}
+
 /// A release recorded before `visibility` keeps the rule from before: whoever shares an
 /// organization with an installer, or reaches an app of it, uses it. Its entry writes back
 /// byte for byte; a private install of it again leaves that rule, a public one replaces it.

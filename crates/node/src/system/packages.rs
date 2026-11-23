@@ -125,6 +125,30 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if release.orgs.iter().any(|o| !s.member_of(o, &actor)) {
                 return Err(NOT_AN_ORG_MEMBER);
             }
+            // A pinned module never reaches more than may run it, judged on the release as
+            // this install leaves it; entries logged below private releases apply as they did.
+            if s.cluster_brings(cluster_version::Feature::PrivateReleases) {
+                let kept = s
+                    .packages
+                    .get(&package)
+                    .and_then(|p| p.versions.get(&release.version));
+                let (pins, visibility, orgs) = match kept {
+                    Some(v) => (
+                        v,
+                        if release.visibility == Some(Visibility::Public) {
+                            release.visibility
+                        } else {
+                            v.visibility
+                        },
+                        v.orgs.union(&release.orgs).cloned().collect(),
+                    ),
+                    None => (&release, release.visibility, release.orgs.clone()),
+                };
+                let private_for = (visibility == Some(Visibility::Private)).then_some(&orgs);
+                if !s.may_pin_all(pins, &actor, &signer_id, private_for) {
+                    return Err("a module the pipelines use is no longer installed");
+                }
+            }
             if let Some(p) = s.packages.get(&package) {
                 if p.signer_id != signer_id {
                     return Err("the package is published under another key");

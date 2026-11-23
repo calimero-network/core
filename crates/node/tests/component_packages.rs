@@ -1194,6 +1194,81 @@ async fn a_module_the_installer_cannot_see_is_unknown() {
     unknown(&e);
 }
 
+/// A pipeline of another signer's package pins a private module only into a release private
+/// to the module's own organizations: Mia, a member of the victim's organization V and of
+/// Acme, installs the attacker's package naming V's private module for Acme, and it is
+/// answered as a module that is not installed; installed for V it pins the module, and a
+/// later install of that release for Acme is refused the same way, leaving it V's alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_private_module_is_pinned_only_into_a_release_private_to_its_organizations() {
+    let (c, vic, mut vic_pk) = compute_cluster().await;
+    let (mia, _m) = signed_up(&c, 1, "mia").await;
+    let (acme_owner, mut acme_pk) = signed_up(&c, 2, "acme").await;
+    let victim = home_org(&vic).await;
+    let acme = home_org(&acme_owner).await;
+    let mia_id = wire(mia.auth().me().await.unwrap())["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (by, pk, org) in [
+        (&vic, &mut vic_pk, &victim),
+        (&acme_owner, &mut acme_pk, &acme),
+    ] {
+        let _ = by
+            .orgs()
+            .set_member(
+                org,
+                &mia_id,
+                calimero_client::types::OrgRole::Member,
+                Some(pk),
+            )
+            .await
+            .unwrap();
+    }
+    install_module(&vic, "1.0.0", 1).await;
+    let attacker = ed25519_dalek::SigningKey::from_bytes(&[77; 32]);
+    let job = common::components("fixture-compute")
+        .compute
+        .clone()
+        .unwrap();
+    let reference = format!("{MODULE_PACKAGE}@1.0.0");
+    let q = mpk_with_pipelines(
+        "com.test.job",
+        "1.0.0",
+        None,
+        Some(&job),
+        &[("pipelines/p1.yaml", &module_pipeline(&reference, ""))],
+        &attacker,
+    );
+    let unknown = |e: &calimero_client::Error| {
+        let details = bad_pipeline(e);
+        assert_eq!(details.len(), 1, "{details:?}");
+        assert_eq!(details[0]["path"], "steps.first.module");
+        assert_eq!(details[0]["code"], "UNKNOWN_MODULE");
+    };
+
+    let e = mia
+        .packages()
+        .upload(q.clone(), Some(&acme))
+        .await
+        .unwrap_err();
+    unknown(&e);
+    let _ok = mia
+        .packages()
+        .upload(q.clone(), Some(&victim))
+        .await
+        .unwrap();
+    assert_eq!(
+        pins(&mia, "1.0.0").await[&reference]["package"],
+        json!(MODULE_PACKAGE)
+    );
+    let e = mia.packages().upload(q, Some(&acme)).await.unwrap_err();
+    unknown(&e);
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let orgs = node.sys(|s| s.packages["com.test.job"].versions["1.0.0"].orgs.clone());
+    assert_eq!(orgs, std::collections::BTreeSet::from([victim]));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_limit_above_the_modules_caps_is_refused() {
     let (_c, owner, _pk) = compute_cluster().await;

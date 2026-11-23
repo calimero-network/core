@@ -68,7 +68,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
 - **C5. Unit members follow the creator.**
   `unit_members` picks only releases the creator may use, ones signed by the same signer as the instance's release (a publisher composing its own packages), or, for an instance from a deployment, ones that deployment offers.
   The rule is the same for every unit, from a deployment or not, and for a unit's preview and upgrade; the member's create runs exactly the release it chose.
-  Pipeline modules already resolve through `sees_release` and follow C3.
+  A pipeline module is pinned at install only from a release the installer may use that is public or the operator's, of the installing package's own signer, or, for a private installing release, private to every organization it is for (`SystemState::may_pin`); an install again of that release keeps its pins and is refused `UNKNOWN_MODULE` when a pin no longer meets the rule for the organization it adds.
 - **C6. Signing in on a private package's frontend is gated. Deferred: the next step after this release, with members-only frontend files.**
   The node does not get an invite at sign-in today, so admitting invite holders needs an optional `invite` on `login/finish` and mero-js and mero-react sending it; until then C1 leaves a stranger's session with nothing to see.
   At sign-in, sign-up finish and refresh on a package's origin, a private release's origin opens a session only for an account that may use it, reaches an instance running it, or carries an unredeemed invite to its org or to such an instance.

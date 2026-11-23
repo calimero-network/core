@@ -2114,6 +2114,48 @@ impl SystemState {
         })
     }
 
+    /// Whether a release of a package signed by `signer`, installed by `actor` and private to
+    /// `private_for` (`None`: not private), may pin `m` of `module` as a pipeline module: one
+    /// `actor` may use that is not recorded private, the operator's, its own signer's, or a
+    /// private one installed for every organization the installing release is private to.
+    #[must_use]
+    pub fn may_pin(
+        &self,
+        module: &PackageRecord,
+        m: &PackageVersion,
+        actor: &str,
+        signer: &str,
+        private_for: Option<&BTreeSet<OrgId>>,
+    ) -> bool {
+        self.sees_release(m, actor)
+            && (m.visibility != Some(Visibility::Private)
+                || m.installed_by_any(OPERATOR)
+                || module.signer_id == signer
+                || private_for.is_some_and(|orgs| orgs.is_subset(&m.orgs)))
+    }
+
+    /// Whether every module `release` pins passes [`Self::may_pin`].
+    #[must_use]
+    pub fn may_pin_all(
+        &self,
+        release: &PackageVersion,
+        actor: &str,
+        signer: &str,
+        private_for: Option<&BTreeSet<OrgId>>,
+    ) -> bool {
+        release
+            .pipelines
+            .values()
+            .flat_map(|r| r.modules.values())
+            .all(|pin| {
+                self.packages.get(&pin.package).is_some_and(|p| {
+                    p.versions
+                        .get(&pin.version)
+                        .is_some_and(|m| self.may_pin(p, m, actor, signer, private_for))
+                })
+            })
+    }
+
     /// Whether a release other than `package`'s own pins `package@version` as a pipeline module.
     #[must_use]
     pub fn module_pinned(&self, package: &str, version: &str) -> bool {

@@ -40,7 +40,8 @@ publisher's key, and every artifact in the archive is listed with its digest.
 - **Pipelines** (`pipelines/*.yaml`) are compiled and checked at install
   against the release's compute methods and the modules of other packages a
   step names (`module: <package>[@<version>]`, pinned to the release resolved
-  then); any error is `400 BAD_PIPELINE` with every problem listed. `GET
+  then: one the installer may use that is public or the operator's, its own
+  signer's, or private to every organization a private release is for); any error is `400 BAD_PIPELINE` with every problem listed. `GET
   /packages/{package}/{version}/pipelines` answers them ([Pipeline
   runs](/protocol/compute-actions/#pipeline-runs)).
 

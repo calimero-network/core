@@ -295,8 +295,8 @@ impl Node {
             .unwrap_or_default();
         self.refuse_stalled_install(actor, &pinned)?;
         let (mpk, visibility) = self.fetch_for_install(package, version, actor).await?;
-        let mut verified = self
-            .verify_release(mpk, BundleSource::Registry, actor)
+        let verified = self
+            .verify_release(mpk, BundleSource::Registry, actor, visibility, org)
             .await?;
         if verified.package != package || verified.release.version != version {
             return Err(ApiError::bad_request(
@@ -307,8 +307,6 @@ impl Node {
                 ),
             ));
         }
-        verified.release.visibility = Some(visibility);
-        verified.release.orgs = org.into_iter().collect();
         self.record_release(verified, None).await
     }
 
@@ -350,21 +348,27 @@ impl Node {
     ) -> Result<Value, ApiError> {
         self.refuse_undeployable(actor).await?;
         let org = self.install_org(actor, org).await?;
-        let mut verified = self
-            .verify_release(Arc::clone(&mpk), BundleSource::Upload, actor)
+        let verified = self
+            .verify_release(
+                Arc::clone(&mpk),
+                BundleSource::Upload,
+                actor,
+                Visibility::Private,
+                org,
+            )
             .await?;
-        verified.release.visibility = Some(Visibility::Private);
-        verified.release.orgs = org.into_iter().collect();
         self.record_release(verified, Some(mpk)).await
     }
 
     /// Everything about a release that can be checked before the log records
-    /// it, including the signer pin `apply` checks again.
+    /// it, including the signer pin `apply` checks again; installed `visibility` for `org`.
     async fn verify_release(
         &self,
         mpk: Arc<[u8]>,
         source: BundleSource,
         actor: &str,
+        visibility: Visibility,
+        org: Option<String>,
     ) -> Result<Verified, ApiError> {
         let mpk_hash = hex::encode(calimero_identity::sha256(&mpk));
         let mpk_size = mpk.len() as u64;
@@ -528,7 +532,41 @@ impl Node {
             return Err(ApiError::conflict(crate::system::SHIPS_IN_OTHER_PACKAGE));
         }
         let pools = self.pool_ceilings();
-        let modules = self.resolve_modules(&service_pipelines.0, actor).await;
+        let orgs: BTreeSet<String> = org.into_iter().collect();
+        // Judged on the release as this install leaves it: an install again keeps its pins
+        // and adds its organization, or makes it public.
+        let kept = self.sys(|s| {
+            s.packages
+                .get(&package)?
+                .versions
+                .get(&manifest.app_version)
+                .cloned()
+        });
+        let (after, orgs_after, pinned) = match &kept {
+            Some(v) => (
+                if visibility == Visibility::Public {
+                    Some(visibility)
+                } else {
+                    v.visibility
+                },
+                v.orgs.union(&orgs).cloned().collect(),
+                v.pipelines
+                    .values()
+                    .flat_map(|r| r.modules.clone())
+                    .collect(),
+            ),
+            None => (Some(visibility), orgs.clone(), BTreeMap::new()),
+        };
+        let private_for = (after == Some(Visibility::Private)).then_some(&orgs_after);
+        let modules = self
+            .resolve_modules(
+                &service_pipelines.0,
+                actor,
+                &signer_id,
+                private_for,
+                &pinned,
+            )
+            .await;
         let mut pipeline_refs = BTreeMap::new();
         for (compiled, record) in pipelines::register(&service_pipelines, &pools, &modules)? {
             let _prev = wasm_by_hash.insert(compiled.hash, compiled.canonical);
@@ -573,8 +611,8 @@ impl Node {
                 // Every release says, absent being `either`.
                 instance_org: Some(manifest.instance_org.unwrap_or_default()),
                 guests: Some(manifest.guests.unwrap_or_default()),
-                visibility: None,
-                orgs: BTreeSet::new(),
+                visibility: Some(visibility),
+                orgs,
             },
             wasm: wasm_by_hash,
         })
