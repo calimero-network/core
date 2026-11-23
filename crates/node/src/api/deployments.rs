@@ -395,7 +395,9 @@ async fn deployment_create(
         ));
     }
     node.refuse_undeployable(&account).await?;
-    let needs_recovery = deployment_needs_recovery(&node).await;
+    // Only an organization's deployment is judged by the rule.
+    let needs_recovery =
+        matches!(body.owner, Deployer::Org(_)) && deployment_needs_recovery(&node).await;
     if !node.sys(|s| s.keeps_recoverable(&body.owner, needs_recovery)) {
         return Err(crate::node::rejected(crate::system::RECOVERY_KEY_REQUIRED));
     }

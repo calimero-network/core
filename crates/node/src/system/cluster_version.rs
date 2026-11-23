@@ -1447,6 +1447,26 @@ mod tests {
         assert!(super::scope_app_features(Some(&[plain])).is_empty());
     }
 
+    /// Both commands the recovery rule judges carry it as a feature once their flag is set,
+    /// and neither does without it.
+    #[test]
+    fn the_recovery_rule_is_a_feature_of_both_commands_it_judges() {
+        let key = |flag| SystemCmd::SetRecoveryKey {
+            org: "org".into(),
+            public_key: None,
+            at: 1,
+            actor: "alice".into(),
+            consent: Value::Null,
+            deployment_needs_recovery: flag,
+        };
+        assert_eq!(key(true).features(), [Feature::DeploymentNeedsRecovery]);
+        assert_eq!(key(false).features(), []);
+        assert_eq!(
+            uses(Feature::DeploymentNeedsRecovery).features(),
+            [Feature::DeploymentNeedsRecovery]
+        );
+    }
+
     /// While an older node replicates the system log, no feature newer than
     /// it is proposed, so every node keeps the same state; once it leaves,
     /// the leader raises the cluster version and the features work.

@@ -434,12 +434,10 @@ async fn recovery_set(
             )
         })?;
     }
-    let needs_recovery = super::deployments::deployment_needs_recovery(&node).await;
-    let owner = crate::system::Deployer::Org(org.clone());
-    if body.public_key.is_none()
-        && needs_recovery
-        && node.sys(|s| s.deployments.values().any(|d| d.owner == owner))
-    {
+    // Only a removal is judged by the rule; a rotation asks no node anything.
+    let needs_recovery =
+        body.public_key.is_none() && super::deployments::deployment_needs_recovery(&node).await;
+    if body.public_key.is_none() && !node.sys(|s| s.may_remove_recovery(&org, needs_recovery)) {
         return Err(crate::node::rejected(crate::system::RECOVERY_KEY_REQUIRED));
     }
     let args = json!({ "publicKey": body.public_key });
