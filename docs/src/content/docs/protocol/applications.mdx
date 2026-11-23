@@ -169,7 +169,7 @@ A release is visible, which is the right to use it (`SystemState::sees_release`)
 
 A session opened on the package's own frontend sees what its account sees.
 A release recorded before releases were public or private keeps the earlier rule: whoever installed it, an account sharing an organization with an installer, an account that reaches an app running it, and a session on the package's frontend.
-Reaching an instance reads the release it runs (its name and version, `SystemState::reads_release`), never uses it.
+Reaching an instance reads the release it runs (its name and version, `SystemState::reads_release`), never uses it, nor reads another release that shares its WASM.
 
 For anyone else the release is not installed. `GET /packages` and
 `GET /packages/{p}` list only the releases the caller sees (a package with
@@ -179,7 +179,8 @@ the newest release the caller sees; with one, the release is installed from
 the registry first, which makes a registry release the caller's too, and
 answers what a missing release answers when the registry lacks it (an upload).
 Naming its WASM by hash answers as an unknown bundle, and approving outbound
-hosts for a package with no release the caller sees answers `404`. An
+hosts for a package whose latest release the caller may not read (the release
+whose prefixes the approval takes) answers `404`, on the API and the consent page. An
 organization's upgrade run moves an app only to a release its upgrader sees;
 the operator's, to one it installed or the app's owner sees.
 

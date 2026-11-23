@@ -368,12 +368,14 @@ is its command line.
   with an installing account, accounts that reach an app running it, and a session
   bound to the package's frontend (`sees_release_from`). Reading the release an
   instance runs (`report::release_of_app`) is `SystemState::reads_release`: who sees
-  it, or reaches an app running it. For
+  it, or reaches an app running it (the release the app's record names, so a release
+  sharing its WASM is not read). For
   anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages`
   leave it out (`404` by name), `resolve_release` treats it as missing (a
   registry install makes it theirs; an upload answers as a missing release), a
   bundle hash it ships is an unknown bundle (`sees_bundle`), outbound approval
-  answers `404`, and upgrade runs skip it (`api::upgrade_sees`; the operator's:
+  (`POST /orgs/{org}/outbound`, the consent page's `outbound`) answers `404` unless
+  the caller reads the latest release, whose prefixes it approves and shows, and upgrade runs skip it (`api::upgrade_sees`; the operator's:
   its own or the app owner's). Frontends stay public by name. Regressions:
   `a_private_package_is_listed_only_to_accounts_that_may_use_it`,
   `a_release_from_before_installers_reads_and_records_who_installs_it_again`,
@@ -383,7 +385,9 @@ is its command line.
   `reaching_an_instance_reads_its_release_but_does_not_use_it`,
   `a_bound_session_does_not_open_a_package_its_account_cannot_see`,
   `another_orgs_account_cannot_install_a_private_package_from_the_registry`,
-  `a_release_is_fetched_again_with_the_credential_only_while_it_is_private`.
+  `a_release_is_fetched_again_with_the_credential_only_while_it_is_private`,
+  `an_outbound_approval_never_reads_a_release_its_approver_cannot_read`,
+  `an_outbound_sheet_never_shows_a_release_its_asker_cannot_read`.
 - **Governance** (`system::Governance`, `Authority`, shared with clients in
   `calimero_client::attest`): three decisions, each held by exactly one
   party chosen at deployment, `owner` (default) or `operator`:

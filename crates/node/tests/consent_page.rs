@@ -800,6 +800,106 @@ async fn a_bundle_swapped_under_the_same_version_is_refused() {
         .unwrap();
 }
 
+/// Alice's private v1 and v2 of `PACKAGE`, v2 declaring `secret_prefix`, and an instance
+/// of v1 that anyone reaches; Alice and Bob each in an organization of their own.
+async fn reached_v1_private_v2(
+    c: &Cluster,
+    secret_prefix: &str,
+) -> (
+    calimero_client::Client,
+    calimero_client::Client,
+    SoftAuthenticator,
+) {
+    let (alice, _a) = signed_up(c, 0, "alice").await;
+    let (bob, bob_pk) = signed_up(c, 1, "bob").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let _o = bob.orgs().create("Bobco", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
+    for (version, outbound) in [("1.0.0", &[][..]), ("2.0.0", &[secret_prefix][..])] {
+        let (mpk, _) = release(
+            version,
+            &kv_wasm(),
+            &publisher,
+            &Declares {
+                outbound,
+                ..Declares::default()
+            },
+        );
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
+    }
+    let _ = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "open", "package": PACKAGE, "version": "1.0.0",
+            "grants": [{ "kind": "anyone" }] }),
+        ))
+        .await
+        .unwrap();
+    (alice, bob, bob_pk)
+}
+
+/// Reaching an instance of v1 shows no outbound sheet of the private v2: the page answers
+/// as for a package that is not installed, whatever prefixes are named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_outbound_sheet_never_shows_a_release_its_asker_cannot_read() {
+    const SECRET: &str = "https://internal.acme.example/secret-api/";
+    let c = Cluster::start(3).await;
+    let (_alice, bob, _b) = reached_v1_private_v2(&c, SECRET).await;
+    for prefixes in [
+        Value::Null,
+        json!([SECRET]),
+        json!(["https://guess.example/"]),
+    ] {
+        let mut subject = json!({ "package": PACKAGE });
+        if !prefixes.is_null() {
+            subject["prefixes"] = prefixes.clone();
+        }
+        let made = bob
+            .consent()
+            .page_create(typed(json!({
+                "kind": "outbound",
+                "scope": "account",
+                "subject": subject,
+                "returnTo": format!("{ORIGIN}/settings"),
+            })))
+            .await
+            .map(wire);
+        let e = match made {
+            Ok(made) => {
+                let model = Page::new(made["url"].as_str().unwrap()).model().await;
+                panic!("{prefixes}: a sheet for Bob: {model}");
+            }
+            Err(e) => e,
+        };
+        assert!(e.to_string().starts_with("404"), "{prefixes}: {e}");
+    }
+}
+
+/// Approving a package's outbound hosts approves its latest release's prefixes: Bob, who
+/// reaches only an instance of v1, is answered as for a package that is not installed,
+/// before any passkey, and never learns the private v2's prefixes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_outbound_approval_never_reads_a_release_its_approver_cannot_read() {
+    const SECRET: &str = "https://internal.acme.example/secret-api/";
+    let c = Cluster::start(3).await;
+    let (_alice, bob, mut bob_pk) = reached_v1_private_v2(&c, SECRET).await;
+    let bobs = home_org(&bob).await;
+    let got = bob
+        .orgs()
+        .outbound_approval(
+            &bobs,
+            PACKAGE,
+            Some(typed(json!("manifest"))),
+            None,
+            Some(&mut bob_pk),
+        )
+        .await
+        .map(wire);
+    let e = got.expect_err("Bob may not approve what he cannot read");
+    assert!(e.to_string().starts_with("404"), "{e}");
+    assert!(!e.to_string().contains(SECRET), "{e}");
+}
+
 /// Release and outbound requests through the page, a person's own account
 /// as the scope; the bounds a request is held to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

@@ -2473,12 +2473,9 @@ async fn outbound_request(
     };
     let latest = node
         .sys(|s| {
-            let pkg = s.packages.get(&package)?;
-            let latest = pkg.latest()?;
+            let latest = s.packages.get(&package)?.latest()?;
             let frontend = bound == Some(package.as_str());
-            pkg.versions
-                .values()
-                .any(|v| s.sees_release_from(v, account, frontend) || s.reads_release(v, account))
+            (s.sees_release_from(latest, account, frontend) || s.reads_release(latest, account))
                 .then(|| latest.clone())
         })
         .ok_or_else(|| ApiError::not_found("no such package"))?;

@@ -2037,7 +2037,14 @@ impl SystemState {
     /// instance runs it): [`Self::sees_release`], or `who` reaches an app running it.
     #[must_use]
     pub fn reads_release(&self, v: &PackageVersion, who: &str) -> bool {
-        self.sees_release(v, who) || (who != OPERATOR && self.reaches_release(v, who))
+        self.sees_release(v, who)
+            || (who != OPERATOR
+                && self.apps.values().any(|a| {
+                    // Releases may share a WASM: an app runs the one its record names.
+                    a.release.as_ref().is_none_or(|r| r.version == v.version)
+                        && v.app_parts().values().any(|h| *h == a.bundle)
+                        && self.may_reach(a, Some(who))
+                }))
     }
 
     /// Whether `who` reaches an app running one of `v`'s services.

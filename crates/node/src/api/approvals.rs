@@ -139,13 +139,14 @@ pub(crate) async fn set_outbound_approval(
     body: OutboundApprovalBody,
 ) -> ApiResult {
     let account = p.account()?;
-    // A package none of whose releases the caller may read (use, or run in an instance it
-    // reaches) is not installed for them: answered before the passkey, as a missing one.
+    // Apply approves the latest release's prefixes: a caller who may not read that release
+    // is answered before the passkey, as for a package that is not installed.
     node.sys_fresh_from(p.sys_index).await;
     if !node.sys(|s| {
         s.packages
             .get(&body.package)
-            .is_some_and(|pkg| pkg.versions.values().any(|v| s.reads_release(v, &account)))
+            .and_then(crate::system::PackageRecord::latest)
+            .is_some_and(|v| s.reads_release(v, &account))
     }) {
         return Err(ApiError::not_found("no such package"));
     }
