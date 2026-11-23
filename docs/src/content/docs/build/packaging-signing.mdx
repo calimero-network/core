@@ -309,7 +309,7 @@ meroctl app check --mpk release.mpk --against last.mpk
 ```
 com.acme.notes 1.3.0 → 1.4.0
   Data can go to: https://inference.near.ai/v1/
-  Users on automatic updates: apply it on their own (green: same signer, no new destination, same state version)
+  Users on automatic updates: wait for an owner's or admin's approval (green, but the app or the apps it created can send data out; only an update whose unit sends nothing out applies on its own)
   New methods: pin, unpin · removed: none · state version unchanged (1)
   Egress added: none · removed: none
   Signer: did:key:z6Mk… (unchanged)
@@ -321,6 +321,14 @@ Calimero` when there is none. Any destination outside Calimero is just a
 destination: the platform never vouches for an external endpoint, a TEE
 included. If your app trusts one (a private-inference service, say), verify its
 attestation in your own code; it is still listed.
+
+The next line says what an organization that lets updates apply on their own
+(`autoApply: noDestinations`, [Updates that apply on their
+own](/protocol/upgrades/#updates-that-apply-on-their-own)) would see: only a
+green release of an app whose unit sends nothing out, before or after, applies
+on its own, after the hold, and it moves the app alone. A green release that
+can send data out, or that moves the apps the release creates, still waits for
+an owner's or admin's approval.
 
 A release is **red**, and waits for a person's approval, when it is signed by
 another key, can send data somewhere new, declares another state version,
