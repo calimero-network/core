@@ -239,7 +239,7 @@ final class CalimeroAppBackendTests: XCTestCase {
         // #general: an open channel reaches the app team.
         let general = try await backend.createContext(groupId: org, applicationId: "", name: "general", initArgs: [:])
         XCTAssertEqual(
-            node.requests.last { $0.path == "/apps" }?.json?["access"], ["kind": "team", "team": .string(appTeam)])
+            node.requests.last { $0.path == "/apps" }?.json?["grants"], [["kind": "team", "team": .string(appTeam)]])
         let openChannels = try await backend.listContexts(groupId: org)
         XCTAssertEqual(openChannels, [general])
         let noSubgroups = try await backend.listSubgroups(namespaceId: org)
@@ -290,7 +290,7 @@ final class CalimeroAppBackendTests: XCTestCase {
         let backend = try await backend()
         let org = try await backend.foundNamespace(name: "Acme").namespaceId
         _ = try await backend.createContext(groupId: org, applicationId: "", name: "general", initArgs: [:])
-        XCTAssertEqual(node.requests.last { $0.path == "/apps" }?.json?["access"], ["kind": "org"])
+        XCTAssertEqual(node.requests.last { $0.path == "/apps" }?.json?["grants"], [["kind": "org"]])
         let token = try await backend.createInvitation(namespaceId: org).token
         XCTAssertEqual(cluster.inviteTeams[token], [])
         let team = try await backend.createSubgroup(namespaceId: org, name: "t", isPublic: true)
