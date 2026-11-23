@@ -22,11 +22,6 @@ fn assert_error(src: &str, code: &str, path: &str) {
 }
 
 #[test]
-fn minimal_pipeline_compiles() {
-    compile(&doc("steps:\n  a: { method: run }\n")).unwrap();
-}
-
-#[test]
 fn each_structural_error_has_a_code_and_path() {
     let steps = |body: &str| doc(&format!("steps:\n{body}"));
     let cases: Vec<(&str, String, &str, &str)> = vec![

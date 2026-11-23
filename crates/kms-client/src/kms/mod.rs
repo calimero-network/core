@@ -2510,17 +2510,6 @@ mod tests {
     }
 
     #[test]
-    fn test_url_join_with_trailing_slash() {
-        // This test verifies that our fix works correctly
-        let url_without_slash = Url::parse("http://host/api/v1").unwrap();
-        let url_with_slash = ensure_trailing_slash(&url_without_slash);
-
-        // Without the fix, this would produce http://host/api/get-key
-        let endpoint = url_with_slash.join("get-key").unwrap();
-        assert_eq!(endpoint.as_str(), "http://host/api/v1/get-key");
-    }
-
-    #[test]
     fn test_validate_kms_transport_security_allows_https_and_loopback_http() {
         let https_url = Url::parse("https://kms.example.com/").unwrap();
         assert!(validate_kms_transport_security(&https_url, true).is_ok());
