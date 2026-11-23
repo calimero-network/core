@@ -1399,8 +1399,9 @@ is its command line.
   open the consent page. Answers `{ app, running: { package, version } | null,
   available: { package, version, source: deployment | release } | null, mayApprove,
   approvers: owner-and-admins | operator | managers }`: `available` is a deployment
-  instance's offer for the package it runs (the newest when several) where it differs
-  from the running one, else the newest release of its package the caller sees (all of
+  instance's offer for the package it runs (the newest when several, only one that still
+  serves, `offer_serves`; regression `an_offer_that_no_longer_serves_is_no_available_update`)
+  where it differs from the running one, else the newest release of its package the caller sees (all of
   them for a bound session) newer than the running one that the upgrade would take
   (`report::newer_versions`, `report::newest_reachable`: authority and runtime, as
   `latestReachable`); `mayApprove` is `api::upgrade_refusal` under the rule in force;

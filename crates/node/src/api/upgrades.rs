@@ -1822,12 +1822,14 @@ pub(crate) async fn update_view(
     let available = node.sys(|s| {
         let r = running.as_ref()?;
         if let Some(d) = &app.deployment {
-            let offered = s
-                .deployments
-                .get(d)?
+            let d = s.deployments.get(d)?;
+            let offered = d
                 .apps
                 .values()
-                .filter(|o| o.package == r.package)
+                .filter(|o| {
+                    o.package == r.package
+                        && s.offered_release(o).is_some_and(|v| s.offer_serves(d, v))
+                })
                 .map(|o| o.version.as_str())
                 .max_by(|a, b| crate::system::compare_versions(a, b))?;
             return (offered != r.version).then(

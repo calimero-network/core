@@ -10036,18 +10036,15 @@ async fn finished_run(who: &Client, org: &str, run: &str) -> Value {
     panic!("run {run} never finished");
 }
 
-/// An offer that no longer serves moves no instance: Mal, a member of Acme, offers Acme's
-/// private V 0.1.0 and the unit N 0.1.0 in his own deployment, Bob creates an instance of
-/// each, Mal moves both offers to 0.2.0, and Alice removes Mal from Acme. Neither Bob's
-/// organization run nor his unit's upgrade then takes an instance to 0.2.0, which his unit
-/// is answered as a version his deployment does not offer.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn an_offer_that_no_longer_serves_moves_no_instance() {
+/// An offer that no longer serves: Mal, a member of Acme, offers Acme's private V 0.1.0 and
+/// the unit N 0.1.0 in his own deployment, Bob creates an instance of each, Mal moves both
+/// offers to 0.2.0, and Alice removes Mal from Acme. Bob, his passkey, his organization, V's
+/// instance and N's.
+async fn stale_offers(c: &Cluster) -> (Client, SoftAuthenticator, String, String, String) {
     let key = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
-    let c = Cluster::start(3).await;
-    let (alice, mut a) = signed_up(&c, 0, "alice").await;
-    let (mal, mut m) = signed_up(&c, 1, "mal").await;
-    let (bob, mut b) = signed_up(&c, 2, "bob").await;
+    let (alice, mut a) = signed_up(c, 0, "alice").await;
+    let (mal, mut m) = signed_up(c, 1, "mal").await;
+    let (bob, b) = signed_up(c, 2, "bob").await;
     let acme = new_org(&alice, "Acme").await;
     let bobco = new_org(&bob, "Bobco").await;
     let _malco = new_org(&mal, "Malco").await;
@@ -10103,8 +10100,18 @@ async fn an_offer_that_no_longer_serves_moves_no_instance() {
         .remove_member(&acme, &mal_id, Some(&mut a))
         .await
         .unwrap();
-    all_applied(&c).await;
+    all_applied(c).await;
+    (bob, b, bobco, single, instance)
+}
 
+/// An offer that no longer serves moves no instance: neither Bob's organization run nor his
+/// unit's upgrade takes an instance to 0.2.0, which his unit is answered as a version his
+/// deployment does not offer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_offer_that_no_longer_serves_moves_no_instance() {
+    let c = Cluster::start(3).await;
+    let (bob, mut b, bobco, single, instance) = stale_offers(&c).await;
+    let vault = "com.acme.stalevault";
     let e = bob
         .apps()
         .upgrade(&single, typed(json!({ "version": "0.2.0" })), Some(&mut b))
@@ -10139,6 +10146,20 @@ async fn an_offer_that_no_longer_serves_moves_no_instance() {
         let r = bob.apps().get(app).await.map(wire).unwrap();
         assert_eq!(r["release"]["version"], json!("0.1.0"), "{r}");
     }
+}
+
+/// An offer that no longer serves is no available update: Bob's instance and his unit show
+/// none, and his organization's updates list neither, as when nothing newer is offered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_offer_that_no_longer_serves_is_no_available_update() {
+    let c = Cluster::start(3).await;
+    let (bob, _b, bobco, single, instance) = stale_offers(&c).await;
+    for app in [&single, &instance] {
+        let u = bob.apps().update(app).await.map(wire).unwrap();
+        assert_eq!(u["available"], Value::Null, "{u}");
+    }
+    let org = bob.orgs().updates(&bobco, None).await.map(wire).unwrap();
+    assert_eq!(org["updates"], json!([]), "{org}");
 }
 
 /// Where the operator upgrades apps, its organization run follows only an offer that still
