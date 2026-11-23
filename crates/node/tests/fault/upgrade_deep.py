@@ -54,42 +54,6 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
-    ("Apps", "Public links and their visitors (a `link` grant, `/apps/{app}/public-links`, `Caller::Visitor`, "
-     "`allowPublicLinks`, `Feature::PublicLinks`) and an app reading a grant's scope (`env::grant_scope`)",
-     "a link is made only once every node runs this release and a visitor's call needs an app built for "
-     "WIT 0.5.6 with a public method, so nothing is seeded before the roll; `public_links.rs` covers it on "
-     "one build and `system::tests::a_public_link_admits_visitors_while_it_and_its_organization_allow` "
-     "the apply rules, `guests.rs` a scope the app reads. State from before has no link and no scope, and an "
-     "older component sees a visitor as public and reads no scope"),
-    ("Organizations", "Guests reaching an instance and scoped instance invites (an outsider's `account` grant, "
-     "`allowGuests`, `/apps/{app}/invites` with `scope`, `Feature::Guests`)",
-     "a guest is admitted only by a release whose manifest says `guests: allowed`, which the old release's "
-     "meroctl cannot pack, and every piece is written only once every node runs this release, so nothing is "
-     "seeded before the roll (`app-access-grants` seeds a guest grant after it, which that release refuses); "
-     "`guests.rs` covers it on one build and `system::tests::"
-     "a_guest_reaches_one_instance_while_its_release_and_its_organization_allow` and "
-     "`an_instances_access_is_a_list_of_grants` the apply rules. An organization or release from before reads "
-     "with guests off, as it behaved"),
-    ("Apps", "An instance's own value of a declared secret (`/apps/{app}/secrets`, `rows::CSECRET`)",
-     "needs a release that declares secrets, which the old release's meroctl cannot pack, and the value is "
-     "set only once every node runs this release; "
-     "`an_owner_sets_its_instances_own_secret_and_it_goes_only_where_declared` (`component_cluster.rs`) "
-     "covers it on one build. An app without one reads as before"),
-    ("Deployments", "A deployment's value of a declared secret (`/deployments/{id}/secrets`, "
-     "`SystemState::deployment_secrets`)",
-     "needs a deployment offering a release that declares secrets, which the old release's meroctl cannot "
-     "pack, and the value is set only once the cluster version is 1.0.0-rc.32 (`Feature::DeploymentSecrets`); "
-     "`a_deployments_secret_reaches_its_instances_unless_they_set_their_own` (`component_cluster.rs`) covers it "
-     "on one build, and a system state without one reads and writes as before "
-     "(`state_from_before_deployment_secrets_reads_with_none_and_writes_as_before`)"),
-    ("Deployments", "An instance from a deployment upgraded only to the release its deployment offers "
-     "(`409 OUTSIDE_DEPLOYMENT`, `SystemState::within_deployment`, `UpgradeApp`'s `in_deployment`)",
-     "needs a deployment and an instance from it, which no case seeds yet (deployments are not seeded, above), "
-     "and the rule changes no stored shape: an `UpgradeApp` without `in_deployment` reads and replays as "
-     "before below cluster version 1.0.0-rc.32 (`Feature::UpgradeInDeployment`). "
-     "`a_deployments_secret_never_reaches_a_package_it_does_not_offer` (`component_cluster.rs`) covers it on "
-     "one build, and `an_instance_from_a_deployment_moves_only_to_what_it_offers` (`system::tests`) the "
-     "replay of an earlier entry"),
     ("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
      "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
      "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
@@ -98,19 +62,11 @@ NOT_COVERED = [
      "`system::tests::only_an_organizations_owner_and_admins_approve_its_upgrades` covers the replay, and "
      "`a_member_needs_the_capability_to_create_apps_or_invite`, `the_leader_checks_upgrade_authority_again` and "
      "`an_upgrade_key_is_an_owners_or_admins_of_the_apps_organization` the refusals on one build"),
-    ("Deployments", "An app's frontend reads whether an update is available (`GET /apps/{app}/update`) and its "
-     "customer accepts the deployment's offer on the consent page",
-     "needs a deployment and an instance from it, which no case seeds yet (deployments are not seeded, above); "
-     "the route reads the state and stores nothing. `an_instance_shows_its_update_and_who_may_approve_it` "
-     "(`deployments.rs`) and `a_customer_accepts_its_deployments_offer_on_the_page` (`consent_page.rs`) cover "
-     "it on one build"),
-    ("Apps", "A unit's destinations (`GET /apps/{app}/egress`, the capability card's `destinations` "
-     "and `members`) and the update classifier's verdict (`GET /apps/{app}/update`'s `class`, `reasons` "
-     "and egress diff, the consent page's `unit`)",
-     "reads that store nothing (the destinations are derived from the signed manifests alone), over a unit, "
-     "which the old release's meroctl cannot pack (it writes no `uses`). "
-     "`a_units_destinations_are_judged_over_its_members` (`consent_page.rs`) covers them on one build and "
-     "`calimero_bundle::update::tests` every rule of the classifier"),
+    ("Deployments", "A deployment's customer accepting its offer on the consent page",
+     "the page is approved in a browser, and a consent request lives in one node's memory for minutes; what it "
+     "logs is the `UpgradeApp` that `POST /apps/{app}/upgrade` without a version logs, which "
+     "`deployment-offer-upgrades` covers with `GET /apps/{app}/update`'s `source: deployment`. "
+     "`a_customer_accepts_its_deployments_offer_on_the_page` (`consent_page.rs`) covers the page on one build"),
     ("Apps", "An update the log cannot classify (a part's release uninstalled while another ships its WASM), "
      "approved first and applied as red with `unclassified` reasons (`Reason::Unclassified` on `ApproveUpgrade` "
      "and `UpgradeApp`)",
@@ -127,58 +83,6 @@ NOT_COVERED = [
      "`restore-points-undo`'s. An upgrade entry and a record without `auto` read and replay as before. "
      "`system::tests` (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`, "
      "`a_deployment_instances_hold_runs_from_its_offer`) and `tests/auto_updates.rs` cover it on one build"),
-    ("Packages", "A release that declares its secrets (`secrets` in the signed manifest, `PackageVersion::secrets`)",
-     "the deep fixtures are packed by the old release's meroctl, which writes no `secrets`, and a release that "
-     "declares them installs only once every node runs this release (`Feature::DeclaredSecrets`); "
-     "`a_release_fills_only_the_secrets_it_declares` (`component_cluster.rs`) covers install and enforcement "
-     "on one build, and a release without them reads as before (`serde(default)`). A case once the "
-     "upgrade-from release packs them"),
-    ("Apps", "A unit upgraded in one consent (`upgrade-unit`, `UpgradeRun::targets`)",
-     "needs a unit, which the old release cannot create (its meroctl packs no `uses`); a run with targets is "
-     "written only once every node runs this release (`Feature::UnitUpgrade`). "
-     "`a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range` (`component_cluster.rs`) covers it on "
-     "one build; a run without targets reads and writes as before"),
-    ("Packages", "The apps a release references (`uses` in the signed manifest, on its capability card)",
-     "the node checks them at install and reads them from the release's manifest, and from 1.0.0-rc.32 keeps "
-     "their package and range on the release (`PackageVersion::uses`), which `deployment-used-secrets` reads "
-     "back; the deep fixtures are packed by the old release's meroctl, which writes no `uses`. "
-     "`a_release_names_the_apps_it_uses_on_its_card` (`component_cluster.rs`) covers install and the card "
-     "on one build. A case once the upgrade-from release packs them"),
-    ("Apps", "An instance created with the apps its release creates (`AppRecord::links`, `init`'s `links`)",
-     "the deep fixtures are packed by the old release's meroctl, which writes no `uses`, and a record with "
-     "`links` is written only once every node runs this release (`Feature::AppLinks`); "
-     "`creating_an_instance_creates_the_apps_its_release_uses` (`component_cluster.rs`) covers it on one "
-     "build, and a record without it reads as before (`serde(default)`)"),
-    ("Apps", "A unit's members on its instance's deployment, and a unit deleted whole "
-     "(`CreateApp { unit_offer }`, `DeleteApp { members }`, `409 UNIT_MEMBER`)",
-     "needs a unit, which the old release cannot create (its meroctl packs no `uses`), made from a "
-     "deployment, which these cases do not seed yet; both entries are written only once the cluster version "
-     "is 1.0.0-rc.32 (`Feature::WholeUnits`). `a_units_members_are_billed_to_its_deployments_developer` "
-     "(`deployments.rs`) and `deleting_an_instance_deletes_its_unit_and_never_a_member_alone` "
-     "(`component_cluster.rs`) cover them on one build, and entries without the fields replay as before "
-     "(`system::tests::unit_entries_logged_before_whole_units_replay_as_they_did`)"),
-    ("Apps", "A unit's member reading the instance that created it (`env::unit_of`, WIT `context.unit-of`)",
-     "nothing is stored: it is derived from the instance's `links` in the system state; it needs a unit, "
-     "which the old release cannot create (its meroctl packs no `uses`), and a component built for 0.5.5. "
-     "`a_member_names_the_instance_that_created_it_with_unit_of` (`component_cluster.rs`) covers it on one "
-     "build, and components built before 0.5.5 keep running without it"),
-    ("Apps", "A person's grant letting an app call another as them (`SetDelegation`, `env::via`)",
-     "the deep fixtures are packed by the old release's meroctl, which writes no `uses` with `methods`, and a "
-     "grant is written only once every node runs this release (`Feature::Delegation`); "
-     "`an_app_calls_another_as_the_person_only_with_their_grant` (`component_cluster.rs`) covers message, call "
-     "and view on one build, and state without grants reads as before (`serde(default)`)"),
-    ("Apps", "An app attached to an instance's `attach` reference (`AppRecord::attached`, `env::linked`)",
-     "the deep fixtures are packed by the old release's meroctl, which writes no `uses`, so no instance has "
-     "a reference to attach to, and a `LinkApp` is written only once every node runs this release "
-     "(`Feature::AttachApp`); `an_owner_attaches_an_app_and_the_instance_reads_it_with_linked` "
-     "(`component_cluster.rs`) covers it on one build, and a record without it reads as before "
-     "(`serde(default)`)"),
-    ("Apps", "A run's synchronous xcalls sent together (`xcall.batch`, `app::join!`)",
-     "nothing new is stored: each call of a batch is an ordinary logged call of its target under the key "
-     "the same call alone would have, and the caller's entry is unchanged; the deep cases deploy the "
-     "release's own kv component, which has no method that batches. "
-     "`joined_sync_calls_run_at_once_and_a_rerun_replays_them` (`component_cluster.rs`) covers concurrency, "
-     "apply-once and replay on one build, and components built before 0.5.4 keep `xcall.call`/`view`"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
@@ -206,9 +110,20 @@ NOT_COVERED = [
     ("Governance", "Owner-held release approvals and release deadlines",
      "the rolled cluster gives release approvals to the operator (`--release-approvals operator`), as "
      "Calimero Cloud does; the operator's approval of the new release is the rollout's first step"),
-    ("Deployments", "Deployer grants and deployments (`/deployers`, `/deployments`, `/ops/deployers`)",
-     "not seeded yet: a grant is an operator-signed or passkey-approved decision these cases do not make "
-     "yet; the cluster tests (`deployers.rs`, `deployments.rs`) cover them on one build"),
+    ("Deployments", "A granted cluster's installs (`--deployments granted`: `403 DEPLOY_NOT_GRANTED`, "
+     "`NOT_A_DEPLOYER` at apply), the one-way switch to it (`SetDeploymentsGranted`, `POST "
+     "/ops/deployments/granted`) and an owner who grants deployers (`--deployers owner`, `SetClusterOwner`, "
+     "`POST /deployers`)",
+     "governance is fixed at genesis and the suite runs one cluster, started open with `--deployers operator`, for "
+     "every case; the switch is one-way and cluster-wide, and from it every install, bundle upload, deployment and "
+     "offer needs a grant, which the cases that write those on the new release do not hold (`kv-package`, "
+     "`packages`, `deployment-offer-upgrades`, `units`, every case seeded after the roll), so switching in any "
+     "phase would turn their steps red; a granted or owner-granting cluster needs a rollout of its own. The "
+     "grants themselves, which an open cluster keeps, are `deployer-grants`'; "
+     "`only_granted_accounts_install_on_a_granted_cluster`, "
+     "`an_open_cluster_installs_as_before_until_the_operator_grants_deployments` and "
+     "`the_cluster_owner_grants_deployers_once_the_operator_names_it` (`deployers.rs`) cover the rest on one "
+     "build"),
     ("Packages", "Multi-service packages (`services`) and instances of a named service (`--service`)",
      "not seeded yet: the suite installs the release's single-service kv bundle; `meroctl app pack --service` "
      "writes one from components now, and the node's install of a named service is covered on one build "
@@ -235,7 +150,7 @@ NOT_COVERED = [
     ("Apps", "The consent page's install sheet (`install`), update sheets with their class, policy and "
      "approval step (\"Approve (1 of 2)\", \"Approve and update (2 of 2)\"), an update policy changed on the page "
      "(`updatePolicy`), the node's updates page (`updates`, `/updates/{id}`, `POST /consent/{id}/open`) and "
-     "`GET /apps/{app}/update`'s `summary` and `unit`",
+     "`GET /apps/{app}/update`'s `summary`",
      "pages and reads that store nothing of their own: a consent request lives in one node's memory for minutes, "
      "and what the pages approve is logged by the routes they run (`POST /apps`, `SetUpgradePolicy`, "
      "`ApproveUpgrade`, `UpgradeApp`), whose stored shapes are the `upgrade-policies` and "
