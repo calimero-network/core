@@ -690,12 +690,12 @@ longer reads their data, and the test passes with none until the first release
 after the cutover records one (`fixtures/upgrade/README.md`); 1.0.0-rc.20's
 cutover dropped 1.0.0-rc.15's, and 1.0.0-rc.33's dropped every one before it. The
 fixtures held now are 1.0.0-rc.33's (the cutover release, whose data this tree
-reads) and 1.0.0-rc.34's.
+reads), 1.0.0-rc.34's and 1.0.0-rc.35's.
 
 ```bash
-scripts/fetch-release.sh 1.0.0-rc.34 target/upgrade-from
+scripts/fetch-release.sh 1.0.0-rc.35 target/upgrade-from
 python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from \
-  --out crates/node/tests/fixtures/upgrade/1.0.0-rc.34
+  --out crates/node/tests/fixtures/upgrade/1.0.0-rc.35
 cargo test -p calimero-node --test upgrade_replay
 ```
 
