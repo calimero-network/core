@@ -721,7 +721,10 @@ is its command line.
     public at `GET /releases`. Past one, a party whose newest approved release is
     older (judged on the set that governs the app) creates, installs and upgrades
     nothing (`SystemState::stalled_for_release`, `install_stalled`; `409
-    RELEASE_DEADLINE`, `node::stalled`), placement skips retired nodes
+    RELEASE_DEADLINE`, `node::stalled`; a registry install judges the package's pinned
+    key only for an installer that may use the package, `package_used`, else as unbound;
+    regression `an_install_names_no_stalled_publisher_of_a_package_its_installer_may_not_use`),
+    placement skips retired nodes
     (`SystemState::retired`); running apps go on. Judged at the command's own
     time (`createdAt`, `at`, `installedAt`), never a node's clock; `run_upgrade`
     stamps `at` before the migration so apply agrees. No mixed-version

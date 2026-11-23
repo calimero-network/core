@@ -287,9 +287,13 @@ impl Node {
         self.refuse_undeployable(actor).await?;
         let org = self.install_org(actor, org).await?;
         // Before the fetch, judged by the key the package is pinned to (none
-        // yet: unbound); `record_release` judges the verified key again.
+        // yet: unbound, as for a package the actor may not use); `record_release` judges
+        // the verified key again.
         let pinned = self
-            .sys(|s| s.packages.get(package).map(|p| p.signer_id.clone()))
+            .sys(|s| {
+                s.package_used(package, actor, false)
+                    .map(|p| p.signer_id.clone())
+            })
             .unwrap_or_default();
         self.refuse_stalled_install(actor, &pinned)?;
         let (mpk, visibility) = self.fetch_for_install(package, version, actor).await?;

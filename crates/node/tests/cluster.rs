@@ -5887,6 +5887,68 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     assert_eq!(public["deadlines"], json!([]), "{public}");
 }
 
+/// A registry install by an account that may not use a package tells it nothing of the
+/// package's publisher: Acme's private package is signed by a key bound to Acme, which
+/// is past a release deadline, and Bob's install of it answers as one of a package not
+/// installed, never `409 RELEASE_DEADLINE`; Alice's still does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_install_names_no_stalled_publisher_of_a_package_its_installer_may_not_use() {
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.tee_release = Some(if cfg.node_id == 3 { "2.0.0" } else { "1.0.0" }.into());
+    })
+    .await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let acme = new_org(&alice, "Acme").await;
+    let bobs = new_org(&bob, "Bobco").await;
+    let key = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
+    let _ok = alice
+        .packages()
+        .upload(mpk("com.test.secret", "1.0.0", &kv_wasm(), &key), None)
+        .await
+        .unwrap();
+    let _ok = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{acme}/publishers"))
+                .json(publisher_binding(&alice, &key, &acme).await),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    let _ok = bob
+        .orgs()
+        .release_approval(&bobs, "2.0.0", None, Some(&mut bob_pk))
+        .await
+        .unwrap();
+    let _ok = set_deadline(&c, Some("2001-01-01T00:00:00Z"))
+        .await
+        .unwrap();
+
+    let mut answers = Vec::new();
+    for package in ["com.test.secret", "com.test.missing"] {
+        let e = bob
+            .packages()
+            .install(package, "1.0.0", None)
+            .await
+            .unwrap_err();
+        answers.push((e.code().map(str::to_owned), e.to_string()));
+    }
+    assert_ne!(
+        answers[0].0.as_deref(),
+        Some("RELEASE_DEADLINE"),
+        "{answers:?}"
+    );
+    assert_eq!(answers[0].0, answers[1].0, "{answers:?}");
+    // Acme's own member is still held to its publisher's deadline.
+    let e = alice
+        .packages()
+        .install("com.test.secret", "1.0.0", None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("RELEASE_DEADLINE"), "{e}");
+}
+
 /// The binding of `key` to `org`: the key's signature over
 /// `calimero-publisher-binding/v1\n{cluster}\n{org}\n{signer}\n{generation}`,
 /// with the cluster's name and the key's generation as the node names them.
