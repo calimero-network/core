@@ -1,18 +1,6 @@
 #!/usr/bin/env bash
-# Fetches a published core release's artifacts for this host (Linux x86_64 and
-# aarch64, Apple silicon; a Calimero Cloud node runs the x86_64 ones): merod and
-# meroctl (and mero-sign, which releases before meroctl signed apps shipped)
-# from the GitHub release's tarballs,
-# checked against its SHA256SUMS, and the release's dev-signed kv fixture
-# (kv-store-test-fixture.mpk).
-#
-#   scripts/fetch-release.sh 1.0.0-rc.15 target/upgrade-from
-#   scripts/fetch-release.sh "$(cat .github/upgrade-from)" target/upgrade-from
-#
-# Lays out OUT/{merod,meroctl,[mero-sign,]kv-store-test-fixture.mpk,SHA256SUMS,VERSION}.
-# Exit status: 0 fetched; 3 the tag does not exist (yet); 1 anything else,
-# including a tag whose release lacks an artifact (never a silent pass).
-# REPO (default calimero-network/core) names another repository.
+# Usage: fetch-release.sh TAG OUT. Fetches TAG's merod, meroctl, mero-sign and kv fixture for this host, checked against SHA256SUMS.
+# Exit 0 fetched, 3 no such tag, 1 anything else (a missing artifact never passes); REPO overrides calimero-network/core.
 set -euo pipefail
 
 TAG="${1:?usage: fetch-release.sh TAG OUT}"
