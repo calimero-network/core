@@ -283,11 +283,23 @@ is its command line.
   (`413 ARGS_TOO_LARGE`), never proposed (regression:
   `a_write_too_large_for_the_log_is_refused_at_once_on_every_node`).
 - **Packages** (`packages.rs`, `system::PackageRecord`): signed `.mpk` releases.
-  `POST /packages/install { package, version }` fetches from the
+  `POST /packages/install { package, version, org? }` fetches from the
   operator's registry (`--registry-url`, `calimero-app-downloader`'s `HttpRegistry`);
-  `POST /packages` takes an uploaded file, only with `Config::allow_package_uploads`
+  `POST /packages?org=` takes an uploaded file, only with `Config::allow_package_uploads`
   (`--dev`; else `403 UPLOADS_DISABLED`: a production release comes from the
-  registry, which any node can fetch it from again). Before `InstallPackage` is logged the
+  registry, which any node can fetch it from again). An account installs for an
+  organization (`Node::install_org`): `org`, which it must be a member of (else `404`),
+  else its only one (`api::apps::only_org`; several `400 ORG_REQUIRED`). Public or
+  private (`PackageVersion::visibility`, `Feature::PrivateReleases`, rc.36;
+  `Node::fetch_for_install`): the registry URL's credential (userinfo) is left out
+  first, and a release served so is public; else it is fetched with the credential
+  and `x-calimero-install-account: <account>` (`INSTALL_ACCOUNT_HEADER`; none for the
+  operator) and is private, which needs an organization (`409 NO_ORGANIZATION`). An
+  upload is private. `PackageVersion::orgs` gains the organization of each install;
+  `InstallPackage` refuses one the actor is not a member of (`NOT_AN_ORG_MEMBER`). A
+  reinstall the registry serves to anyone makes a release public, never private again.
+  `release_mpk` fetches a public release without the credential, any other with it
+  and no account, pinned by the recorded hash. Before `InstallPackage` is logged the
   node checks the publisher signature and every artifact digest
   (`calimero_bundle::VerifiedBundle`), `minRuntimeVersion` (build.rs's
   `CALIMERO_RELEASE_VERSION`), the package's pinned signer (first release wins,
@@ -312,7 +324,7 @@ is its command line.
   `PackageVersion::pipelines` maps name to `PipelineRef { hash, worstCaseFuel }` (hash of the canonical JSON, fuel a decimal string, `modules`: reference as written to `ModulePin { package, version, compute }`, pinned at install so a newer module release moves nothing until the pipeline's package is released again; `InstallPackage` applies only while every pinned release is still installed, and `UninstallPackage` of a pinned release is `409 MODULE_IN_USE`, `SystemState::module_pinned`); the canonical JSON is stored as a blob by its hash beside the wasm parts, and `Node::pipeline_json(hash)` reads it, else recompiles it from the release's `.mpk`.
   Such a release is installed only once every node runs this release (`409 CLUSTER_NOT_UPGRADED`).
   `GET /packages/{package}/{version}/pipelines` (who sees the release) answers `{ name: { hash, worstCaseFuel, modules, pipeline } }`; `meroctl app pipelines`.
-  `GET /packages/{package}/{version}/capabilities` (the same access: who sees the release, or a session bound to the package) answers the release's capability card before any app of it exists: `{ package, version, service, bundle, mpk, manifestHash, signer, name, author, outbound, abi }`, the first eight keys as `consent_page::diff::side` shows each side of an upgrade's sheet, `outbound` the manifest's sorted prefixes and `abi` the service component's embedded `calimero:abi` verbatim (`null` when it embeds none), read from the verified `.mpk` through `consent_page::release_capabilities` (cached with the consent page's release facts). The card is of one service: `?service=<name>`, else the release's only one (named or not; the card's `service` says which), and an unknown name, or no name on a release with several, is `400 NO_SUCH_SERVICE` listing the release's services (`packages::no_such_service`, as `resolve_release_parts` answers). A name over `MAX_SERVICE_QUERY_BYTES` is `400 BAD_REQUEST`, checked before the release is read. `release_facts` reads a compute-only release's ABI from its compute component, as `GET /apps/{app}/abi` does from the running bundle. Tests: `a_package_versions_capabilities_are_readable_before_an_app_exists`, `a_cards_service_is_the_sole_one_or_the_one_named`, `a_compute_only_releases_card_reports_its_compute_abi`, `a_member_removed_from_the_org_loses_the_capability_card`.
+  `GET /packages/{package}/{version}/capabilities` (the same access: who sees the release; a session bound to the package sees what its account does, every release only for a record from before `visibility`, `SystemState::sees_release_from`) answers the release's capability card before any app of it exists: `{ package, version, service, bundle, mpk, manifestHash, signer, name, author, outbound, abi }`, the first eight keys as `consent_page::diff::side` shows each side of an upgrade's sheet, `outbound` the manifest's sorted prefixes and `abi` the service component's embedded `calimero:abi` verbatim (`null` when it embeds none), read from the verified `.mpk` through `consent_page::release_capabilities` (cached with the consent page's release facts). The card is of one service: `?service=<name>`, else the release's only one (named or not; the card's `service` says which), and an unknown name, or no name on a release with several, is `400 NO_SUCH_SERVICE` listing the release's services (`packages::no_such_service`, as `resolve_release_parts` answers). A name over `MAX_SERVICE_QUERY_BYTES` is `400 BAD_REQUEST`, checked before the release is read. `release_facts` reads a compute-only release's ABI from its compute component, as `GET /apps/{app}/abi` does from the running bundle. Tests: `a_package_versions_capabilities_are_readable_before_an_app_exists`, `a_cards_service_is_the_sole_one_or_the_one_named`, `a_compute_only_releases_card_reports_its_compute_abi`, `a_member_removed_from_the_org_loses_the_capability_card`.
   `PackageVersion::compute` maps service to that hash, whose `BundleRecord` has
   `PackageRef::compute = true`: never a service (`resolve_release`, `CreateApp` and
   `UpgradeApp` refuse it), and fetched by `release_wasm` like a service.
@@ -347,12 +359,16 @@ is its command line.
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
   another release ships stays). Raw `POST /bundles` is development only
   (`allow_unsigned_bundles`, on with `--dev`). **Who sees a release**
-  (`SystemState::sees_release`): its installers (`installed_by`, and
-  `PackageVersion::installers`, added when someone installs the same release
-  again), everyone for a release the operator installed (the catalog), accounts
-  sharing an organization with an installing account, accounts that reach an
-  app running it, a session bound to the package's frontend (all its releases),
-  and the operator for its own installs only. For
+  (`SystemState::sees_release`, the right to use it): everyone for a release the
+  operator installed (the catalog), and the operator for its own installs only; a
+  public release (`visibility: public`): everyone; a private one: the members of an
+  organization in `PackageVersion::orgs` (an installer only while such a member). A
+  release recorded before `visibility` keeps the earlier rule: its installers
+  (`installed_by`, `PackageVersion::installers`), accounts sharing an organization
+  with an installing account, accounts that reach an app running it, and a session
+  bound to the package's frontend (`sees_release_from`). Reading the release an
+  instance runs (`report::release_of_app`) is `SystemState::reads_release`: who sees
+  it, or reaches an app running it. For
   anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages`
   leave it out (`404` by name), `resolve_release` treats it as missing (a
   registry install makes it theirs; an upload answers as a missing release), a
@@ -360,7 +376,14 @@ is its command line.
   answers `404`, and upgrade runs skip it (`api::upgrade_sees`; the operator's:
   its own or the app owner's). Frontends stay public by name. Regressions:
   `a_private_package_is_listed_only_to_accounts_that_may_use_it`,
-  `a_release_from_before_installers_reads_and_records_who_installs_it_again`.
+  `a_release_from_before_installers_reads_and_records_who_installs_it_again`,
+  `a_private_release_is_used_only_in_the_organizations_it_was_installed_for` (both
+  `system::tests` and `tests/cluster.rs`),
+  `a_release_recorded_before_visibility_keeps_the_rule_from_before`,
+  `reaching_an_instance_reads_its_release_but_does_not_use_it`,
+  `a_bound_session_does_not_open_a_package_its_account_cannot_see`,
+  `another_orgs_account_cannot_install_a_private_package_from_the_registry`,
+  `a_release_is_fetched_again_with_the_credential_only_while_it_is_private`.
 - **Governance** (`system::Governance`, `Authority`, shared with clients in
   `calimero_client::attest`): three decisions, each held by exactly one
   party chosen at deployment, `owner` (default) or `operator`:

@@ -155,18 +155,21 @@ to: `(package, signer)`.
 ## Who sees a release
 
 Many organizations may share one cluster, and what one of them installed is
-not another's to list or run. A release is visible (`SystemState::sees_release`) to:
+not another's to list or run.
+An account installs a release for an organization it is a member of: the one it names (`org`), else its only one.
+The release is public when the registry serves it to anyone (fetched without the cluster's registry credential), and private otherwise: a private registry package (fetched with the credential and the installing account, `x-calimero-install-account`), or an upload.
+A release is visible, which is the right to use it (`SystemState::sees_release`), to:
 
-- whoever installed it: the account recorded as `installedBy`, or one that
-  installed the same release again later (`installers`);
 - every account, for a release the operator installed (`/ops/packages`): the
   cluster's own catalog, which the operator upgrades apps to;
-- an account that shares an organization with an account that installed it;
-- an account that reaches an app running one of its services (so a member of
-  an app always sees the release it runs);
-- a session opened on the package's own frontend, for every release of that
-  package (the frontend is public by name, and it creates instances of it);
+- every account, for a public release;
+- a member of an organization a private release was installed for (an installer
+  only while such a member), each install for another organization adding it;
 - the operator, for the releases it installed; it sees no account's releases.
+
+A session opened on the package's own frontend sees what its account sees.
+A release recorded before releases were public or private keeps the earlier rule: whoever installed it, an account sharing an organization with an installer, an account that reaches an app running it, and a session on the package's frontend.
+Reaching an instance reads the release it runs (its name and version, `SystemState::reads_release`), never uses it.
 
 For anyone else the release is not installed. `GET /packages` and
 `GET /packages/{p}` list only the releases the caller sees (a package with
