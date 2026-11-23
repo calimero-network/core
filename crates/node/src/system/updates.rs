@@ -512,13 +512,19 @@ impl SystemState {
             return Err(AUTO_UPDATE_REFUSED);
         }
         let since = match &app.deployment {
+            // Only an offer that still serves, as for any upgrade (`within_deployment`).
             Some(d) => self
                 .deployments
                 .get(d)
                 .and_then(|d| {
-                    d.apps
-                        .values()
-                        .find(|o| o.package == to.package && o.version == to.version)
+                    d.apps.values().find(|o| {
+                        o.package == to.package
+                            && o.version == to.version
+                            && (!self.cluster_brings(cluster_version::Feature::PrivateReleases)
+                                || self
+                                    .offered_release(o)
+                                    .is_some_and(|v| self.offer_serves(d, v)))
+                    })
                 })
                 .map(|o| o.added_at)
                 .ok_or(AUTO_UPDATE_REFUSED)?,

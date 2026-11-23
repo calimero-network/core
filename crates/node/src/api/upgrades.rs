@@ -865,8 +865,8 @@ fn target_bundle(
             compute: false,
         };
         // An instance from a deployment runs what its developer chose, not what
-        // its owner sees: a move that stays on the deployment (its offer, or a
-        // unit member's own package) needs no visibility of the release, as
+        // its owner sees: a move that stays on the deployment (its offer that still
+        // serves, or a unit member's own package) needs no visibility of the release, as
         // creating from the offer needs none; any other move does.
         let on_deployment = app.deployment.is_some()
             && s.within_deployment(app, Some(&release), who.run.as_deref())

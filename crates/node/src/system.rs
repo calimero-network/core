@@ -2878,6 +2878,14 @@ impl SystemState {
         };
         let d = self.deployments.get(id).ok_or(OUTSIDE_DEPLOYMENT)?;
         let to = release.ok_or(OUTSIDE_DEPLOYMENT)?;
+        // Only an offer that still serves, from the version that brings private releases, so
+        // earlier entries replay as they applied.
+        let serves = |o: &Offer| {
+            !self.cluster_brings(cluster_version::Feature::PrivateReleases)
+                || self
+                    .offered_release(o)
+                    .is_some_and(|v| self.offer_serves(d, v))
+        };
         if app
             .release
             .as_ref()
@@ -2904,14 +2912,14 @@ impl SystemState {
                             .is_some_and(|p| p.package == r.package)
                         && d.apps
                             .values()
-                            .any(|o| o.package == r.package && o.version == r.version)
+                            .any(|o| o.package == r.package && o.version == r.version && serves(o))
                 });
             return unit_run.map(|_| ()).ok_or(OUTSIDE_DEPLOYMENT);
         }
         if !d
             .apps
             .values()
-            .any(|o| o.package == to.package && o.version == to.version)
+            .any(|o| o.package == to.package && o.version == to.version && serves(o))
         {
             return Err(OUTSIDE_DEPLOYMENT);
         }

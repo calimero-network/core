@@ -515,8 +515,16 @@ is its command line.
   the offer (`api::apps::offered_bundle`, the package it runs; naming no
   version accepts the offer), and another version, another package or a raw
   bundle is `409 OUTSIDE_DEPLOYMENT` (`node::outside_deployment`) before the
-  step-up; `run_upgrade` and an org, publisher or unit run judge the same
-  (`SystemState::within_deployment`), and `UpgradeApp` refuses it at apply
+  step-up; `run_upgrade` and an org, publisher, operator's or unit run judge the same
+  (`SystemState::within_deployment`: once the logged cluster version brings
+  `Feature::PrivateReleases`, only an offer that still serves, `offer_serves`, as an
+  automatic update's deployment branch, `auto_update_allows`; regressions
+  `an_offer_that_no_longer_serves_moves_no_instance`,
+  `the_operators_run_follows_no_offer_that_no_longer_serves`,
+  `an_update_never_applies_on_its_own_from_an_offer_that_no_longer_serves`,
+  `system::tests::an_offer_that_no_longer_serves_moves_no_instance_from_the_version_that_brings_the_rule`,
+  `system::tests::a_deployment_instance_updates_on_its_own_only_from_an_offer_that_serves`),
+  and `UpgradeApp` refuses it at apply
   when its `in_deployment` flag is set (`Feature::UpgradeInDeployment`, rc.32,
   `in_deployment_rule`) or the logged cluster version brings it
   (`SystemState::cluster_brings`); earlier entries replay as they applied.

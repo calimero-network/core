@@ -12238,6 +12238,69 @@ fn an_instance_from_a_deployment_moves_only_to_what_it_offers() {
     );
 }
 
+/// A deployment's offer moves an instance only while it serves: once the release it names is
+/// one nobody who acts for the deployment's owner may use, an upgrade to it is refused
+/// `OUTSIDE_DEPLOYMENT` from the logged version that brings private releases; an entry
+/// logged below it replays as it applied.
+#[test]
+fn an_offer_that_no_longer_serves_moves_no_instance_from_the_version_that_brings_the_rule() {
+    use super::{cluster_version::Feature, Deployer, Deployments, OUTSIDE_DEPLOYMENT};
+    let mut m = deploying(Deployments::Open);
+    let _ok = m.run_unproven(install_declaring("alice", "1.0.0")).unwrap();
+    let _ok = m.run_unproven(install_declaring("alice", "2.0.0")).unwrap();
+    let _ok = m
+        .run_unproven(create_deployment(
+            "a",
+            Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(offer_app("a", "notes", "1.0.0", "alice"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(instance("i1", "bob", "b-1.0.0", Some("a")))
+        .unwrap();
+    m.state.apps.get_mut("i1").unwrap().release = Some(PackageRef {
+        package: "p".into(),
+        version: "1.0.0".into(),
+        service: None,
+        compute: false,
+    });
+    let _ok = m
+        .run_unproven(offer_app("a", "notes", "2.0.0", "alice"))
+        .unwrap();
+    // 2.0.0 becomes private to an organization alice is not in: her offer no longer serves.
+    if let Some(v) = m
+        .state
+        .packages
+        .get_mut("p")
+        .and_then(|p| p.versions.get_mut("2.0.0"))
+    {
+        v.visibility = Some(super::Visibility::Private);
+        v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+    }
+    let mut up = upgrade_to("i1", "bob", "b-2.0.0", Some(("p", "2.0.0")));
+    if let SystemCmd::UpgradeApp { in_deployment, .. } = &mut up {
+        *in_deployment = true;
+    }
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    old.state.cluster_version = Some(Feature::UpgradeInDeployment.since().to_owned());
+    assert!(
+        old.run_unproven(up.clone()).is_ok(),
+        "replayed as it applied"
+    );
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(m.run_unproven(up).unwrap_err(), OUTSIDE_DEPLOYMENT);
+    assert_eq!(
+        m.state.apps["i1"].release.as_ref().unwrap().version,
+        "1.0.0"
+    );
+}
+
 /// C8's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
 /// member) with `inst` on `p@1.0.0`; `p@1.0.1` ships the same WASM and destinations
 /// (green), `p@1.1.0` adds a telemetry host (red).
@@ -13233,6 +13296,42 @@ fn a_deployment_instances_hold_runs_from_its_offer() {
     );
     let _ok = m.run(up(2000 + day)).unwrap();
     assert_eq!(m.state.apps["inst"].bundle, "b3");
+}
+
+/// An instance of a deployment updates on its own only from an offer that still serves: once
+/// nobody who acts for the deployment's owner may use the offered release, the leader finds
+/// nothing to apply, from the logged version that brings private releases.
+#[test]
+fn a_deployment_instance_updates_on_its_own_only_from_an_offer_that_serves() {
+    use super::{cluster_version::Feature, Deployer};
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    let _ok = m
+        .run_unproven(create_deployment(
+            "d",
+            Deployer::Account("pam".into()),
+            "pam",
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(offer_app("d", "notes", "1.0.1", "pam"))
+        .unwrap();
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        a.deployment = Some("d".into());
+    }
+    if let Some(v) = m
+        .state
+        .packages
+        .get_mut("p")
+        .and_then(|p| p.versions.get_mut("1.0.1"))
+    {
+        v.visibility = Some(super::Visibility::Private);
+        v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+    }
+    let later = 10 * 24 * 3600;
+    assert_eq!(m.state.auto_update_candidates(later).len(), 1, "as before");
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert!(m.state.auto_update_candidates(later).is_empty());
 }
 
 /// A move the log cannot rebuild (the release the app runs, or a member's, no longer

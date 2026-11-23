@@ -9951,3 +9951,189 @@ async fn a_unit_upgrade_answers_a_release_its_owner_may_not_use_as_a_missing_one
         "before the passkey"
     );
 }
+
+/// `who`'s upgrade run `run` of `org`, once it finished.
+async fn finished_run(who: &Client, org: &str, run: &str) -> Value {
+    for _ in 0..200 {
+        let r = who.orgs().upgrade_status(org, run).await.map(wire).unwrap();
+        if r["finished"] == json!(true) {
+            return r;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("run {run} never finished");
+}
+
+/// An offer that no longer serves moves no instance: Mal, a member of Acme, offers Acme's
+/// private V 0.1.0 and the unit N 0.1.0 in his own deployment, Bob creates an instance of
+/// each, Mal moves both offers to 0.2.0, and Alice removes Mal from Acme. Neither Bob's
+/// organization run nor his unit's upgrade then takes an instance to 0.2.0, which his unit
+/// is answered as a version that does not exist.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_offer_that_no_longer_serves_moves_no_instance() {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (mal, mut m) = signed_up(&c, 1, "mal").await;
+    let (bob, mut b) = signed_up(&c, 2, "bob").await;
+    let acme = new_org(&alice, "Acme").await;
+    let bobco = new_org(&bob, "Bobco").await;
+    let _malco = new_org(&mal, "Malco").await;
+    join_org(&alice, &mut a, &mal, &acme, "member").await;
+    let vault = "com.acme.stalevault";
+    let kv = "com.acme.stalekv";
+    let notes = "com.acme.stalenotes";
+    let unit = json!({ "kv": { "package": kv, "range": "^0.1" } });
+    for (p, v, uses) in [
+        (vault, "0.1.0", Value::Null),
+        (vault, "0.2.0", Value::Null),
+        (kv, "0.1.0", Value::Null),
+        (kv, "0.1.1", Value::Null),
+        (notes, "0.1.0", unit.clone()),
+        (notes, "0.2.0", unit.clone()),
+    ] {
+        let tag = format!("{p}{v}");
+        let _ = alice
+            .packages()
+            .upload(
+                mpk_using(p, v, &variant(&kv_wasm(), &tag), &key, &[], uses),
+                Some(&acme),
+            )
+            .await
+            .unwrap();
+    }
+    let d = own_deployment(&mal, &mut m).await;
+    for (name, p) in [("vault", vault), ("notes", notes)] {
+        let _ = mal
+            .deployments()
+            .offer(&d, name, p, "0.1.0", Some(&mut m))
+            .await
+            .unwrap();
+    }
+    let single = from_offer(&bob, &d, vault).await.unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let instance = from_offer(&bob, &d, notes).await.unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (name, p) in [("vault", vault), ("notes", notes)] {
+        let _ = mal
+            .deployments()
+            .offer(&d, name, p, "0.2.0", Some(&mut m))
+            .await
+            .unwrap();
+    }
+    let mal_id = account_id(&mal).await;
+    let _ = alice
+        .orgs()
+        .remove_member(&acme, &mal_id, Some(&mut a))
+        .await
+        .unwrap();
+    all_applied(&c).await;
+
+    let e = bob
+        .apps()
+        .upgrade(&single, typed(json!({ "version": "0.2.0" })), Some(&mut b))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OUTSIDE_DEPLOYMENT"), "{e}");
+    let run = bob
+        .orgs()
+        .upgrade(
+            &bobco,
+            typed(json!({ "package": vault, "version": "0.2.0" })),
+            Some(&mut b),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let run = finished_run(&bob, &bobco, run["runId"].as_str().unwrap()).await;
+    assert!(run["failed"].get(&single).is_some(), "{run}");
+    let stale = bob
+        .apps()
+        .upgrade_unit(&instance, "0.2.0", Some(&mut b))
+        .await
+        .unwrap_err();
+    let missing = bob
+        .apps()
+        .upgrade_unit(&instance, "0.9.0", Some(&mut b))
+        .await
+        .unwrap_err();
+    assert_eq!(stale.to_string(), missing.to_string());
+    for app in [&single, &instance] {
+        let r = bob.apps().get(app).await.map(wire).unwrap();
+        assert_eq!(r["release"]["version"], json!("0.1.0"), "{r}");
+    }
+}
+
+/// Where the operator upgrades apps, its organization run follows only an offer that still
+/// serves: Bob's instance from Mal's deployment of Acme's private V stays at 0.1.0 once
+/// Mal, who moved the offer to 0.2.0, is no longer in Acme.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_operators_run_follows_no_offer_that_no_longer_serves() {
+    use calimero_node::system::{Authority, Governance};
+    let key = ed25519_dalek::SigningKey::from_bytes(&[94; 32]);
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.governance = Governance {
+            app_upgrades: Authority::Operator,
+            ..Governance::default()
+        };
+    })
+    .await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (mal, mut m) = signed_up(&c, 1, "mal").await;
+    let (bob, _b) = signed_up(&c, 2, "bob").await;
+    let acme = new_org(&alice, "Acme").await;
+    let bobco = new_org(&bob, "Bobco").await;
+    let _malco = new_org(&mal, "Malco").await;
+    join_org(&alice, &mut a, &mal, &acme, "member").await;
+    let vault = "com.acme.opsvault";
+    for v in ["0.1.0", "0.2.0"] {
+        let _ = alice
+            .packages()
+            .upload(
+                mpk_using(vault, v, &variant(&kv_wasm(), v), &key, &[], Value::Null),
+                Some(&acme),
+            )
+            .await
+            .unwrap();
+    }
+    let d = own_deployment(&mal, &mut m).await;
+    let _ = mal
+        .deployments()
+        .offer(&d, "vault", vault, "0.1.0", Some(&mut m))
+        .await
+        .unwrap();
+    let app = from_offer(&bob, &d, vault).await.unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = mal
+        .deployments()
+        .offer(&d, "vault", vault, "0.2.0", Some(&mut m))
+        .await
+        .unwrap();
+    let mal_id = account_id(&mal).await;
+    let _ = alice
+        .orgs()
+        .remove_member(&acme, &mal_id, Some(&mut a))
+        .await
+        .unwrap();
+    all_applied(&c).await;
+
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let run = common::ops_signed(
+        &ops,
+        &format!("ops/orgs/{bobco}/upgrade"),
+        json!({ "package": vault, "version": "0.2.0" }),
+    )
+    .await
+    .unwrap();
+    let run = finished_run(&bob, &bobco, run["runId"].as_str().unwrap()).await;
+    assert!(run["failed"].get(&app).is_some(), "{run}");
+    let r = bob.apps().get(&app).await.map(wire).unwrap();
+    assert_eq!(r["release"]["version"], json!("0.1.0"), "{r}");
+}

@@ -821,3 +821,110 @@ async fn an_update_never_applies_on_its_own_to_a_release_its_owner_may_not_use()
     assert_eq!(running(&mal, &app).await, "1.0.0");
     shift_update_clock(0);
 }
+
+/// An update applies on its own to an instance from a deployment only while its offer
+/// serves: Mal, a member of Bobco, offers Bobco's private release in his deployment and
+/// moves the offer to its next one; removed from Bobco, his offer no longer serves, and
+/// Carol's instance from it stays where it is, however many passes run past the hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_update_never_applies_on_its_own_from_an_offer_that_no_longer_serves() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (bob, mut bob_pk) = signed_up(&c, 0, "bob").await;
+    let (mal, mut mal_pk) = signed_up(&c, 1, "mal").await;
+    let (carol, mut carol_pk) = signed_up(&c, 2, "carol").await;
+    let org_of = |answer: Value| answer["orgId"].as_str().unwrap().to_owned();
+    let bobco = org_of(
+        bob.orgs()
+            .create("Bobco", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+    );
+    let caro = org_of(
+        carol
+            .orgs()
+            .create("Caro", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+    );
+    let mal_id = mal.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = bob
+        .orgs()
+        .set_member(&bobco, &mal_id, OrgRole::Member, Some(&mut bob_pk))
+        .await
+        .unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[49; 32]);
+    let _ = bob
+        .packages()
+        .upload(release("1.0.0", &kv_wasm(), &publisher), Some(&bobco))
+        .await
+        .unwrap();
+    let d = mal
+        .deployments()
+        .create(
+            "labs",
+            typed(json!({ "account": mal_id })),
+            Some(&mut mal_pk),
+        )
+        .await
+        .map(wire)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = mal
+        .deployments()
+        .offer(&d, "p", PACKAGE, "1.0.0", Some(&mut mal_pk))
+        .await
+        .unwrap();
+    let app = carol
+        .apps()
+        .create(typed(
+            json!({ "name": "p", "deployment": d, "package": PACKAGE, "org": caro }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _set = carol
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{caro}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
+            &mut carol_pk,
+        )
+        .await
+        .unwrap();
+    let _ = bob
+        .packages()
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            Some(&bobco),
+        )
+        .await
+        .unwrap();
+    let _ = mal
+        .deployments()
+        .offer(&d, "p", PACKAGE, "1.1.0", Some(&mut mal_pk))
+        .await
+        .unwrap();
+    let _ = bob
+        .orgs()
+        .remove_member(&bobco, &mal_id, Some(&mut bob_pk))
+        .await
+        .unwrap();
+
+    shift_update_clock(DAY + 600);
+    for _ in 0..3 {
+        let _ = pass(&c).await;
+    }
+    assert_eq!(running(&carol, &app).await, "1.0.0");
+    shift_update_clock(0);
+}

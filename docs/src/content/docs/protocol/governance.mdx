@@ -555,6 +555,10 @@ refuses the same where it applies (`SystemState::within_deployment`) for an
 entry that says so (`in_deployment`, set once the cluster version brings
 `upgradeInDeployment`, 1.0.0-rc.32) or once the logged cluster version brings
 the rule; an earlier entry replays as it applied.
+An offer moves an instance (one app, any run, the operator's, an update on its
+own) only while someone who acts for the deployment's owner may still use the
+release it names; from the logged cluster version that brings
+`privateReleases`, apply judges the same.
 
 **Secrets**: a value a manager sets for a secret its offered releases declare
 fills `{{secret:NAME}}` for every instance created from the deployment that
