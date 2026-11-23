@@ -391,6 +391,24 @@ class Client:
         `Visitor` (its `link` and `public_key`, how the app names it)."""
         return self._native.use_visitor(link, bytes(seed))
 
+    def sign_out(self) -> None:
+        """End this session and forget the credential. The client is signed out
+        whether or not the node answers: the revoke (`auth.logout`) is tried and
+        its failure raised after the credential is dropped (a visitor has no
+        session, so the node refuses it with `403 VISITOR_ONLY`)."""
+        try:
+            self.auth.logout()
+        finally:
+            self._native.forget()
+
+    def sign_out_everywhere(self) -> None:
+        """End every session of the signed-in account, on every device, this one
+        too; signed out even when the request fails."""
+        try:
+            self.auth.logout_all()
+        finally:
+            self._native.forget()
+
     def use_session(self, session: Any) -> None:
         """Authenticate with a session returned by `sign_up`/`sign_in`."""
         self._native.use_session(session)
