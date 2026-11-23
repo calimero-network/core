@@ -10,9 +10,9 @@ against the hash its own manifest names, then writes into OUT:
     kv.wasm                     its component (the manifest's `wasm.path`)
     release.txt                 the release it came from
 
-The release is `--version`, else the first word of `.github/upgrade-from`'s first non-comment
-line (the release the upgrade-path job pins) when it names one, else the newest published
-release that has the bundle. A token in GH_TOKEN or GITHUB_TOKEN is used for the API when set.
+The release is `--version`, else the newest published release that has the bundle: a release
+is published minutes before its assets finish uploading, so one without it is skipped.
+A token in GH_TOKEN or GITHUB_TOKEN is used for the API when set.
 
     python3 -I scripts/fetch-release-app.py --out target/previous-release
 """
@@ -24,7 +24,6 @@ import hashlib
 import io
 import json
 import os
-import re
 import sys
 import tarfile
 import urllib.request
@@ -33,9 +32,6 @@ from pathlib import Path
 REPO = "calimero-network/core"
 ASSET = "kv-store-test-fixture.mpk"
 API = f"https://api.github.com/repos/{REPO}"
-ROOT = Path(__file__).resolve().parent.parent
-PIN = ROOT / ".github" / "upgrade-from"
-VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?")
 MAX_BUNDLE_BYTES = 64 * 1024 * 1024  # the fixture is about 0.2 MB packed
 MAX_MEMBER_BYTES = 64 * 1024 * 1024
 
@@ -55,14 +51,6 @@ def get(url: str, accept: str = "application/vnd.github+json", limit: int = 8 * 
     if len(body) > limit:
         fail(f"{url}: more than {limit} bytes")
     return body
-
-
-def pinned() -> str | None:
-    """The release `.github/upgrade-from` pins, if the file exists and names one."""
-    if not PIN.exists():
-        return None
-    lines = [x.split() for x in PIN.read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")]
-    return lines[0][0] if lines and VERSION_RE.fullmatch(lines[0][0]) else None
 
 
 def release(version: str | None) -> dict:
@@ -96,10 +84,10 @@ def member(archive: tarfile.TarFile, name: str) -> bytes:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--version", help="the release tag (default: the pin, else the newest release with the bundle)")
+    parser.add_argument("--version", help="the release tag (default: the newest release with the bundle)")
     args = parser.parse_args()
 
-    rel = release(args.version or pinned())
+    rel = release(args.version)
     tag = rel["tag_name"]
     asset = next((a for a in rel.get("assets", []) if a.get("name") == ASSET), None)
     if asset is None:
