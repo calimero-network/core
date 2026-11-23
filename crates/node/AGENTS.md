@@ -398,7 +398,8 @@ is its command line.
   release's first installer is too, counts only beside a release recorded before
   `visibility`), outbound approval
   (`POST /orgs/{org}/outbound`, the consent page's `outbound`) approves and shows the
-  prefixes of the newest release the caller reads (`PackageRecord::latest_where`;
+  prefixes of the newest release the caller reads (the operator's cluster-wide one, the
+  newest of all; `PackageRecord::latest_where`;
   `SetOutboundApproval` at apply once the logged cluster version brings
   `Feature::PrivateReleases`), `404` with none; the page's `requestedBy` and its
   `returnTo` origins read that release too (regression

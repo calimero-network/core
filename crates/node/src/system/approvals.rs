@@ -178,9 +178,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let record = s.packages.get(&package).ok_or("no such package")?;
             let signer = record.signer_id.clone();
-            // The newest release the actor reads; entries logged below the version that
-            // brings private releases apply the newest of all, as they did.
-            let gated = s.cluster_brings(cluster_version::Feature::PrivateReleases);
+            // The newest release the actor reads (the operator, holding the cluster's
+            // approvals, the newest of all); entries logged below private releases as they did.
+            let gated = s.cluster_brings(cluster_version::Feature::PrivateReleases)
+                && scope != ReleaseScope::Cluster;
             let newest = record.latest_where(|v| !gated || s.reads_release(v, &actor));
             if gated && newest.is_none() {
                 return Err("no such package");
