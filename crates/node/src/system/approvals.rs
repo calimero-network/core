@@ -182,7 +182,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // approvals, the newest of all); entries logged below private releases as they did.
             let gated = s.cluster_brings(cluster_version::Feature::PrivateReleases)
                 && scope != ReleaseScope::Cluster;
-            let newest = record.latest_where(|v| !gated || s.reads_release(v, &actor));
+            let newest = record.latest_where(|v| !gated || s.reads_release(&package, v, &actor));
             if gated && newest.is_none() {
                 return Err("no such package");
             }

@@ -21,6 +21,7 @@ Two rights are judged apart:
   For a private release: only a member of an organization it was installed for (an installer too only while such a member), its installing accounts for one installed for no organization, and the operator for its own installs.
 - **Read the facts** of the release an instance runs (its name and version in reports and update notices, the instance's ABI): whoever reaches that instance, as today.
   An organization that makes an instance reachable (grants, guests, public links, a deployment's customers) shares that instance, never the release.
+  The release an instance runs is the package and version its record names; another package shipping the same WASM at that version is not it.
 
 Today `SystemState::sees_release` is one rule for both: any installer, anyone sharing any org with an installer, anyone reaching an app running it, and (in the package routes) any session bound to the package's frontend.
 

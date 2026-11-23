@@ -727,8 +727,8 @@ fn a_private_release_is_used_only_in_the_organizations_it_was_installed_for() {
     let _prev = m.state.apps.insert("x".into(), app);
     let v = m.state.packages["p"].versions["1.0.0"].clone();
     assert!(m.state.may_reach(&m.state.apps["x"], Some("carol")));
-    assert!(m.state.reads_release(&v, "carol") && !m.state.sees_release(&v, "carol"));
-    assert!(!m.state.reads_release(&v, OPERATOR));
+    assert!(m.state.reads_release("p", &v, "carol") && !m.state.sees_release(&v, "carol"));
+    assert!(!m.state.reads_release("p", &v, OPERATOR));
 
     // Installed again for A: A's members use it too, a guest does not.
     let _ok = m
@@ -759,6 +759,41 @@ fn a_private_release_is_used_only_in_the_organizations_it_was_installed_for() {
     let v = &m.state.packages["p"].versions["1.0.0"];
     assert_eq!(v.visibility, Some(Visibility::Public));
     assert!(seen(&m, "dave") && seen(&m, "alice"));
+}
+
+/// Reaching an instance of one package reads nothing of another package's release that
+/// ships the same WASM at the same version: Bob runs public `notes@1.0.0`, never reads
+/// Alice's private `secret@1.0.0`.
+#[test]
+fn reaching_an_instance_never_reads_another_packages_release_of_its_wasm() {
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    for (package, by, visibility) in [("secret", "alice", "private"), ("notes", "bob", "public")] {
+        let _ok = m
+            .run_authorized(SystemCmd::InstallPackage {
+                package: package.into(),
+                signer_id: "did:key:z".into(),
+                release: serde_json::from_value(json!({
+                    "version": "1.0.0", "mpk": package, "mpkSize": 1, "source": "registry",
+                    "services": { "": "b1" }, "installedBy": by, "installedAt": 1,
+                    "visibility": visibility, "orgs": [p(by)],
+                }))
+                .unwrap(),
+            })
+            .unwrap();
+    }
+    let app: crate::types::AppRecord = serde_json::from_value(json!({
+        "appId": "x", "name": "x", "group": 2, "bundle": "b1", "owner": "bob",
+        "org": p("bob"), "replicas": [1], "createdAt": 0,
+        "release": { "package": "notes", "version": "1.0.0" },
+    }))
+    .unwrap();
+    let _prev = m.state.apps.insert("x".into(), app);
+    assert!(m.state.newest_read("notes", "bob", false).is_some());
+    assert!(m.state.newest_read("secret", "bob", false).is_none());
 }
 
 /// A private release installed for no organization (its installer is in none) is its

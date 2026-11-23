@@ -904,6 +904,57 @@ async fn an_outbound_approval_never_reads_a_release_its_approver_cannot_read() {
     assert!(!got.to_string().contains(SECRET), "{got}");
 }
 
+/// Reaching an instance of one package reads nothing of another package shipping the same
+/// WASM at the same version: Bob runs the operator's `notes@1.0.0`, and approving outbound
+/// hosts of Acme's private `secret@1.0.0` answers as for a package not installed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_outbound_approval_never_reads_another_packages_release_of_the_same_wasm() {
+    const SECRET: &str = "https://internal.acme.example/secret-api/";
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let _o = alice.orgs().create("Acme", None, None).await.unwrap();
+    let _o = bob.orgs().create("Bobco", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[16; 32]);
+    let secret = Declares {
+        outbound: &[SECRET],
+        ..Declares::default()
+    };
+    let (mpk, _) = release_of("com.test.secret", "1.0.0", &kv_wasm(), &publisher, &secret);
+    let _ = alice.packages().upload(mpk, None).await.unwrap();
+    let (mpk, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = ops.ops().package_upload(mpk).await.unwrap();
+    let _ = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "n", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .unwrap();
+
+    let bobs = home_org(&bob).await;
+    let mut answers = Vec::new();
+    for package in ["com.test.secret", "com.test.missing"] {
+        let got = bob
+            .orgs()
+            .outbound_approval(
+                &bobs,
+                package,
+                Some(typed(json!("manifest"))),
+                None,
+                Some(&mut bob_pk),
+            )
+            .await
+            .map(wire)
+            .map_err(|e| e.to_string());
+        answers.push(got);
+    }
+    assert!(!format!("{answers:?}").contains(SECRET), "{answers:?}");
+    assert_eq!(answers[0], answers[1]);
+}
+
 /// A session bound to a package learns nothing of a release its account may not read: Bob,
 /// signed in on the origin of Alice's private package, asks for an organization, and the
 /// page names neither the release's display name nor its author and offers no app team, as

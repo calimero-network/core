@@ -97,11 +97,12 @@ pub fn release_of_app(s: &SystemState, app: &AppRecord, reader: Reader<'_>) -> O
 /// Release `r`, if installed and `reader` may read it ([`SystemState::reads_release`]).
 fn named_release(s: &SystemState, r: &PackageRef, reader: Reader<'_>) -> Option<ReleaseName> {
     let v = s.packages.get(&r.package)?.versions.get(&r.version)?;
-    s.reads_release(v, reader.who()).then(|| ReleaseName {
-        package: r.package.clone(),
-        version: r.version.clone(),
-        service: r.service.clone(),
-    })
+    s.reads_release(&r.package, v, reader.who())
+        .then(|| ReleaseName {
+            package: r.package.clone(),
+            version: r.version.clone(),
+            service: r.service.clone(),
+        })
 }
 
 /// The package release that ships bundle `hash`, if `reader` may read one: the
@@ -117,7 +118,9 @@ pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Opt
             .packages
             .get(&r.package)
             .and_then(|p| p.versions.get(&r.version))
-            .is_some_and(|v| v.app_parts().values().any(|h| h == hash) && s.reads_release(v, who));
+            .is_some_and(|v| {
+                v.app_parts().values().any(|h| h == hash) && s.reads_release(&r.package, v, who)
+            });
         if visible {
             return Some(ReleaseName {
                 package: r.package.clone(),
@@ -129,7 +132,7 @@ pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Opt
     s.packages
         .values()
         .flat_map(|p| p.versions.values().map(move |v| (p, v)))
-        .filter(|(_, v)| s.reads_release(v, who))
+        .filter(|(p, v)| s.reads_release(&p.name, v, who))
         .filter_map(|(p, v)| {
             let service = v.app_parts().iter().find(|(_, h)| *h == hash)?.0;
             Some((p, v, service))

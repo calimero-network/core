@@ -2041,11 +2041,11 @@ impl SystemState {
         }
     }
 
-    /// Whether `who` may read the facts of the release `v` (its name and version where an
-    /// instance runs it): [`Self::sees_release`], or `who` reaches an app running it (one that
-    /// names no release, only when `v` is not recorded private).
+    /// Whether `who` may read the facts of the release `v` of `package` (its name and version
+    /// where an instance runs it): [`Self::sees_release`], or `who` reaches an app running it
+    /// (one that names no release, only when `v` is not recorded private).
     #[must_use]
-    pub fn reads_release(&self, v: &PackageVersion, who: &str) -> bool {
+    pub fn reads_release(&self, package: &str, v: &PackageVersion, who: &str) -> bool {
         self.sees_release(v, who)
             || (who != OPERATOR
                 && self.apps.values().any(|a| {
@@ -2054,7 +2054,7 @@ impl SystemState {
                     a.release
                         .as_ref()
                         .map_or(v.visibility != Some(Visibility::Private), |r| {
-                            r.version == v.version
+                            r.package == package && r.version == v.version
                         })
                         && v.app_parts().values().any(|h| *h == a.bundle)
                         && self.may_reach(a, Some(who))
@@ -2136,9 +2136,9 @@ impl SystemState {
     /// `visibility`.
     #[must_use]
     pub fn newest_read(&self, package: &str, who: &str, frontend: bool) -> Option<&PackageVersion> {
-        self.packages
-            .get(package)?
-            .latest_where(|v| (frontend && v.visibility.is_none()) || self.reads_release(v, who))
+        self.packages.get(package)?.latest_where(|v| {
+            (frontend && v.visibility.is_none()) || self.reads_release(package, v, who)
+        })
     }
 
     /// `to`, for an instance `app` from a deployment, when the move stays on that deployment
