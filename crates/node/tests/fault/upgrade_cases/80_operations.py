@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 from upgrade_deep import (DeepCase, anyone, check, decision, eq, kv_wasm, new_org, operator, ops,
                           ops_text, person, same_decisions, same_read, scrub, snap, subset, until)
@@ -272,12 +273,19 @@ class RestoreBackup(DeepCase):
     seeds = ("an app written to, backed up on every node (`POST /ops/backup`), then written to again: "
              "the second write is not in the backup")
     verifies = ("the app answers with both writes as before; on the new release the operator restores the old "
-                "release's backup (`ops restore`): the answer names the backup's release, the app holds the first "
-                "write and not the second, and takes new writes")
+                "release's backup by name (`ops restore --backup`), not a newer one: the app holds the first write "
+                "and not the second, and takes new writes")
 
     def _keys(self, w, s):
         rowan = person(w, "rowan")
         return {k: rowan.result(s["app"], "get", {"key": k}) for k in s["want"]}
+
+    def _newest_backup(self, w, app):
+        """The newest backup file of `app` in the harness's backup directory (`<dir>/<app>/<name>`)."""
+        files = [f.name for f in (Path(w.fleet.workdir) / "backups" / app).iterdir()
+                 if not f.name.startswith(".") and not f.name.endswith(".manifest")]
+        check(files, f"no backup of {app} was written")
+        return max(files)
 
     def populate(self, w):
         rowan = person(w, "rowan")
@@ -288,6 +296,7 @@ class RestoreBackup(DeepCase):
             check(out is not None and "written" in out, f"a backup on node {node}: {out}")
         rowan.call(app, "set", {"key": "lost", "value": "after the backup"})
         s = {"app": app, "want": {"kept": "before the backup", "lost": "after the backup"}}
+        s["backup"] = self._newest_backup(w, app)
         eq(self._keys(w, s), s["want"], "the app's keys before a restore")
         return s
 
@@ -295,7 +304,7 @@ class RestoreBackup(DeepCase):
         eq(self._keys(w, s), s["want"], "the app's keys")
 
     def exercise(self, w, s):
-        out = w.fleet.operate("restore", s["app"])
+        out = w.fleet.operate("restore", s["app"], "--backup", s["backup"])
         check((out.get("backup") or {}).get("name"), f"the restored backup: {out}")
         s["want"] = {"kept": "before the backup", "lost": None}
         got = until("the restored app answers", lambda: self._keys(w, s), 60)
