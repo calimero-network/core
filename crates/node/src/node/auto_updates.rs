@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use calimero_bundle::update::Class;
 use tracing::{info, warn};
 
 use super::Node;
@@ -215,7 +214,7 @@ impl Node {
                 match &verdict {
                     // A green move that drops a method waits for a person too: another app
                     // may call it, and no record says which (plain xcalls declare nothing).
-                    Some(c) if c.class == Class::Green && c.removed_methods.is_empty() => {}
+                    Some(c) if crate::egress::moves_on_its_own(c) => {}
                     // Red: remembered, so later passes reach the apps after it.
                     Some(_) => {
                         let _r = self.with_auto_update_memory(|mem| {
