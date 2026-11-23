@@ -166,12 +166,12 @@ jobs:
           grep -qE '^sdks/(clients/|package\.json$|pnpm-lock\.yaml$)' <<<"$files" && sdk_clients=true
           e2e=false
           if [ "$wanted" = true ] && { [ "$all" = true ] || [ "$rust" = true ] || [ "$sdk_clients" = true ] \
-               || grep -qE '^(workflows/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
+               || grep -qE '^(workflows/|scripts/soak-summary)' <<<"$files"; }; then
             e2e=true
           fi
           node=false
           if [ "$e2e" = true ] && { [ "$all" = true ] || [ "$node_closure" = true ] \
-               || grep -qE '^(apps/fixture-compute/|apps/compute-redact/|crates/meroctl/|crates/node/tests/fault/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
+               || grep -qE '^(apps/fixture-compute/|apps/compute-redact/|crates/meroctl/|crates/node/tests/fault/|scripts/soak-summary)' <<<"$files"; }; then
             node=true
           fi
           clients=$node

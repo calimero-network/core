@@ -783,9 +783,8 @@ The jobs:
   the artifact `compute-e2e-logs` on failure);
 - jobs `clients against merod (mero-js)` and `(calimero-client-py)`
   (`clients`): mero-js's `test:cluster` and calimero-client-py's cluster tests
-  against `build-release`'s `merod`. A change that
-  breaks a client goes green with the client's fix: a same-named branch there,
-  or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
+  against `build-release`'s `merod`. Both clients are this tree's `sdks/clients/`,
+  so a change that breaks a client carries the client's fix in the same PR.
 - job `consent page in a browser` (`consent-page`): the suite above against
   `build-release`'s `merod`, `meroctl` and kv component. Unlike the jobs above it
   runs on every PR that reaches the page (`crates/node/src/consent_page.rs`,
