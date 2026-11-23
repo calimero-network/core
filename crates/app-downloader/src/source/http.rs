@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use eyre::bail;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, Url};
 use tracing::info;
 use url::Host;
@@ -68,6 +69,7 @@ fn is_local_or_private_v4(ip: Ipv4Addr) -> bool {
 pub struct HttpRegistry {
     base: Url,
     client: Client,
+    headers: HeaderMap,
 }
 
 impl HttpRegistry {
@@ -89,7 +91,16 @@ impl HttpRegistry {
         Ok(Self {
             base,
             client: registry_client()?,
+            headers: HeaderMap::new(),
         })
+    }
+
+    /// Sends `name: value` with every fetch.
+    pub fn with_header(mut self, name: &'static str, value: &str) -> eyre::Result<Self> {
+        let _prev = self
+            .headers
+            .insert(HeaderName::from_static(name), HeaderValue::from_str(value)?);
+        Ok(self)
     }
 }
 
@@ -117,7 +128,12 @@ impl AppSource for HttpRegistry {
 
         // No host guard beyond the plain-http check in `new`: `url` is this node's own
         // configured base, which is routinely private or air-gapped.
-        let response = self.client.get(url.clone()).send().await?;
+        let response = self
+            .client
+            .get(url.clone())
+            .headers(self.headers.clone())
+            .send()
+            .await?;
         if response.status() == StatusCode::NOT_FOUND {
             // Not published here yet, which the caller retries - not a fault.
             return Ok(None);
