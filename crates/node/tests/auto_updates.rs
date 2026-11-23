@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::types::{OrgRole, ViewsRequestConsistency};
 use calimero_client::Request;
 use calimero_node::testing::shift_update_clock;
 use reqwest::Method;
@@ -731,5 +731,93 @@ async fn a_pass_off_the_system_leader_moves_nothing() {
         0,
         "a node that does not lead the system group upgraded an app"
     );
+    shift_update_clock(0);
+}
+
+/// An update applies on its own only to a release the app's owner may use: Mal, once a
+/// member of Bobco, made an instance of Bobco's private release in his own organization
+/// under the automatic policy; removed from Bobco, he never gets its next private release,
+/// however many passes run past the hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_update_never_applies_on_its_own_to_a_release_its_owner_may_not_use() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (bob, mut bob_pk) = signed_up(&c, 0, "bob").await;
+    let (mal, mut mal_pk) = signed_up(&c, 1, "mal").await;
+    let bobco = bob
+        .orgs()
+        .create("Bobco", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let malco = mal
+        .orgs()
+        .create("Malco", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mal_id = mal.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = bob
+        .orgs()
+        .set_member(&bobco, &mal_id, OrgRole::Member, Some(&mut bob_pk))
+        .await
+        .unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[48; 32]);
+    let _ = bob
+        .packages()
+        .upload(release("1.0.0", &kv_wasm(), &publisher), Some(&bobco))
+        .await
+        .unwrap();
+    let app = mal
+        .apps()
+        .create(typed(
+            json!({ "name": "p", "package": PACKAGE, "version": "1.0.0", "org": malco }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _set = mal
+        .transport()
+        .confirmed(
+            Request::new(
+                Method::POST,
+                format!("orgs/{malco}/upgrade-policy").as_str(),
+            )
+            .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
+            &mut mal_pk,
+        )
+        .await
+        .unwrap();
+    let _ = bob
+        .orgs()
+        .remove_member(&bobco, &mal_id, Some(&mut bob_pk))
+        .await
+        .unwrap();
+    let _ = bob
+        .packages()
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            Some(&bobco),
+        )
+        .await
+        .unwrap();
+
+    shift_update_clock(DAY + 600);
+    for _ in 0..3 {
+        let _ = pass(&c).await;
+    }
+    assert_eq!(running(&mal, &app).await, "1.0.0");
     shift_update_clock(0);
 }

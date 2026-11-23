@@ -369,7 +369,7 @@ impl SystemState {
     /// What lets an update of `app` to `to` (its `bundle`), carrying `class`, apply on
     /// its own at `at` with restore point `taken` (`UpgradeApp::auto`): the app's policy
     /// says `noDestinations`; the class is green; it moves the app along its package to
-    /// a newer release; the app is no unit's member (a member moves with its unit); its
+    /// a newer release, outside a deployment one its owner may use; the app is no unit's member (a member moves with its unit); its
     /// unit, as the log holds it, has no destination before or after; its hold has
     /// passed since the release was logged (its deployment's offer of exactly it for an
     /// instance of a deployment, else its install); and a restore point was taken where
@@ -511,10 +511,16 @@ impl SystemState {
                 })
                 .map(|o| o.added_at)
                 .ok_or(AUTO_UPDATE_REFUSED)?,
+            // Only a release the owner may use; entries logged below the version that brings
+            // private releases replay as they applied.
             None => self
                 .packages
                 .get(&to.package)
                 .and_then(|p| p.versions.get(&to.version))
+                .filter(|v| {
+                    !self.cluster_brings(cluster_version::Feature::PrivateReleases)
+                        || self.sees_release(v, &app.owner)
+                })
                 .map(|v| v.installed_at)
                 .ok_or(AUTO_UPDATE_REFUSED)?,
         };

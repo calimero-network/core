@@ -12631,6 +12631,58 @@ fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
     );
 }
 
+/// An update applies on its own only to a release the app's owner may use: a stranger to
+/// the organization a private release was installed for never moves onto it, from a public
+/// one or any other, from the logged version that brings private releases; an entry logged
+/// below it replays as it applied.
+#[test]
+fn an_update_on_its_own_moves_only_to_a_release_its_owner_may_use() {
+    use super::cluster_version::Feature;
+    use super::{Visibility, AUTO_UPDATE_REFUSED};
+    let hold_over = 1000 + 24 * 3600;
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    let p = m.state.packages.get_mut("p").unwrap();
+    p.versions.get_mut("1.0.0").unwrap().visibility = Some(Visibility::Public);
+    for v in ["1.0.1", "1.0.2"] {
+        let v = p.versions.get_mut(v).unwrap();
+        v.visibility = Some(Visibility::Private);
+        v.orgs = BTreeSet::from(["pub".to_owned()]);
+    }
+    let cmd = auto_upgrade(
+        "1.0.1",
+        "b3",
+        Some(green()),
+        hold_over,
+        Some(taken_on(1, 7)),
+    );
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let _ok = old.run(cmd.clone()).expect("replayed as it applied");
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert!(m.state.auto_update_candidates(hold_over).is_empty());
+    assert_eq!(m.run(cmd.clone()), Err(AUTO_UPDATE_REFUSED.to_owned()));
+    assert_eq!(m.state.apps["inst"].bundle, "b1");
+    // Installed for the app's own organization too, it is its owner's to move onto.
+    let _new = m
+        .state
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .get_mut("1.0.1")
+        .unwrap()
+        .orgs
+        .insert("cust".to_owned());
+    let found = m.state.auto_update_candidates(hold_over);
+    assert_eq!(found[0].1.len(), 1, "{found:?}");
+    assert_eq!(found[0].1[0].version, "1.0.1");
+    let _ok = m.run(cmd).unwrap();
+}
+
 /// For a week after an upgrade, an owner or admin undoes it with their passkey: the app
 /// goes back to the release it ran, into a new group the restore point's node seeds
 /// (whatever it wrote since is lost), the one move to an older release; the restore

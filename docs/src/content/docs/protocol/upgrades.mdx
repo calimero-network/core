@@ -380,6 +380,10 @@ authority, and apply judges it again from the log alone
 - the app's policy says `noDestinations`, and the class is green (and agrees
   with the log, as [The class at apply](#the-class-at-apply) says);
 - it moves the app along its package to a newer release; never back;
+- outside a deployment, the app's owner may use that release (`sees_release`:
+  a private release only while the owner is a member of an organization it was
+  installed for), judged from the logged cluster version that brings
+  `Feature::PrivateReleases`, so an entry logged before replays as it applied;
 - the app is no unit's member (a member moves with its unit) and its unit, as
   the log holds it, has no destination before or after the move;
 - its hold has passed: the upgrade's own `at` is at least `holdHours` after the

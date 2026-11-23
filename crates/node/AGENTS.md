@@ -1479,7 +1479,12 @@ is its command line.
   no longer runs that release (another move won).
   `UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that
   actor); apply judges `SystemState::auto_update_gate`: policy, green class (and
-  `check_class`), newer release of its package, not a unit member, the logged unit with
+  `check_class`), newer release of its package that, outside a deployment, the app's
+  owner may use (`sees_release`, once the logged cluster version brings
+  `Feature::PrivateReleases`; regressions
+  `an_update_on_its_own_moves_only_to_a_release_its_owner_may_use`,
+  `an_update_never_applies_on_its_own_to_a_release_its_owner_may_not_use`), not a unit
+  member, the logged unit with
   no destination before or after, the hold (`at` >= `installedAt`, or the deployment
   offer's `addedAt`, + `holdHours`), a restore point
   (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `RESTORE_POINT_REQUIRED`;
