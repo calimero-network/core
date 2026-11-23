@@ -14,6 +14,7 @@ holding an `sdk.json` that says what it is and how CI treats it:
       ],
       "depends_on": [],                       # other SDKs it builds against
       "inputs": ["docs/public/openapi.json"], # files outside its directory it reads
+      "toolchain": "swift",                   # optional: generate runs in a container without this tool
       "generate": "pnpm run generate",        # regenerates `generated` from core (run in its dir)
       "generated": ["src/generated"],         # paths (in its dir) `generate` owns
       "workflow": ".github/workflows/sdk-mero-js.yml"
@@ -53,6 +54,7 @@ import fnmatch
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -74,6 +76,12 @@ SHARED = (
     "sdks/pnpm-lock.yaml",
     "sdks/.npmrc",
 )
+
+# The Swift generator runs in this image when swift is not installed; python3 is added for its scripts.
+SWIFT_IMAGE = "swift:6.1.2-noble@sha256:9096456b6dd5f3dcb1f64152601de3d96f40e48ac98354fefa9ffa9abf2dd6bf"
+SWIFT_IMAGE_TAG = "mero-swift-codegen:6.1.2"
+SWIFT_DOCKERFILE = f"FROM {SWIFT_IMAGE}\nRUN apt-get -q update && apt-get -q install -y python3 && rm -rf /var/lib/apt/lists/*\n"
+FORCE_CONTAINER = "SDKS_GENERATE_IN_CONTAINER"  # set to run the container path even with swift installed
 
 # A pre-release or release version, as core tags them (1.0.0-rc.30, 1.0.0).
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$")
@@ -297,6 +305,22 @@ def version_report(sdks: list[dict], version: str, root: Path = ROOT) -> list[st
 # ---------------------------------------------------------------- generate
 
 
+def generate_argv(sdk: dict, command: str, env=os.environ) -> list[str]:
+    """The command line for `generate`: bash, or docker when the SDK's toolchain is missing."""
+    script = ["bash", "-euo", "pipefail", "-c", command]
+    tool = sdk.get("toolchain")
+    if not tool or (shutil.which(tool) and not env.get(FORCE_CONTAINER)):
+        return script
+    if not shutil.which("docker"):
+        raise SdkError(f"{sdk['name']}: needs `{tool}` or docker to generate; install one of them")
+    work = ROOT / sdk["dir"]
+    return [
+        "docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
+        "-e", "HOME=/tmp", "-e", f"MERO_OPENAPI_CACHE={work}/.build/openapi-generator-container",
+        "-v", f"{ROOT}:{ROOT}", "-w", str(work), SWIFT_IMAGE_TAG, *script,
+    ]
+
+
 def run_generate(sdks: list[dict]) -> int:
     status = 0
     for sdk in sdks:
@@ -304,8 +328,11 @@ def run_generate(sdks: list[dict]) -> int:
         if not command:
             print(f"{sdk['name']}: generates nothing")
             continue
+        argv = generate_argv(sdk, command)
+        if argv[0] == "docker":
+            subprocess.run(["docker", "build", "-q", "-t", SWIFT_IMAGE_TAG, "-"], input=SWIFT_DOCKERFILE, text=True, check=True)
         print(f"::group::{sdk['name']}: {command}", flush=True)
-        code = subprocess.run(["bash", "-euo", "pipefail", "-c", command], cwd=ROOT / sdk["dir"]).returncode
+        code = subprocess.run(argv, cwd=ROOT / sdk["dir"]).returncode
         print("::endgroup::", flush=True)
         if code:
             print(f"::error::{sdk['name']}: `{command}` failed ({code})")

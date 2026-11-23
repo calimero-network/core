@@ -373,3 +373,111 @@ class RestorePoints(DeepCase):
         check((point.get("file") or {}).get("node") in w.members(), f"a restore point on a new node: {point}")
         self._undo(w, s, a)
         s["records"][a] = snap(rex, f"apps/{a}")
+
+
+def _unclassified(update, version, reason):
+    """`GET /apps/{app}/update` once it offers `version` as red, unclassified for `reason`."""
+    available = update.get("available") or {}
+    if (available.get("version"), available.get("class"), available.get("reasons")) != (version, "red", reason):
+        raise Failed(f"no unclassified update to {version} yet: {json.dumps(update)[:400]}")
+    return update
+
+
+@case
+class UnclassifiedUpdates(DeepCase):
+    name = "unclassified-updates"
+    area = "Upgrades"
+    since = "1.0.0-rc.35"
+    seeds = ("kv-r 1.0.0 and 1.1.0 (one WASM) installed and 1.0.0 uninstalled under three apps that run it, so "
+             "their update cannot be classified (red, an `unclassified` reason naming the release that is gone); in "
+             "an organization whose policy asks for a second approver, one app upgraded by an admin on the owner's "
+             "first approval and one with that approval still waiting; one upgraded by its owner where no policy asks")
+    verifies = ("each app's `lastUpgrade` (red, its `unclassified` reason, the first approver) and data; the waiting "
+                "app's update (red, `unclassified`) and approval on every node, the owner alone refused "
+                "`SECOND_APPROVAL_REQUIRED`; on the new release the admin applies the waiting update, and 1.0.0 is "
+                "installed again, an app made on it, uninstalled, and that app's unclassified update approved and "
+                "applied the same way")
+
+    def _app(self, w, s, name, org):
+        nia = person(w, "nia")
+        a = nia.raw("post", "apps", {"name": name, "package": s["package"], "version": s["v1"], "org": org})["appId"]
+        nia.call(a, "set", {"key": "made", "value": f"{name} on {s['v1']}"})
+        s["data"][a] = f"{name} on {s['v1']}"
+        return a
+
+    def _offered(self, w, s, app):
+        until(f"{app}'s unclassified update is offered",
+              lambda: _unclassified(person(w, "noa").get(f"apps/{app}/update"), s["v2"], s["reason"]), 30)
+
+    def _applied(self, w, s, app, by, approved_by):
+        rec = snap(person(w, "nia"), f"apps/{app}")
+        last = rec.get("lastUpgrade") or {}
+        eq((last.get("ok"), last.get("class"), last.get("reasons"), last.get("by"), last.get("approvedBy")),
+           (True, "red", s["reason"], by, approved_by), f"{app}'s unclassified update, applied")
+        eq((rec.get("release") or {}).get("version"), s["v2"], f"the release {app} runs")
+        s["records"][app] = rec
+
+    def populate(self, w):
+        nia, noa = people(w, "nia", "noa")
+        p, v1 = install(nia, w, "kv-r-1.0.0.mpk")
+        _, v2 = install(nia, w, "kv-r-1.1.0.mpk")
+        org = new_org(nia, "Unclassified Org")
+        join(nia, org, noa, role="admin")
+        nia.raw("post", f"orgs/{org}/upgrade-policy", {"policy": {"secondApprover": True}})
+        # An organization of its own, without the policy: an instance naming none would go to
+        # whichever organization of its creator's the node picks.
+        own = new_org(nia, "Unclassified Own")
+        s = {"org": org, "package": p, "v1": v1, "v2": v2, "data": {}, "records": {},
+             "reason": [{"code": "unclassified", "member": None, "package": p, "version": v1}]}
+        for k, o in (("approved", org), ("waiting", org), ("direct", own)):
+            s[k] = self._app(w, s, k, o)
+        # 1.1.0 ships the same WASM, so the release the apps run may go.
+        nia.raw("delete", f"packages/{p}/{v1}")
+        for a in (s["approved"], s["waiting"]):
+            self._offered(w, s, a)
+            nia.raw("post", f"apps/{a}/upgrade-approvals", {"version": v2})
+        noa.raw("post", f"apps/{s['approved']}/upgrade", {"version": v2})
+        self._applied(w, s, s["approved"], noa.id, nia.id)
+        nia.raw("post", f"apps/{s['direct']}/upgrade", {"version": v2})
+        self._applied(w, s, s["direct"], nia.id, None)
+        s["records"][s["waiting"]] = snap(nia, f"apps/{s['waiting']}")
+        s["pending"] = noa.get(f"apps/{s['waiting']}/update")["pendingApprovals"]
+        check(len(s["pending"]) == 1 and s["pending"][0].get("by") == nia.id
+              and s["pending"][0].get("class") == "red", f"the waiting approval: {s['pending']}")
+        s["read"] = snap(nia, f"packages/{p}")
+        check(f'"{v1}"' not in json.dumps(s["read"]), f"version {v1} still installed: {s['read']}")
+        return s
+
+    def check(self, w, s):
+        nia, noa = people(w, "nia", "noa")
+        same_read(nia, f"packages/{s['package']}", s["read"], "the package")
+        for a, rec in s["records"].items():
+            same_read(nia, f"apps/{a}", rec, f"app {a}")
+            eq(nia.result(a, "get", {"key": "made"}), s["data"][a], f"app {a}'s data")
+        if s["pending"]:
+            for n in w.members():
+                update = noa.get(f"apps/{s['waiting']}/update", node=n)
+                eq(update["pendingApprovals"], s["pending"], f"the waiting approval on node {n}")
+                _unclassified(update, s["v2"], s["reason"])
+            eq(decision(lambda: nia.raw("post", f"apps/{s['waiting']}/upgrade", {"version": s["v2"]})),
+               "SECOND_APPROVAL_REQUIRED", "the owner alone upgrading the app whose approval waits")
+
+    def exercise(self, w, s):
+        nia, noa = people(w, "nia", "noa")
+        noa.raw("post", f"apps/{s['waiting']}/upgrade", {"version": s["v2"]})
+        self._applied(w, s, s["waiting"], noa.id, nia.id)
+        s["pending"] = []
+        eq(noa.get(f"apps/{s['waiting']}/update")["pendingApprovals"], [], "the approval spent")
+        # The whole move on the new release: 1.0.0 back, an app on it, 1.0.0 gone again.
+        nia.raw("post", "packages/install", {"package": s["package"], "version": s["v1"]})
+        fresh = self._app(w, s, "fresh", s["org"])
+        nia.raw("delete", f"packages/{s['package']}/{s['v1']}")
+        self._offered(w, s, fresh)
+        first = nia.raw("post", f"apps/{fresh}/upgrade-approvals", {"version": s["v2"]})
+        check("unclassified" in json.dumps(first), f"the first approval's reasons: {first}")
+        eq(decision(lambda: nia.raw("post", f"apps/{fresh}/upgrade", {"version": s["v2"]})),
+           "SECOND_APPROVAL_REQUIRED", "the owner alone upgrading the fresh app")
+        noa.raw("post", f"apps/{fresh}/upgrade", {"version": s["v2"]})
+        self._applied(w, s, fresh, noa.id, nia.id)
+        eq(nia.result(fresh, "get", {"key": "made"}), s["data"][fresh], "the fresh app's data")
+        s["read"] = snap(nia, f"packages/{s['package']}")
