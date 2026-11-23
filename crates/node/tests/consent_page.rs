@@ -457,6 +457,8 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         "scope": { "kind": "app", "app": "<redacted>", "name": "notes", "org": home },
         "headline": "Upgrade Notes from 1.0.0 to 2.0.0",
         "title": "Update notes to version 2.0.0",
+        // From no deployment: none named.
+        "deployment": null,
         "points": [
             "notes moves from version 1.0.0 to 2.0.0, for everyone who uses it.",
             "Until you approve, nothing changes: it keeps running 1.0.0.",
@@ -3215,6 +3217,30 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     assert_eq!(u["available"]["version"], "2.0.0", "{u}");
     assert_eq!(u["available"]["source"], "deployment", "{u}");
     assert_eq!(u["mayApprove"], json!(true), "{u}");
+    // Names are not unique: the deployment comes with its id and its owner.
+    let named = json!({ "id": d, "name": "acme", "owner": { "kind": "account", "name": "dev" } });
+    assert_eq!(u["deployment"], named, "{u}");
+
+    // A second instance from the offer: the install sheet names the deployment the same way.
+    let made = ask(
+        &carol_app,
+        &back,
+        "install",
+        json!({ "package": PACKAGE, "name": "notes-2", "deployment": d, "org": globex }),
+    )
+    .await
+    .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    assert_eq!(model["kind"], "install", "{model}");
+    assert_eq!(model["deployment"], named, "{model}");
+    let offered_by = format!("Offered by acme (deployment {d}), run by the account dev.");
+    assert!(
+        model["points"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(offered_by)),
+        "{model}"
+    );
     let u = bob_app
         .transport()
         .json(Request::new(Method::GET, format!("apps/{inst}/update")))
@@ -3256,6 +3282,14 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     let model = page.model().await;
     assert_eq!(model["kind"], "upgrade", "{model}");
     assert_eq!(model["upgrade"]["to"]["version"], "2.0.0", "{model}");
+    assert_eq!(model["deployment"], named, "{model}");
+    assert!(
+        model["points"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(offered_by)),
+        "{model}"
+    );
     let mut carol_page = SoftAuthenticator::with_key(&carol_in_app, "localhost", &origin(&url));
     let ((code, done), args) = page.approve(&c, &mut carol_page).await;
     assert_eq!(code, 200, "{done}");
@@ -3363,6 +3397,8 @@ async fn a_units_destinations_are_judged_over_its_members() {
 
     // The update moves the store to a release that adds a destination: red.
     let update = get(&alice, &format!("apps/{notes}/update")).await.unwrap();
+    // From no deployment: named as none, not left out.
+    assert_eq!(update.get("deployment"), Some(&json!(null)), "{update}");
     let available = &update["available"];
     assert_eq!(available["version"], "2.0.0", "{update}");
     assert_eq!(available["class"], "red", "{update}");

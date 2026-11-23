@@ -1972,6 +1972,25 @@ enum Part {
     Member,
 }
 
+/// The sheet's line naming the deployment an instance comes from
+/// ([`crate::system::SystemState::deployment_shown`]): its name, id and owner together.
+fn offered_by(d: &Value) -> String {
+    let kind = if d["owner"]["kind"] == "org" {
+        "organization"
+    } else {
+        "account"
+    };
+    let owner = d["owner"]["name"].as_str().map_or_else(
+        || format!("an {kind} no longer on this cluster"),
+        |n| format!("the {kind} {n}"),
+    );
+    format!(
+        "Offered by {} (deployment {}), run by {owner}.",
+        d["name"].as_str().unwrap_or_default(),
+        d["id"].as_str().unwrap_or_default()
+    )
+}
+
 async fn upgrade_request(
     node: &Node,
     p: &Principal,
@@ -2136,6 +2155,13 @@ async fn upgrade_request(
             "Until you approve, nothing changes: it keeps running {old}."
         )),
     ];
+    let shown = app
+        .deployment
+        .as_ref()
+        .and_then(|d| node.sys(|s| s.deployment_shown(d)));
+    if let Some(d) = &shown {
+        points.push(json!(offered_by(d)));
+    }
     let mut attention = upgrade_attention(&sheet);
     if let Some(c) = &unit {
         points.push(json!(destinations_point(c, !app.links.is_empty())));
@@ -2158,6 +2184,7 @@ async fn upgrade_request(
         "attention": attention,
         "unit": unit.as_ref().map(crate::egress::verdict_json),
         "app": { "name": name, "package": package },
+        "deployment": shown,
         "publisher": {
             "name": author,
             "signer": to.signer,
@@ -3761,6 +3788,19 @@ fn decline(node: &Node, id: &str) -> Result<Value, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deployment_is_named_with_its_id_and_its_owner() {
+        let shown = |owner: Value| json!({ "id": "d1", "name": "acme", "owner": owner });
+        assert_eq!(
+            offered_by(&shown(json!({ "kind": "org", "name": "Acme Labs" }))),
+            "Offered by acme (deployment d1), run by the organization Acme Labs."
+        );
+        assert_eq!(
+            offered_by(&shown(json!({ "kind": "account", "name": null }))),
+            "Offered by acme (deployment d1), run by an account no longer on this cluster."
+        );
+    }
 
     fn request(account: &str, expires_at: u64) -> ConsentRequest {
         ConsentRequest {

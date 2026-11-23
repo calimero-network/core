@@ -525,16 +525,13 @@ pub(super) async fn install_request(
              applies its updates on their own after a 24 h hold, as long as they keep it that way."
         ));
     }
-    let payer = subject.deployment.as_ref().and_then(|d| {
-        node.sys(|s| {
-            let d = s.deployments.get(d)?;
-            Some(match &d.owner {
-                crate::system::Deployer::Account(a) => s.accounts.get(a).map(|a| a.name.clone()),
-                crate::system::Deployer::Org(o) => s.orgs.get(o).map(|o| o.name.clone()),
-            })
-        })
-        .flatten()
-    });
+    let shown = subject
+        .deployment
+        .as_ref()
+        .and_then(|d| node.sys(|s| s.deployment_shown(d)));
+    let payer = shown
+        .as_ref()
+        .and_then(|d| d["owner"]["name"].as_str().map(str::to_owned));
     let mut points = vec![json!(format!(
         "{} is created for you{}: {app_name} {}{}.",
         subject.name,
@@ -554,6 +551,9 @@ pub(super) async fn install_request(
         where_words.clone()
     }));
     points.push(json!(update_words[0]));
+    if let Some(d) = &shown {
+        points.push(json!(super::offered_by(d)));
+    }
     if let Some(who) = &payer {
         points.push(json!(format!(
             "{who} pays for {app_name}; you have no Calimero bill for it."
@@ -568,6 +568,7 @@ pub(super) async fn install_request(
         "attention": [],
         "app": { "name": app_name, "package": package },
         "publisher": { "name": author, "signer": facts.signer },
+        "deployment": shown,
         "install": {
             "name": subject.name,
             "package": package,

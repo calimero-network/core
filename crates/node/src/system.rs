@@ -2411,6 +2411,24 @@ impl SystemState {
         }
     }
 
+    /// `owner`'s kind (`account` or `org`) and its name, `None` once it is gone.
+    #[must_use]
+    pub fn deployer_named(&self, owner: &Deployer) -> (&'static str, Option<String>) {
+        match owner {
+            Deployer::Account(a) => ("account", self.accounts.get(a).map(|a| a.name.clone())),
+            Deployer::Org(o) => ("org", self.orgs.get(o).map(|o| o.name.clone())),
+        }
+    }
+
+    /// Deployment `id` as a customer is shown it: names are not unique, so never its
+    /// name alone, but with its id and its owner (`{ id, name, owner: { kind, name } }`).
+    #[must_use]
+    pub fn deployment_shown(&self, id: &str) -> Option<Value> {
+        let d = self.deployments.get(id)?;
+        let (kind, name) = self.deployer_named(&d.owner);
+        Some(json!({ "id": d.id, "name": d.name, "owner": { "kind": kind, "name": name } }))
+    }
+
     /// Whether the cluster's sign-up policy lets an account in with `invite`
     /// (none, an organization invite or a cluster sign-up invite), and how.
     /// `open` takes anyone, `invite` an invite of either kind, `closed` a
