@@ -291,6 +291,13 @@ The class and its reasons are kept on the app's last upgrade
 release's, a raw bundle's, or a release the classifier could not read) is taken
 as red by every rule below; one logged before the feature replays as it applied.
 
+The consent page cannot show such an update.
+Its sheet builds the "before" side from the files of the release the app runs, and that release is gone.
+Opening it answers `404` for a session opened on the app's frontend and `400 NOT_A_RELEASE` for any other.
+Approve it from the command line or the API instead: `meroctl instance update INSTANCE --version V` (`POST /apps/{app}/upgrade`), which names the release by the app's own record.
+Under a `secondApprover` policy one owner or admin first runs `meroctl instance approve-update INSTANCE --version V` (`POST /apps/{app}/upgrade-approvals`), and another then runs `instance update`.
+Both are refused `409 FEATURE_NOT_ACTIVE` until every node runs 1.0.0-rc.35.
+
 ## Update policies
 
 How an app's updates apply is its organization's owner's and admins' to decide,

@@ -1346,7 +1346,11 @@ is its command line.
   the first approval, the upgrade, the unit's upgrade and the consent page of such a move under
   a `secondApprover` policy `409 FEATURE_NOT_ACTIVE` before the passkey, and `class_of` logs it
   without a class otherwise, as rc.34 did (the view still shows it red); `UpgradeRecord::class`/`reasons`/`approved_by` keep it
-  (`lastUpgrade`). Policies (`Feature::UpgradePolicies`, rc.34): `SetUpgradePolicy { org,
+  (`lastUpgrade`).
+  The consent page cannot open such an update: `upgrade_request` reads the "before" facts through `release_of_app`, which is `None`
+  once the release is uninstalled (`UninstallPackage` allows it while another release ships the same WASM), so a package-bound
+  session gets `404` from `Principal::within` and any other `400 NOT_A_RELEASE`; `api::upgrades::upgrade_app` falls back to
+  `app.release` and takes it (`instance update`, `instance approve-update`). Policies (`Feature::UpgradePolicies`, rc.34): `SetUpgradePolicy { org,
   app?, policy? }` by an owner or admin (`approves_upgrades`), consent `org:<org> /
   __set_upgrade_policy / system::upgrade_policy_args`, kept on `Org::upgrade_policy` and
   `Org::app_upgrade_policies` (a move drops the app's, `move_app`); `types::UpgradePolicy
