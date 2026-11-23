@@ -1482,6 +1482,21 @@ async fn on_a_granted_cluster_a_customer_creates_only_from_an_offer() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("DEPLOY_NOT_GRANTED"), "{e}");
+    // Refused before the app's group ran anything: every replica runs what it did.
+    let bundle = bob.apps().get(&catalog).await.map(wire).unwrap()["bundle"].clone();
+    for (i, n) in c.nodes.iter().enumerate() {
+        let running = n
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(&catalog)
+            .map(|g| g.read_local(|m, _| m.state.bundle.clone()));
+        assert_eq!(
+            running,
+            Some(bundle.as_str().map(str::to_owned)),
+            "node {i}"
+        );
+    }
 }
 
 /// The value of `metric{labels}` in Prometheus text, if the series is there.
