@@ -306,7 +306,7 @@ class RestoreBackup(DeepCase):
     def exercise(self, w, s):
         out = w.fleet.operate("restore", s["app"], "--backup", s["backup"])
         check((out.get("backup") or {}).get("name"), f"the restored backup: {out}")
-        s["want"] = {"kept": "before the backup", "lost": None}
+        s["want"] = {"kept": "before the backup", "lost": "after the backup"}
         got = until("the restored app answers", lambda: self._keys(w, s), 60)
         eq(got, s["want"], "the restored app's keys: the write after the backup is gone")
         person(w, "rowan").call(s["app"], "set", {"key": "again", "value": "after the restore"})
