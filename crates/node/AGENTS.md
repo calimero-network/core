@@ -291,7 +291,17 @@ is its command line.
   node checks the publisher signature and every artifact digest
   (`calimero_bundle::VerifiedBundle`), `minRuntimeVersion` (build.rs's
   `CALIMERO_RELEASE_VERSION`), the package's pinned signer (first release wins,
-  `apply` re-checks) and that each service's WASM compiles. The log keeps the
+  `apply` re-checks) and that each service's WASM compiles. Each compile (every service's
+  component and compute component, and a raw `POST /bundles`) goes through the node's one
+  `compile::Compiler` (`Node::compile`): on the blocking pool, `MAX_CONCURRENT_COMPILES` (1)
+  at a time, `MAX_QUEUED_COMPILES` (4) more waiting at most `COMPILE_WAIT` (10 s), past that
+  `503 BUSY`; one that runs past `COMPILE_TIMEOUT` (60 s) is `422 COMPILE_TIMEOUT` (with the
+  service in `details`) and keeps the slot until its thread returns. A component over
+  `MAX_COMPONENT_BYTES` (a blob, 47 MiB, unpacked) is `413 TOO_LARGE` before it compiles: it
+  could not reach another node as a blob. A component app's first-use prepare at run time
+  (`Node::prepare_bytes`) stays outside the compiler, off the workers through `spawn_blocking`.
+  Regression: `an_install_that_compiles_slowly_leaves_the_async_worker_free`
+  (`tests/slow_compile.rs`, `testing::slow_compiles`), `compile::tests`. The log keeps the
   `.mpk`'s hash; a node that runs a release it does not hold fetches it itself
   (`Node::release_wasm`: the registry for a registry release, never a peer; a peer
   for an upload), refuses bytes whose hash differs, and verifies them again.

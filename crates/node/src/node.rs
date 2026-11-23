@@ -514,7 +514,7 @@ pub struct Node {
     /// `<data_dir>/components`, each with a MAC under a key derived from K_c (S8).
     wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepares a release's compute components at install; no run ever goes through it.
-    compute_wasm: calimero_app_engine_wasmtime::WasmtimeEngine,
+    compute_wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepared components per bundle hash.
     prepared: Mutex<HashMap<String, calimero_app_host::Prepared>>,
     /// One lock per bundle being prepared, so concurrent first uses wait for one
@@ -577,6 +577,9 @@ pub struct Node {
     /// Makes this node's quotes (`/attestation`, the recovery disk's), off the
     /// async workers and one at a time.
     pub(crate) quoter: crate::attest::Quoter,
+    /// Compiles the components installs and uploads hand this node, off the
+    /// async workers and one at a time (`compile`).
+    pub(crate) compiler: crate::compile::Compiler,
     peers: Mutex<HashMap<String, Arc<calimero_sealed::client::SealedTransport>>>,
     pub(crate) http: reqwest::Client,
     cluster_secret: String,
@@ -1067,7 +1070,7 @@ impl Node {
             config.data_dir.join("components"),
             &component::component_cache_key(&cluster_key),
         )?);
-        let compute_wasm = calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?;
+        let compute_wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?);
         let clock = Clock::new(config.clock_offset_ms);
         let quoter = crate::attest::Quoter::new(config.attestation);
         let http = crate::peer_tls::peer_client(&config.tls_extra_roots)
@@ -1075,6 +1078,9 @@ impl Node {
             .build()?;
         #[cfg(feature = "testing")]
         let quoter = quoter.for_node(&config.public_url);
+        let compiler = crate::compile::Compiler::default();
+        #[cfg(feature = "testing")]
+        let compiler = compiler.for_node(&config.public_url);
         let node = Arc::new(Self {
             cluster_secret: cluster_secret(&cluster_key, &config.cluster),
             cluster_key,
@@ -1116,6 +1122,7 @@ impl Node {
             receipt_key,
             recovery: recovery_disk::RecoveryWriter::default(),
             quoter,
+            compiler,
             peers: Mutex::new(HashMap::new()),
             http,
             challenges: Mutex::new(HashMap::new()),
