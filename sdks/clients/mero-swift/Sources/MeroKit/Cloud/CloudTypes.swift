@@ -343,6 +343,15 @@ public struct OrgInfo: Sendable, Equatable {
             newWorkStopped = nil
         }
     }
+
+    /// `package`'s app team here: the top-level team whose `metadata.app.package`
+    /// is `package` (made with the org on the consent page, or adopted by an
+    /// admin). `nil` without one, or for a closed team the caller does not see.
+    public func appTeam(package: String) -> String? {
+        guard !package.isEmpty else { return nil }
+        return teams.values.filter { $0.parent == nil && $0.metadata["app"]?["package"]?.stringValue == package }
+            .map(\.teamId).min()
+    }
 }
 
 /// A passed release deadline that stopped new work.
