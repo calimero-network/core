@@ -181,8 +181,9 @@ impl Node {
     /// and when the restore point was taken (`takenAt`, Unix seconds, this node's clock
     /// as the write's is its leader's), for the undo's answer. `hosted: false` (and
     /// both counts `null`) when this node no longer hosts the app (a replica move took
-    /// it off): the undo then reads them from a replica it is on now, never takes the
-    /// `null`s for no writes (`api::undo::lost_writes`).
+    /// it off). This release's undo takes only `takenAt` from here and reads the rest
+    /// from a majority of the app's replicas, as this node may be behind its group
+    /// (`api::undo::lost_writes`); the counts stay for a node on the release before.
     pub(crate) fn restore_point_here(
         &self,
         app_id: &str,

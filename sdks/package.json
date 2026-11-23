@@ -16,6 +16,7 @@
     "overrides": {
       "@babel/core@<7.29.6": "^7.29.6",
       "@humanfs/node@<0.16.8": "~0.16.8",
+      "@vitest/mocker@<4.1.12": "4.1.12",
       "baseline-browser-mapping": ">=2.11.0 <3",
       "brace-expansion@<2": ">=1.1.21 <2",
       "brace-expansion@>=2 <3": "^2.1.7",
