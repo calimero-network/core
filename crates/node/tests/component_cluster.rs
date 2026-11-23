@@ -2,6 +2,11 @@
 //! sealed channels, with the real app components (`apps/fixture-*`, `apps/team-space`,
 //! built on first use by `common::component`).
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod common;
 
 use std::sync::Arc;

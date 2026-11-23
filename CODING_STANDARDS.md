@@ -46,6 +46,7 @@ Crates use `eyre`, imported as `use eyre::Result as EyreResult;`.
 
 A panic point (`.unwrap()`, `.expect()`, `assert!`, `panic!`) is reserved for an invariant that cannot fail, or a failure where aborting the node is the right response.
 State that invariant beside it: `// SAFETY: guaranteed by X`.
+Write it as `.expect("...")`: clippy refuses `.unwrap()` outside tests (`unwrap_used`, in the root `Cargo.toml`'s `[workspace.lints]`, which every member takes with `[lints] workspace = true`; `clippy.toml` exempts `#[test]` functions, and an integration test or bench allows it at its crate root).
 
 ## Control flow
 

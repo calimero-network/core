@@ -2,6 +2,11 @@
 //! roots (the Let's Encrypt staging CA on a test cluster) is refused by the
 //! peer client as built before, and reached once that CA is an extra root.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 

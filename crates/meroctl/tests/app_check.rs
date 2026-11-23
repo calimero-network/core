@@ -1,6 +1,11 @@
 //! `meroctl app check` offline (`--against FILE.mpk`): releases packed with `app pack`,
 //! judged green or red by the node's classifier, with the gate's exit codes. No node.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::path::Path;
 use std::process::{Command, Output};
 

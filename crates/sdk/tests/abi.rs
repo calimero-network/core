@@ -2,6 +2,10 @@
 //! read by the host, and its generated `handle` run on the wasmtime engine.
 
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
 
 use std::collections::BTreeMap;
 use std::path::Path;

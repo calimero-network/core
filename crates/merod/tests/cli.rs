@@ -1,6 +1,11 @@
 //! `merod init`, `config`, `run`, `inspect` and `attest`, through the binary: v1's
 //! command line over the node.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Output};

@@ -7,6 +7,11 @@
 //! `harness/cluster.rs`). Run one at a time (`--test-threads 1`): the clock shift is the
 //! process's.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::time::Duration;
 
 use calimero_client::types::ViewsRequestConsistency;
