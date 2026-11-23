@@ -291,7 +291,9 @@ class UpgradeKeys(DeepCase):
     def exercise(self, w, s):
         uma = person(w, "uma")
         _, v2 = w.registry.publish(fixture(w, "kv-u-1.1.0.mpk"))
-        uma.raw("post", "packages/install", {"package": s["package"], "version": v2})
+        # An install names its organization once an account may be in several: the app's.
+        org = uma.get(f"apps/{s['app']}")["org"]
+        uma.raw("post", "packages/install", {"package": s["package"], "version": v2, "org": org})
         refused(("FORBIDDEN", "NOT_FOUND", "REJECTED"),
                 lambda: uma.http("POST", f"apps/{s['other']}/upgrade", {"version": v2}, key=s["key"]),
                 "the upgrade key on another app")

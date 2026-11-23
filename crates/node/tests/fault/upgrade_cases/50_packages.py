@@ -511,7 +511,8 @@ class UnclassifiedUpdates(DeepCase):
         s["pending"] = []
         eq(noa.get(f"apps/{s['waiting']}/update")["pendingApprovals"], [], "the approval spent")
         # The whole move on the new release: 1.0.0 back, an app on it, 1.0.0 gone again.
-        nia.raw("post", "packages/install", {"package": s["package"], "version": s["v1"]})
+        # Nia is in two organizations: an install names the one the fresh app goes to.
+        nia.raw("post", "packages/install", {"package": s["package"], "version": s["v1"], "org": s["org"]})
         fresh = self._app(w, s, "fresh", s["org"])
         nia.raw("delete", f"packages/{s['package']}/{s['v1']}")
         self._offered(w, s, fresh)
