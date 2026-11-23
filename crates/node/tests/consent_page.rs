@@ -3255,6 +3255,85 @@ async fn a_unit_upgrades_on_the_page_in_one_approval() {
     }
 }
 
+/// A unit's available update tells a reader who may not use the release a member would move
+/// to nothing of it: the operator's notes 2.0.0 moves Alice's member to Acme's private kv
+/// 0.1.1, which declares a secret host; Bob reaches the instance and sees the update without
+/// that host, Acme's owner and members with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_units_update_never_shows_a_reader_a_member_release_it_may_not_use() {
+    const SECRET: &str = "https://internal.acme.example/secret-api/";
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let org = alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .orgs()
+        .invite_create(
+            &org,
+            typed(json!({ "role": "member" })),
+            Some(&mut alice_key),
+        )
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = carol.orgs().invite_redeem(&token).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+    let kv = "com.test.unit-kv";
+    let uses = |version: &str| Declares {
+        uses: Some(json!({ "kv": { "package": kv, "range": "^0.1", "version": version } })),
+        ..Declares::default()
+    };
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    for (package, version, d) in [
+        (kv, "0.1.0", Declares::default()),
+        (PACKAGE, "1.0.0", uses("0.1.0")),
+        (PACKAGE, "2.0.0", uses("0.1.1")),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = ops.ops().package_upload(mpk).await.unwrap();
+    }
+    let secret = Declares {
+        outbound: &[SECRET],
+        ..Declares::default()
+    };
+    let (mpk, _) = release_of(kv, "0.1.1", &kv_wasm(), &publisher, &secret);
+    let _ = alice.packages().upload(mpk, None).await.unwrap();
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0",
+            "grants": [{ "kind": "anyone" }] }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+
+    for org_member in [&alice, &carol] {
+        let got = get(org_member, &format!("apps/{notes}/update"))
+            .await
+            .unwrap();
+        assert_eq!(got["available"]["version"], "2.0.0", "{got}");
+        assert!(got.to_string().contains(SECRET), "{got}");
+    }
+    let bobs = get(&bob, &format!("apps/{notes}/update")).await.unwrap();
+    assert_eq!(bobs["available"]["version"], "2.0.0", "{bobs}");
+    assert!(!bobs.to_string().contains(SECRET), "{bobs}");
+}
+
 /// An app's frontend asks the person to let it call another app as them: the page names both
 /// apps and every method the app's release lists for the other's package, the person's passkey
 /// covers exactly those (`__delegate`), and the grant is recorded. The same frontend may not

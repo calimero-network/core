@@ -22,6 +22,7 @@ Two rights are judged apart:
 - **Read the facts** of the release an instance runs (its name and version in reports and update notices, the instance's ABI): whoever reaches that instance, as today.
   An organization that makes an instance reachable (grants, guests, public links, a deployment's customers) shares that instance, never the release.
   The release an instance runs is the package and version its record names; another package shipping the same WASM at that version is not it.
+  An update shown to such a reader leaves out the releases a unit's members would move to unless they may use them, as those are chosen for the instance's owner.
 
 Today `SystemState::sees_release` is one rule for both: any installer, anyone sharing any org with an installer, anyone reaching an app running it, and (in the package routes) any session bound to the package's frontend.
 

@@ -1865,7 +1865,9 @@ pub(crate) async fn update_view(
     let mut available = available;
     if let Some(a) = available.as_mut() {
         let version = a["version"].as_str().unwrap_or_default().to_owned();
-        match crate::egress::judged_update(node, &app, &version, !app.links.is_empty()).await {
+        let whole_unit = !app.links.is_empty()
+            && member_targets_readable(node, &app, running.as_ref(), &version, account).await;
+        match crate::egress::judged_update(node, &app, &version, whole_unit).await {
             Ok(Some(c)) => {
                 let summary = crate::consent_page::update_summary(&c);
                 // Unclassified: what compares the two sides is unknown (`null`), not unchanged.
@@ -1922,6 +1924,38 @@ pub(crate) async fn update_view(
         "policy": { "autoApply": policy.auto_apply, "holdHours": policy.hold_hours,
             "secondApprover": policy.second_approver, "source": source },
         "pendingApprovals": pending,
+    })
+}
+
+/// Whether `account` may be shown the releases `app`'s members move to with its update to
+/// `version`: a member of its organization, or one who may use each of them. They are
+/// chosen for the owner (`unit_members`), so a guest or visitor reaching the app is not.
+async fn member_targets_readable(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    running: Option<&crate::system::PackageRef>,
+    version: &str,
+    account: Option<&str>,
+) -> bool {
+    let (Some(account), Some(running)) = (account, running) else {
+        return false;
+    };
+    if node.sys(|s| s.member_of(&app.org, account)) {
+        return true;
+    }
+    let target = crate::system::PackageRef {
+        version: version.to_owned(),
+        ..running.clone()
+    };
+    let Ok(unit) =
+        super::apps::unit_members(node, &target, &app.owner, app.deployment.as_deref()).await
+    else {
+        return false;
+    };
+    node.sys(|s| {
+        unit.members
+            .values()
+            .all(|(package, version)| s.release_used(package, version, account).is_some())
     })
 }
 

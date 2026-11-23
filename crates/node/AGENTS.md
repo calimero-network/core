@@ -1417,7 +1417,10 @@ is its command line.
   `approvers` is `managers` while `Feature::OwnerApprovedUpgrades` is not.
   Regression: `an_instance_shows_its_update_and_who_may_approve_it`
   (`tests/deployments.rs`). `available` also carries the update classifier's verdict
-  (Unit destinations below), over the whole unit when the instance has members.
+  (Unit destinations below), over the whole unit when the instance has members and the
+  caller is a member of its organization or may use every release they move to (they are
+  chosen for its owner; `member_targets_readable`), else over the app alone (regression
+  `a_units_update_never_shows_a_reader_a_member_release_it_may_not_use`).
 - **Unit destinations** (`egress.rs`; the classifier is `calimero_bundle::update`,
   shared with `meroctl`): a unit's egress is the union of the `outbound` prefixes (and
   any declared secret host no prefix names) of the release the app runs and of each
