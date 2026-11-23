@@ -405,6 +405,43 @@ expect_absent "$CH" 'package.json' "  ...and no package.json is"
 expect_exit 4 "second run is a no-op" \
   bash "$BUMP" --surface npm --pkg @calimero-network/mero-js=29.7.0 --dir "$D" --no-lock
 
+# `# fleet-bump: hold` keeps a catalog pin where it is, even across a major
+# with --allow-major: apps' default catalog holds the conformance 0.x rig on
+# mero-js 26 while the component line moves to core's 1.0 release.
+D=$(mkfixture held-catalog); mkdir -p "$D/apps/v1/app"
+cat > "$D/pnpm-workspace.yaml" <<'YAML'
+packages:
+  - "apps/*/app"
+
+catalog:
+  "@calimero-network/mero-js": 26.11.0 # fleet-bump: hold
+  "@calimero-network/mero-icons": ^0.0.5
+
+catalogs:
+  component:
+    "@calimero-network/mero-js": ^36.0.0
+YAML
+cat > "$D/apps/v1/app/package.json" <<'JSON'
+{
+  "name": "v1",
+  "dependencies": {
+    "@calimero-network/mero-js": "catalog:",
+    "@calimero-network/mero-icons": "catalog:"
+  }
+}
+JSON
+touch "$D/pnpm-lock.yaml"
+commit "$D"
+OUT="$ROOT/held-catalog.out"
+bash "$BUMP" --surface npm --allow-major \
+  --pkg @calimero-network/mero-js=1.0.0-rc.32 --pkg @calimero-network/mero-icons=1.0.0-rc.32 \
+  --dir "$D" --no-lock > "$OUT" 2>&1
+expect_exit 0 "a held catalog pin stays while the rest move" sh -c "exit $?"
+expect_file "$D/pnpm-workspace.yaml" '"@calimero-network/mero-js": 26.11.0 # fleet-bump: hold' "  the held pin and its marker are untouched"
+expect_file "$D/pnpm-workspace.yaml" '"@calimero-network/mero-js": ^1.0.0-rc.32' "  the component catalog moves across the major"
+expect_file "$D/pnpm-workspace.yaml" '"@calimero-network/mero-icons": ^1.0.0-rc.32' "  an unheld default-catalog pin moves"
+expect_file "$OUT" 'is held (# fleet-bump: hold)' "  the hold is reported"
+
 # Peer ranges are floors, not pins: a manifest that pins the package literally
 # moves, and its peer range beside it does not.
 D=$(mkfixture peer-range); mkdir -p "$D/lib"
