@@ -62,6 +62,10 @@ Not exposed (verified): another org reading the victim's own instance, its state
   `sees_release` splits into the two rights above; `shares_org` goes, and the reach clause stays only in the read-the-facts rule (`report::named_release`, `app_update`).
   A record without `visibility` keeps today's rule; no cluster holds a private registry install yet, and none gets a credential before this release (mdma, below).
   `Feature::PrivateReleases` gates the new fields; a `DeepCase` covers a release installed before and after.
+  Everything that picks a release by its version follows the use right: an update on its own moves an app only to a release its owner may use; an app team is named after, and a package named for one, an upgrade key or an outbound approval is found from, the newest release the actor may use (an outbound approval: reads); a package with none answers as a missing one.
+  A deployment's offer serves only while someone who acts for its owner may use the release.
+  An install again that would leave its installer a release it may not use is refused before it is logged.
+  Apply judges the rules it can from the logged version that brings `Feature::PrivateReleases`, so earlier entries replay as they applied.
 - **C4. The registry learns who installs.**
   A private install's fetch sends the installing account (`x-calimero-install-account: <account id>`) with the cluster credential; `calimero-app-downloader`'s `HttpRegistry` takes the header.
   A re-fetch of a release the log already records (`release_mpk`: other nodes, `release_wasm`, frontends) sends none and is pinned by the recorded hash.
