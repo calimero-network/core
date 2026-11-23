@@ -1,6 +1,5 @@
-//! The forum on the real engine: v1's `TestHost` tests (the forum's, and the noticeboard's
-//! and team space's it absorbed), with the storage policies they exercised now the app's
-//! own checks.
+//! The forum on the real engine; the storage policies the old host enforced are now the
+//! app's own checks, tested here.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -562,9 +561,8 @@ fn forum_with_big_post(voters: usize, tags: usize, comments: usize) -> TestApp {
     t
 }
 
-/// The state once a post of one tag, one vote and one comment is deleted, in a forum of
-/// `voters` voters: a maintained count that falls to zero keeps its entry, so this, not
-/// the state before the post, is what deleting `big` must leave.
+/// The state after deleting a one-tag, one-vote, one-comment post: a count that falls to
+/// zero keeps its entry, so this, not the pre-post state, is what deleting `big` must leave.
 fn after_deleting_a_small_post(voters: usize) -> Vec<u8> {
     let mut t = forum_with_big_post(voters, 1, 1);
     for v in 1..voters {

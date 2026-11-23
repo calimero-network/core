@@ -1,7 +1,5 @@
 //! team-space on the real engine, in an org of an owner, an admin (`ada`), two members
-//! (`bob`, in the team `eng`, and `cy`) and a guest (`gus`): the organization's standing,
-//! the owned config, the role registry and the writer sets with their rotation (v1's
-//! `TestHost` tests of `Ownable`, `AccessControl` and `SharedStorage`, and the refusals).
+//! (`bob` in team `eng`, `cy`) and a guest (`gus`): standing, owned config, writer sets.
 
 #![cfg(not(target_arch = "wasm32"))]
 

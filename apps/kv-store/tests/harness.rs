@@ -1,4 +1,5 @@
-//! The store on the real engine: v1's `TestHost` tests, method for method.
+//! The store on the real engine: what the scenario files do not check (event payloads,
+//! misses, ordering, paging).
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -36,7 +37,7 @@ fn entries_and_clear() {
         view(&mut t, "entries", json!({})),
         json!({ "a": "1", "b": "2" })
     );
-    // v1's clear: any member, no passkey confirmation.
+    // Any member may clear, with no passkey confirmation.
     t.as_("owner").call("clear", json!({})).expect("clear");
     assert_eq!(view(&mut t, "len", json!({})), json!("0"));
     assert_eq!(view(&mut t, "entries", json!({})), json!({}));

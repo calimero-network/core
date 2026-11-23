@@ -1,4 +1,4 @@
-//! Rooms on the real engine, driven by the shared scenario (acceptance criterion A1, harness half).
+//! Rooms on the real engine, driven by the shared scenario (the cluster runs it too).
 
 #![cfg(not(target_arch = "wasm32"))]
 
