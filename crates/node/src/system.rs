@@ -2085,6 +2085,17 @@ impl SystemState {
             .is_some_and(|r| r >= OrgRole::Member)
     }
 
+    /// `package@version` if `who` may use it ([`Self::sees_release`]); for anyone else, as
+    /// if not installed. A route reads a release a client names through this or its kin.
+    #[must_use]
+    pub fn release_used(&self, package: &str, version: &str, who: &str) -> Option<&PackageVersion> {
+        self.packages
+            .get(package)?
+            .versions
+            .get(version)
+            .filter(|v| self.sees_release(v, who))
+    }
+
     /// The releases of `p` that `who` may see ([`Self::sees_release`]).
     pub fn visible_versions<'a>(
         &'a self,

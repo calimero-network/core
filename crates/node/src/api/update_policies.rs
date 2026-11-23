@@ -206,10 +206,12 @@ pub(crate) async fn approve_upgrade(
         service: running.service.clone(),
         compute: false,
     };
+    // Before the passkey, a release the approver may not use answers as a missing one; an
+    // instance from a deployment names its offer, though its owner may not use it otherwise.
     if !node.sys(|s| {
-        s.packages
-            .get(&target.package)
-            .is_some_and(|p| p.versions.contains_key(&target.version))
+        s.release_used(&target.package, &target.version, &actor)
+            .is_some()
+            || (app.deployment.is_some() && s.within_deployment(app, Some(&target), None).is_ok())
     }) {
         return Err(ApiError::new(
             409,

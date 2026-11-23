@@ -1456,7 +1456,13 @@ is its command line.
   a unit half way. Only a `__upgrade_unit` consent keeps `targets` on a run
   (`StartUpgradeRun` drops any other run's, whatever the entry lists), and its members are
   the instance's `links` (`upgrade_run_apps`). `POST /apps/{app}/upgrade-approvals` answers `approval` in the
-  `pendingApprovals` shape (`api::upgrades::approval_json`).
+  `pendingApprovals` shape (`api::upgrades::approval_json`). A target the approver may not
+  use (`SystemState::release_used`; for an instance from a deployment, its offer that still
+  serves) answers `409 NOT_INSTALLED` as a missing version, before the passkey, and
+  `ApproveUpgrade` refuses it at apply once the logged cluster version brings
+  `Feature::PrivateReleases` (regressions
+  `a_first_approval_answers_a_release_its_approver_may_not_use_as_a_missing_one`,
+  `system::tests::a_first_approval_of_a_release_its_approver_may_not_use_is_refused`).
   The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
   `autoApply` (`noDestinations`: a green update of an app whose unit has no destinations
   before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST

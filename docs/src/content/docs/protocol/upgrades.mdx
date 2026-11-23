@@ -321,7 +321,10 @@ first approves with `POST /apps/{app}/upgrade-approvals { version, unit? }`, its
 own consent (`<app> / __approve_upgrade / { package, version, targets, class }`,
 `ApproveUpgrade`), logged as a pending approval on the organization
 (`Org::pending_upgrades`, one per app; with `unit` the members the unit's
-upgrade moves, by app). Another owner or admin then upgrades as usual
+upgrade moves, by app).
+A version the approver may not use (a release private to an organization they are
+not in) answers `409 NOT_INSTALLED`, as a version that does not exist, before any
+passkey. Another owner or admin then upgrades as usual
 (`/upgrade`, `/upgrade-unit`, the consent page, an organization's or a
 publisher's run); `UpgradeApp` applies only with a live first approval of that
 move by someone else (`SystemState::update_gate`), and records its approver

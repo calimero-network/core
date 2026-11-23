@@ -133,7 +133,18 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !s.upgrade_policy_of(a).0.second_approver || class.is_green() {
                 return Err(ONE_APPROVAL);
             }
-            if s.logged_release(&package, &version).is_none() {
+            // A release the actor may not use is missing; entries logged below the version
+            // that brings private releases replay as they applied.
+            let to = PackageRef {
+                package: package.clone(),
+                version: version.clone(),
+                service: None,
+                compute: false,
+            };
+            let usable = !s.cluster_brings(cluster_version::Feature::PrivateReleases)
+                || s.release_used(&package, &version, &actor).is_some()
+                || (a.deployment.is_some() && s.within_deployment(a, Some(&to), None).is_ok());
+            if s.logged_release(&package, &version).is_none() || !usable {
                 return Err("that release is not installed");
             }
             if s.running(a).is_some_and(|r| r.package != package) {

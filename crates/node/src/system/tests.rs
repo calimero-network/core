@@ -12647,6 +12647,60 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
     assert!(m.state.orgs["cust"].pending_upgrades.is_empty());
 }
 
+/// A first approval names only a release its approver may use, from the logged version that
+/// brings private releases: one private to another organization is refused as a missing
+/// one, and an entry logged below it replays as it applied.
+#[test]
+fn a_first_approval_of_a_release_its_approver_may_not_use_is_refused() {
+    use super::cluster_version::Feature;
+    use crate::types::UpgradePolicy;
+    let mut m = classified();
+    let _ok = m
+        .run_unproven(SystemCmd::SetUpgradePolicy {
+            org: "cust".into(),
+            app: None,
+            policy: Some(UpgradePolicy {
+                second_approver: true,
+                ..UpgradePolicy::default()
+            }),
+            actor: "eve".into(),
+            consent: Value::Null,
+        })
+        .unwrap();
+    if let Some(v) = m
+        .state
+        .packages
+        .get_mut("p")
+        .and_then(|p| p.versions.get_mut("1.1.0"))
+    {
+        v.visibility = Some(super::Visibility::Private);
+        v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+    }
+    let approve = SystemCmd::ApproveUpgrade {
+        app_id: "inst".into(),
+        package: "p".into(),
+        version: "1.1.0".into(),
+        targets: std::collections::BTreeMap::new(),
+        class: red(&["https://telemetry.example/"]),
+        actor: "cora".into(),
+        at: 5,
+        consent: Value::Null,
+    };
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    assert!(
+        old.run_unproven(approve.clone()).is_ok(),
+        "replayed as it applied"
+    );
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(
+        m.run_unproven(approve),
+        Err("that release is not installed".to_owned())
+    );
+}
+
 // ------------------------------------------------------- updates on their own, undo
 
 /// C9's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a

@@ -9781,3 +9781,85 @@ async fn an_owner_attaches_an_app_and_the_instance_reads_it_with_linked() {
     let record = alice.apps().get(&notes).await.map(wire).unwrap();
     assert!(record.get("attached").is_none(), "{record}");
 }
+
+/// A first approval names only a release its approver may use: Bob, removed from Acme,
+/// keeps an instance of Acme's private 0.1.0 under a policy asking for a second approver;
+/// Acme's later private 0.2.0 (sending data to a partner) answers his approval, of the app
+/// or of its unit, exactly as a version that does not exist, before his passkey, so he
+/// learns neither the release nor its destinations.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_first_approval_answers_a_release_its_approver_may_not_use_as_a_missing_one() {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[93; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let acme = new_org(&alice, "Acme").await;
+    let bobco = new_org(&bob, "Bobco").await;
+    join_org(&alice, &mut a, &bob, &acme, "member").await;
+    let notes = "com.acme.approvednotes";
+    let release = |version: &str, tag: &str, outbound: &[&str]| {
+        mpk_using(
+            notes,
+            version,
+            &variant(&kv_wasm(), tag),
+            &key,
+            outbound,
+            Value::Null,
+        )
+    };
+    let _ = alice
+        .packages()
+        .upload(release("0.1.0", "n1", &[]), Some(&acme))
+        .await
+        .unwrap();
+    let made = bob
+        .apps()
+        .create(typed(
+            json!({ "name": "n", "package": notes, "version": "0.1.0", "org": bobco }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let app = made["appId"].as_str().unwrap().to_owned();
+    let policy = json!({ "autoApply": "never", "holdHours": 24, "secondApprover": true });
+    let _ = bob
+        .apps()
+        .policy_set(&app, Some(Some(typed(policy))), Some(&mut b))
+        .await
+        .unwrap();
+    let bob_id = account_id(&bob).await;
+    let _ = alice
+        .orgs()
+        .remove_member(&acme, &bob_id, Some(&mut a))
+        .await
+        .unwrap();
+    let partner = "https://secret-partner.acme.example/";
+    let _ = alice
+        .packages()
+        .upload(release("0.2.0", "n2", &[partner]), Some(&acme))
+        .await
+        .unwrap();
+    all_applied(&c).await;
+
+    for unit in [None, Some(true)] {
+        let approve = |version: &'static str| bob.apps().approve_upgrade(&app, version, unit, None);
+        let missing = approve("0.9.0").await.unwrap_err();
+        let private = approve("0.2.0").await.unwrap_err();
+        assert_eq!(missing.code(), Some("NOT_INSTALLED"), "{missing}");
+        assert_eq!(
+            missing.to_string(),
+            private.to_string().replace("0.2.0", "0.9.0")
+        );
+        let signed = bob
+            .apps()
+            .approve_upgrade(&app, "0.2.0", unit, Some(&mut b))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            signed.to_string(),
+            private.to_string(),
+            "before the passkey"
+        );
+        assert!(!signed.to_string().contains("partner"), "{signed}");
+    }
+}
