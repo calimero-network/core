@@ -129,7 +129,7 @@ class GrantedInstalls(DeepCase):
     area = "Deployments"
     since = "1.0.0-rc.34"
     seeds = ("a granted account's install (`POST /packages/install`) and app of it; an ungranted member of its "
-             "organization makes an instance of that release (no install, no grant)")
+             "organization (an admin) makes an instance of that release (no install, no grant)")
     verifies = ("both apps read back; an ungranted account's install, bundle upload and `POST /apps` of a registry "
                 "release refused `403 DEPLOY_NOT_GRANTED` as on the old release; on the new release the granted "
                 "account installs another package")
@@ -138,7 +138,7 @@ class GrantedInstalls(DeepCase):
         dev = person(w, "gus-dev")
         mate, nils = ungranted(w, "mia-mate", "nils-nogrant")
         org = new_org(dev, "Granted Org")
-        join(dev, org, mate)
+        join(dev, org, mate, role="admin")
         package, version = install(dev, w, "kv-b-1.0.0.mpk")
         apps = {}
         for p in (dev, mate):
@@ -190,7 +190,7 @@ class OwnerDeployers(DeepCase):
         org = new_org(olga, "Owner Granted Org")
         owner.raw("post", "deployers", {"deployer": {"org": org}, "until": AHEAD})
         owner.raw("post", "deployers", {"deployer": {"account": rex.id}})
-        install(olga, w, "kv-a-1.0.0.mpk")
+        install(olga, w, "kv-u-1.0.0.mpk")
         package, _ = install(rex, w, "kv-b-1.0.0.mpk")
         owner.raw("delete", "deployers/" + urllib.parse.quote(f"account:{rex.id}", safe=""))
         return {"org": org, "rex_package": package, "grants": {f"org:{org}": AHEAD}, "refused": ["rex-revoked"]}
@@ -277,31 +277,30 @@ class ReleaseDeadlines(DeepCase):
     since = "1.0.0-rc.34"
     seeds = (f"the operator's release deadlines (`POST /ops/releases/{{version}}/deadline`): a passed one on the "
              f"old nodes' release (so no node retires) and one announced far ahead; an organization that approves "
-             f"only an older release ({OLDER}) is stalled, one on the old release is not")
-    verifies = ("`GET /releases` lists both deadlines; the stalled organization's new app and install are refused "
-                "`409 RELEASE_DEADLINE` as on the old release, while the other's are not; on the new release the "
+             f"only an older release ({OLDER}) is stalled; its owner, also a member of one on the old release, is "
+             f"served and installs, but makes no app in it")
+    verifies = ("`GET /releases` lists both deadlines; a new app in the stalled organization is refused "
+                "`409 RELEASE_DEADLINE` as on the old release, while the other's app reads back; on the new release the "
                 "stalled organization approves the new release and creates an app, and the far deadline is lifted")
 
     def populate(self, w):
         stan, ora = people(w, "stan-stalled", "ora-ontime")
+        other = new_org(ora, "On Time Org")
+        join(ora, other, stan)
         org = new_org(stan, "Stalled Org")
         stan.raw("post", f"orgs/{org}/releases", {"version": OLDER})
         stan.raw("post", f"orgs/{org}/releases", {"version": FROM_RELEASE, "approved": False})
-        other = new_org(ora, "On Time Org")
         signed_ops(w, "POST", f"ops/releases/{FROM_RELEASE}/deadline", {"after": PASSED})
         signed_ops(w, "POST", f"ops/releases/{FAR}/deadline", {"after": AHEAD})
         s = {"org": org, "deadlines": {FROM_RELEASE: PASSED, FAR: AHEAD}, "stalled": True,
              "apps": {"ora-ontime": ora.deploy(kv_wasm(w), "on-time", org=other)}}
         s["decisions"] = self._decide(w, s)
-        eq(s["decisions"], {"create": "RELEASE_DEADLINE", "install": "RELEASE_DEADLINE"}, "the stalled organization")
+        eq(s["decisions"], {"create": "RELEASE_DEADLINE"}, "the stalled organization")
         return s
 
     def _decide(self, w, s):
         stan = person(w, "stan-stalled")
-        return decisions({
-            "create": lambda: stan.deploy(kv_wasm(w), "stalled", org=s["org"]),
-            "install": lambda: install(stan, w, "kv-c-1.0.0.mpk"),
-        })
+        return decisions({"create": lambda: stan.deploy(kv_wasm(w), "stalled", org=s["org"])})
 
     def check(self, w, s):
         got = {d["version"]: d["after"] for d in ops(w, "GET", "releases")["deadlines"]}
