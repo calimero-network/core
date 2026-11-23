@@ -610,10 +610,9 @@ async fn eventually(
     args: Value,
     done: impl Fn(&Value) -> bool,
 ) -> Value {
-    let mut last = Value::Null;
-    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
-    while tokio::time::Instant::now() < deadline {
-        if let Ok(v) = cl
+    let (args, done) = (&args, &done);
+    harness::poll::eventually(EVENTUALLY_DEADLINE, method, move || async move {
+        match cl
             .apps()
             .view(
                 app,
@@ -624,14 +623,12 @@ async fn eventually(
             )
             .await
         {
-            if done(&v.result) {
-                return v.result;
-            }
-            last = v.result;
+            Ok(v) if done(&v.result) => Ok(v.result),
+            Ok(v) => Err(format!("last answer {}", v.result)),
+            Err(e) => Err(format!("last error {e}")),
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("{method} never got there; last answer {last}");
+    })
+    .await
 }
 
 /// A blob reaches the other nodes base64-encoded inside a sealed request
@@ -1947,27 +1944,29 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     let session = alice.session().await.unwrap();
     let on3 = c.client(2);
     on3.use_session(session).await;
-    let mut seen = None;
-    for _ in 0..100 {
-        if let Ok(v) = on3
-            .apps()
-            .view(
-                &app,
-                "get",
-                Some(json!({ "key": "k" })),
-                Some(ViewsRequestConsistency::Stale),
-                Some(0),
-            )
-            .await
-        {
-            seen = Some(v.result);
-            if seen == Some(json!("v1")) {
-                break;
+    harness::poll::eventually(
+        harness::poll::EVENTUALLY,
+        "node 3 caught up once approved",
+        || async {
+            let v = on3
+                .apps()
+                .view(
+                    &app,
+                    "get",
+                    Some(json!({ "key": "k" })),
+                    Some(ViewsRequestConsistency::Stale),
+                    Some(0),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            if v.result == json!("v1") {
+                Ok(())
+            } else {
+                Err(v.result.to_string())
             }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(seen, Some(json!("v1")), "node 3 caught up once approved");
+        },
+    )
+    .await;
 
     // Withdrawn again: node 3 is sent nothing new.
     let _ok = alice

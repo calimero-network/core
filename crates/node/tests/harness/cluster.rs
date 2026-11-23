@@ -11,6 +11,9 @@ use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::attest::Mode;
 use calimero_node::{run, Config, Running};
 
+#[path = "eventually.rs"]
+pub mod poll;
+
 pub const ORIGIN: &str = "http://localhost:3000";
 
 /// The kv fixture (`apps/fixture-kv`: `set`, `get`, `entries`, `remove`, ...) as a

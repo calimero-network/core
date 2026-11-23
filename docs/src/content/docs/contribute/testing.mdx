@@ -707,7 +707,9 @@ test off it, make the test fast without making it prove less: a test limit
 instead of the production one (`ComputeLimits`, whose `poll` sets how often a
 leader asks its job nodes, a node's `set_app_start_wait` and
 `set_upload_complete_wait`, and `calimero_node::testing::shared_http_timeout`), polling for the state instead
-of a fixed sleep, a smaller file where size is not the point, a matrix split into
+of a fixed sleep (`eventually` in `crates/node/tests/harness/eventually.rs`,
+mounted as `harness::poll` and `common::poll`; a sleep stays only where it shows that something
+does not happen within a window), a smaller file where size is not the point, a matrix split into
 tests. A request a test expects to answer `503` is sent once through
 `client.transport()`: the client's `call` and `view` send it again while the node
 answers `503` (D70), about seven times. A new slow test is made fast, not listed.
