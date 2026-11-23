@@ -1,9 +1,9 @@
 ---
 title: Calimero
-description: A private cloud for apps people use together. Your app's data stays sealed, even from the people who run the servers.
+description: The confidential application platform. Your app gets its whole backend, and nobody can read the data, Calimero included.
 template: splash
 hero:
-  tagline: Build apps people use together, and keep their data private. Calimero runs your app on sealed servers that nobody can look inside, not even us.
+  tagline: The Firebase or Vercel of confidential computing. Calimero gives your app its whole backend, and nobody can read the data, Calimero included. You don't have to trust us; you can check.
   actions:
     - text: Get started
       link: /cloud/quickstart/
@@ -20,26 +20,60 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Why Calimero
+## Everything your app needs, out of the box
+
+Cloud providers sell confidential hardware and leave the rest to you: keys,
+storage, backups, upgrades, permissions. Calimero supplies all of it, so you
+ship in days or weeks instead of years.
 
 <CardGrid>
-  <Card title="Private by default" icon="seti:lock">
-    Your app's data is encrypted and stays inside sealed hardware. Not the
-    server operator, not Calimero, not anyone else can read it.
+  <Card title="Sign-in" icon="seti:lock">
+    Passkey sign-in, sessions and scoped API keys.
   </Card>
-  <Card title="Proof, not promises" icon="approve-check">
-    Before sending anything, your app checks that it is talking to a genuine,
-    unmodified server. Every answer comes back signed.
+  <Card title="Database" icon="seti:db">
+    Your app's data, replicated across servers: maps, sets, tables and rich
+    text.
   </Card>
-  <Card title="Always in sync" icon="random">
-    Every app runs on several servers at once and keeps them in step, so it
-    stays up and nothing is lost if one goes down.
+  <Card title="Functions" icon="seti:rust">
+    App logic in Rust, plus background jobs, timers and pipelines.
   </Card>
-  <Card title="Works where you are" icon="laptop">
-    Sign in with a passkey, no passwords. Call your app from the web, iOS or
-    Android with our client libraries.
+  <Card title="Realtime" icon="random">
+    Live updates and presence pushed to every client.
+  </Card>
+  <Card title="Files and search" icon="document">
+    Sealed file storage and full-text search over your app's data.
+  </Card>
+  <Card title="Clients" icon="laptop">
+    Ready-made TypeScript, Python, Swift and Kotlin clients.
   </Card>
 </CardGrid>
+
+## Private, and you can prove it
+
+<CardGrid>
+  <Card title="Sealed servers" icon="approve-check">
+    Before your app sends anything, it checks that the server is genuine,
+    unmodified hardware, and then talks to it only over an encrypted channel.
+  </Card>
+  <Card title="Encrypted at rest" icon="seti:lock">
+    A server gets its disk key only after proving which software it runs. A
+    copied disk or a tampered server reads nothing.
+  </Card>
+  <Card title="You approve every change" icon="setting">
+    New code reaches your data only after the approver you choose signs off.
+    Calimero can't push an update on its own.
+  </Card>
+  <Card title="Open source" icon="github">
+    The runtime, node and SDK are open source (Apache 2.0), and every answer
+    comes back with a signed receipt you can check.
+  </Card>
+</CardGrid>
+
+## Run it your way
+
+Start on **Calimero Cloud**, where small apps share hardware and cost a
+fraction of a dedicated machine. Move to a **dedicated cluster** or **your own
+infrastructure** when you need to, without rewriting your app.
 
 ## Where do you want to start?
 
@@ -51,7 +85,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <Card title="Build an app" icon="rocket">
     Write your app in Rust and publish it. [Start building →](/build/)
   </Card>
-  <Card title="Run your own servers" icon="setting">
+  <Card title="Run your own servers" icon="puzzle">
     Host a Calimero cluster yourself. [Operate a cluster →](/operate/)
   </Card>
   <Card title="Learn how it works" icon="open-book">
