@@ -466,8 +466,9 @@ is its command line.
   (what the caller manages), `GET /deployments/{id}` (public, on fresh state:
   name, owner kind and name, offers), `GET /deployments/{id}/orgs` (managers, `sys_fresh`:
   customer orgs' id, name, instance count, apps and versions, first created).
-  Not done: the spec's migration of old installs into deployments, transfer,
-  the lockout guard, the consent page naming the deployment. Regressions:
+  Decided, not built: the consent page naming the deployment, the recovery-key
+  guard, transfer (the spec's section 14); the migration of old installs is
+  dropped. Regressions:
   `tests/deployments.rs`, `deployments_are_their_managers_and_keep_what_they_offer`,
   `deployment_changes_carry_their_managers_consent`,
   `state_from_before_deployments_reads_with_none_and_writes_as_before`,
