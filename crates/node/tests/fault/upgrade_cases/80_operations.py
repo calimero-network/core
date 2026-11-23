@@ -87,7 +87,7 @@ class OpsState(DeepCase):
     name = "ops-state"
     area = "Ops"
     seeds = "account quotas changed, a per-organization quota override, a compute pool"
-    verifies = ("quotas, overrides, pools, the cluster's sign-up invites and policy as before; a quota changed "
+    verifies = ("quotas, overrides, pools, the cluster's sign-up policy as before (its invites are `sign-up-invites`'); a quota changed "
                 "and a backup written on each new node")
 
     def populate(self, w):
@@ -109,13 +109,11 @@ class OpsState(DeepCase):
     def _record(self, w, s):
         s["quotas"] = ops(w, "GET", "ops/quotas")
         s["pools"] = ops(w, "GET", "ops/pools")
-        s["invites"] = _answer(lambda: ops(w, "GET", "ops/sign-up/invites"))
         s["signup"] = anyone(w, "GET", "sign-up")
 
     def check(self, w, s):
         subset(ops(w, "GET", "ops/quotas"), s["quotas"], "quotas and overrides")
         subset(scrub(ops(w, "GET", "ops/pools"), {"nodes", "running"}), scrub(s["pools"], {"nodes", "running"}), "pools")
-        subset(_answer(lambda: ops(w, "GET", "ops/sign-up/invites")), s["invites"], "cluster sign-up invites")
         subset(anyone(w, "GET", "sign-up"), s["signup"], "the sign-up policy")
 
     def exercise(self, w, s):
@@ -125,16 +123,6 @@ class OpsState(DeepCase):
         for n in w.members():
             out = ops(w, "POST", "ops/backup", {}, node=n)
             check(out is not None and "written" in out, f"a backup on node {n}: {out}")
-
-
-def _answer(f):
-    """`f()`'s answer, or its refusal as `{"error": ..}`: compared the same way after the roll."""
-    from rv2 import HttpError
-
-    try:
-        return f()
-    except HttpError as e:
-        return {"error": e.body.get("error") if isinstance(e.body, dict) else e.status}
 
 
 @case
@@ -287,17 +275,17 @@ class RestoreBackup(DeepCase):
                 "write and not the second, and takes new writes")
 
     def _keys(self, w, s):
-        rob = person(w, "rob")
-        return {k: rob.result(s["app"], "get", {"key": k}) for k in s["want"]}
+        rowan = person(w, "rowan")
+        return {k: rowan.result(s["app"], "get", {"key": k}) for k in s["want"]}
 
     def populate(self, w):
-        rob = person(w, "rob")
-        app = rob.deploy(kv_wasm(w), "restore-me")
-        rob.call(app, "set", {"key": "kept", "value": "before the backup"})
+        rowan = person(w, "rowan")
+        app = rowan.deploy(kv_wasm(w), "restore-me")
+        rowan.call(app, "set", {"key": "kept", "value": "before the backup"})
         for node in w.members():
             out = ops(w, "POST", "ops/backup", {}, node=node)
             check(out is not None and "written" in out, f"a backup on node {node}: {out}")
-        rob.call(app, "set", {"key": "lost", "value": "after the backup"})
+        rowan.call(app, "set", {"key": "lost", "value": "after the backup"})
         s = {"app": app, "want": {"kept": "before the backup", "lost": "after the backup"}}
         eq(self._keys(w, s), s["want"], "the app's keys before a restore")
         return s
@@ -311,6 +299,6 @@ class RestoreBackup(DeepCase):
         s["want"] = {"kept": "before the backup", "lost": None}
         got = until("the restored app answers", lambda: self._keys(w, s), 60)
         eq(got, s["want"], "the restored app's keys: the write after the backup is gone")
-        person(w, "rob").call(s["app"], "set", {"key": "again", "value": "after the restore"})
+        person(w, "rowan").call(s["app"], "set", {"key": "again", "value": "after the restore"})
         s["want"]["again"] = "after the restore"
         self.check(w, s)
