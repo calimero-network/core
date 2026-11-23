@@ -1,9 +1,5 @@
-//! meroctl-sign: library for signing Calimero bundle manifests
-//!
-//! Implements the signing flow:
-//! - Generate Ed25519 keypairs
-//! - Sign manifests using RFC 8785 canonicalization
-//! - Derive did:key signerId from public keys
+//! Signing library for Calimero bundle manifests: Ed25519 keys, RFC 8785 canonicalization,
+//! did:key signerId derivation.
 
 use std::fs;
 use std::io::Read;
@@ -18,11 +14,8 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// Well-known development signing key seed.
-///
-/// Derived deterministically: `SHA-256("calimero-dev-signing-key-v1")`.
-/// This key is PUBLIC and provides no security. It exists solely as a
-/// marker for development builds, analogous to Android's `debug.keystore`.
+/// Development key seed: `SHA-256("calimero-dev-signing-key-v1")`. PUBLIC, so it provides no security;
+/// it only marks development builds, like Android's `debug.keystore`.
 const DEV_SEED: [u8; 32] = [
     0x8c, 0xb7, 0xae, 0x25, 0x1b, 0x4d, 0xa5, 0x5a, 0xec, 0xc3, 0x87, 0x5f, 0x4c, 0x0a, 0x71, 0x2c,
     0xe2, 0xb3, 0x4c, 0xb0, 0x6d, 0x47, 0x71, 0xe7, 0x13, 0xf2, 0xbb, 0x32, 0x89, 0xd0, 0xf7, 0xb4,
@@ -127,9 +120,8 @@ pub fn dev_signer_id() -> String {
     derive_signer_id_did_key(key.verifying_key().as_bytes())
 }
 
-/// True when `key` is the well-known development key. Derived from the public
-/// half so the dev warning cannot be suppressed by how a caller invokes signing
-/// (e.g. a MERO_SIGN_KEY file that happens to hold the dev seed).
+/// True when `key` is the dev key, judged from the public half so the warning cannot be dodged by
+/// how signing is invoked (e.g. a MERO_SIGN_KEY file holding the dev seed).
 pub fn is_dev_key(key: &SigningKey) -> bool {
     key.verifying_key().as_bytes() == dev_signing_key().verifying_key().as_bytes()
 }
@@ -140,7 +132,6 @@ pub fn sign_manifest(manifest_path: &Path, signing_key: &SigningKey) -> Result<(
     let verifying_key = signing_key.verifying_key();
     let signer_id = derive_signer_id_did_key(verifying_key.as_bytes());
 
-    // Read the manifest
     let manifest_content = fs::read_to_string(manifest_path)
         .with_context(|| format!("failed to read manifest: {}", manifest_path.display()))?;
 
@@ -157,7 +148,6 @@ pub fn sign_manifest(manifest_path: &Path, signing_key: &SigningKey) -> Result<(
         bail!("manifest is missing required field `minRuntimeVersion`");
     }
 
-    // Add signerId to the manifest
     if let Some(obj) = manifest.as_object_mut() {
         obj.insert(
             "signerId".to_string(),
@@ -165,20 +155,15 @@ pub fn sign_manifest(manifest_path: &Path, signing_key: &SigningKey) -> Result<(
         );
     }
 
-    // Canonicalize the manifest (without signature)
     let canonical_bytes = canonicalize_manifest(&manifest)?;
 
-    // Compute the signing payload
     let signing_payload = compute_signing_payload(&canonical_bytes);
 
-    // Sign the payload
     let signature = signing_key.sign(&signing_payload);
 
-    // Encode public key and signature as base64url
     let public_key_b64 = URL_SAFE_NO_PAD.encode(verifying_key.as_bytes());
     let signature_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-    // Add the signature object to the manifest
     let signature_obj = SignatureObject {
         algorithm: "ed25519".to_string(),
         public_key: public_key_b64,
@@ -192,7 +177,6 @@ pub fn sign_manifest(manifest_path: &Path, signing_key: &SigningKey) -> Result<(
         );
     }
 
-    // Write the signed manifest back
     let signed_manifest = serde_json::to_string_pretty(&manifest)?;
     fs::write(manifest_path, signed_manifest).with_context(|| {
         format!(
@@ -222,11 +206,8 @@ pub struct AbiCheck {
     pub breaking: bool,
 }
 
-/// Compare the ABI of every component `manifest_path` names (read beside it) with the ABI of
-/// `previous`: the last published release (`.mpk`), its component, or its ABI JSON. A change
-/// that breaks callers is reported; a state change the old data cannot be read through,
-/// with the state version unchanged, is an error, since signing it would publish a release
-/// whose upgrade strands the app's data.
+/// Compare each component's ABI with `previous`: a caller-breaking change is reported, but a state change old
+/// data cannot be read through, with the state version unchanged, is an error (the upgrade would strand data).
 pub fn check_abi(manifest_path: &Path, previous: &Path) -> Result<AbiCheck> {
     use calimero_app_abi::diff::diff;
     use calimero_app_abi::load::load_path;
@@ -268,13 +249,8 @@ pub fn check_abi(manifest_path: &Path, previous: &Path) -> Result<AbiCheck> {
     Ok(AbiCheck { report, breaking })
 }
 
-/// Verify a signed manifest end to end: re-canonicalize (RFC 8785, signature and
-/// underscore fields excluded), hash, and check the ed25519 signature against the
-/// embedded public key, then confirm `signerId` derives from that same key.
-///
-/// Returns `Ok(true)` when the signature verifies, `Ok(false)` when it is present
-/// but invalid, and `Err` when the manifest lacks a well-formed `signature`
-/// object. Mirrors the node's `verify_manifest_signature` gate.
+/// Verify a signed manifest end to end like the node's `verify_manifest_signature`: `Ok(false)` for an invalid
+/// signature, `Err` when it is missing or malformed, and the signerId must derive from the embedded key.
 pub fn verify_manifest(manifest: &serde_json::Value) -> Result<bool> {
     let signature_obj = manifest
         .get("signature")
@@ -347,9 +323,8 @@ fn make_key_dir(output_path: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
-/// Generate a new Ed25519 keypair. Refuses to replace an existing file unless
-/// `force`: a signing key is unrecoverable, and losing one means no further
-/// updates can be published for any app already installed under its signerId.
+/// Generate a new Ed25519 keypair; refuses to replace a file unless `force`, since a lost signing key
+/// means no more updates for any app installed under its signerId.
 pub fn generate_key(output_path: &Path, force: bool) -> Result<()> {
     let mut rng = rand::rng();
     let signing_key = SigningKey::generate(&mut rng);
@@ -391,12 +366,8 @@ pub fn generate_key(output_path: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
-/// Write the private-key JSON to a file this process creates, never to one that
-/// already exists: an existing file would keep its old permissions, and
-/// `create_new` refuses to write through a pre-placed symlink. On unix the seed
-/// is owner-only (0600) from its first byte, since `.mode()` applies at creation
-/// only. Other platforms inherit the default ACL, and say so. Without `force`,
-/// `create_new` leaves an existing key untouched and reports `AlreadyExists`.
+/// Write the key to a file this process creates, never an existing one (it would keep its permissions;
+/// `create_new` also refuses a pre-placed symlink). Unix: 0600 from the first byte; elsewhere the default ACL.
 fn write_private_key(path: &Path, contents: &str, force: bool) -> std::io::Result<()> {
     if force {
         match fs::remove_file(path) {
@@ -406,15 +377,11 @@ fn write_private_key(path: &Path, contents: &str, force: bool) -> std::io::Resul
         }
     }
 
-    // Exclusive creation, owner-only on every platform. This used to be `0600`
-    // on unix and a printed warning everywhere else, because std cannot set a
-    // Windows ACL — the signing seed is the one key that cannot be regenerated,
-    // and whoever reads it can publish under this publisher's ApplicationId, so
-    // a warning was never the right answer.
+    // Owner-only exclusive creation on every platform: the seed cannot be regenerated, and whoever reads it
+    // can publish under this publisher's ApplicationId.
     calimero_utils_fs::write_owner_only(path, contents.as_bytes())
 }
 
-/// Derive the signerId from a key file
 pub fn derive_signer_id(key_path: &Path) -> Result<()> {
     let key_content = fs::read_to_string(key_path)
         .with_context(|| format!("failed to read key file: {}", key_path.display()))?;
@@ -527,9 +494,8 @@ mod tests {
         let key_a = SigningKey::generate(&mut rng);
         let key_b = SigningKey::generate(&mut rng);
 
-        // Builds and signs a manifest with `signing_key`, claiming `signer_id`.
-        // signerId is part of the canonicalized (signed) payload, so it must be
-        // baked in before signing rather than patched in afterward.
+        // Builds and signs a manifest claiming `signer_id`, set before signing since it is part of the
+        // signed payload.
         let sign_with = |signing_key: &SigningKey, signer_id: &str| -> serde_json::Value {
             let mut manifest = json!({
                 "package": "com.example.app",
@@ -554,12 +520,8 @@ mod tests {
         let honest = sign_with(&key_a, &honest_id);
         assert!(verify_manifest(&honest).unwrap());
 
-        // Key A signs the identical structure but falsely claims key B's
-        // identity. The ed25519 signature still verifies (it signs over
-        // whatever bytes it is given, lie included), so the rejection below
-        // can only come from the signerId-vs-embedded-key check, not a
-        // signature failure - the "honest" case above proves the signature
-        // path alone succeeds for this exact signing key.
+        // Key A signs the same structure but claims key B's identity. The signature still verifies, so the
+        // rejection can only come from the signerId-vs-embedded-key check.
         let claimed_id = derive_signer_id_did_key(key_b.verifying_key().as_bytes());
         let forged = sign_with(&key_a, &claimed_id);
         assert!(!verify_manifest(&forged).unwrap());
@@ -694,9 +656,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("key.json");
 
-        // Pre-place a world-readable file with junk: a forced replacement must
-        // both replace the content AND end at 0600, never leave the new seed
-        // under the old 0644.
+        // Pre-place a world-readable file: a forced replacement must replace the content and end at 0600,
+        // never leave the new seed under the old 0644.
         std::fs::write(&key_path, "junk, not a key").unwrap();
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
 

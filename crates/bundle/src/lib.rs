@@ -35,10 +35,8 @@ pub const MAX_PIPELINES_PER_PACKAGE: usize = 16;
 /// A pipeline file is at most this large, the pipeline compiler's own source cap.
 pub const MAX_PIPELINE_BYTES: u64 = 64 * 1024;
 
-/// Represents an artifact within a bundle (WASM, ABI, migration)
-///
-/// `hash` is what binds the artifact bytes to the manifest signature, so a
-/// manifest that omits it is malformed rather than merely unhashed.
+/// `hash` binds the artifact bytes to the manifest signature, so a manifest that omits it is
+/// malformed rather than merely unhashed.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleArtifact {
@@ -62,11 +60,8 @@ pub struct BundleMetadata {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
-    /// Primary storefront category, from the registry's closed vocabulary
-    /// (`cargo_mero::meta::CATEGORIES`). Optional on the wire so bundles
-    /// published before it existed still deserialize, and so an older node
-    /// reading a newer bundle is unaffected — this struct has no
-    /// `deny_unknown_fields`.
+    /// Primary storefront category from the registry's closed vocabulary. Optional and not
+    /// `deny_unknown_fields`, so older bundles still read and older nodes accept newer ones.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     /// The app's Markdown guide for agents, the full text of the file its
@@ -111,10 +106,8 @@ pub fn is_web_url(url: &str) -> bool {
     !rest.is_empty() && !url.chars().any(char::is_control)
 }
 
-/// Whether `url` may be declared under a manifest's `outbound`: `https://`,
-/// a host, no credentials, no query or fragment, no whitespace or control
-/// characters, at most 2048 bytes. It is a prefix: it covers itself and every
-/// URL below it at a `/`, with any query string.
+/// Whether `url` may be declared under `outbound`: `https://`, a host, no credentials, query, fragment,
+/// whitespace or control characters, at most 2048 bytes. A prefix: covers every URL below it at a `/`.
 #[must_use]
 pub fn is_outbound_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
@@ -244,17 +237,14 @@ pub struct BundleUse {
     /// That release's ABI, as the app vendored it: `sha256:<64 hex>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub abi: Option<String>,
-    /// The referenced app's methods this release calls as the person its run serves, once
-    /// that person grants it (`SystemCmd::SetDelegation`): the referenced app then sees the
-    /// person as its caller. Empty: the release calls it as itself only. Shown on the
-    /// release's card and on the grant's consent, so the person sees what they allow.
+    /// The referenced app's methods this release calls as the person its run serves, once they grant it
+    /// (`SystemCmd::SetDelegation`). Empty: it calls as itself only. Shown on the grant's consent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<String>,
 }
 
 /// Whether `name` may name a method a release calls as the person: an ABI method name
-/// (`A-Za-z0-9_`, not starting with a digit, at most [`MAX_USE_METHOD_BYTES`]), never one of
-/// the node's own (`__`).
+/// (`A-Za-z0-9_`, no leading digit, at most [`MAX_USE_METHOD_BYTES`]), never a node-own `__` one.
 #[must_use]
 pub fn is_use_method(name: &str) -> bool {
     !name.is_empty()
@@ -310,14 +300,8 @@ impl UsesError {
 }
 
 impl BundleManifest {
-    /// Checks `secrets` against the rules a node enforces at install: valid names, at most
-    /// [`MAX_SECRETS`], each with 1 to [`MAX_SECRET_HOSTS`] hosts, every host the host of one
-    /// of the release's `outbound` prefixes (so a secret goes only where the release already
-    /// says data goes), and a short description.
-    ///
-    /// # Errors
-    ///
-    /// The first rule a declared secret breaks.
+    /// Checks `secrets` against the node's install rules; each host must be the host of an `outbound`
+    /// prefix, so a secret goes only where the release already says data goes.
     pub fn check_secrets(&self) -> Result<(), SecretsError> {
         let Some(secrets) = &self.secrets else {
             return Ok(());
@@ -355,13 +339,8 @@ impl BundleManifest {
         Ok(())
     }
 
-    /// Checks `uses` against the rules a node enforces at install: valid names, at most
-    /// [`MAX_USES`], a package other than the release's own, a semver range, a locked
-    /// version inside it, and an ABI digest of the right shape.
-    ///
-    /// # Errors
-    ///
-    /// The first rule a reference breaks.
+    /// Checks `uses` against the node's install rules: names, count, own-package ban, semver range,
+    /// locked version inside it and ABI digest shape.
     pub fn check_uses(&self) -> Result<(), UsesError> {
         let Some(uses) = &self.uses else {
             return Ok(());
@@ -420,16 +399,8 @@ impl BundleManifest {
     }
 }
 
-/// Deep-link handler declarations for the application.
-///
-/// Lets an app declare its own deep-link `slug` (e.g. `mero-chat`) so links
-/// like `https://links.calimero.network/<slug>/join` and
-/// `calimero://<slug>/join` resolve to the right app. When absent, the desktop
-/// falls back to kebab-casing the app name.
-///
-/// This block is a sibling of `metadata` in the manifest, NOT nested inside it,
-/// so it is deliberately outside the raw-wasm application-id derivation
-/// (`hash(bytecode, size, source, metadata)`).
+/// Deep-link handler declarations (`slug`; absent: the desktop kebab-cases the app name).
+/// Sibling of `metadata`, so outside the raw-wasm application-id derivation.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleHandlers {
@@ -437,21 +408,8 @@ pub struct BundleHandlers {
     pub slug: Option<String>,
 }
 
-/// How the bundle's `calimero-sdk` dependency resolved at build time — i.e.
-/// which node release the wasm was actually compiled against.
-///
-/// Distinct from `min_runtime_version`, which is a hand-declared floor ("refuse
-/// to run below this") and defaults to `0.1.0` for anyone who never sets it.
-/// This block is derived, not declared: a bundling tool reads it off the
-/// resolve graph, so it cannot drift from the bytecode it ships beside.
-///
-/// A sibling of `metadata`, like `handlers`, and for the same reason: stamping
-/// it must not move any app's raw-wasm application id
-/// (`hash(bytecode, size, source, metadata)`).
-///
-/// Every field is optional on the wire, and the struct has no
-/// `deny_unknown_fields`: bundles published before this existed carry no
-/// `buildInfo` at all, and an older node reading a newer bundle is unaffected.
+/// How `calimero-sdk` resolved at build time, read off the resolve graph rather than declared.
+/// Sibling of `metadata` so it moves no app id; every field is optional so older bundles and nodes are unaffected.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleBuildInfo {
@@ -459,16 +417,8 @@ pub struct BundleBuildInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sdk_source: Option<String>,
 
-    /// The node version the wasm was built against, when the resolution names
-    /// one: the git `tag=`, or the crate version for a registry dependency.
-    ///
-    /// ⚠️ NEVER the git dependency's own crate version. Core's in-git
-    /// `[workspace.package] version` is the literal `0.0.0` placeholder that
-    /// cargo-workspaces rewrites only when publishing, so every git-resolved
-    /// `calimero-sdk` reports `0.0.0` — a tagged checkout of rc.34 included.
-    /// A branch or rev dependency names no version at all; both leave this
-    /// `None` rather than publish a number that is not a release. `sdk_rev`
-    /// still identifies the build exactly in that case.
+    /// Node version built against: the git `tag=` or the registry crate version. Never a git dependency's
+    /// own crate version (the `0.0.0` placeholder); a branch or rev names none, so this stays `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sdk_version: Option<String>,
 
@@ -478,9 +428,7 @@ pub struct BundleBuildInfo {
     pub sdk_rev: Option<String>,
 }
 
-/// Cryptographic signature of the manifest
-///
-/// The signature is computed over the SHA-256 hash of the canonical manifest bytes (RFC 8785 JCS) with the `signature` field excluded.
+/// Ed25519 over the domain-tagged SHA-256 of the canonical manifest (RFC 8785, `signature` excluded).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleSignature {
@@ -512,26 +460,16 @@ pub struct BundleService {
     pub pipelines: Vec<BundleArtifact>,
 }
 
-/// Who upgrades the instances of a package, as its signed manifest declares
-/// (`upgrades`), where the cluster leaves app upgrades to owners
-/// (`--app-upgrades owner`; where the operator holds them, it alone does).
-///
-/// The declaration may only loosen toward owners: once a release declares
-/// `owner`, no later version of the package may declare `publisher` (a node
-/// refuses to install it), and no instance is upgraded from an `owner`
-/// release to a `publisher` one. Whoever accepted an instance as theirs to
-/// upgrade never loses that to a later release.
+/// Who upgrades a package's instances, as its signed manifest declares; it may only loosen toward owners:
+/// once a release declares `owner`, no later version may declare `publisher` (a node refuses it).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UpgradeAuthority {
-    /// Each instance's owner, or, for an organization's instance, whoever
-    /// holds `MANAGE_APPLICATION` there. The default when the manifest
-    /// leaves `upgrades` out.
+    /// Each instance's owner, or an organization's `MANAGE_APPLICATION` holders there. The default.
     #[default]
     Owner,
-    /// The organization the package's signing key is bound to: its `MANAGE_APPLICATION` holders upgrade every
-    /// instance, whoever owns it. Until an organization has bound the key
-    /// (`BindPublisher`), nobody upgrades them.
+    /// The organization the signing key is bound to: its `MANAGE_APPLICATION` holders upgrade every
+    /// instance. Until it binds the key (`BindPublisher`), nobody upgrades them.
     Publisher,
 }
 
@@ -543,11 +481,8 @@ impl UpgradeAuthority {
     }
 }
 
-/// Whether an instance of a package takes guests, as its signed manifest declares
-/// (`guests`): accounts listed on one instance that are not members of its organization.
-///
-/// Absent means [`Self::Forbidden`], so a package from before never takes guests it did
-/// not declare. A node older than the rule ignores the field.
+/// Whether an instance takes guests (accounts outside its organization), as the manifest declares.
+/// Absent means [`Self::Forbidden`]; an older node ignores the field.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GuestPolicy {
@@ -570,17 +505,13 @@ impl GuestPolicy {
     }
 }
 
-/// Where an instance of a package goes, as its signed manifest declares
-/// (`instanceOrg`): the organization it is created in.
-///
-/// Absent means [`Self::Either`]. A node older than the rule ignores the field
-/// (the signature is over the raw manifest).
+/// Where an instance goes (`instanceOrg`): the organization it is created in. Absent means
+/// [`Self::Either`]; an older node ignores the field (the signature is over the raw manifest).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InstanceOrg {
-    /// Every instance comes with an organization of its own, made with it (its
-    /// creator the owner); a request may not name an existing one. Its people are
-    /// invited into that organization.
+    /// Every instance comes with an organization of its own, made with it (its creator the owner);
+    /// a request may not name an existing one.
     Standalone,
     /// An instance goes into an organization its creator is already in: the one
     /// named, or their only one. Never makes one.
@@ -603,13 +534,8 @@ impl InstanceOrg {
     }
 }
 
-/// Bundle manifest describing the contents of a bundle archive.
-///
-/// Supports two formats:
-/// - **Single-service** (backward compat): `wasm` + optional `abi` fields
-/// - **Multi-service**: `services` array with named WASM modules
-///
-/// If `services` is present and non-empty, it takes priority over `wasm`/`abi`.
+/// Bundle manifest: single-service (`wasm` + optional `abi`, backward compat) or multi-service
+/// (`services`); a non-empty `services` takes priority over `wasm`/`abi`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleManifest {
@@ -666,63 +592,37 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links: Option<BundleLinks>,
 
-    /// Other URLs the same frontend is served at, besides `links.frontend`.
-    /// Never opened: `links.frontend` stays the one place clients load the
-    /// app. A node's sign-in page also trusts a login callback to any of their
-    /// origins, so an app that moves domain lists its old origin here until
-    /// every client has moved, then drops it.
-    ///
-    /// A sibling of `links`, not inside it: the registry refuses any `links`
-    /// value that is not a single URL string, and clients iterate `links` as
-    /// one URL each. An older node or registry ignores an unknown top-level
-    /// field, and a bundle's id is `(package, signer)`, so no app moves.
+    /// Other URLs the frontend is served at; never opened, but a node's sign-in page trusts a login callback to them.
+    /// A sibling of `links`: the registry refuses any `links` value that is not one URL string.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub frontend_aliases: Vec<String>,
 
-    /// The `https://` URL prefixes the app's runs may send an outbound request
-    /// under (a run's outgoing HTTP): `https://api.example.com/v1/` covers every
-    /// path below it, with any query string. Signed with the rest, shown at
-    /// install, and kept on the release record, where the node reads it: a request
-    /// no prefix covers is refused, and an app that lists none never gets a client.
-    /// A node still sends nothing unless its operator turned outbound requests on
-    /// and allows the URL's host.
+    /// The `https://` URL prefixes the app's outbound requests may go under; a request no prefix covers is refused.
+    /// Signed and shown at install; a node still sends nothing unless its operator allows the host.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outbound: Vec<String>,
 
-    /// The secrets the app's outbound requests name (`{{secret:NAME}}`), by name: the
-    /// hosts each may go to (each the host of an `outbound` prefix) and what it is, so
-    /// whoever deploys the app knows what to supply ([`BundleSecret`]). Signed with the
-    /// rest. A node that keeps it fills only a declared name, and only into a request to
-    /// one of its hosts; absent, the node fills any secret its operator bound to the
-    /// package, as before. An older node ignores the field (the signature is over the
-    /// raw manifest).
+    /// Secrets the outbound requests name (`{{secret:NAME}}`) and the hosts each may go to; a node fills only a
+    /// declared name into those hosts. Absent: any secret the operator bound. An older node ignores the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<BTreeMap<String, BundleSecret>>,
-    /// The other apps this release calls, by the name its code knows each by
-    /// ([`BundleUse`]): the package, the semver range it works with, the release it was
-    /// built against and that release's ABI, and whether the reference is created with
-    /// the app and upgraded with it (`create`) or an app the deployer already runs
-    /// (`attach`). Signed with the rest, shown before install and on the upgrade consent
-    /// page. An older node ignores the field (the signature is over the raw manifest).
+    /// The other apps this release calls, by the name its code knows each by ([`BundleUse`]); signed, shown
+    /// before install. An older node ignores the field (the signature is over the raw manifest).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uses: Option<BTreeMap<String, BundleUse>>,
 
-    /// Who upgrades the package's instances ([`UpgradeAuthority`]); absent
-    /// means [`UpgradeAuthority::Owner`]. Signed with the rest; a value other
-    /// than `owner` or `publisher` fails to parse, so the bundle is refused.
+    /// Who upgrades the package's instances ([`UpgradeAuthority`]); absent means `Owner`. Signed with the rest;
+    /// a value other than `owner` or `publisher` fails to parse, so the bundle is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upgrades: Option<UpgradeAuthority>,
 
-    /// Which organization an instance is created in ([`InstanceOrg`]): one of its own
-    /// (`standalone`), one its creator is in (`org`), or either (`either`, the default
-    /// when absent). Signed with the rest; any other value fails to parse, so the
-    /// bundle is refused. An older node ignores the field.
+    /// Which organization an instance is created in ([`InstanceOrg`]); absent means `either`. Signed with the
+    /// rest; an unknown value fails to parse, so the bundle is refused. An older node ignores the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_org: Option<InstanceOrg>,
 
-    /// Whether an instance takes guests ([`GuestPolicy`]): `allowed`, or `forbidden` (the
-    /// default when absent). Signed with the rest; any other value fails to parse. An
-    /// older node ignores the field.
+    /// Whether an instance takes guests ([`GuestPolicy`]); absent means `forbidden`. Signed with the rest;
+    /// an unknown value fails to parse. An older node ignores the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guests: Option<GuestPolicy>,
 
@@ -742,8 +642,7 @@ pub struct WasmArtifact<'a> {
 }
 
 impl BundleManifest {
-    /// Returns the list of service names in this bundle.
-    /// For single-service bundles, returns an empty vec (no named services).
+    /// Empty for single-service bundles.
     pub fn service_names(&self) -> Vec<&str> {
         match &self.services {
             Some(svcs) if !svcs.is_empty() => svcs.iter().map(|s| s.name.as_str()).collect(),
@@ -751,16 +650,11 @@ impl BundleManifest {
         }
     }
 
-    /// Returns true if this is a multi-service bundle.
     pub fn is_multi_service(&self) -> bool {
         matches!(&self.services, Some(svcs) if svcs.len() > 1)
     }
 
-    /// Iterate all WASM artifacts uniformly, regardless of single/multi-service.
-    ///
-    /// - Multi-service (`services` non-empty): yields one `WasmArtifact` per service.
-    /// - Single-service: yields one `WasmArtifact` with `name: None` from the
-    ///   top-level `wasm` field.
+    /// One `WasmArtifact` per service, or one with `name: None` for a single-service bundle.
     pub fn wasm_artifacts(&self) -> Vec<WasmArtifact<'_>> {
         match &self.services {
             Some(svcs) if !svcs.is_empty() => svcs
@@ -843,11 +737,8 @@ impl BundleManifest {
         artifacts
     }
 
-    /// Serialize the manifest's display metadata to JSON bytes for storage.
-    ///
-    /// Extracts `package`, `version`, `metadata.*`, `links.*` and
-    /// `frontendAliases` into a flat JSON object. This replaces the ~70-line inline blocks that were
-    /// copy-pasted across the three bundle install paths.
+    /// The display metadata a node stores at install: `package`, `version`, `metadata.*`, `links.*` and
+    /// `frontendAliases` as a flat JSON object.
     pub fn to_metadata_json(&self) -> eyre::Result<Vec<u8>> {
         let mut obj = serde_json::Map::new();
         obj.insert(
@@ -1126,9 +1017,7 @@ mod tests {
         assert!(serde_json::to_value(&none).unwrap().get("uses").is_none());
     }
 
-    /// A minimal manifest JSON with the given optional `handlers` block spliced
-    /// in verbatim. Everything else is held constant so the only difference
-    /// between two produced manifests is the presence of `handlers`.
+    /// A minimal manifest JSON with the given `handlers` block spliced in verbatim; the rest is constant.
     fn manifest_json(handlers_block: &str) -> String {
         format!(
             r#"{{
@@ -1262,9 +1151,8 @@ mod tests {
         assert!(stored_meta("").get("outbound").is_none());
     }
 
-    /// `upgrades` says who upgrades a package's instances: absent (every
-    /// manifest from before) is the owner and is written back absent, an
-    /// unknown value is refused, and the field is signed with the rest.
+    /// `upgrades` absent (every older manifest) is the owner and written back absent; an unknown value
+    /// is refused, and the field is signed.
     #[test]
     fn upgrades_is_owner_unless_the_manifest_says_publisher() {
         let parse = |block: &str| serde_json::from_str::<BundleManifest>(&manifest_json(block));
@@ -1296,9 +1184,8 @@ mod tests {
         );
     }
 
-    /// `instanceOrg` says where a package's instances go: absent (every manifest
-    /// from before) is `either` and is written back absent, an unknown value is
-    /// refused, and the field is signed with the rest.
+    /// `instanceOrg` absent (every older manifest) is `either` and written back absent; an unknown value
+    /// is refused, and the field is signed.
     #[test]
     fn instance_org_is_either_unless_the_manifest_says_otherwise() {
         let parse = |block: &str| serde_json::from_str::<BundleManifest>(&manifest_json(block));
@@ -1332,9 +1219,8 @@ mod tests {
         );
     }
 
-    /// `guests` says whether an instance takes guests: absent (every manifest from
-    /// before) is `forbidden` and is written back absent, an unknown value is refused, and
-    /// the field is signed with the rest.
+    /// `guests` absent (every older manifest) is `forbidden` and written back absent; an unknown value
+    /// is refused, and the field is signed.
     #[test]
     fn guests_are_forbidden_unless_the_manifest_allows_them() {
         let parse = |block: &str| serde_json::from_str::<BundleManifest>(&manifest_json(block));
@@ -1457,8 +1343,8 @@ mod tests {
         );
     }
 
-    /// A manifest without a guide must serialize exactly as it did before the
-    /// field existed: an emitted `"guide": null` would change every signed payload.
+    /// Every absent optional field (guide, buildInfo, handlers) must serialize as before it existed:
+    /// an emitted null would change every signed payload.
     #[test]
     fn absent_guide_leaves_the_manifest_bytes_unchanged() {
         let manifest: BundleManifest = serde_json::from_str(&manifest_json("")).unwrap();
