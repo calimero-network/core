@@ -219,7 +219,14 @@ impl SystemState {
         };
         match self.publisher_of_signer(&p.signer_id) {
             Some(org) => self.manages_apps(org, account, None),
-            None => p.owner == account,
+            // A first installer, only while a release of it is theirs to use (from the
+            // version that brings private releases, so earlier entries replay as they applied).
+            None => {
+                p.owner == account
+                    && (!self
+                        .cluster_brings(crate::system::cluster_version::Feature::PrivateReleases)
+                        || p.versions.values().any(|v| self.sees_release(v, account)))
+            }
         }
     }
 

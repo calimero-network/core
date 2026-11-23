@@ -274,12 +274,40 @@ async fn package_capabilities(
     Ok(Json(card))
 }
 
+/// Refuses, as apply refuses a missing one, an uninstall of releases `account` may not use:
+/// `version`, or with none, every release of `package`.
+async fn refuse_unusable(
+    node: &Node,
+    p: &Principal,
+    package: &str,
+    version: Option<&str>,
+) -> Result<String, ApiError> {
+    let account = p.account()?;
+    node.sys_fresh_from(p.sys_index).await;
+    let refusal = node.sys(|s| {
+        let pkg = s.packages.get(package)?;
+        let usable = |v: &crate::system::PackageVersion| s.sees_release(v, &account);
+        if !pkg.versions.values().any(usable) {
+            return Some("no such package");
+        }
+        version
+            .and_then(|v| pkg.versions.get(v))
+            .is_some_and(|v| !usable(v))
+            .then_some("no such version")
+    });
+    match refusal {
+        Some(why) => Err(crate::node::rejected(why)),
+        None => Ok(account),
+    }
+}
+
 async fn package_uninstall(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(package): Path<String>,
 ) -> ApiResult {
-    let account = holder(&node, &headers).await?.account()?;
+    let p = holder(&node, &headers).await?;
+    let account = refuse_unusable(&node, &p, &package, None).await?;
     Ok(Json(
         node.sys_write(&SystemCmd::UninstallPackage {
             package,
@@ -295,7 +323,8 @@ async fn package_version_uninstall(
     headers: HeaderMap,
     Path((package, version)): Path<(String, String)>,
 ) -> ApiResult {
-    let account = holder(&node, &headers).await?.account()?;
+    let p = holder(&node, &headers).await?;
+    let account = refuse_unusable(&node, &p, &package, Some(&version)).await?;
     Ok(Json(
         node.sys_write(&SystemCmd::UninstallPackage {
             package,

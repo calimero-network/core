@@ -765,6 +765,63 @@ fn a_private_release_is_used_only_in_the_organizations_it_was_installed_for() {
     assert!(seen(&m, "dave") && seen(&m, "alice"));
 }
 
+/// A package's first installer uninstalls (and manages the origins of) only the releases it
+/// may use, from the logged version that brings private releases; an entry logged below it
+/// replays as it applied.
+#[test]
+fn an_uninstall_takes_only_the_releases_its_actor_may_use() {
+    use super::cluster_version::Feature;
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    let install =
+        |by: &str, version: &str, visibility: &str, orgs: &[String]| SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: serde_json::from_value(json!({
+                "version": version, "mpk": version, "mpkSize": 1, "source": "registry",
+                "services": { "": format!("b-{version}") }, "installedBy": by,
+                "installedAt": 1, "visibility": visibility, "orgs": orgs,
+            }))
+            .unwrap(),
+        };
+    let _ok = m
+        .run_authorized(install("bob", "1.0.0", "public", &[]))
+        .unwrap();
+    let _ok = m
+        .run_authorized(install("alice", "2.0.0", "private", &[p("alice")]))
+        .unwrap();
+    let uninstall = |version: Option<&str>| SystemCmd::UninstallPackage {
+        package: "p".into(),
+        version: version.map(str::to_owned),
+        actor: "bob".into(),
+    };
+
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let gone = old.run_authorized(uninstall(Some("2.0.0"))).unwrap();
+    assert_eq!(gone["removed"], json!(["2.0.0"]), "replayed as it applied");
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(
+        m.run_authorized(uninstall(Some("2.0.0"))),
+        m.run_authorized(uninstall(Some("9.9.9")))
+    );
+    let gone = m.run_authorized(uninstall(None)).unwrap();
+    assert_eq!(gone["removed"], json!(["1.0.0"]));
+    assert!(m.state.packages["p"].versions.contains_key("2.0.0"));
+    assert_eq!(m.run_authorized(uninstall(None)), Err("no such package"));
+    // Nor does the first installer manage the origins of releases it may not use.
+    assert!(!m.state.manages_package("p", "bob"));
+    let mut before = m.state.clone();
+    before.cluster_version = None;
+    assert!(before.manages_package("p", "bob"), "as it applied before");
+}
+
 /// A release recorded before `visibility` keeps the rule from before: whoever shares an
 /// organization with an installer, or reaches an app of it, uses it. Its entry writes back
 /// byte for byte; a private install of it again leaves that rule, a public one replaces it.

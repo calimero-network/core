@@ -239,13 +239,25 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             actor,
         } => {
             let p = s.packages.get(&package).ok_or("no such package")?;
+            // A release the actor may not use answers as a missing one; entries logged
+            // below the version that brings private releases replay as they applied.
+            let gated = s.cluster_brings(cluster_version::Feature::PrivateReleases);
+            let usable = |v: &PackageVersion| !gated || s.sees_release(v, &actor);
+            if !p.versions.values().any(usable) {
+                return Err("no such package");
+            }
             if p.owner != actor {
                 return Err("only whoever installed the package (an account, or the operator) may uninstall it");
             }
             let gone: Vec<String> = match &version {
-                Some(v) if !p.versions.contains_key(v) => return Err("no such version"),
+                Some(v) if !p.versions.get(v).is_some_and(usable) => return Err("no such version"),
                 Some(v) => vec![v.clone()],
-                None => p.versions.keys().cloned().collect(),
+                None => p
+                    .versions
+                    .iter()
+                    .filter(|(_, v)| usable(v))
+                    .map(|(k, _)| k.clone())
+                    .collect(),
             };
             // An offered release is the deployments' to keep: whoever
             // installed it first does not take it from them.

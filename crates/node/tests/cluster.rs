@@ -7588,6 +7588,43 @@ async fn reaching_an_instance_reads_its_release_but_does_not_use_it() {
         .unwrap();
 }
 
+/// A package's first installer uninstalls only the releases it may use: Bob installed the
+/// public 1.0.0 first, and Alice's private 2.0.0 for Acme answers him as a missing version,
+/// so he neither removes it nor learns it exists; uninstalling the whole package takes only
+/// his.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_first_installer_uninstalls_only_the_releases_it_may_use() {
+    let registry = FakeRegistry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let _acme = new_org(&alice, "Acme").await;
+    let _bobco = new_org(&bob, "Bobco").await;
+    let mixed = "com.acme.mixed";
+    let release = |version: &str| mpk(mixed, version, &variant(&kv_wasm(), version), &publisher);
+    registry.publish(mixed, "1.0.0", release("1.0.0"));
+    let _ok = bob.packages().install(mixed, "1.0.0", None).await.unwrap();
+    let _ok = alice
+        .packages()
+        .upload(release("2.0.0"), None)
+        .await
+        .unwrap();
+
+    let p = bob.packages();
+    let hidden = p.version_uninstall(mixed, "2.0.0").await.unwrap_err();
+    let missing = p.version_uninstall(mixed, "9.9.9").await.unwrap_err();
+    assert_eq!(hidden.to_string(), missing.to_string());
+    let removed = p.uninstall(mixed).await.map(wire).unwrap();
+    assert_eq!(removed["removed"], json!(["1.0.0"]), "{removed}");
+    let listed_alice = listed(&alice).await;
+    assert_eq!(
+        listed_alice,
+        BTreeMap::from([(mixed.to_owned(), vec!["2.0.0".to_owned()])])
+    );
+}
+
 /// On a granted cluster, a stranger's session on a public release's frontend creates an
 /// instance of it: another organization installed it, and the stranger needs no install
 /// and no deployer grant of their own.

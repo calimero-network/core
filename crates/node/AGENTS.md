@@ -357,7 +357,13 @@ is its command line.
   `POST /apps { package, version?, service? }` creates from a release (installing
   it from the registry first); upgrade takes `{ version }`; `DELETE /apps/{app}`;
   `DELETE /packages/{p}[/{v}]` is refused while an app runs the release (a WASM
-  another release ships stays). Raw `POST /bundles` is development only
+  another release ships stays); it takes only releases the actor may use, one it may
+  not answering as missing (`api::packages::refuse_unusable`, and `UninstallPackage`
+  at apply once the logged cluster version brings `Feature::PrivateReleases`, so
+  earlier entries replay as they applied; `manages_package` keeps a first installer
+  to the origins of a package with a release it may use, the same way; regression
+  `an_uninstall_takes_only_the_releases_its_actor_may_use`,
+  `a_first_installer_uninstalls_only_the_releases_it_may_use`). Raw `POST /bundles` is development only
   (`allow_unsigned_bundles`, on with `--dev`). **Who sees a release**
   (`SystemState::sees_release`, the right to use it): everyone for a release the
   operator installed (the catalog), and the operator for its own installs only; a
