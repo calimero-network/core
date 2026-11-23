@@ -79,6 +79,8 @@ class ReleaseVisibility(DeepCase):
         ines, ivo = people(w, "ines", "ivo")
         org = new_org(ines, "Ines Packages")
         join(ines, org, ivo)
+        # A member creates apps only with CREATE_APP (bit 0), which no member holds by default.
+        ines.raw("post", f"orgs/{org}/capabilities", {"account": ivo.id, "capabilities": 1})
         p, v = install(ines, w, "kv-b-1.0.0.mpk")
         return {"org": org, "before": [p, v], "after": None}
 
