@@ -7,7 +7,7 @@ import json
 import time
 
 from upgrade_deep import (DeepCase, anyone, check, decision, eq, kv_wasm, new_org, operator, ops,
-                          ops_text, person, same_decisions, same_read, scrub, snap, subset, until)
+                          ops_text, person, refused, same_decisions, same_read, scrub, snap, subset, until)
 from upgrade_path import case
 
 
@@ -302,4 +302,53 @@ class RestoreBackup(DeepCase):
         eq(got, s["want"], "the restored app's keys: the write after the backup is gone")
         person(w, "rowan").call(s["app"], "set", {"key": "again", "value": "after the restore"})
         s["want"]["again"] = "after the restore"
+        self.check(w, s)
+
+
+def _job_nodes(w):
+    """The ids of the job nodes the directory holds (`GET /ops/placement`)."""
+    return sorted(n["id"] for n in ops(w, "GET", "ops/placement")["nodes"] if str(n.get("role")).lower() == "job")
+
+
+def _attested(w, node=None):
+    """`{job node: its attestation answer}` as the system leader's check reports it: each must be admitted."""
+    got = {}
+    for job in _job_nodes(w):
+        got[job] = until(f"job node {job} is attested", lambda job=job: _admitted(ops(
+            w, "GET", f"ops/job-nodes/{job}/attestation", node=node), job), 30)
+    check(got, "no job node is registered")
+    return got
+
+
+def _admitted(answer, job):
+    check(answer.get("state") == "admitted" and answer.get("node") == job, f"job node {job}: {answer}")
+    return answer
+
+
+@case
+class JobNodeAttestation(DeepCase):
+    name = "job-node-attestation"
+    area = "Ops"
+    since = "1.0.0-rc.25"
+    seeds = "the job node the cluster registered (compute runs use it); nothing is stored beyond its registration"
+    verifies = ("the operator's read of each registered job node's attestation answers `admitted` with the "
+                "release it runs, as the old release's nodes judge it, in the mixed cluster, and as the new "
+                "release's nodes judge the new job node after the roll; a replica's id is refused `404`")
+
+    def populate(self, w):
+        got = _attested(w)
+        check(all(w.fixtures["from_version"] in json.dumps(a.get("release")) for a in got.values()),
+              f"the job node's release: {got}")
+        return {"from": w.fixtures["from_version"]}
+
+    def check(self, w, s):
+        _attested(w)
+        replica = w.members()[0]
+        refused(("NOT_FOUND", "404"), lambda: ops(w, "GET", f"ops/job-nodes/{replica}/attestation"),
+                "the attestation of a replica node")
+
+    def exercise(self, w, s):
+        got = _attested(w)
+        check(all(s["from"] not in json.dumps(a.get("release")) for a in got.values()),
+              f"the job nodes after the roll run the new release: {got}")
         self.check(w, s)

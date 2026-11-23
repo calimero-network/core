@@ -136,9 +136,6 @@ NOT_COVERED = [
     ("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
      "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
      "is covered, the stream itself by the cluster tests"),
-    ("Ops", "A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`)",
-     "a read that stores nothing, so there is no data to carry across a roll; it needs a registered job "
-     "node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable"),
     ("Apps", "The consent page's install sheet (`install`), update sheets with their class, policy and "
      "approval step (\"Approve (1 of 2)\", \"Approve and update (2 of 2)\"), an update policy changed on the page "
      "(`updatePolicy`), the node's updates page (`updates`, `/updates/{id}`, `POST /consent/{id}/open`) and "
