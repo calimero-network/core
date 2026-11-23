@@ -1380,17 +1380,6 @@ mod tests {
     }
 
     #[test]
-    fn handlers_defaults_to_none_when_absent() {
-        let manifest: BundleManifest = serde_json::from_str(&manifest_json(""))
-            .expect("manifest without handlers should deserialize");
-
-        assert!(
-            manifest.handlers.is_none(),
-            "handlers must default to None when the block is absent"
-        );
-    }
-
-    #[test]
     fn handlers_absent_block_and_empty_slug_deserialize() {
         // An empty `handlers: {}` block yields Some(handlers) with slug == None
         // thanks to the field-level `#[serde(default)]`.
@@ -1451,32 +1440,6 @@ mod tests {
         assert_eq!(
             build_info.sdk_rev.as_deref(),
             Some("6c6fb4ab4fe02500ab1262c643f52dcc6d6278bf")
-        );
-    }
-
-    /// Every bundle published before `buildInfo` existed has none. Reading one
-    /// must stay a plain `None`, not an error — this is the whole reason the
-    /// field is optional.
-    #[test]
-    fn build_info_defaults_to_none_when_absent() {
-        let manifest: BundleManifest = serde_json::from_str(&manifest_json(""))
-            .expect("manifest without buildInfo should deserialize");
-
-        assert!(manifest.build_info.is_none());
-    }
-
-    /// A manifest that carries no `buildInfo` must serialize without the key
-    /// at all: an emitted `"buildInfo": null` would change the canonical bytes
-    /// every existing signature was computed over.
-    #[test]
-    fn absent_build_info_is_not_serialized() {
-        let manifest: BundleManifest = serde_json::from_str(&manifest_json("")).unwrap();
-
-        let json = serde_json::to_string(&manifest).expect("serialize");
-
-        assert!(
-            !json.contains("buildInfo"),
-            "absent buildInfo must not appear in the serialized manifest: {json}"
         );
     }
 

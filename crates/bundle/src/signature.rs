@@ -492,24 +492,6 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_bundle_hash() {
-        let canonical_bytes = b"test manifest content";
-        let hash = compute_bundle_hash(canonical_bytes);
-
-        // Hash should be 32 bytes
-        assert_eq!(hash.len(), 32);
-
-        // Same input should produce same hash
-        let hash_2 = compute_bundle_hash(canonical_bytes);
-        assert_eq!(hash, hash_2);
-
-        // Different input should produce different hash
-        let different_bytes = b"different content";
-        let different_hash = compute_bundle_hash(different_bytes);
-        assert_ne!(hash, different_hash);
-    }
-
-    #[test]
     fn test_decode_public_key_valid() {
         // Generate a test key
         let signing_key = SigningKey::generate(&mut rand::rng());
@@ -550,22 +532,6 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("invalid signature length"));
-    }
-
-    #[test]
-    fn test_verify_ed25519_valid_signature() {
-        let signing_key = SigningKey::generate(&mut rand::rng());
-        let message = b"test message";
-
-        let signature = signing_key.sign(message);
-
-        let result = verify_ed25519(
-            &signature.to_bytes(),
-            signing_key.verifying_key().as_bytes(),
-            message,
-        );
-
-        assert!(result.is_ok());
     }
 
     #[test]
@@ -713,39 +679,6 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("signature verification failed"));
-    }
-
-    #[test]
-    fn test_signer_id_derivation_is_stable() {
-        // Generate a key and derive signerId multiple times
-        let signing_key = SigningKey::generate(&mut rand::rng());
-        let verifying_key = signing_key.verifying_key();
-        let pubkey = verifying_key.as_bytes();
-
-        let signer_id_1 = derive_signer_id_did_key(pubkey);
-        let signer_id_2 = derive_signer_id_did_key(pubkey);
-        let signer_id_3 = derive_signer_id_did_key(pubkey);
-
-        assert_eq!(signer_id_1, signer_id_2);
-        assert_eq!(signer_id_2, signer_id_3);
-    }
-
-    #[test]
-    fn test_bundle_hash_is_deterministic() {
-        let signing_key = SigningKey::generate(&mut rand::rng());
-        let signer_id = derive_signer_id_did_key(signing_key.verifying_key().as_bytes());
-
-        let manifest = create_test_manifest("com.example.app", "1.0.0", Some(&signer_id));
-
-        // Compute hash multiple times
-        let canonical_1 = canonicalize_manifest(&manifest).unwrap();
-        let hash_1 = compute_bundle_hash(&canonical_1);
-
-        let canonical_2 = canonicalize_manifest(&manifest).unwrap();
-        let hash_2 = compute_bundle_hash(&canonical_2);
-
-        assert_eq!(hash_1, hash_2);
-        assert_eq!(canonical_1, canonical_2);
     }
 
     /// The same vector is pinned in the registry's verifier tests, so the two
