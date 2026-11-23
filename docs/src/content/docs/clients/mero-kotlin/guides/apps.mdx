@@ -61,18 +61,23 @@ client.orgs.updates(org = orgId)                                    // every app
 
 A public link lets anyone with its token call the app's `#[app::public]` methods without an account
 ([Public links](/protocol/organizations/#public-links)). Whoever may change the app's access makes
-one, with a passkey step-up:
+one, with a passkey step-up; the visitor's client signs each request with its own key:
 
 ```kotlin
 val created = client.apps.publicLinkCreate(app = appId, label = "Feedback", ratePerMinute = 60)
 created.token                                                       // shown once: hand it to visitors
 client.apps.publicLinkList(app = appId).links                       // terms and creator, never a token
 client.apps.publicLinkRevoke(app = appId, link = created.link)
+
+// The visitor: no sign-in. Keep the seed (newVisitorSeed()) in encrypted preferences to stay the same visitor.
+val visitorClient = CalimeroClient(CalimeroClientOptions(baseUrl = clusterUrl, policy = CloudPolicy.production))
+val visitor = visitorClient.useVisitor(link = created.token, seed = newVisitorSeed())
+visitor.publicKey                                                   // how the app names the visitor
+visitorClient.apps.intents(app = appId, method = "submit", args = args)
 ```
 
-mero-kotlin has no visitor mode: a visitor's client signs each request with its own Ed25519 key
-(`Bearer vis1.…`, [Public links](/protocol/organizations/#public-links)); mero-js's `useVisitor` does
-this in a browser.
+`useVisitor` signs every request afresh (`Bearer vis1.…`, valid within 5 minutes of the node's
+clock), and only the app's `#[app::public]` methods answer it; `useApiKey` or `useSession` replaces it.
 
 ## Calls and views
 

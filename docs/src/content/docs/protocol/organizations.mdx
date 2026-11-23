@@ -665,7 +665,8 @@ storage) and sends, on every request, `Authorization: Bearer
 vis1.<token>.<key>.<at>.<signature>`: its public key (64 hex) and its signature
 over `"calimero.visitor.v1\0" ‖ link ‖ 0 ‖ key ‖ 0 ‖ at`, `at` within 5 minutes
 of the node's clock (mero-js `client.useVisitor({ link, seed })`, the Rust
-client's `use_visitor`). Nothing about a visitor is logged. The node admits it
+client's `use_visitor`, mero-py's `client.use_visitor(link=..., seed=...)`,
+MeroKit's and mero-kotlin's `useVisitor`). Nothing about a visitor is logged. The node admits it
 only to that instance's calls and views of `#[app::public]` methods
 (`403` for any other method, `403 VISITOR_ONLY` on every other route, `404` for
 another app, `401` once the link is revoked, expired or turned off), at most

@@ -174,6 +174,9 @@ class CalimeroClient(
 
     @Volatile private var credential: String? = null
 
+    /** A public link's visitor ([useVisitor]): a credential signed fresh for each request, in place of [credential]. */
+    @Volatile private var visitor: Visitor? = null
+
     @Volatile private var current: CalimeroSession? = null
     private var refreshing: Deferred<CalimeroSession>? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -331,14 +334,33 @@ class CalimeroClient(
 
     /** Authenticate every request with an API key (`cal_…`, or an operator token). */
     fun useApiKey(key: String) {
+        visitor = null
         credential = key
         current = null
     }
 
     /** Use a session kept from before (an `onSession` callback's). */
     fun useSession(session: CalimeroSession) {
+        visitor = null
         credential = session.sessionToken
         current = session
+    }
+
+    /**
+     * Call as an anonymous visitor through a public link ([link]: its token, from the link's URL),
+     * with the visitor's own Ed25519 key ([seed]: 32 bytes, from [newVisitorSeed], kept to stay the
+     * same visitor). Each request is signed fresh; only the instance's `#[app::public]` methods
+     * answer. Answers the [Visitor] (its `link` and `publicKey`, how the app names it).
+     */
+    fun useVisitor(
+        link: String,
+        seed: ByteArray,
+    ): Visitor {
+        val v = Visitor(link, seed)
+        credential = null
+        current = null
+        visitor = v
+        return v
     }
 
     @Volatile private var observer: ((CalimeroSession?) -> Unit)? = options.onSession
@@ -354,6 +376,7 @@ class CalimeroClient(
     }
 
     private fun dropSession() {
+        visitor = null
         credential = null
         current = null
         observer?.invoke(null)
@@ -380,7 +403,7 @@ class CalimeroClient(
             source?.let { if (it.options.now() >= it.due) reread() }
             val url = nodeUrl
             val builder = Request.Builder().url("$url/$path")
-            credential?.let { builder.header("authorization", "Bearer $it") }
+            (visitor?.bearer() ?: credential)?.let { builder.header("authorization", "Bearer $it") }
             val payload = body?.let { it.bytes.toRequestBody(it.contentType.toMediaType()) }
             when (method) {
                 "GET" -> builder.get()
@@ -810,16 +833,26 @@ class CalimeroClient(
         }
     }
 
-    /** End this session. */
+    /**
+     * End this session. The client is signed out whether or not the node answers (a
+     * visitor has no session to revoke, and the node refuses the route): the revoke is
+     * tried, and its failure is thrown after the credential is dropped, as in mero-js.
+     */
     suspend fun signOut() {
-        raw(defaultApi.accounts.logoutRequestConfig())
-        dropSession()
+        try {
+            raw(defaultApi.accounts.logoutRequestConfig())
+        } finally {
+            dropSession()
+        }
     }
 
-    /** End every session of the signed-in account, on every device, this one too. */
+    /** End every session of the signed-in account, on every device, this one too; signed out even when the request fails. */
     suspend fun signOutEverywhere() {
-        raw(defaultApi.accounts.logoutAllRequestConfig())
-        dropSession()
+        try {
+            raw(defaultApi.accounts.logoutAllRequestConfig())
+        } finally {
+            dropSession()
+        }
     }
 
     /** Forget the session here without telling the node (it lapses by itself). */

@@ -13,6 +13,7 @@
 //!   generated client's httpx transport sends through, the recovery between
 //!   nodes, the event streams, and the keys the client signs with
 //! - [`passkey`] - `SoftPasskey`, a software passkey for tests and scripts
+//! - [`visitor`] - `Visitor`, an anonymous visitor through a public link
 //! - [`error`] - `CloudError`
 //! - [`convert`] - Python <-> JSON
 
@@ -20,6 +21,7 @@ pub mod client;
 pub mod convert;
 pub mod error;
 pub mod passkey;
+pub mod visitor;
 
 use pyo3::prelude::*;
 
@@ -28,6 +30,7 @@ use pyo3::prelude::*;
 fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<client::PyCloudClient>()?;
     m.add_class::<passkey::PySoftPasskey>()?;
+    m.add_class::<visitor::PyVisitor>()?;
     m.add("CloudError", m.py().get_type::<error::CloudError>())?;
     m.add("LoginRequired", m.py().get_type::<error::LoginRequired>())?;
     m.add("WrongNode", m.py().get_type::<error::WrongNode>())?;

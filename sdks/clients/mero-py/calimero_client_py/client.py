@@ -17,6 +17,7 @@ the key helpers.
 import base64
 import json
 import os
+import secrets
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from . import _native, facade
@@ -25,9 +26,17 @@ from ._native import CloudError
 from .openapi import AuthenticatedClient
 from .sealed import error_from, sealed_client
 
-__all__ = ["Client", "CloudClient"]
+__all__ = ["Client", "CloudClient", "Visitor", "new_visitor_seed"]
 
 _SealedClient = _native.SealedClient
+Visitor = _native.Visitor
+
+
+def new_visitor_seed() -> bytes:
+    """A new visitor seed: 32 random bytes. Keep it to stay the same visitor
+    (`Client.use_visitor`)."""
+    return secrets.token_bytes(32)
+
 
 # The fields of a session, as earlier releases answered it (core's `Session`).
 _SESSION = ("accountId", "sessionToken", "expiresAt", "refreshToken")
@@ -239,7 +248,7 @@ class Client:
     ) -> AuthenticatedClient:
         """A client for the generated calls (`calimero_client_py.openapi.api`),
         whose requests go through the sealed channel with this client's
-        credential (`use_api_key`, a session).
+        credential (`use_api_key`, a session, `use_visitor`).
 
         `passkey` answers a `412 CONFIRM_REQUIRED` (what an owner approves):
         the request is sent again with its assertion over the node's
@@ -372,6 +381,15 @@ class Client:
     def use_api_key(self, key: str) -> None:
         """Authenticate every request with an API key (`cal_...`)."""
         self._native.use_api_key(key)
+
+    def use_visitor(self, link: str, seed: bytes) -> Any:
+        """Call as an anonymous visitor through a public link: `link` is its
+        token (from the link's URL), `seed` the visitor's own Ed25519 key (32
+        bytes, from `new_visitor_seed()`; keep it to stay the same visitor).
+        Every request then carries a credential signed fresh with that key, and
+        only the instance's `#[app::public]` methods answer it. Returns the
+        `Visitor` (its `link` and `public_key`, how the app names it)."""
+        return self._native.use_visitor(link, bytes(seed))
 
     def use_session(self, session: Any) -> None:
         """Authenticate with a session returned by `sign_up`/`sign_in`."""

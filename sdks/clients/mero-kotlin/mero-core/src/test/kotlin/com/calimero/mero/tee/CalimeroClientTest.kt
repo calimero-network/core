@@ -194,6 +194,48 @@ class CalimeroClientTest {
         }
 
     @Test
+    fun `a visitor signs every request fresh, in place of the session, and is never refreshed`() =
+        runBlocking {
+            val cluster = Cluster({ _, _ -> refused(401, "UNAUTHENTICATED") })
+            val client = cluster.client()
+            client.useSession(old)
+            val visitor = client.useVisitor("pl_token", ByteArray(32) { 9 })
+            assertNull(client.session)
+            try {
+                client.view("app-1", "get")
+                fail("expected the 401")
+            } catch (_: LoginRequired) {
+            }
+            val sent = cluster.nodes[0].requests.map { bearer(it.first)!! }
+            assertEquals(1, sent.size)
+            val parts =
+                sent
+                    .single()
+                    .removePrefix("Bearer ")
+                    .split('.')
+            assertEquals(listOf("vis1", "pl_token", visitor.publicKey), parts.take(3))
+            assertTrue(cluster.nodes[0].requests.none { path(it.first) == "/auth/refresh" })
+            client.useApiKey("cal_key")
+            runCatching { client.view("app-1", "get") }
+            val last = cluster.nodes[0].requests.last()
+            assertEquals("Bearer cal_key", bearer(last.first))
+        }
+
+    @Test
+    fun `signing out drops the visitor even though the node refuses to revoke it`() =
+        runBlocking {
+            // A visitor has no session, so the node refuses the logout; the client must still forget it.
+            val cluster = Cluster({ _, _ -> refused(403, "VISITOR_ONLY") })
+            val client = cluster.client()
+            client.useVisitor("pl_token", ByteArray(32) { 9 })
+            assertTrue(runCatching { client.signOut() }.isFailure)
+            val before = cluster.nodes[0].requests.size
+            runCatching { client.view("app-1", "get") }
+            val after = cluster.nodes[0].requests.drop(before)
+            assertTrue(after.all { bearer(it.first) == null })
+        }
+
+    @Test
     fun `calls an app's intents with a minted idempotency key, and views with strong consistency`() =
         runBlocking {
             val cluster = Cluster({ _, _ -> json(200, """{"index":7,"result":{"ok":true},"events":[{"kind":"Set","data":1}]}""") })

@@ -223,6 +223,7 @@ The passkey ceremonies are two routes each, with the passkey in between:
 | `refresh()` | A new session from the refresh token (one at a time with the client's own refreshes). |
 | `use_session(session)` | Authenticates with a session from `sign_up` / `sign_in`. |
 | `use_api_key(key)` | Authenticates every request with a `cal_...` key. |
+| `use_visitor(link, seed)` | Calls as a public link's visitor (`link`: its token; `seed`: 32 bytes, `new_visitor_seed()`), signing every request; answers the `Visitor` (`link`, `public_key`, `bearer(at=None)`). |
 | `session()` | The session in use, or `None`. |
 
 Signing out, the account's sessions and its passkeys are routes:
