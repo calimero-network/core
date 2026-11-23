@@ -89,7 +89,8 @@ pub(crate) async fn offered_bundle(
                 .values()
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
                 .filter_map(|o| {
-                    let r = s.offered_release(o)?;
+                    // An offer serves only while its owner's side may still use the release.
+                    let r = s.offered_release(o).filter(|r| s.offer_serves(d, r))?;
                     Some((o.version.clone(), r.app_parts().clone(), r.compute.clone()))
                 })
                 .collect();

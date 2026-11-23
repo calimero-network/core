@@ -498,7 +498,11 @@ is its command line.
   `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT`;
   names `deployment_name_fits`, app names and ids `deployment_segment_fits`.
   `POST /apps { deployment, package, version? }` creates from the offer
-  (`api::offered_bundle`, no install, no grant, no `sees_release`) and records
+  (`api::offered_bundle`, no install, no grant, no `sees_release` for the creator; an
+  offer serves, for a create or an upgrade, only while someone who `acts_for` the owner
+  may use its release, `SystemState::offer_serves`, else `400 NOT_OFFERED`; apply is
+  unchanged and instances made before keep running; regression
+  `an_offer_outlives_no_offerer_who_may_no_longer_use_its_release`) and records
   `AppRecord::deployment`; `CreateApp` checks the offer again
   (`offers_bundle`). The managers decide which release its instances run;
   an owner only accepts it: `upgrade_app` resolves an instance's target from

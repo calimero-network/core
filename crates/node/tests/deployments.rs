@@ -2222,3 +2222,52 @@ async fn a_customer_creates_from_an_offered_private_release_and_reads_its_name()
     // As for a release the cluster lacks: this cluster has no registry to install it from.
     assert_eq!(e.code(), Some("NO_REGISTRY"), "{e}");
 }
+
+/// An offer serves only while someone who acts for its deployment's owner may still use the
+/// release: Mal offers Bobco's private release from his own deployment, is removed from
+/// Bobco, and neither he nor a customer creates from that offer any more (answered as a
+/// package the deployment does not offer); the instance made before keeps running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_offer_outlives_no_offerer_who_may_no_longer_use_its_release() {
+    let c = Cluster::start(3).await;
+    let (bob, mut bob_pk) = signed_up(&c, 0, "bob").await;
+    let bobco = org(&bob, "Bobco").await;
+    let (mal, mut mal_pk) = signed_up(&c, 1, "mal").await;
+    let mal_id = account_of(&mal).await;
+    let (carol, _carol_pk) = signed_up(&c, 2, "carol").await;
+    let globex = org(&carol, "Globex").await;
+    join(&bob, &mut bob_pk, &bobco, &mal).await;
+    let _ok = bob
+        .packages()
+        .upload(release("com.test.notes", "1.0.0"), None)
+        .await
+        .unwrap();
+    let d = deploy(&mal, &mut mal_pk, "mals", json!({ "account": mal_id })).await;
+    let _ok = offer(&mal, &mut mal_pk, &d, "notes", "com.test.notes", "1.0.0")
+        .await
+        .unwrap();
+    let before = instance(&carol, &d, "com.test.notes", None, Some(&globex))
+        .await
+        .unwrap();
+
+    let _ok = bob
+        .orgs()
+        .remove_member(&bobco, &mal_id, Some(&mut bob_pk))
+        .await
+        .unwrap();
+    let missing = instance(&carol, &d, "com.test.other", None, Some(&globex))
+        .await
+        .unwrap_err();
+    let e = instance(&carol, &d, "com.test.notes", None, Some(&globex))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.to_string().replace("com.test.notes", "com.test.other"),
+        missing.to_string()
+    );
+    let e = instance(&mal, &d, "com.test.notes", None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), missing.code(), "{e}");
+    let _still = carol.apps().get(&before).await.unwrap();
+}

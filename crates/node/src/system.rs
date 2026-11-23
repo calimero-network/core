@@ -2726,6 +2726,22 @@ impl SystemState {
             .get(&offer.version)
     }
 
+    /// Whether `d`'s offer of `v` still serves: someone who acts for its owner may use `v`.
+    #[must_use]
+    pub fn offer_serves(&self, d: &Deployment, v: &PackageVersion) -> bool {
+        let candidates: Vec<&str> = match &d.owner {
+            Deployer::Account(a) => vec![a],
+            Deployer::Org(o) => self
+                .orgs
+                .get(o)
+                .map(|o| o.members.keys().map(String::as_str).collect())
+                .unwrap_or_default(),
+        };
+        candidates
+            .into_iter()
+            .any(|m| self.acts_for(&d.owner, m) && self.sees_release(v, m))
+    }
+
     /// Whether `d` offers a release that ships `bundle`: what an instance
     /// created from it must run.
     #[must_use]

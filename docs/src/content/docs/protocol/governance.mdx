@@ -528,7 +528,11 @@ deployment is not deleted until the deployment is.
 **Instances**: `POST /apps { deployment, package, version?, service?, … }`
 creates an instance from the release the deployment offers for that package
 (`version`, if given, must be it), whether or not the creator sees the
-release otherwise, and without a deployer grant: nothing is installed. The
+release otherwise, and without a deployer grant: nothing is installed. An offer
+serves (here, and for an upgrade to it) only while someone who acts for the
+deployment's owner may still use the release; otherwise the deployment answers as
+one that does not offer the package (`400 NOT_OFFERED`), and instances made before
+keep running. The
 instance records the deployment (`AppRecord::deployment`), and `CreateApp`
 checks again where it applies that the deployment exists and offers the
 release the instance runs. Instances created without a deployment, and those
