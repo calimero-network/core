@@ -7053,6 +7053,57 @@ async fn a_deployments_unit_creates_a_member_from_a_release_the_deployment_offer
     assert_eq!(record["deployment"], json!(d));
 }
 
+/// An offer that no longer serves is no source for a member: once Mal, whose account owns
+/// the deployment, leaves Acme, P (private to Acme) is refused as a member of W's instance
+/// (`409 USES_NOT_INSTALLED`) though the deployment still offers it, and Bob ends with no
+/// app running P.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_deployments_unit_takes_no_member_from_an_offer_that_no_longer_serves() {
+    let acme_key = ed25519_dalek::SigningKey::from_bytes(&[50; 32]);
+    let mal_key = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (mal, mut m) = signed_up(&c, 1, "mal").await;
+    let (bob, _b) = signed_up(&c, 2, "bob").await;
+    let acme = new_org(&alice, "Acme").await;
+    let _bobco = new_org(&bob, "Bobco").await;
+    let malco = new_org(&mal, "Malco").await;
+    join_org(&alice, &mut a, &mal, &acme, "member").await;
+    let vault = "com.acme.vault";
+    upload_release(&alice, Some(&acme), vault, &acme_key, "vault", Value::Null).await;
+    let notes = "com.mal.notes";
+    upload_release(
+        &mal,
+        Some(&malco),
+        notes,
+        &mal_key,
+        "notes",
+        creates_vault(vault, false),
+    )
+    .await;
+    let d = own_deployment(&mal, &mut m).await;
+    for (name, package) in [("notes", notes), ("vault", vault)] {
+        let _ = mal
+            .deployments()
+            .offer(&d, name, package, "0.1.0", Some(&mut m))
+            .await
+            .unwrap();
+    }
+
+    let mal_id = account_id(&mal).await;
+    let _ = alice
+        .orgs()
+        .remove_member(&acme, &mal_id, Some(&mut a))
+        .await
+        .unwrap();
+    all_applied(&c).await;
+
+    let e = from_offer(&bob, &d, notes).await.unwrap_err();
+    assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
+    let mine = bob.apps().list(None, None).await.map(wire).unwrap();
+    assert!(mine["apps"].as_array().unwrap().is_empty(), "{mine}");
+}
+
 /// A member names the instance that created it: `env::unit_of()` in the member's run answers
 /// the instance's id, and in the instance's own run, or an app created on its own, `None`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

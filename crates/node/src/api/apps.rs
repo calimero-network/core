@@ -836,11 +836,12 @@ pub(crate) async fn unit_members(
         let installed: Vec<String> = node.sys(|s| {
             let own = s.packages.get(&release.package).map(|p| &p.signer_id);
             let offers = deployment.and_then(|d| s.deployments.get(d));
-            let offered = |version: &str| {
+            let offered = |version: &str, v: &crate::system::PackageVersion| {
                 offers.is_some_and(|d| {
-                    d.apps
-                        .values()
-                        .any(|o| o.package == u.package && o.version == version)
+                    s.offer_serves(d, v)
+                        && d.apps
+                            .values()
+                            .any(|o| o.package == u.package && o.version == version)
                 })
             };
             s.packages
@@ -849,7 +850,7 @@ pub(crate) async fn unit_members(
                     let same_signer = own == Some(&p.signer_id);
                     p.versions
                         .iter()
-                        .filter(|(k, v)| same_signer || s.sees_release(v, creator) || offered(k))
+                        .filter(|(k, v)| same_signer || s.sees_release(v, creator) || offered(k, v))
                         .map(|(k, _)| k.clone())
                         .collect()
                 })

@@ -1025,7 +1025,8 @@ is its command line.
   place. Regressions: `creating_an_instance_creates_the_apps_its_release_uses`,
   `a_unit_never_creates_a_member_from_a_private_release_its_creator_cannot_use`,
   `a_deployments_unit_never_creates_a_member_from_a_private_release_it_does_not_offer`,
-  `a_deployments_unit_creates_a_member_from_a_release_the_deployment_offers`.
+  `a_deployments_unit_creates_a_member_from_a_release_the_deployment_offers`,
+  `a_deployments_unit_takes_no_member_from_an_offer_that_no_longer_serves`.
   A unit is one (`Feature::WholeUnits`, rc.32): members of an instance from a deployment
   carry its deployment (billed to its developer, its secret values), their `CreateApp`
   naming the offer of the instance's release that covers them (`unit_offer`, checked at
