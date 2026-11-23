@@ -377,6 +377,20 @@ jobs:
           workflows of every app this touches run on this pull request; a red one is
           an SDK change that app needs code for.
           PR_BODY
+          elif [ "$SURFACE" = "npm" ]; then
+          cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
+          Moves this repository's \`@calimero-network/*\` SDK and component pins to
+          \`$VERSION\`.
+
+          Rewritten automatically by \`fleet-bump\` in
+          [calimero-network/core](https://github.com/calimero-network/core) once that
+          release's packages were served by npm: each \`package.json\` or pnpm catalog
+          entry that declares one, and the lockfile beside it.
+
+          A pin marked \`fleet-bump: hold\` is left where it is. Before merging, check
+          that the frontends typecheck, build and pass their tests on this pull
+          request.
+          PR_BODY
           elif [ -f Cargo.toml ] && [ ! -f logic/Cargo.toml ]; then
           # The monorepo. One pull request stands in for what used to be
           # fifteen, so it is worth saying out loud what merging it does.

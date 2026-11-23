@@ -79,8 +79,8 @@
 
   "consumers": [
     { "repo": "apps", "surfaces": ["cargo", "npm", "mobile"] },
-    { "repo": "mero-ar", "surfaces": ["cargo"] },
-    { "repo": "mero-tag", "surfaces": ["cargo"] },
+    { "repo": "mero-ar", "surfaces": ["cargo", "mobile"] },
+    { "repo": "mero-tag", "surfaces": ["cargo", "mobile"] },
     { "repo": "app-registry", "surfaces": ["npm"] },
     { "repo": "calimero-studio", "surfaces": ["cargo"] },
     { "repo": "mero-tee", "surfaces": ["tee"] }

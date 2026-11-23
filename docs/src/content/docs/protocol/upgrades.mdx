@@ -291,6 +291,13 @@ The class and its reasons are kept on the app's last upgrade
 release's, a raw bundle's, or a release the classifier could not read) is taken
 as red by every rule below; one logged before the feature replays as it applied.
 
+The consent page cannot show such an update.
+Its sheet builds the "before" side from the files of the release the app runs, and that release is gone.
+Opening it answers `404` for a session opened on the app's frontend and `400 NOT_A_RELEASE` for any other.
+Approve it from the command line or the API instead: `meroctl instance update INSTANCE --version V` (`POST /apps/{app}/upgrade`), which names the release by the app's own record.
+Under a `secondApprover` policy one owner or admin first runs `meroctl instance approve-update INSTANCE --version V` (`POST /apps/{app}/upgrade-approvals`), and another then runs `instance update`.
+Both are refused `409 FEATURE_NOT_ACTIVE` until every node runs 1.0.0-rc.35.
+
 ## Update policies
 
 How an app's updates apply is its organization's owner's and admins' to decide,
@@ -440,10 +447,11 @@ restore point is the state just before the upgrade, so whatever the app wrote
 since is lost: `GET /apps/{app}/undo` says what would be undone and lost
 before anyone decides (`lostWrites`: the group's entries since the restore
 point, its last write, and whether it wrote after the restore point was
-taken), and the `POST` answers the same. When the restore point's node no
-longer hosts the app (a replica move took it off), those are read from the
-replicas the app is on now: all are asked, a majority must answer, and the
-furthest of them counts (every committed entry is on a majority). Only an
+taken), and the `POST` answers the same. Those are read from the replicas the
+app is on now, never from the restore point's node alone (it may be behind its
+group, or a replica move may have taken the app off it): all are asked, a
+majority must answer, and the furthest of them counts (every committed entry is
+on a majority). Only an
 applied index at or past the restore point's counts entries or says nothing is
 lost; below it, from a release that does not say, or with no majority
 answering, each is `null` (`any: null`, unless a write after the restore point

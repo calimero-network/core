@@ -1346,7 +1346,11 @@ is its command line.
   the first approval, the upgrade, the unit's upgrade and the consent page of such a move under
   a `secondApprover` policy `409 FEATURE_NOT_ACTIVE` before the passkey, and `class_of` logs it
   without a class otherwise, as rc.34 did (the view still shows it red); `UpgradeRecord::class`/`reasons`/`approved_by` keep it
-  (`lastUpgrade`). Policies (`Feature::UpgradePolicies`, rc.34): `SetUpgradePolicy { org,
+  (`lastUpgrade`).
+  The consent page cannot open such an update: `upgrade_request` reads the "before" facts through `release_of_app`, which is `None`
+  once the release is uninstalled (`UninstallPackage` allows it while another release ships the same WASM), so a package-bound
+  session gets `404` from `Principal::within` and any other `400 NOT_A_RELEASE`; `api::upgrades::upgrade_app` falls back to
+  `app.release` and takes it (`instance update`, `instance approve-update`). Policies (`Feature::UpgradePolicies`, rc.34): `SetUpgradePolicy { org,
   app?, policy? }` by an owner or admin (`approves_upgrades`), consent `org:<org> /
   __set_upgrade_policy / system::upgrade_policy_args`, kept on `Org::upgrade_policy` and
   `Org::app_upgrade_policies` (a move drops the app's, `move_app`); `types::UpgradePolicy
@@ -1450,13 +1454,14 @@ is its command line.
   (`Node::seed_undo` -> `seed_undo_here` -> `seed_restore`, in its own task, once a fresh
   system read shows it the undo: it may be a follower behind the commit; regression: the
   `restore-points-undo` upgrade case) and waits
-  `UNDO_WAIT`; `GET /apps/{app}/undo` (`lostWrites` from `restore_point_here`: entries
-  since, last write, `any`; `hosted: false` there, the node no longer hosting the app,
-  reads them from the current replicas, `Node::group_progress` over `internal/last-write`'s
-  `appliedIndex`: every replica asked, the furthest of a majority, `furthest_progress`; an
-  index below the restore point's, none, or no majority is `null`, `any` included, never
-  `0`/`false`: `api::undo::lost_writes`; regressions `api::undo::tests`,
-  `node::group_progress_tests`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
+  `UNDO_WAIT`; `GET /apps/{app}/undo` (`lostWrites`: entries since, last write, `any`,
+  read from the app's current replicas whether or not the restore point's node still
+  hosts it (it may be behind its group; `restore_point_here` gives only `takenAt`),
+  `Node::group_progress` over `internal/last-write`'s `appliedIndex`: every replica asked,
+  the furthest of a majority, `furthest_progress`; an index below the restore point's,
+  none, or no majority is `null`, `any` included, never `0`/`false`:
+  `api::undo::lost_writes`; regressions `api::undo::tests`, `node::group_progress_tests`,
+  `access_gate::an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_node_lags`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
   `UNDO_NOT_AS_NAMED`, `409 RESTORE_POINT_UNAVAILABLE`. Regressions: `system::tests`
   (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`,
   `an_upgrade_is_undone_within_a_week_back_to_its_restore_point`,
