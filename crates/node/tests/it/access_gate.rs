@@ -461,6 +461,85 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
 }
 
+/// G4 (L4): the owner and admin checks a route makes after `gate` (`manages_app`,
+/// `may_handle_files`, `read_only_in`) judged the app record the handler read before
+/// `gate`'s read-index round, so on a follower behind they saw the owner and organization
+/// the record held then. Here Bob hands his app to Alice through the leader while the
+/// follower serving his next request has not applied it: he must not still read its
+/// xcalls (owner or admin only) as its owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer() {
+    let c = ProxiedCluster::start().await;
+    let leader = c.system_leader();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let (alice, mut a) = signed_up(&c, leader, "alice").await;
+    let (bob, mut b) = signed_up(&c, follower, "bob").await;
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let org = shared_org(&alice, &mut a, &bob).await;
+    let bob_account = bob.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // `CREATE_APP`: Bob, a plain member, makes the app and owns it.
+    let _ok = alice
+        .orgs()
+        .capabilities(&org, 1, Some(&bob_account), None, Some(&mut a))
+        .await
+        .unwrap();
+    let bundle = bob
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = bob
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle, "org": org })))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ok = bob
+        .apps()
+        .access(&app, vec![typed(json!({ "kind": "org" }))])
+        .await
+        .unwrap();
+    let xcalls = bob.apps().xcalls(&app).await;
+    assert!(xcalls.is_ok(), "the owner reads them: {:?}", xcalls.err());
+
+    // Hold the follower; Bob hands the app to Alice through the leader.
+    let bob_on_leader = c.client(leader);
+    let _s = bob_on_leader.sign_in(&mut b).await.unwrap();
+    let follower_node = &c.nodes[follower].node;
+    let applied = |n: &calimero_node::Node| n.sys(|s| s.apps.get(&app).map(|r| r.owner.clone()));
+    assert_eq!(applied(follower_node), Some(bob_account.clone()));
+    c.hold[follower].send_replace(true);
+    bob_on_leader
+        .apps()
+        .transfer(&app, &alice_id, Some(&mut b))
+        .await
+        .unwrap();
+    assert_eq!(
+        applied(follower_node),
+        Some(bob_account),
+        "the follower must still hold Bob as the owner"
+    );
+    let read = tokio::spawn({
+        let app = app.clone();
+        async move { bob.apps().xcalls(&app).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    c.hold[follower].send_replace(false);
+    let read = read.await.unwrap();
+    let err = read.expect_err("a transfer committed before the request must hold");
+    assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+}
+
 /// Review finding A3: `GET /attestation?app=` is in the clear and takes no
 /// credential, yet it bound any app's bundle hash, so anyone could learn that a
 /// private app exists and which release it runs (`404` against `200`). It now

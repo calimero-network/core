@@ -920,7 +920,7 @@ async fn internal_events(
     let caller = peer(&node, &headers, key).await?;
     caller_may_hold_app(&node, &caller, &q.app).await?;
     let subscriber = Some(q.subscriber).filter(|s| !s.is_empty());
-    let stream = local_events(&node, &q.app, q.from, subscriber)
+    let stream = local_events(&node, &q.app, q.from, subscriber, None)
         .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
