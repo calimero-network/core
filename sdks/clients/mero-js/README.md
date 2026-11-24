@@ -122,6 +122,21 @@ where the nodes are: each is attested under `policy`, which is the app's own.
 hostname alone, so a page can choose its policy from it
 (`allowDebugProfile: cloudEnvironment() === 'staging'`).
 
+## Confidential KV
+
+A service reaches a Confidential KV store from its environment
+(`CALIMERO_CLUSTER`, `CALIMERO_API_KEY`, `CALIMERO_KV_STORE`, `CALIMERO_MIN_RELEASE`):
+
+```ts
+import { Calimero } from '@calimero-network/mero-js';
+
+const kv = (await Calimero.fromEnv()).kv();
+await kv.set({ bucket: 'default', key: 'flags/beta', value: JSON.stringify({ enabled: true }) });
+```
+
+`kv()` is a `KvClient` generated from the store's ABI. Every variable is in the
+[Confidential KV guide](https://calimero-network.github.io/core/clients/mero-js/guides/confidential-kv/).
+
 ## What the client checks
 
 Before it sends anything to a node, as core's Rust client does (`Measurements::Release`):
