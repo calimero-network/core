@@ -906,7 +906,7 @@ is its command line.
   `apply_compute_final` settles the step of a linked run in the same apply: outputs pinned (+1 each, released when the record is dropped), outputs and results kept per run index (item rows, so `<step>.outputs` is in item order), a result up to `MAX_STEP_RESULT_BYTES` and a step's together up to `MAX_STEP_RESULTS_BYTES` (past it none are kept and `results_too_large` is set), failed items counted from the runs that failed or were cancelled; the step is `succeeded` once every run it will have is final and `failed_items` is at most `fan.allowed` (zero while the run is cancelled or stopping), else `failed` (one item over cancels its active runs and no more are created), and the run ended once every step is settled (inputs released; `succeededWithFailures` when a step tolerated failed items). `PipelineRun::fail_fast` (the pipeline's `failFast`) makes the first failed step set `stopping`, end the pending steps `cancelled` and flag the running steps' runs.
   The leader's loop (`Node::drive_pipelines`, beside `drive_runs`) is stateless: `plan` decides every pending step from the records (start when its needs succeeded, `skipped` for no items, `upstreamFailed` when one failed, `cancelled` for a cancelled or stopping run) and the next `More` wave of each running fan-out (`maxParallel` less its active runs, the app's room, `MAX_STEP_RUNS`), and each wave is also cut so its encoded runs stay within `MAX_DECISION_RUNS_BYTES` (a run that cannot fit one decision alone fails the step with `RUN_TOO_LARGE`), and each decision is proposed only while it still applies (the step pending, or the fan-out's next index unchanged). A pipeline whose definition is gone (`pipeline_by_hash` answers 404) gets `Failed{PIPELINE_UNAVAILABLE}` for its steps that have not started or have runs left to create.
   A step in another package's module (`bundle_of`) is built with that module's caps (`caps_of_component` per bundle) and `StepRun::compute_bundle` (none for `self`); apply accepts only a bundle the run pinned (`UNKNOWN_MODULE` fails the step), writes it as the `RunRecord`'s `compute_bundle`, and the cache key uses it. Owner, payer, `bundle` (usage) and file keys stay the app's; the job node is pushed the module's component like any compute component. Regression: `a_step_runs_another_packages_module_under_the_callers_keys_and_payer`.
-  It keeps only caches of immutable data, a pipeline by hash (`Node::pipeline_by_hash`) and a compute component's caps (`caps_of_component`).
+  It keeps only caches of immutable data, a pipeline by hash (`Node::pipeline_by_hash`) and a compute component's caps (`caps_of_component`, read from its ABI with the compute engine's `abi_of`, never by compiling it: the install compiled it once to verify it; regression `reading_a_compute_components_caps_compiles_nothing`).
   A step's args are its `args` with `params.x` replaced by the run's value or the default and `<step>.result` by that step's result as JSON; no args is no bytes; its inputs are `inputs.x` and `<step>.outputs`, deduplicated, at most `MAX_PIPELINE_RUN_INPUTS` (10,000, which the job node's admission and `MAX_ASSIGNMENT_BYTES` (8 MiB) allow; a run an app starts keeps `MAX_RUN_INPUTS`).
   A `forEach` step makes one run per batch of items; its inputs are the step's `inputs` references in the order written with the run's item files where `item` stands (first when it is not listed), and `item` in `args` is the item (a file id or a result value; a list for a batch above 1). `collect: <step>.outputs` is one run over all of that step's outputs in item order, then its other `inputs`. A step's `pool` is carried on `StepRun::pool` into `RunRecord::pool`; `AcquireRun { pool }` then puts the slot in that pool (`RUN_NO_POOL` when the cluster lacks it or its `maxMemoryMib` is below the run's memory), so `pick_job` uses only its job nodes. A step without `pool` keeps `pool_for`. The leader proposes `pool` only while `Node::nodes_behind_release` is empty (an older node would drop it), else `None`. Regression: `a_steps_pool_places_its_runs_on_that_pools_job_node`, `a_named_pool_waits_until_every_node_runs_this_release`.
   Only those who may handle the app's files (`api::may_handle_files`: its owner, its organization's members) start, cancel or retry a run, even where an `anyone` grant admits others (`403 FORBIDDEN`); anyone who reaches the app reads it without results or file hashes. Regression: `only_those_who_handle_the_apps_files_start_cancel_or_retry_a_pipeline`.
@@ -1339,11 +1339,11 @@ is its command line.
   `removed`), `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
   unit's moves its direct members as `unit_plan` does. The class decides how it applies:
   under `secondApprover` a red one takes two approvers (C8), under `noDestinations` a
-  green one of a unit with no destination before or after that removes no method applies on
-  its own, moving the app alone (C9).
+  green one of a unit with no destination before or after applies on its own, unless it
+  removes a method or would move the unit's members (C9).
   Regressions: `a_units_destinations_are_judged_over_its_members`
   (`tests/it/consent_page.rs`), `calimero_bundle::update::tests`,
-  `an_update_whose_members_differ_applies_on_its_own_and_moves_the_instance_alone`
+  `an_update_that_would_move_the_units_members_waits_for_a_person`
   (`tests/auto_updates.rs`).
 - **Update classes and policies** (C8; `system/updates.rs`, `api/update_policies.rs`;
   docs: protocol upgrades "The class at apply", "Update policies"): every `UpgradeApp`
@@ -1401,8 +1401,8 @@ is its command line.
   the instance's `links` (`upgrade_run_apps`). `POST /apps/{app}/upgrade-approvals` answers `approval` in the
   `pendingApprovals` shape (`api::upgrades::approval_json`).
   The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
-  `autoApply` (`noDestinations`: a green update that removes no method, of an app whose
-  unit has no destinations before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
+  `autoApply` (`noDestinations`: a green update that removes no method and moves none of
+  the apps it created, of an app whose unit has no destinations before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
   /apps/{app}/upgrade-policy` (`policy_json`), `GET /apps/{app}/update` adds `policy`,
   `pendingApprovals`, `available.approvalsNeeded`/`approvedBy`
   (`api::upgrades::update_view`), `GET /orgs/{org}/updates?after=` (owners and admins,
@@ -1452,7 +1452,9 @@ is its command line.
   `UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that
   actor); apply judges `SystemState::auto_update_gate`: policy, green class (and
   `check_class`), newer release of its package, not a unit member, the logged unit with
-  no destination before or after, the hold (`at` >= `installedAt`, or the deployment
+  no destination before or after, a release that keeps the unit's members where they
+  are (`moves_members` over `release_of_use`, which `unit_members` picks with too;
+  `UpgradeApp { members_stay }`, `Feature::AutoUpdateMembersStay`, rc.36), the hold (`at` >= `installedAt`, or the deployment
   offer's `addedAt`, + `holdHours`), a restore point
   (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `RESTORE_POINT_REQUIRED`;
   `UpgradeRecord::auto`). Every update decision's time is `types::update_now`
@@ -1483,13 +1485,18 @@ is its command line.
   none, or no majority is `null`, `any` included, never `0`/`false`:
   `api::undo::lost_writes`; regressions `api::undo::tests`, `node::group_progress_tests`,
   `access_gate::an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_node_lags`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
-  `UNDO_NOT_AS_NAMED`, `409 RESTORE_POINT_UNAVAILABLE`. Regressions: `system::tests`
+  `UNDO_NOT_AS_NAMED`, `UNDO_RELEASE_GONE` (the release it returns to is uninstalled while another
+  release's WASM kept the bundle; `UndoUpgrade { release_installed }`,
+  `Feature::UndoToInstalledRelease` rc.36, `SystemState::undo_release_installed`, or the logged
+  cluster version bringing it; an undo to a release the deployment no longer offers is allowed),
+  `409 RESTORE_POINT_UNAVAILABLE`. Regressions: `system::tests`
   (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`,
   `an_upgrade_is_undone_within_a_week_back_to_its_restore_point`,
+  `an_undo_never_returns_to_a_release_that_is_no_longer_installed`,
   `a_deployment_instances_hold_runs_from_its_offer`,
   `an_automatic_failure_is_judged_on_the_derived_release_of_an_app_without_one`),
   `tests/auto_updates.rs`
-  (`a_passing_failure_before_an_automatic_update_is_retried_not_held_against_it`,
+  (`an_undo_is_refused_to_a_release_that_was_uninstalled`, `a_passing_failure_before_an_automatic_update_is_retried_not_held_against_it`,
   `a_red_newest_release_does_not_hold_back_a_green_one_below_it`,
   `an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app`,
   `passes_take_turns_and_move_an_app_once`, `a_pass_off_the_system_leader_moves_nothing`;
@@ -1737,7 +1744,7 @@ is its command line.
   client routes and relative tails served as the bundle's, its CSP plus the cluster's API
   origins and the attestation mirror (`ATTESTATION_MIRROR`, where clients get the release's
   measurements and Intel's collateral; regression
-  `a_served_page_may_reach_the_cluster_and_the_attestation_mirror`) in `connect-src`, `/.well-known/calimero.json` (with the deployments
+  `a_served_page_may_reach_the_cluster_and_the_attestation_mirror`) in `connect-src`, `/.well-known/calimero.json` (the node's `cluster` and the deployments
   offering the package); an unknown label under
   D is a 404, never a node route. Each package is also at
   `{cluster_label(config.cluster, package)}.D` on its cluster, the same site
@@ -2220,7 +2227,11 @@ API and system group:
 
 - **Engine and host** (`node/component.rs`): one `WasmtimeEngine` per node
   (`Node::app_engine`), compiled artifacts cached under `<data_dir>/components`, each
-  with a MAC under a key derived from K_c (S8). `Node::prepared_for` prepares a bundle
+  with a MAC under a key derived from K_c (S8); the engine deletes another wasmtime's or
+  config's artifacts at start, and `Node::sweep_component_cache` (every
+  `COMPONENT_CACHE_SWEEP_EVERY`, 1 hour, the first an hour after start) those of bundles no
+  app uses or this node keeps prepared, once an hour unmodified
+  (`the_component_cache_keeps_only_what_apps_run`). `Node::prepared_for` prepares a bundle
   once (single-flight, Ruling 44; `concurrent_first_uses_of_a_bundle_prepare_it_once`).
   `POST /bundles` and package installs run the engine's `prepare` on a component
   (a core module is refused, see "SDK 0.12 apps").
@@ -2563,8 +2574,8 @@ rollback epoch in the attested KMS evidence, search indexes that survive a resta
 ```bash
 cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
 # the integration tests are one binary, `it` (tests/it/main.rs: a module per file), so one
-# test is <module>::<test>; auto_updates, compute_runs (process-wide test hooks) and
-# scenarios (its own main) stay binaries of their own (docs: contribute/testing)
+# test is <module>::<test>; auto_updates (process-wide test hooks) and scenarios (its
+# own main) stay binaries of their own (docs: contribute/testing)
 cargo test -p calimero-node --test it cluster::        # one module (a filter: any prefix)
 cargo test -p calimero-node --test it component_cluster::end_to_end -- --exact --nocapture
 cargo test -p calimero-node --test auto_updates -- --test-threads 1

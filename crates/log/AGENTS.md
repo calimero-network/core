@@ -79,6 +79,18 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   group's commit reaches a node while a synced write of the slow group holds that
   node's write path, and the worker must run while the same write still waits:
   told by order, not latency, since a loaded runner's own fsync can take 300 ms).
+- A read of the applied state waits off the async workers too (`machine::read_applied`:
+  `Group::read_local`, a proposal's build, `digests`). An apply holds the state's write
+  lock while its batch commits, so readers never see a state the disk does not hold,
+  and that commit queues behind any other write's fsync; a reader that waited for the
+  lock on a worker stopped it for as long as the disk took (the node's `Node::sys` is
+  `read_local`, so one handler or background task did). A free lock is taken at once,
+  a held one is waited for through `store::wait_off_workers` (`block_in_place` on a
+  multi-threaded runtime, inline elsewhere). `testing::writes_queued(dir)` counts the
+  writes waiting behind a held synced write. Regression:
+  `a_state_read_waiting_for_an_apply_behind_the_disk_leaves_the_worker_free`
+  (`tests/slow_disk.rs`, one worker: it ticked 0 times in 300 ms before, as CI's node
+  `a_blob_put_waiting_for_the_disk_leaves_the_async_worker_free` once did).
 - `Engine::store_watch` reports the store open until RocksDB has closed and
   released its lock (`Db::closed`, the last field), not merely until the last
   `Arc<Db>` starts dropping.

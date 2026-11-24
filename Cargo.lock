@@ -1017,6 +1017,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
@@ -1105,6 +1106,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tdx-quote",
+ "time",
  "tokio",
  "tracing",
 ]

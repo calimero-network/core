@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for ci-scope.py against this repository's own dependency graph.
-
-Both wrong answers are silent: running a job too often only costs time, but
-skipping one lands a change its gate never saw. Each case pins one rule.
-
-    python3 scripts/tests/ci-scope-test.py
-"""
+"""ci-scope.py against this repository's graph, and every scripts/tests/ file run by a workflow.
+A wrong scope lands a change its gate never saw; a test no workflow runs guards nothing."""
 
 import fnmatch
 import importlib.util
@@ -64,6 +59,14 @@ def scripts_ci_checks_runs():
     return sorted({m.removeprefix("./") for m in re.findall(r"(?:\./)?scripts/[\w./-]+", text)})
 
 
+def script_tests_no_workflow_runs():
+    """Each scripts/tests/ file no workflow names: a test CI never runs guards nothing."""
+    workflows = SCRIPT.parent.parent / ".github" / "workflows"
+    text = "".join(p.read_text() for p in sorted(workflows.glob("*.yml")))
+    tests = sorted(p for p in (SCRIPT.parent / "tests").iterdir() if p.is_file())
+    return [f"scripts/tests/{p.name}" for p in tests if f"scripts/tests/{p.name}" not in text]
+
+
 def main():
     failures = 0
     for name, paths, want in CASES:
@@ -84,6 +87,9 @@ def main():
         if not any(fnmatch.fnmatchcase(script, g) for g in inputs):
             print(f"FAIL ci-checks.yml runs {script}, which is not an input of `rust` in ci-scope.py")
             failures += 1
+    for test in script_tests_no_workflow_runs():
+        print(f"FAIL {test} is run by no workflow: run it in one, or delete it")
+        failures += 1
     if failures:
         return 1
     print(f"all {len(CASES)} ci-scope cases passed")

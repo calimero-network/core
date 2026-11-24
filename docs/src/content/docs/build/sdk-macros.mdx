@@ -176,6 +176,8 @@ The generated `handle`:
 
 - **Arguments** are a JSON object keyed by camelCase parameter names; unknown
   keys are refused (`BadArgs`).
+  A `BadArgs` error's fields carry the `message` and, when one parameter is at
+  fault, its name as `param` (dotted into records, as in `window.after`).
 - **64-bit integers and bytes:** `u64`, `i64` and `Vec<u8>` (and `Option` of
   each) travel as decimal strings and base64url without padding, in arguments,
   results, record fields, and error and event fields, so no JavaScript client

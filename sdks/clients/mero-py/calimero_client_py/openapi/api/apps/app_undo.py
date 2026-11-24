@@ -111,8 +111,9 @@ def sync_detailed(
     wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each
     group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING`
     meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`,
-    `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its
-    instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
+    `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer
+    installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance),
+    `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
     FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -159,8 +160,9 @@ def sync(
     wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each
     group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING`
     meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`,
-    `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its
-    instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
+    `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer
+    installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance),
+    `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
     FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -202,8 +204,9 @@ async def asyncio_detailed(
     wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each
     group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING`
     meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`,
-    `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its
-    instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
+    `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer
+    installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance),
+    `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
     FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -248,8 +251,9 @@ async def asyncio(
     wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each
     group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING`
     meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`,
-    `UNDO_STALE` (the app moved on), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its
-    instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
+    `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer
+    installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance),
+    `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409
     FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
