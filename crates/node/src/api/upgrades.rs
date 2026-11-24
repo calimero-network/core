@@ -49,6 +49,16 @@ pub(crate) async fn move_class(
     class_of(node, app_id, release, false).await
 }
 
+/// [`move_class`] as the classifier's whole verdict, with what the log does not keep
+/// (`removed_methods`), for the leader's updates on their own.
+pub(crate) async fn move_verdict(
+    node: &Node,
+    app_id: &str,
+    release: Option<&PackageRef>,
+) -> Option<calimero_bundle::update::Classification> {
+    verdict_of(node, app_id, release, false).await
+}
+
 /// The class an upgrade run's `UpgradeApp` of `app_id` carries: for the instance of a
 /// unit's run, the whole unit's (its members moving to the run's targets), as apply
 /// judges it ([`crate::system::SystemState::run_update_gate`]); else [`move_class`].
@@ -69,6 +79,18 @@ async fn class_of(
     release: Option<&PackageRef>,
     whole_unit: bool,
 ) -> Option<crate::types::UpgradeClass> {
+    verdict_of(node, app_id, release, whole_unit)
+        .await
+        .and_then(upgrade_class)
+}
+
+/// The verdict [`class_of`] logs as a class.
+async fn verdict_of(
+    node: &Node,
+    app_id: &str,
+    release: Option<&PackageRef>,
+    whole_unit: bool,
+) -> Option<calimero_bundle::update::Classification> {
     let to = release?;
     if node
         .require_features(&[Feature::UpgradeClasses])
@@ -100,7 +122,7 @@ async fn class_of(
         {
             None
         }
-        Ok(c) => c.and_then(upgrade_class),
+        Ok(c) => c,
         Err(e) => {
             warn!(app = %app_id, error = %e.message, "the upgrade was not classified");
             None
@@ -343,6 +365,17 @@ pub(crate) async fn upgrade_app(
     if let Err(why) = node.sys(|s| s.within_deployment(&app, release.as_ref(), None)) {
         return Err(crate::node::rejected(why));
     }
+    let may = || {
+        node.sys(|s| {
+            s.upgrades_outside_offers(&app, &account, release.as_ref(), &bundle, now_secs())
+        })
+    };
+    if !may() {
+        let _caught_up = node.sys_fresh().await;
+        if !may() {
+            return Err(crate::node::not_a_deployer());
+        }
+    }
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
         return Err(crate::node::rejected("unknown bundle"));
     }
@@ -526,6 +559,11 @@ async fn run_upgrade(
         }
         if let Err(why) = s.within_deployment(a, release.as_ref(), who.run.as_deref()) {
             return Some(crate::node::rejected(why));
+        }
+        if !who.by_operator
+            && !s.upgrades_outside_offers(a, &who.actor, release.as_ref(), &bundle, begun)
+        {
+            return Some(crate::node::not_a_deployer());
         }
         if s.components_of(release.as_ref()) != a.components {
             return Some(ApiError::new(

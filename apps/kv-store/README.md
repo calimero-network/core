@@ -42,8 +42,8 @@ meroctl app build apps/kv-store --out kv_store.wasm   # from the repo root
 `cargo test` builds the component for `wasm32-wasip2` and runs it on the real engine
 (`calimero_sdk::testing::TestApp`): `tests/harness.rs` is v1's `TestHost` suite, and
 `tests/scenarios.rs` runs every `scenarios/*.json` in the org its `.org.json` names. The
-scenarios replace the merobox workflows (`simple-store`, `bundle-invitation`,
-`workflow-example`); `kv-store.json` covers the rest of the ABI. `tests/migrations.rs`
+scenarios replace the merobox workflows (`simple-store`, `workflow-example`);
+`kv-store.json` covers the rest of the ABI. `tests/migrations.rs`
 runs `migrations/0.1.0.json` from the bundle `releases/0.1.0.mpk` (the store as it was
 packed at `1.0.0-rc.15`, dev-signed) to this build: whatever the store becomes, it must read
 what that release stored. The crate is standalone (its own `[workspace]`).

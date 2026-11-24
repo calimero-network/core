@@ -14,6 +14,11 @@
 //! are reported ignored unless `--include-ignored` / `--ignored` (or `SCENARIO_INCLUDE_SKIPPED=1`).
 //! `SCENARIO_FILES=a.json,b.json` runs those cluster scenario files instead of the discovered ones.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 #[path = "harness/cluster.rs"]
 #[allow(dead_code)]
 mod cluster;

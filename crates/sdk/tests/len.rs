@@ -2,6 +2,11 @@
 //! one read to answer, one more write per insert or removal, and honest about tables stored
 //! before it existed.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_sdk::collections::UnorderedMap;
 use calimero_sdk::encoding::key;
 use calimero_sdk::prelude::*;

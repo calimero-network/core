@@ -201,8 +201,8 @@ pub struct PolicyArgs {
     #[arg(long)]
     second_approver: Option<bool>,
     /// Which updates apply on their own after the hold: `never`, or `no-destinations` (a
-    /// green update of an app whose unit sends data nowhere outside Calimero, before or
-    /// after). Stored now; applied by a later release.
+    /// green update that removes no method, of an app whose unit sends data nowhere outside
+    /// Calimero, before or after).
     #[arg(long, value_enum)]
     auto_apply: Option<AutoApply>,
     /// How long a green update waits before applying on its own: 24 to 168 hours.
