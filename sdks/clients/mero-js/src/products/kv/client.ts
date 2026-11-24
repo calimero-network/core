@@ -99,6 +99,12 @@ export interface WhoAmI {
   storeAdmin: boolean;
 }
 
+/** The arguments of the app's `init`: `initArgs` of `client.apps.create`. */
+export interface InitArgs {
+  servicesOnly?: boolean | null;
+  passkeyWrites?: boolean | null;
+}
+
 /** The arguments of `addAdmin`. */
 export interface AddAdminArgs {
   account: string;

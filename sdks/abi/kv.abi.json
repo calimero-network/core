@@ -325,9 +325,18 @@
     "init": {
       "allowSystem": false,
       "confirm": false,
-      "doc": "Creates the `default` bucket with the owner as its admin. Run as a member of an app's\nunit, it also grants that app (`env::unit_of()`) `read`, `write` and `admin` on it.",
+      "doc": "Creates the `default` bucket with the owner as its admin, `servicesOnly` and\n`passkeyWrites` as `createBucket` takes them. Run as a member of an app's unit, it\ngrants that app (`env::unit_of()`) `read`, `write` and `admin` on it; else it grants\nthe owner `read` and `write`, unless `default` is `servicesOnly`.",
       "kind": "init",
-      "params": [],
+      "params": [
+        [
+          "servicesOnly",
+          "option<bool>"
+        ],
+        [
+          "passkeyWrites",
+          "option<bool>"
+        ]
+      ],
       "public": false,
       "returns": null
     },
