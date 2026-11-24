@@ -373,7 +373,7 @@ class RestoreBackup(DeepCase):
         eq(self._keys(w, s), s["want"], "the app's keys")
         until("the first file reads back", lambda: self._file(w, s), 30)
         if not s["want"]["lost"]:
-            refused("NOT_FOUND", lambda: person(w, "rowan").http("GET", f"apps/{s['app']}/files/{s['lost']}"),
+            refused("NOT_FOUND", lambda: person(w, "rowan").http("GET", f"apps/{s['app']}/files/{s['kept']['id']}"),
                     "the file written after the backup")
 
     def exercise(self, w, s):
