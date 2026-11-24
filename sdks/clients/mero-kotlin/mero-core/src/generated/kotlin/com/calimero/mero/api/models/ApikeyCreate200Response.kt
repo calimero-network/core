@@ -47,7 +47,7 @@ data class ApikeyCreate200Response (
     val key: kotlin.String,
 
     @SerialName(value = "then")
-    val then: kotlin.collections.List<ApikeyCreate200ResponseThenInner>
+    val then: kotlin.collections.List<ApikeyCreate200ResponseThenInner>? = null
 
 ) {
 

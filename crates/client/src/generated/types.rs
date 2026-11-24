@@ -4396,7 +4396,8 @@ pub struct ApikeyCreateResponse {
     #[serde(rename = "keyId")]
     pub key_id: String,
     pub key: String,
-    pub then: Vec<ApikeyCreateResponseThenItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then: Option<Vec<ApikeyCreateResponseThenItem>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

@@ -27143,7 +27143,7 @@ public enum Operations {
                         /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/then`.
                         public typealias ThenPayload = [Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.ThenPayloadPayload]
                         /// - Remark: Generated from `#/paths/auth/apikeys/POST/responses/200/content/json/then`.
-                        public var then: Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.ThenPayload
+                        public var then: Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.ThenPayload?
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
@@ -27153,7 +27153,7 @@ public enum Operations {
                         public init(
                             keyId: Swift.String,
                             key: Swift.String,
-                            then: Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.ThenPayload
+                            then: Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.ThenPayload? = nil
                         ) {
                             self.keyId = keyId
                             self.key = key

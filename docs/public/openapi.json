@@ -11261,8 +11261,7 @@
                   },
                   "required": [
                     "keyId",
-                    "key",
-                    "then"
+                    "key"
                   ]
                 }
               }

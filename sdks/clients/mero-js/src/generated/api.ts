@@ -11231,7 +11231,7 @@ export interface operations {
                     "application/json": {
                         keyId: string;
                         key: string;
-                        then: {
+                        then?: {
                             /** Format: int64 */
                             index: number;
                             /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
