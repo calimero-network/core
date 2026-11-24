@@ -1,10 +1,11 @@
 //! KMS attestation policy for merod.
 //!
 //! When MERO_KMS_RELEASE_TAG, MERO_KMS_VERSION, or MERO_TEE_VERSION is set,
-//! merod fetches the attestation policy from the official mero-tee release
-//! instead of relying on config written by external scripts.
-//! Use USE_ENV_POLICY=true for air-gapped deployments, where the policy is
-//! provisioned in config.toml under `[tee.kms.attestation]`.
+//! merod fetches the attestation policy from the official mero-tee release and
+//! verifies its Sigstore signature. This is the only thing a KMS is trusted on:
+//! with no release named there is no policy, and the caller refuses the KMS.
+//! There is no fallback to allowlists in a config file, and `USE_ENV_POLICY`,
+//! which once selected one, is ignored with a warning.
 //!
 //! With MERO_TEE_PROFILE set, merod asks for that profile's policy asset
 //! (`kms-attestation-policy.<profile>.json`) and falls back to the generic
@@ -135,16 +136,6 @@ where
     }
 
     Ok(None)
-}
-
-/// Whether to skip release fetch and use config.toml policy (air-gapped).
-pub fn use_env_policy() -> bool {
-    // Security note: this bypasses release-policy fetch. It is intended for
-    // controlled environments (for example air-gapped deployments) where policy
-    // files are provisioned and verified by deployment tooling.
-    std::env::var("USE_ENV_POLICY")
-        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false)
 }
 
 /// Fetch attestation policy from the official mero-tee release.
@@ -452,21 +443,44 @@ fn enforce_minimum_release(version: &str, minimum: Option<&str>) -> EyreResult<(
     Ok(())
 }
 
+/// Once made a node skip the signed release policy for allowlists in its
+/// config; now only warned about.
+const IGNORED_USE_ENV_POLICY: &str = "USE_ENV_POLICY";
+
 /// Resolve policy: fetch from release when version is set, else None.
 pub async fn resolve_policy() -> EyreResult<Option<KmsAttestationPolicy>> {
-    if use_env_policy() {
-        warn!("USE_ENV_POLICY=true: skipping release fetch, using config.toml policy");
-        return Ok(None);
+    resolve_policy_with(
+        |env_var| std::env::var(env_var).ok(),
+        |version| async move { fetch_policy_from_release(&version).await },
+    )
+    .await
+}
+
+/// [`resolve_policy`] over an environment reader and a release fetcher.
+async fn resolve_policy_with<E, F, Fut>(
+    mut env_reader: E,
+    fetch: F,
+) -> EyreResult<Option<KmsAttestationPolicy>>
+where
+    E: FnMut(&str) -> Option<String>,
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = EyreResult<KmsAttestationPolicy>>,
+{
+    if env_reader(IGNORED_USE_ENV_POLICY).is_some() {
+        warn!(
+            "{IGNORED_USE_ENV_POLICY} is set and ignored: the KMS is verified only against \
+             the signed release policy"
+        );
     }
-    let Some(version) = release_version_from_env()? else {
+    let Some(version) = release_version_from_env_with(&mut env_reader)? else {
         return Ok(None);
     };
-    let minimum = std::env::var("MERO_TEE_MIN_VERSION").ok();
+    let minimum = env_reader("MERO_TEE_MIN_VERSION");
     enforce_minimum_release(&version, minimum.as_deref())?;
 
     // Security fail-closed: if operator explicitly configured a release version,
     // we must not continue without attestation policy verification.
-    let policy = fetch_policy_from_release(&version).await.map_err(|e| {
+    let policy = fetch(version.clone()).await.map_err(|e| {
         eyre::eyre!(
             "Failed to fetch policy from release mero-kms-v{}: {}",
             version,
@@ -860,5 +874,43 @@ mod tests {
             err.to_string().contains("none of the policy assets"),
             "{err}"
         );
+    }
+
+    /// `USE_ENV_POLICY` once made a node skip the signed release policy and
+    /// fall back to allowlists in its config. A KMS is trusted only through the
+    /// signed release policy, so the variable changes nothing.
+    #[tokio::test]
+    async fn use_env_policy_does_not_skip_the_signed_release_policy() {
+        let env = |env_var: &str| match env_var {
+            "USE_ENV_POLICY" => Some("true".to_owned()),
+            "MERO_KMS_VERSION" => Some("2.3.69".to_owned()),
+            _ => None,
+        };
+        let fetched = std::cell::Cell::new(false);
+        let policy = resolve_policy_with(env, |version| {
+            fetched.set(true);
+            std::future::ready(parse_policy_json_for_release(
+                PUBLISHED_POLICY,
+                &version,
+                None,
+            ))
+        })
+        .await
+        .expect("the release policy resolves");
+        assert!(fetched.get(), "the signed release policy was never fetched");
+        assert_eq!(policy.map(|p| p.release).as_deref(), Some("2.3.69"));
+    }
+
+    /// With the variable set and no release named, there is still no policy,
+    /// so no key: the caller refuses the KMS (`disk_key`).
+    #[tokio::test]
+    async fn use_env_policy_without_a_release_resolves_no_policy() {
+        let env = |env_var: &str| (env_var == "USE_ENV_POLICY").then(|| "true".to_owned());
+        let policy = resolve_policy_with(env, |_| async {
+            unreachable!("no release is named, so nothing is fetched")
+        })
+        .await
+        .expect("no release named is not an error here");
+        assert!(policy.is_none());
     }
 }

@@ -1,4 +1,5 @@
-//! The store on the real engine: v1's `TestHost` tests, method for method.
+//! The store on the real engine: what the scenario files do not check (event payloads,
+//! misses, ordering, paging).
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -28,17 +29,6 @@ fn names(t: &TestApp) -> Vec<String> {
 }
 
 #[test]
-fn set_get_len_remove() {
-    let mut t = app();
-    call(&mut t, "set", json!({ "key": "k", "value": "v" }));
-    assert_eq!(view(&mut t, "get", json!({ "key": "k" })), json!("v"));
-    assert_eq!(view(&mut t, "len", json!({})), json!("1"));
-    assert_eq!(call(&mut t, "remove", json!({ "key": "k" })), json!("v"));
-    assert_eq!(view(&mut t, "get", json!({ "key": "k" })), json!(null));
-    assert_eq!(view(&mut t, "len", json!({})), json!("0"));
-}
-
-#[test]
 fn entries_and_clear() {
     let mut t = app();
     call(&mut t, "set", json!({ "key": "b", "value": "2" }));
@@ -47,38 +37,10 @@ fn entries_and_clear() {
         view(&mut t, "entries", json!({})),
         json!({ "a": "1", "b": "2" })
     );
-    // v1's clear: any member, no passkey confirmation.
+    // Any member may clear, with no passkey confirmation.
     t.as_("owner").call("clear", json!({})).expect("clear");
     assert_eq!(view(&mut t, "len", json!({})), json!("0"));
     assert_eq!(view(&mut t, "entries", json!({})), json!({}));
-}
-
-#[test]
-fn update_if_exists_and_get_or_insert() {
-    let mut t = app();
-    let args = json!({ "key": "k", "value": "v" });
-    assert_eq!(call(&mut t, "updateIfExists", args.clone()), json!(false));
-    assert_eq!(view(&mut t, "get", json!({ "key": "k" })), json!(null));
-    assert_eq!(
-        call(
-            &mut t,
-            "getOrInsert",
-            json!({ "key": "k", "value": "first" })
-        ),
-        json!("first")
-    );
-    assert_eq!(
-        call(
-            &mut t,
-            "getOrInsert",
-            json!({ "key": "k", "value": "second" })
-        ),
-        json!("first")
-    );
-    assert_eq!(call(&mut t, "updateIfExists", args), json!(true));
-    assert_eq!(view(&mut t, "get", json!({ "key": "k" })), json!("v"));
-    assert_eq!(view(&mut t, "len", json!({})), json!("1"));
-    assert_eq!(names(&t), ["Inserted", "Updated"]);
 }
 
 #[test]
@@ -133,23 +95,6 @@ fn get_result_and_get_unchecked_on_a_missing_key() {
     assert_eq!(
         view(&mut t, "getUnchecked", json!({ "key": "k" })),
         json!("v")
-    );
-}
-
-/// v1's `converge.rs`: every write a member makes survives. Here the leader orders them,
-/// so three members' writes to distinct keys are three keys.
-#[test]
-fn distinct_keys_from_several_members_all_survive() {
-    let mut t = common::app(Org::new().members(["bob", "cy"]));
-    for (who, key) in [("owner", "a"), ("bob", "b"), ("cy", "c")] {
-        t.as_(who)
-            .call("set", json!({ "key": key, "value": who }))
-            .expect("set");
-    }
-    assert_eq!(view(&mut t, "len", json!({})), json!("3"));
-    assert_eq!(
-        view(&mut t, "entries", json!({})),
-        json!({ "a": "owner", "b": "bob", "c": "cy" })
     );
 }
 

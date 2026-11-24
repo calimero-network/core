@@ -6,7 +6,20 @@ The mero-kms client a TEE node fetches its keys with. It was merod's (`src/kms`,
 - **Release policy** (`policy.rs`): the KMS is trusted only if its `/attest` quote
   matches the signed mero-tee release the environment names (`MERO_TEE_VERSION`,
   `MERO_KMS_VERSION`, `MERO_KMS_RELEASE_TAG`), fetched and Sigstore-verified with
-  `calimero-tee-release`. No release named: no key.
+  `calimero-tee-release`. No release named: no key. Nothing else pins a KMS:
+  `fetch_storage_key` and `probe_storage_key` take the policy, not an option,
+  and there is no config allowlist and no `USE_ENV_POLICY` bypass (both were
+  removed; a set `USE_ENV_POLICY` is only warned about).
+- **Trust model** (a TDX node on mero-tee's image): the image's root filesystem,
+  merod and its init script included, is behind dm-verity, and its root hash is
+  on the kernel command line, which RTMR2 measures, so the quote names the code
+  that runs. The host does not choose what that code trusts: the init script
+  passes only whitelisted metadata values to `merod init` and `merod.env` (the
+  release, profile and KMS URL among them), `config.toml` lives on the data disk
+  the KMS's key encrypts, and the KMS is trusted only if its quote matches the
+  Sigstore-verified release policy. A host that names an older release is held
+  by `MERO_TEE_MIN_VERSION`; one that names another URL reaches a KMS the policy
+  refuses.
 - **Key release** (`kms/`): challenge, this TD's quote over it, a signed request with
   the identity's libp2p key; the KMS answers with the key for
   `{namespace}/{profile}/{peerId}`, sealed to the request (`kms/sealed.rs`).
@@ -35,10 +48,12 @@ The mero-kms client a TEE node fetches its keys with. It was merod's (`src/kms`,
   `counters: None`. Vectors shared with mero-kms: `the_v2_wire_format_matches_the_published_vectors`,
   `the_rollback_macs_match_the_published_vectors`. `disk_key::fetch_disk_key_and_counters`
   is what merod calls.
-- **Config** (`config.rs`): `TeeConfig` / `KmsConfig` / `KmsAttestationConfig`, as
-  merod's `config.toml` held them.
-- **mock-attestation** (feature, off by default): accepts mock quotes where a test
-  config allows them. Never in a shipped build.
+- **Config** (`config.rs`): `TeeConfig` / `KmsConfig` (the KMS URL and TLS
+  settings). An `attestation` table under `[tee.kms]` still parses and is
+  ignored. merod's `config.toml` has no `[tee]` section at all and refuses one.
+- **mock-attestation** (feature, off by default): the release-policy check
+  accepts a mock quote when `MEROD_ALLOW_MOCK_KMS_ATTESTATION` is also set.
+  Tests only. Never in a shipped build.
 
 ## Commands
 

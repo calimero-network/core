@@ -1,7 +1,5 @@
 //! team-space on the real engine, in an org of an owner, an admin (`ada`), two members
-//! (`bob`, in the team `eng`, and `cy`) and a guest (`gus`): the organization's standing,
-//! the owned config, the role registry and the writer sets with their rotation (v1's
-//! `TestHost` tests of `Ownable`, `AccessControl` and `SharedStorage`, and the refusals).
+//! (`bob` in team `eng`, `cy`) and a guest (`gus`): standing, owned config, writer sets.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -204,43 +202,6 @@ fn transfer_moves_control_to_the_new_owner() {
     );
 }
 
-// The role registry.
-
-#[test]
-fn writers_of_roles_grant_and_revoke_others_cannot() {
-    let mut t = app();
-    t.as_("owner")
-        .call("grantRole", json!({ "role": "editor", "who": "bob" }))
-        .unwrap();
-    assert_eq!(
-        t.as_("bob")
-            .view("hasRole", json!({ "role": "editor", "who": "bob" }))
-            .unwrap(),
-        json!(true)
-    );
-    // An editor does not grant roles.
-    assert_eq!(
-        t.as_("bob")
-            .call("grantRole", json!({ "role": "editor", "who": "cy" })),
-        not_writer("roles")
-    );
-    assert_eq!(
-        t.as_("bob")
-            .call("tryGrantRole", json!({ "role": "editor", "who": "cy" }))
-            .unwrap(),
-        json!(false)
-    );
-    t.as_("owner")
-        .call("revokeRole", json!({ "role": "editor", "who": "bob" }))
-        .unwrap();
-    assert_eq!(
-        t.as_("bob")
-            .view("hasRole", json!({ "role": "editor", "who": "bob" }))
-            .unwrap(),
-        json!(false)
-    );
-}
-
 // Writer sets and their rotation.
 
 #[test]
@@ -253,22 +214,6 @@ fn set_and_get_shared() {
             .expect("the owner is the first writer");
         assert_eq!(t.as_("bob").view("getShared", json!({})), Ok(json!(v)));
     }
-}
-
-#[test]
-fn map_set_and_get() {
-    let mut t = app();
-    t.as_("owner")
-        .call("mapSet", json!({ "key": "greeting", "value": "hello" }))
-        .expect("mapSet");
-    assert_eq!(
-        t.as_("bob").view("mapGet", json!({ "key": "greeting" })),
-        Ok(json!("hello"))
-    );
-    assert_eq!(
-        t.as_("bob").view("mapGet", json!({ "key": "absent" })),
-        Ok(json!(null))
-    );
 }
 
 #[test]

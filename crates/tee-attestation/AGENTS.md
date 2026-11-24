@@ -130,7 +130,7 @@ Mock quotes (`is_mock_quote`, magic header `MOCK_QUOTE_HEADER = b"MOCK_TDX_QUOTE
 
 ## Relationship to the KMS
 
-This crate has no KMS-specific code - it is a generic TDX quote generate/verify library. The KMS is mero-kms running as a GCP TDX cluster, and its client lives in `crates/kms-client` (`calimero-kms-client`): `merod` calls `generate_attestation` to produce its own quote when requesting a key, and calls `verify_attestation` / `verify_mock_attestation` to check the quote the KMS returns from `/attest` before trusting a fetched storage encryption key. Pinning that quote's MRTD and RTMR0-3 to the release policy, and the mock/real decision with its `accept_mock` enforcement (reject a mock quote unless explicitly allowed), are entirely the caller's responsibility - this crate just answers "is this quote's binding and signature valid," it never decides whether mock is acceptable.
+This crate has no KMS-specific code - it is a generic TDX quote generate/verify library. The KMS is mero-kms running as a GCP TDX cluster, and its client lives in `crates/kms-client` (`calimero-kms-client`): `merod` calls `generate_attestation` to produce its own quote when requesting a key, and calls `verify_attestation` / `verify_mock_attestation` to check the quote the KMS returns from `/attest` before trusting a fetched storage encryption key. Pinning that quote's MRTD and RTMR0-3 to the release policy, and the mock/real decision (reject a mock quote unless explicitly allowed: in `calimero-kms-client`, only with its `mock-attestation` feature and `MEROD_ALLOW_MOCK_KMS_ATTESTATION`), are entirely the caller's responsibility - this crate just answers "is this quote's binding and signature valid," it never decides whether mock is acceptable.
 
 ## Key Files
 
