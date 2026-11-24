@@ -726,6 +726,11 @@ is its command line.
   (a read index), so a removal committed elsewhere holds before the next request; an event
   stream judges each event the same way (Events below). Regression:
   `a_revocation_holds_on_a_follower_that_has_not_applied_it_yet`.
+  The owner, admin and read-only checks made after `gate` (`manages_app`,
+  `may_handle_files`, `read_only_in`) read the app's record again from that state
+  (`api::fresh_record`), never the one the handler read before the round, so a transfer
+  or move committed elsewhere holds too. Regression:
+  `a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer`.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
@@ -1338,11 +1343,11 @@ is its command line.
   `removed`), `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
   unit's moves its direct members as `unit_plan` does. The class decides how it applies:
   under `secondApprover` a red one takes two approvers (C8), under `noDestinations` a
-  green one of a unit with no destination before or after that removes no method applies on
-  its own, moving the app alone (C9).
+  green one of a unit with no destination before or after applies on its own, unless it
+  removes a method or would move the unit's members (C9).
   Regressions: `a_units_destinations_are_judged_over_its_members`
   (`tests/it/consent_page.rs`), `calimero_bundle::update::tests`,
-  `an_update_whose_members_differ_applies_on_its_own_and_moves_the_instance_alone`
+  `an_update_that_would_move_the_units_members_waits_for_a_person`
   (`tests/auto_updates.rs`).
 - **Update classes and policies** (C8; `system/updates.rs`, `api/update_policies.rs`;
   docs: protocol upgrades "The class at apply", "Update policies"): every `UpgradeApp`
@@ -1400,8 +1405,8 @@ is its command line.
   the instance's `links` (`upgrade_run_apps`). `POST /apps/{app}/upgrade-approvals` answers `approval` in the
   `pendingApprovals` shape (`api::upgrades::approval_json`).
   The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
-  `autoApply` (`noDestinations`: a green update that removes no method, of an app whose
-  unit has no destinations before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
+  `autoApply` (`noDestinations`: a green update that removes no method and moves none of
+  the apps it created, of an app whose unit has no destinations before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
   /apps/{app}/upgrade-policy` (`policy_json`), `GET /apps/{app}/update` adds `policy`,
   `pendingApprovals`, `available.approvalsNeeded`/`approvedBy`
   (`api::upgrades::update_view`), `GET /orgs/{org}/updates?after=` (owners and admins,
@@ -1451,7 +1456,9 @@ is its command line.
   `UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that
   actor); apply judges `SystemState::auto_update_gate`: policy, green class (and
   `check_class`), newer release of its package, not a unit member, the logged unit with
-  no destination before or after, the hold (`at` >= `installedAt`, or the deployment
+  no destination before or after, a release that keeps the unit's members where they
+  are (`moves_members` over `release_of_use`, which `unit_members` picks with too;
+  `UpgradeApp { members_stay }`, `Feature::AutoUpdateMembersStay`, rc.36), the hold (`at` >= `installedAt`, or the deployment
   offer's `addedAt`, + `holdHours`), a restore point
   (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `RESTORE_POINT_REQUIRED`;
   `UpgradeRecord::auto`). Every update decision's time is `types::update_now`
@@ -2082,7 +2089,13 @@ is its command line.
   `internal/call`) wait to apply it (`Node::sys_fresh_from`, whose doc is the
   argument that this is as fresh as a round of their own) instead of running
   another. Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
+  A credential that cannot be valid costs no round (`api::credential`, D4): an
+  API key not of `new_api_key`'s shape, or one a caught-up read found missing in
+  the last `UNKNOWN_API_KEY_TTL` (`UnknownApiKeys`, `MAX_UNKNOWN_API_KEYS`), a
+  visitor credential whose signature fails, a session token its issuer did not
+  sign; a missing key waits (`sys_until`) only when the round did not catch up.
   Regressions: `a_call_costs_one_system_read_round`,
+  `a_credential_that_cannot_be_valid_costs_no_system_read_round`,
   `a_revocation_committed_before_the_round_holds_on_a_leader_behind`
   (`tests/it/access_gate.rs`).
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
@@ -2318,6 +2331,14 @@ API and system group:
   `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`
   (`testing`: `Node::hold_system_log` makes a node refuse the system group's Raft
   messages while its app groups go on), `removed_member_stops_receiving_org_events`.
+  Every stream `gate` lets open (events, presence, a pipeline run's events, an event
+  stream proxied from another replica) also judges the principal that opened it before
+  each batch it sends, on the same fresh state (`api::still_admitted`,
+  `Principal::admitted_on`): an account no longer reaching the app, a revoked API key or
+  an ended session ends it; a session token's own expiry does not (a refresh). Regressions:
+  `a_removed_member_stops_receiving_presence`,
+  `a_revoked_key_or_session_stops_its_event_and_presence_streams`,
+  `a_removed_member_stops_receiving_a_runs_events`.
 - **Usage** (Q20, `component::RunUsage`, `DayUsage`): each `componentInit`,
   `componentCall` and `componentTick` outcome carries `usage { fuel, wallMs, writes,
   bytesWritten, events }`, measured by the leader (`Outcome::from_host`; a `HostDenied`
@@ -2571,8 +2592,8 @@ rollback epoch in the attested KMS evidence, search indexes that survive a resta
 ```bash
 cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
 # the integration tests are one binary, `it` (tests/it/main.rs: a module per file), so one
-# test is <module>::<test>; auto_updates, compute_runs (process-wide test hooks) and
-# scenarios (its own main) stay binaries of their own (docs: contribute/testing)
+# test is <module>::<test>; auto_updates (process-wide test hooks) and scenarios (its
+# own main) stay binaries of their own (docs: contribute/testing)
 cargo test -p calimero-node --test it cluster::        # one module (a filter: any prefix)
 cargo test -p calimero-node --test it component_cluster::end_to_end -- --exact --nocapture
 cargo test -p calimero-node --test auto_updates -- --test-threads 1

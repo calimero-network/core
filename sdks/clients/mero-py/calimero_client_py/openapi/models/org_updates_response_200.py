@@ -24,10 +24,10 @@ class OrgUpdatesResponse200:
         policy (UpgradePolicy): How an organization's owner and admins let an app's updates apply (`POST
             /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave
             any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins.
-            `autoApply` (default `never`; `noDestinations`: a green update that removes no method, of an app whose unit has
-            no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an
-            update applies on its own once `holdHours` have passed since the release was logged (its install, or its
-            deployment's offer), after a restore point.
+            `autoApply` (default `never`; `noDestinations`: a green update that removes no method and moves none of the apps
+            it created, of an app whose unit has no destinations before or after it, so no data leaves Calimero) and
+            `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the
+            release was logged (its install, or its deployment's offer), after a restore point.
         updates (list[Any]):
         next_ (Union[None, str]):
     """

@@ -2687,6 +2687,191 @@ async fn an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_
     );
 }
 
+/// Alice's organization "Acme" with Bob and Carol as members, and a team-space app in it:
+/// `(org, app, bob's account id)`.
+async fn acme_with_bob_and_carol(
+    alice: &Client,
+    a: &mut SoftAuthenticator,
+    bob: &Client,
+    carol: &Client,
+) -> (String, String, String) {
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice
+            .orgs()
+            .create("Acme", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+        "orgId",
+    );
+    for member in [bob, carol] {
+        let token = s(
+            alice
+                .orgs()
+                .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut *a))
+                .await
+                .map(wire)
+                .unwrap(),
+            "token",
+        );
+        let _r = member.orgs().invite_redeem(&token).await.unwrap();
+    }
+    let bob_id = s(bob.auth().me().await.map(wire).unwrap(), "accountId");
+    let bundle = alice
+        .packages()
+        .bundle_put(wasm("team-space"))
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "bundle": &bundle, "org": org }),
+        ))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    (org, app, bob_id)
+}
+
+/// G4: the presence stream was judged once, when it was opened. A member removed from the
+/// organization kept receiving who else was present in the app, and the state each of them
+/// published, for as long as the stream stayed open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_removed_member_stops_receiving_presence() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let (org, app, bob_id) = acme_with_bob_and_carol(&alice, &mut a, &bob, &carol).await;
+
+    let mut bob_presence = Box::pin(bob.presence_stream(&app).await.unwrap());
+    let mut carol_presence = Box::pin(carol.presence_stream(&app).await.unwrap());
+    for stream in [&mut bob_presence, &mut carol_presence] {
+        let (_, kind, _) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(kind, "snapshot");
+    }
+    let _r = alice
+        .apps()
+        .presence_publish(&app, 1, Some(Some(hex::encode(b"one")).as_deref()))
+        .await
+        .unwrap();
+    for stream in [&mut bob_presence, &mut carol_presence] {
+        let (_, kind, d) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(kind, "presence");
+        assert_eq!(d["state"], json!(hex::encode(b"one")));
+    }
+
+    let _r = alice
+        .orgs()
+        .remove_member(&org, &bob_id, Some(&mut a))
+        .await
+        .map(wire)
+        .unwrap();
+    let _r = alice
+        .apps()
+        .presence_publish(&app, 2, Some(Some(hex::encode(b"two")).as_deref()))
+        .await
+        .unwrap();
+    let (_, _, d) = tokio::time::timeout(Duration::from_secs(5), carol_presence.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d["state"], json!(hex::encode(b"two")));
+    let got = tokio::time::timeout(Duration::from_secs(3), bob_presence.next()).await;
+    assert!(
+        !matches!(got, Ok(Some(_))),
+        "a removed member still received presence: {got:?}"
+    );
+}
+
+/// G4: an event stream judged its subscriber's account, never the credential that opened it.
+/// A stream opened with an API key, or a session, went on after the key was revoked or the
+/// session ended, so revoking a leaked key did not stop it reading the app's events.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_revoked_key_or_session_stops_its_event_and_presence_streams() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let (_org, app, _bob_id) = acme_with_bob_and_carol(&alice, &mut a, &bob, &carol).await;
+
+    // Bob's machine on a key; Bob's second session on another node.
+    let (key_id, key) = bob
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), Some(&mut b))
+        .await
+        .map(|k| (k.key_id, k.key))
+        .unwrap();
+    let machine = c.client(2);
+    machine.use_api_key(&key).await;
+    let laptop = c.client(0);
+    let _s = laptop.sign_in(&mut b).await.unwrap();
+
+    let mut machine_events = Box::pin(machine.events(&app, 0).await.unwrap());
+    let mut laptop_events = Box::pin(laptop.events(&app, 0).await.unwrap());
+    let mut machine_presence = Box::pin(machine.presence_stream(&app).await.unwrap());
+    let mut carol_events = Box::pin(carol.events(&app, 0).await.unwrap());
+    let (_, kind, _) = tokio::time::timeout(Duration::from_secs(5), machine_presence.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kind, "snapshot");
+    let _r = alice
+        .apps()
+        .call(&app, "announce", Some(json!({ "text": "one" })), None, None)
+        .await
+        .unwrap();
+    for stream in [&mut machine_events, &mut laptop_events, &mut carol_events] {
+        let (_id, _kind, data) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(data["text"], "one");
+    }
+
+    let _r = bob
+        .auth()
+        .apikey_revoke(&key_id, Some(&mut b))
+        .await
+        .unwrap();
+    let _r = laptop.auth().logout().await.unwrap();
+    let _r = alice
+        .apps()
+        .call(&app, "announce", Some(json!({ "text": "two" })), None, None)
+        .await
+        .unwrap();
+    let _r = alice
+        .apps()
+        .presence_publish(&app, 1, Some(Some(hex::encode(b"here")).as_deref()))
+        .await
+        .unwrap();
+    let (_id, _kind, data) = tokio::time::timeout(Duration::from_secs(5), carol_events.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(data["text"], "two");
+    for (what, stream) in [
+        ("a revoked API key's events", &mut machine_events),
+        ("an ended session's events", &mut laptop_events),
+    ] {
+        let got = tokio::time::timeout(Duration::from_secs(3), stream.next()).await;
+        assert!(!matches!(got, Ok(Some(_))), "{what} went on: {got:?}");
+    }
+    let got = tokio::time::timeout(Duration::from_secs(3), machine_presence.next()).await;
+    assert!(
+        !matches!(got, Ok(Some(_))),
+        "a revoked API key's presence went on: {got:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn unique_ids_differ_within_a_term_and_across_leaders() {
     let mut c = Cluster::start(3).await;
@@ -4241,6 +4426,7 @@ async fn the_leader_checks_upgrade_authority_again() {
                     owner_approves: false,
                     class: None,
                     auto: false,
+                    members_stay: false,
                     restore_point: None,
                 })
                 .await

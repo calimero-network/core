@@ -953,6 +953,8 @@ dependencies = [
 name = "calimero-outbound"
 version = "0.0.0"
 dependencies = [
+ "aho-corasick",
+ "base64 0.23.1",
  "borsh",
  "calimero-bundle",
  "calimero-primitives",
@@ -1106,6 +1108,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tdx-quote",
+ "time",
  "tokio",
  "tracing",
 ]

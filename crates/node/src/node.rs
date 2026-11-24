@@ -109,15 +109,6 @@ impl From<StatsWire> for crate::app::StorageStats {
 /// fetches. Transfers that may take longer (job transfers) bound themselves.
 pub const SHARED_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// [`SHARED_HTTP_TIMEOUT`], or the timeout a test set (`testing::shared_http_timeout`).
-fn shared_http_timeout() -> Duration {
-    #[cfg(feature = "testing")]
-    if let Some(timeout) = crate::testing::shared_http_timeout_override() {
-        return timeout;
-    }
-    SHARED_HTTP_TIMEOUT
-}
-
 /// Node configuration.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -552,6 +543,8 @@ pub struct Node {
     pub(crate) export_limits: crate::api::ExportLimits,
     /// Visitors' calls through each public link, per visitor key (`api::VisitorLimits`).
     pub(crate) visitor_limits: crate::api::VisitorLimits,
+    /// API keys a fresh read found missing lately, refused with no read (`api::credential`).
+    pub(crate) unknown_api_keys: crate::api::UnknownApiKeys,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -1088,8 +1081,13 @@ impl Node {
         let compute_wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?);
         let clock = Clock::new(config.clock_offset_ms);
         let quoter = crate::attest::Quoter::new(config.attestation);
+        let http_timeout = SHARED_HTTP_TIMEOUT;
+        // A test may give this node a shorter one (`testing::shared_http_timeout`).
+        #[cfg(feature = "testing")]
+        let http_timeout =
+            crate::testing::shared_http_timeout_override(&config.data_dir).unwrap_or(http_timeout);
         let http = crate::peer_tls::peer_client(&config.tls_extra_roots)
-            .timeout(shared_http_timeout())
+            .timeout(http_timeout)
             .build()?;
         #[cfg(feature = "testing")]
         let quoter = quoter.for_node(&config.public_url);
@@ -1121,6 +1119,7 @@ impl Node {
             blob_guards: Arc::default(),
             export_limits: crate::api::ExportLimits::default(),
             visitor_limits: crate::api::VisitorLimits::default(),
+            unknown_api_keys: crate::api::UnknownApiKeys::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,
