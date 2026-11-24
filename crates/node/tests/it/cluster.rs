@@ -6890,6 +6890,41 @@ async fn a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy(
     let (_client, _a) = signed_up(&c, reached, "bob-after-a-misaddressed-heartbeat").await;
 }
 
+/// B6: a cluster whose nodes all run this release logs its version, which
+/// brings batched heartbeats, and every node turns batching on; the system
+/// group keeps its leader and term through the switch and after, and writes
+/// commit. (The rollout from a release before, node by node, is
+/// `calimero-log`'s `a_mixed_cluster_keeps_its_leaders_through_the_batching_rollout`.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_cluster_of_this_release_batches_its_heartbeats_and_keeps_its_leader() {
+    let c = Cluster::start(3).await;
+    let node = |i: usize| &c.nodes[i].as_ref().unwrap().node;
+    let before = node(0).system.status();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !(0..3).all(|i| node(i).engine.batch_heartbeats()) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "batching never turned on: {:?}",
+            (0..3)
+                .map(|i| node(i).engine.batch_heartbeats())
+                .collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Several election timeouts on batched heartbeats alone.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for i in 0..3 {
+        let s = node(i).system.status();
+        assert_eq!(
+            (s.term, s.leader),
+            (before.term, before.leader),
+            "node {} moved",
+            i + 1
+        );
+    }
+    let (_client, _a) = signed_up(&c, 1, "alice-on-batched-heartbeats").await;
+}
+
 /// eu-shared-2 (and `bababa`) never kept a system leader: a TDX node attests a
 /// peer in about a second (Intel's collateral is fetched each time), and
 /// openraft gives an append one heartbeat (200 ms there). Each RPC began the

@@ -77,6 +77,12 @@ is its command line.
   never a scan of `apps`; `reconcile` uses `apps_on` and `app_of_group` too.
   Regressions: `system::routing::tests`
   (`routing_a_raft_message_does_not_scan_the_apps`, a scaling guard).
+  Heartbeats travel batched per peer (`internal/raft-batch`, `PeerTransport::send_batch`,
+  B6) once the logged cluster version brings `Feature::BatchedHeartbeats` (a wire
+  feature: `Feature::in_log` false, set on the engine by the reconcile loop in `lib.rs`);
+  every item passes `admit_raft` as a message alone does, only empty appends, at most
+  `MAX_HEARTBEATS_PER_BATCH`. Regressions: `cluster::a_cluster_of_this_release_batches_its_heartbeats_and_keeps_its_leader`,
+  `approval_bypasses::a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
   No interop with nodes before this (a hard cutover: clusters are recreated).
   Regression (`tests/it/approval_bypasses.rs`):
   `a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.

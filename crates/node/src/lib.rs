@@ -216,6 +216,10 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
                 () = tokio::time::sleep(Duration::from_millis(500)) => {}
             }
             let Some(node) = weak.upgrade() else { return };
+            // Heartbeats go batched per peer once every node takes a batch (B6).
+            node.engine.set_batch_heartbeats(
+                node.sys(|s| s.cluster_brings(system::cluster_version::Feature::BatchedHeartbeats)),
+            );
             node.reconcile().await;
         }
     }));

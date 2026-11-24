@@ -50,6 +50,8 @@ past it is logged trapped. Compute runs on job nodes have their own caps
 | Limit | Value | Constant |
 | --- | --- | --- |
 | One log entry | 1 MiB | `calimero_log::MAX_ENTRY_BYTES` |
+| Heartbeats in one batch to a peer | 1024 (`413 TOO_MANY_HEARTBEATS` past it); only empty appends | `calimero_log::MAX_HEARTBEATS_PER_BATCH` |
+| Wait for a tick's other heartbeats before a batch goes | 5 ms (a heartbeat has `heartbeat_ms`, 200 ms, to be answered) | `calimero_log::HEARTBEAT_BATCH_WINDOW` |
 | One sealed request, one HTTP body | 64 MiB | `MAX_SEALED_BYTES`, `DefaultBodyLimit` |
 | A raw development bundle | 16 MiB | `bundle_put` |
 | One blob (an uploaded file, a package `.mpk`, uploaded or fetched from a registry) | 47 MiB: it reaches the other nodes base64-encoded in one sealed request | `MAX_BLOB_BYTES`, `MAX_MPK_BYTES` |

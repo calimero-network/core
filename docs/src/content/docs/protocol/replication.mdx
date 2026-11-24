@@ -307,6 +307,18 @@ rest, deleting their data from that node.
   (`SystemMachine::app_of_group`, `apps_on`, `group_may_hold`). Nothing of it
   is stored or replicated. `reconcile` reads the same index, so a pass costs
   this node's groups, not groups times apps.
+- **Heartbeats are batched per peer** once the cluster version brings
+  `batchedHeartbeats` (1.0.0-rc.36; a [wire feature](/protocol/upgrades/#the-cluster-version)).
+  Then openraft's own heartbeat timer is off in every group and one engine
+  ticker sends every group's heartbeats each `heartbeat_ms`; those to one peer
+  within `HEARTBEAT_BATCH_WINDOW` (5 ms) go in one `internal/raft-batch`
+  message of at most `MAX_HEARTBEATS_PER_BATCH` (1024), each item checked as a
+  message alone is. A batch the peer does not answer as a whole is sent again
+  item by item. Below the version, each group heartbeats each peer on its own,
+  every 300 ms (openraft 0.9 checks `heartbeat_ms` only on its tick, every 1.5
+  × `heartbeat_ms`); batched, every 200 ms, still a sixth of
+  `election_min_ms` (1200 ms), so a follower hears from its leader more often,
+  never less.
 
 ## Replica moves
 

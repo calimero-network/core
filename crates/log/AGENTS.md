@@ -192,6 +192,22 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 - Entries are capped at `MAX_ENTRY_BYTES` (1 MiB; `WriteError::TooLarge`): openraft
   gives each append RPC one heartbeat interval, so a huge entry would never reach a
   follower. Large content goes to the sealed blob store (`Engine::put_blob`/`get_blob`).
+- Heartbeats batched per peer (B6; `network::Batcher`), while
+  `Engine::set_batch_heartbeats(true)` (the node turns it on once the cluster version
+  brings `batchedHeartbeats`; off is the release before's behaviour): one engine ticker
+  (`heartbeat_ticker`, every `heartbeat_ms`) turns openraft's own heartbeat timer off in
+  each group (`RpcTarget::tick`, also on start and restart) and triggers every group's
+  heartbeats at once; each empty append to a peer then waits up to
+  `HEARTBEAT_BATCH_WINDOW` (5 ms) and goes in one `Transport::send_batch` of at most
+  `MAX_HEARTBEATS_PER_BATCH` (1024). A batch not answered as a whole (unreachable,
+  refused, the wrong number of answers) is sent again item by item, so each group gets
+  its own answer. `Engine::handle_rpc_batch` takes a batch whatever the switch. Cadence:
+  openraft's timer fires every 300 ms (it checks `heartbeat_ms` only on its tick,
+  1.5 × `heartbeat_ms`); the ticker every 200 ms, against `election_min_ms` 1200: more
+  often, never less. Regression (`tests/heartbeats.rs`):
+  `a_mixed_cluster_keeps_its_leaders_through_the_batching_rollout` (a node refusing
+  batches, batching on node by node, a peer refusing them again, off again: no group
+  changes leader or term; without the item-by-item fallback it fails).
 - Network: `Transport` trait; the node supplies an attested channel, tests an in-memory one.
   openraft takes the sender an RPC names (`vote.leader_id`) on trust and a
   follower accepts an append from any node with a higher term:
@@ -219,13 +235,11 @@ unit a commit's latency is made of.
 
 Bench: `cargo bench -p calimero-log --bench heartbeats` (`benches/heartbeats.rs`,
 B6): 1, 100 and 1,000 idle groups (`HEARTBEAT_GROUPS`) on 3 engines, all led by
-node 1, on `Config::default()`; it prints the messages node 1 sends one follower
-per second and per heartbeat interval, and the process CPU per Raft message.
-Each group's openraft core heartbeats each follower on its own (an empty append,
-in practice every 300 ms: openraft 0.9 checks `heartbeat_ms` only on its tick,
-every 1.5 x `heartbeat_ms`), so a peer gets about one message per shared group
-per 300 ms (663 per 200 ms at 1,000 groups); heartbeats are not batched per peer.
+node 1, on `Config::default()`, heartbeats per group and then batched; it prints the
+messages node 1 sends one follower per second and per heartbeat interval, the
+heartbeats each carries, and the process CPU per Raft message. Per group a peer gets
+about one message per shared group per 300 ms (671 per 200 ms at 1,000 groups);
+batched, about one per 200 ms tick (1.6 at 1,000 groups, ~610 heartbeats each).
 Routing a message is a hash lookup here (`Engine::handle_rpc`) and in the node
-(`SystemMachine::app_of_group`, #5163), so the CPU per message stays flat (~31 µs
-at 100 and 1,000 groups in one process). Batching them per peer is designed, not
-built (B6).
+(`SystemMachine::app_of_group`, #5163), so the CPU per message stays flat with the
+groups.

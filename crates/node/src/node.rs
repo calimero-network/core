@@ -774,6 +774,56 @@ impl Transport for PeerTransport {
             serde_json::from_value(resp).map_err(|e| e.to_string())
         })
     }
+
+    /// Heartbeats of several groups in one message (`internal/raft-batch`),
+    /// sent only while the cluster version brings
+    /// [`Feature::BatchedHeartbeats`](crate::system::cluster_version::Feature).
+    /// A group whose data the peer may not hold is answered here, as `send`
+    /// refuses it, and never sent.
+    fn send_batch(
+        &self,
+        target: NodeId,
+        _addr: String,
+        items: Vec<(GroupId, RpcRequest)>,
+    ) -> BoxFuture<Result<Vec<Result<RpcResponse, String>>, String>> {
+        let node = self.node.lock().ok().and_then(|n| n.upgrade());
+        Box::pin(async move {
+            let node = node.ok_or("node is shutting down")?;
+            let addr = node
+                .replica_addr(target)
+                .ok_or_else(|| format!("node {target} is not a node of this cluster"))?;
+            let mut answers = Vec::with_capacity(items.len());
+            let mut sent = Vec::new();
+            for (group, rpc) in items {
+                if node.may_send(&addr, group).await {
+                    sent.push(json!({ "group": group, "rpc": rpc }));
+                    answers.push(None);
+                } else {
+                    answers.push(Some(Err(format!(
+                        "{addr} runs a release not approved for the app; it gets none of the app's data"
+                    ))));
+                }
+            }
+            let body = json!({ "target": target, "items": sent });
+            let resp = node
+                .peer_post(&addr, "internal/raft-batch", &body)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut replies: std::collections::VecDeque<RpcResponse> =
+                serde_json::from_value(resp).map_err(|e| e.to_string())?;
+            if replies.len() != sent.len() {
+                return Err(format!(
+                    "{} answers to {} heartbeats",
+                    replies.len(),
+                    sent.len()
+                ));
+            }
+            Ok(answers
+                .into_iter()
+                .map(|a| a.unwrap_or_else(|| replies.pop_front().ok_or_else(String::new)))
+                .collect())
+        })
+    }
 }
 
 /// What the node answers a component app's call that reaches its own commands

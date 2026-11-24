@@ -786,9 +786,18 @@ the cluster's system log; the other nodes go on.
 | `orgCapabilities` | `CreateOrg` with `capabilities`: the organization's member default capabilities, set in the creating entry; an earlier release ignores the field and leaves the default a new organization has | 1.0.0-rc.29 |
 | `inviteCapabilities` | `CreateInvite` with `capabilities`: the bits a new member gets on redeeming; an earlier release drops the field, so they would get the organization's default | 1.0.0-rc.29 |
 | `clusterVersion` | `SetClusterVersion` | 1.0.0-rc.16 |
+| `batchedHeartbeats` | No entry: heartbeats batched per peer (`internal/raft-batch`), a message between nodes that a node before it has no route for | 1.0.0-rc.36 |
 
 The rc.15 features were added before the gate: on a cluster whose every node
 runs rc.15 or newer they work as before, and they are refused only while a
 node on rc.14 or older replicates the log. App groups have no gated entry
 yet; a new app log entry gets a feature the same way, and the cluster version
 bounds every replica, since no node below it joins.
+
+A **wire feature** is a message between nodes rather than an entry
+(`Feature::in_log` is false): no proposal names it, so the gate never sees it.
+A node uses it once the logged version brings it
+(`SystemState::cluster_brings`), which keeps every node that lacks it out from
+then on, and every node of its release accepts it whatever the version. The one
+so far is `batchedHeartbeats`: below it each group heartbeats each peer on its
+own, as before.
