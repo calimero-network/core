@@ -21,6 +21,17 @@ internal object TeeFixtures {
     val QUOTE: ByteArray by lazy { bytes("sealed/tdx_quote.bin") }
     val COLLATERAL: DcapCollateral by lazy { DcapCollateral.fromJson(Json.parseToJsonElement(text("sealed/tdx_quote_collateral.json"))) }
 
+    /**
+     * The sample collateral is Intel's TCB evaluation data 17 (June 2025), below the floor every
+     * verifier enforces ([DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER], 20). To test the other checks on
+     * the real quote, [GENUINE] verifies its signatures against the genuine collateral while the
+     * floor reads this: the same collateral naming 20 (only Intel can re-sign it).
+     */
+    val CURRENT: DcapCollateral by lazy { COLLATERAL.withEvaluationData(DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER) }
+
+    /** [Dcap], against the genuine sample collateral when handed one that reads as [CURRENT]. */
+    val GENUINE = DcapVerify { quote, collateral, nowSecs -> Dcap.verify(quote, if (collateral.tcbInfo == CURRENT.tcbInfo) COLLATERAL else collateral, nowSecs) }
+
     /** A moment inside that collateral's validity window (2025-06-27). */
     const val AT = 1_751_000_000_000L
     val QUOTE_B64: String by lazy { Base64.toBase64String(QUOTE) }
@@ -42,6 +53,24 @@ internal object TeeFixtures {
     val NONCE: String by lazy { Hex.encode(SAMPLE_TD.reportData.copyOfRange(0, 32)) }
     val SUFFIX: String by lazy { Hex.encode(SAMPLE_TD.reportData.copyOfRange(32, 64)) }
 }
+
+/**
+ * This collateral as it reads naming Intel TCB evaluation data [number] instead of its own. Only
+ * Intel can re-sign it, so its signatures no longer verify for any other number.
+ */
+internal fun DcapCollateral.withEvaluationData(number: Int): DcapCollateral =
+    DcapCollateral(
+        pckCrlIssuerChain = pckCrlIssuerChain,
+        rootCaCrl = rootCaCrl,
+        pckCrl = pckCrl,
+        tcbInfoIssuerChain = tcbInfoIssuerChain,
+        tcbInfo = tcbInfo.replace(Regex("\"tcbEvaluationDataNumber\":\\d+"), "\"tcbEvaluationDataNumber\":$number"),
+        tcbInfoSignature = tcbInfoSignature,
+        qeIdentityIssuerChain = qeIdentityIssuerChain,
+        qeIdentity = qeIdentity,
+        qeIdentitySignature = qeIdentitySignature,
+        pckCertificateChain = pckCertificateChain,
+    )
 
 /** Run [block], which must throw an exception whose message contains [expected]. */
 internal inline fun assertRefuses(

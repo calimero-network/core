@@ -106,6 +106,11 @@ data class CloudReleasePolicy(
      * small a value refuses every node if Intel is slow to re-sign.
      */
     val maxCollateralAgeDays: Double? = null,
+    /**
+     * Refuse collateral whose TCB info names Intel TCB evaluation data older than this. Raises
+     * [com.calimero.mero.tee.DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER] (core's floor), never lowers it.
+     */
+    val minTcbEvaluationDataNumber: Int? = null,
     /** Override the release signer (defaults to the mero-tee node release workflow). */
     val identity: String? = null,
     val issuer: String? = null,
@@ -245,7 +250,7 @@ private suspend fun verifyRelease(
             policy.issuer,
         )
     val fetchCollateral = freshCollateral(policy.fetchCollateral ?: defaultCollateral(policy.collateralSource, http), policy.maxCollateralAgeDays, policy.now)
-    return trusted.verifier(policy.dcapVerify, fetchCollateral, policy.now).verify(quote)
+    return trusted.verifier(policy.dcapVerify, fetchCollateral, policy.minTcbEvaluationDataNumber, policy.now).verify(quote)
 }
 
 /**

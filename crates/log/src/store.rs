@@ -617,8 +617,15 @@ impl Db {
     }
 
     fn delete_range(&self, col: Column, lo: &[u8], hi: &[u8]) -> eyre::Result<()> {
+        self.delete_ranges(&[(col, lo, hi)])
+    }
+
+    /// Delete every range of `ranges` in one batch: all of them or none.
+    fn delete_ranges(&self, ranges: &[(Column, &[u8], &[u8])]) -> eyre::Result<()> {
         let mut batch = WriteBatch::default();
-        batch.delete_range_cf(&self.cf(col)?, lo, hi);
+        for (col, lo, hi) in ranges {
+            batch.delete_range_cf(&self.cf(*col)?, lo, hi);
+        }
         #[cfg(feature = "testing")]
         let _path = self.join_write_path();
         self.db.write(batch)?;
@@ -1035,9 +1042,12 @@ impl Db {
     pub fn drop_group(&self, group: GroupId) -> eyre::Result<()> {
         let lo = group_prefix(group);
         let hi = group_end(group);
-        for col in [Column::Log, Column::Meta, Column::State] {
-            self.delete_range(col, &lo, &hi)?;
-        }
+        // One batch: a crash keeps the whole group or none of it.
+        self.delete_ranges(&[
+            (Column::Log, lo.as_slice(), hi.as_slice()),
+            (Column::Meta, lo.as_slice(), hi.as_slice()),
+            (Column::State, lo.as_slice(), hi.as_slice()),
+        ])?;
         let prefix = format!("g{group}-");
         for entry in std::fs::read_dir(&self.snapshot_dir)?.filter_map(Result::ok) {
             if entry.file_name().to_string_lossy().starts_with(&prefix) {
