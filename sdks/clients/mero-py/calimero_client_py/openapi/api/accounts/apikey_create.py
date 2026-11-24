@@ -116,7 +116,9 @@ def sync_detailed(
     own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
     `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
     making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
-    error }`) and no key is made. `412` first. The key is shown once.
+    error, applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain
+    key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own.
+    `412` first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -158,7 +160,9 @@ def sync(
     own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
     `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
     making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
-    error }`) and no key is made. `412` first. The key is shown once.
+    error, applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain
+    key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own.
+    `412` first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -195,7 +199,9 @@ async def asyncio_detailed(
     own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
     `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
     making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
-    error }`) and no key is made. `412` first. The key is shown once.
+    error, applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain
+    key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own.
+    `412` first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -235,7 +241,9 @@ async def asyncio(
     own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
     `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
     making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
-    error }`) and no key is made. `412` first. The key is shown once.
+    error, applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain
+    key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own.
+    `412` first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
