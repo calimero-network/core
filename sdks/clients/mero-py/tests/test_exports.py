@@ -13,6 +13,7 @@ import calimero
 import calimero_client_py
 
 CLIENT = {
+    "Calimero",
     "Client",
     "CloudClient",
     "CloudError",

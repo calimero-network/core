@@ -14,6 +14,8 @@
  * and its `status` and `code` (the node's code) keep working for all of them.
  */
 
+const RIGHT_VERBS = new Map([['read', 'view'], ['write', 'edit'], ['admin', 'manage']]); // a KV right as its sentence says it
+
 export class CalimeroError extends Error {
   constructor(
     readonly status: number,
@@ -384,16 +386,16 @@ export class QuotaExceeded extends CalimeroError {
 /**
  * `422 APP_ERROR`: the app refused the call. `appCode` is the app's declared
  * error (`Taken`, `Forbidden`, ...) and `fields` its named fields. The call was
- * logged, so its idempotency key is spent.
+ * logged, so its idempotency key is spent. A `NotGranted` or `NotLinked` message is a sentence.
  */
 export class AppError extends CalimeroError {
   readonly appCode: string;
   readonly fields: Record<string, unknown>;
 
   constructor(message: string, details: Record<string, unknown> = {}) {
-    super(422, 'APP_ERROR', message, details);
-    this.name = 'AppError';
     const { appCode, fields } = appErrorOf(details);
+    super(422, 'APP_ERROR', appErrorSentence(appCode, fields) ?? message, details);
+    this.name = 'AppError';
     this.appCode = appCode;
     this.fields = fields;
   }
@@ -456,6 +458,18 @@ function appErrorOf(details: Record<string, unknown>): { appCode: string; fields
   const source = typeof details.code === 'string' ? details : record(details.error);
   const appCode = typeof source.code === 'string' ? source.code : '';
   return { appCode, fields: { ...record(source.fields) } };
+}
+
+/** A sentence for the refusals every app shares: a KV's `NotGranted` and a `uses` link's `NotLinked`. */
+function appErrorSentence(appCode: string, fields: Record<string, unknown>): string | undefined {
+  const { bucket, need, name } = fields;
+  if (appCode === 'NotGranted' && typeof bucket === 'string' && typeof need === 'string' && RIGHT_VERBS.has(need)) {
+    return `You can't ${RIGHT_VERBS.get(need)} bucket ${bucket}.`;
+  }
+  if (appCode === 'NotLinked' && typeof name === 'string') {
+    return `This app isn't connected to ${name === 'kv' ? 'a KV store' : `its ${name}`} yet.`;
+  }
+  return undefined;
 }
 
 function retryAfterOf(details: Record<string, unknown>, header?: string | null): number | undefined {

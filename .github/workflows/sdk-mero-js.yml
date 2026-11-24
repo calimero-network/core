@@ -58,8 +58,12 @@ jobs:
         working-directory: sdks
         run: pnpm install --frozen-lockfile
 
-      # src/generated and the receipt vectors are those of this tree's
-      # docs/public/openapi.json and crates/client/tests/fixtures.
+      # Generates the vendored app clients (scripts/app-codegen.sh).
+      - name: Install the pinned Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      # src/generated, src/products/kv and the receipt vectors are those of this
+      # tree's docs/public/openapi.json, sdks/abi and crates/client/tests/fixtures.
       - name: Generated code matches this tree
         run: pnpm check:api
 

@@ -113,23 +113,12 @@ NOT_COVERED = [
      "the suite's packages carry no frontend, and the node routes a frontend by Host under the apps "
      "domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test "
      "`app_frontends_are_served_and_their_sessions_are_bound` covers serving"),
-    ("Governance", "Owner-held release approvals and release deadlines",
-     "the rolled cluster gives release approvals to the operator (`--release-approvals operator`), as "
-     "Calimero Cloud does; the operator's approval of the new release is the rollout's first step"),
-    ("Deployments", "A granted cluster's installs (`--deployments granted`: `403 DEPLOY_NOT_GRANTED`, "
-     "`NOT_A_DEPLOYER` at apply), the one-way switch to it (`SetDeploymentsGranted`, `POST "
-     "/ops/deployments/granted`) and an owner who grants deployers (`--deployers owner`, `SetClusterOwner`, "
-     "`POST /deployers`)",
-     "governance is fixed at genesis and the suite runs one cluster, started open with `--deployers operator`, for "
-     "every case; the switch is one-way and cluster-wide, and from it every install, bundle upload, deployment and "
-     "offer needs a grant, which the cases that write those on the new release do not hold (`kv-package`, "
-     "`packages`, `deployment-offer-upgrades`, `units`, every case seeded after the roll), so switching in any "
-     "phase would turn their steps red; a granted or owner-granting cluster needs a rollout of its own. The "
-     "grants themselves, which an open cluster keeps, are `deployer-grants`'; "
-     "`only_granted_accounts_install_on_a_granted_cluster`, "
-     "`an_open_cluster_installs_as_before_until_the_operator_grants_deployments` and "
-     "`the_cluster_owner_grants_deployers_once_the_operator_names_it` (`deployers.rs`) cover the rest on one "
-     "build"),
+    ("Governance", "A release deadline that passes while a cluster rolls (`SystemState::retired`: the old nodes are "
+     "placed no new app mid-roll)",
+     "a deadline is judged at the command's own time, so the granted run sets a passed one on the old nodes' own "
+     "release, which retires no node; one on the new release would stop placement on the old nodes before the roll "
+     "and needs a deadline timed to the rollout. `a_release_deadline_stops_new_work_but_not_running_apps` "
+     "(`cluster.rs`) covers retired nodes on one build"),
     ("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
      "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
      "is covered, the stream itself by the cluster tests"),
@@ -549,7 +538,14 @@ def ops(w, method, path, body=None, node=None):
     return _http(method, w.fleet.url(node) + path, body, w.fleet.ops_token, 30)
 
 
-def operator(w, method, path, body=None):
+def ops_text(w, path, node):
+    """A plain-text ops route (`ops/metrics`) as `node` answers it."""
+    req = urllib.request.Request(w.fleet.url(node) + path, headers={"authorization": f"Bearer {w.fleet.ops_token}"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.read().decode()
+
+
+def signed_ops(w, method, path, body=None):
     """An operator decision over the ops route: the node answers `428 OPERATOR_SIGNATURE_REQUIRED`
     with the bytes to sign, and the retry carries the operator key's signature over them."""
     try:
@@ -561,13 +557,6 @@ def operator(w, method, path, body=None):
     seed = bytes.fromhex(OPERATOR_SEED)
     sig = ed25519_sign.sign(seed, base64.b64decode(details["message"])).hex()
     return ops(w, method, path, {**(body or {}), "operatorProof": {"nonce": details["nonce"], "signature": sig}})
-
-
-def ops_text(w, path, node):
-    """A plain-text ops route (`ops/metrics`) as `node` answers it."""
-    req = urllib.request.Request(w.fleet.url(node) + path, headers={"authorization": f"Bearer {w.fleet.ops_token}"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode()
 
 
 def _http(method, url, body, bearer, timeout):
@@ -687,7 +676,8 @@ def matrix() -> str:
     for cls in upgrade_path.CASES:
         c = cls()
         if isinstance(c, DeepCase):
-            rows.append(f"| {c.area} | `{c.name}` | {c.seeds} | {c.verifies} | yes (since {c.since}) |")
+            run = "" if len(c.governance) > 1 else f", {c.governance[0]} run only"
+            rows.append(f"| {c.area} | `{c.name}` | {c.seeds} | {c.verifies} | yes (since {c.since}{run}) |")
         else:
             doc = " ".join((cls.__doc__ or "").split())
             rows.append(f"| Representative | `{c.name}` | {doc} | read back, extended, read again | yes |")
