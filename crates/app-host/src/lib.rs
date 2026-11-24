@@ -9,6 +9,7 @@ mod blobs;
 mod core;
 mod engine;
 mod files;
+mod fuel;
 mod overlay;
 mod runs;
 mod search;
@@ -46,6 +47,11 @@ pub use files::{
     MAX_READ_CHUNK, MAX_RUN_FILE_BYTES, NOT_A_RUN_OUTPUT, NO_SUCH_FILE, RUN_PUBLISHED_TOO_MUCH,
     RUN_WROTE_TOO_MUCH,
 };
+pub use fuel::{
+    FUEL_HOST_CALL, FUEL_PER_BYTE, FUEL_PER_RANGE_ENTRY, FUEL_PER_SEARCH_BYTE, FUEL_PER_SEARCH_HIT,
+    FUEL_PER_SEARCH_MATCH, FUEL_SEARCH_QUERY, FUEL_STATE_ACCESS, MAX_SEARCHES_PER_RUN,
+    SEARCH_TOO_MANY,
+};
 pub use runs::{
     ActiveRun, NoRuns, RunInput, Runs, StartedRun, MAX_ACTIVE_RUNS, MAX_COMPUTE_ARGS_BYTES,
     MAX_PIPELINE_RUN_INPUTS, MAX_RUN_INPUTS, MAX_RUN_INPUT_BYTES, MAX_STARTS_PER_RUN,
@@ -62,6 +68,7 @@ pub use types::{
     Audience, BlobInfo, Budget, Caller, ComputeCtx, Directory, Event, HostDenied,
     InvalidInvocation, Invocation, InvocationKind, OrgRole, Outcome, Status, TimerCtx, TrapKind,
     Usage, Write, Xcall, ACTION_WALL_CLOCK, CALL_WALL_CLOCK, DEFAULT_FUEL, DEFAULT_MEMORY_PAGES,
+    WALL_CLOCK_EXCEEDED,
 };
 pub use xcall::{
     sync_xcall_key, SyncXcall, XcallHost, XcallKind, XcallRequest, MAX_SYNC_XCALLS,

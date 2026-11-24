@@ -29,7 +29,10 @@ use eyre::{bail, eyre, Result as EyreResult};
 use serde_json::{Map, Value};
 use tracing::warn;
 
-use crate::{AppIdentity, Approval, OutboundHost, OutboundService};
+use crate::{
+    egress_gated, refusal_kind, AppIdentity, Approval, EgressCheck, OutboundHost, OutboundService,
+    EGRESS_OFF,
+};
 
 mod openai;
 mod stripe;
@@ -492,8 +495,12 @@ pub struct RunClients {
 impl OutboundService {
     /// [`Self::for_run_counted`] for an app that also declares `connectors`:
     /// its raw requests may not reach a declared connector's host, and its
-    /// connector calls go through the same gates and the same count.
+    /// connector calls go through the same gates and the same count. Both
+    /// clients ask `egress` before every request or call and refuse it with
+    /// [`EGRESS_OFF`] while egress is off ([`egress_gated`]): a connector is
+    /// no way around the switch.
     #[must_use]
+    #[expect(clippy::too_many_arguments, reason = "one run's whole outbound scope")]
     pub fn for_run_with_connectors(
         self: &Arc<Self>,
         app: AppIdentity,
@@ -502,6 +509,7 @@ impl OutboundService {
         approval: Option<Approval>,
         context: String,
         sent: Arc<AtomicU64>,
+        egress: EgressCheck,
     ) -> RunClients {
         let grants: BTreeMap<String, ConnectorGrant> = connectors
             .into_iter()
@@ -513,25 +521,67 @@ impl OutboundService {
             .filter_map(|name| connector(name))
             .map(|c| (c.host.to_owned(), c.name.to_owned()))
             .collect();
-        let http = self.run_outbound(
-            app.clone(),
-            declared,
-            reserved,
-            approval.clone(),
-            context.clone(),
-            Arc::clone(&sent),
-        );
+        let http = self
+            .run_outbound(
+                app.clone(),
+                declared,
+                reserved,
+                approval.clone(),
+                context.clone(),
+                Arc::clone(&sent),
+            )
+            .map(|http| egress_gated(http, Arc::clone(&egress)));
         let connectors = (!grants.is_empty()).then(|| {
-            Arc::new(RunConnectors {
-                service: Arc::clone(self),
-                app,
-                grants,
-                approval,
-                context,
-                sent,
-            }) as Arc<dyn ConnectorHost>
+            egress_gated_connectors(
+                Arc::new(RunConnectors {
+                    service: Arc::clone(self),
+                    app,
+                    grants,
+                    approval,
+                    context,
+                    sent,
+                }),
+                egress,
+            )
         });
         RunClients { http, connectors }
+    }
+}
+
+/// `inner`, asking `off` before each call and refusing it with [`EGRESS_OFF`]
+/// while egress is off, before anything is built, resolved or sent: the
+/// connectors' side of [`egress_gated`].
+#[must_use]
+pub fn egress_gated_connectors(
+    inner: Arc<dyn ConnectorHost>,
+    off: EgressCheck,
+) -> Arc<dyn ConnectorHost> {
+    Arc::new(EgressGatedConnectors { inner, off })
+}
+
+/// [`egress_gated_connectors`]' host.
+struct EgressGatedConnectors {
+    inner: Arc<dyn ConnectorHost>,
+    off: EgressCheck,
+}
+
+impl fmt::Debug for EgressGatedConnectors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EgressGatedConnectors")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ConnectorHost for EgressGatedConnectors {
+    fn call(&self, connector: &str, operation: &str, input: &[u8]) -> Result<Vec<u8>, String> {
+        if let Some(who) = (self.off)() {
+            return Err(format!(
+                "{EGRESS_OFF}: {who} turned egress off, so no request leaves the cluster \
+                 for this app, whatever was approved"
+            ));
+        }
+        self.inner.call(connector, operation, input)
     }
 }
 
@@ -547,9 +597,19 @@ struct RunConnectors {
 }
 
 impl RunConnectors {
-    fn refused(&self, name: &str, operation: &str, reason: &eyre::Report) -> String {
-        warn!(context = %self.context, package = %self.app.package, connector = name, operation, %reason, "connector call refused");
-        reason.to_string()
+    /// Logs a refused call by the node's name for the refusal, never its words:
+    /// they quote the input (a field, a URL, a name the guest wrote) and this
+    /// line ships to the operator's log. The guest gets the words.
+    fn refused(&self, name: &str, reason: &eyre::Report) -> String {
+        let reason = reason.to_string();
+        warn!(
+            context = %self.context,
+            package = %self.app.package,
+            connector = name,
+            refusal = refusal_kind(&reason),
+            "connector call refused"
+        );
+        reason
     }
 }
 
@@ -563,7 +623,7 @@ impl ConnectorHost for RunConnectors {
         };
         let request = connector
             .build(grant, operation, input)
-            .map_err(|e| self.refused(name, operation, &e))?;
+            .map_err(|e| self.refused(name, &e))?;
         // The credential is the connector's, bound to its host alone, whatever
         // the release declares for its raw requests.
         let mut app = self.app.clone();
@@ -577,10 +637,15 @@ impl ConnectorHost for RunConnectors {
         let prepared = self
             .service
             .prepare(&app, &declared, self.approval.as_ref(), request)
-            .map_err(|e| self.refused(name, operation, &e))?;
-        let (status, body) =
-            self.service
-                .transmit(&self.app, &self.context, &self.sent, &prepared, started)?;
+            .map_err(|e| self.refused(name, &e))?;
+        let (status, body) = self.service.transmit(
+            &self.app,
+            &self.context,
+            &self.sent,
+            &declared,
+            &prepared,
+            started,
+        )?;
         if !(200..300).contains(&status) {
             return Err(format!(
                 "{name} answered {status}{}",

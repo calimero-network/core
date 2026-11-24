@@ -47,14 +47,12 @@ dedicated cluster, and also on Vercel for CI previews. `connectHere` finds the
 cluster without naming it:
 
 ```ts
-import { CalimeroClient, cloudEnvironment } from '@calimero-network/mero-js';
+import { CLOUD_ENVIRONMENTS, CalimeroClient, cloudEnvironment } from '@calimero-network/mero-js';
 
+// Staging runs debug node images too. Decided by the page's hostname, never by what a server says.
+const cloud = CLOUD_ENVIRONMENTS[cloudEnvironment() ?? 'production'];
 const client = await CalimeroClient.connectHere({
-  policy: {
-    release: { minReleaseVersion: '2.3.109' },
-    // Staging runs debug node images. Decided by the page's hostname, never by what a server says.
-    allowDebugProfile: cloudEnvironment() === 'staging',
-  },
+  policy: { release: { minReleaseVersion: '2.3.109', ...cloud.trust } },
   // Only where no cluster serves the page (Vercel, localhost): values fixed at build time.
   fallback: { cluster: 'staging-1', environment: 'staging' },
 });
@@ -71,6 +69,11 @@ client.deployment; // the deployment the page was opened for, or null
 - The manifest only says where the nodes are; each is still attested under
   your `policy`. `cloudEnvironment()` reads the page's hostname, which the
   browser checked over TLS: `'production'`, `'staging'`, or `null` elsewhere.
+- `CLOUD_ENVIRONMENTS[env].trust` is what that Cloud's nodes need in
+  `policy.release`: nothing for production (`locked-read-only` only); for
+  staging, `profiles` (all three image profiles) with `allowDebugProfile`. With
+  `profiles`, the node's own profile is used when it is listed, and its quote
+  must still be that profile's signed image.
 - A page on Vercel must be a registered origin of your package
   (`client.packages.originsAdd`), at a stable address such as a branch alias:
   each preview deploy gets a new URL.

@@ -163,10 +163,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./scripts/check-naming.sh
 
-      # Fleet nodes run at INFO and operators read their logs, so info! must not carry user data.
+      # Fleet nodes run at INFO and every line ships to the operator, so info!, warn!
+      # and error! must not carry user data or text from outside the node (F6).
       - name: No user data at info level
         if: ${{ !cancelled() }}
         run: python3 scripts/check-no-user-data-at-info.py
+
+      - name: Test the no-user-data check
+        if: ${{ !cancelled() }}
+        run: python3 scripts/tests/check-no-user-data-at-info-test.py
 
       - name: Test check-like-ci
         if: ${{ !cancelled() }}

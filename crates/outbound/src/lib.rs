@@ -10,10 +10,15 @@
 //! 2. **The app declared a prefix covering the URL** in its signed bundle
 //!    manifest (`outbound`): same host, and a path at or below the prefix's
 //!    at a `/`. A run gets a client only when its app declares one.
-//! 3. **The run writes on this node** (a call, a follow-up, a timer, a
+//! 3. **Egress is on for the app**: neither its organization nor the instance
+//!    turned it off. The node asks before every request ([`egress_gated`]), so
+//!    a switch turned off reaches a run already going; while it is off every
+//!    request is refused with [`EGRESS_OFF`], whatever the manifest declares
+//!    and whatever was approved.
+//! 4. **The run writes on this node** (a call, a follow-up, a timer, a
 //!    delivery) or is a component's action: never a view, `init`, a migration
 //!    or a compute run. The node and its component host decide that.
-//! 4. **The request fits**: `https` on port 443 to a DNS name that resolves
+//! 5. **The request fits**: `https` on port 443 to a DNS name that resolves
 //!    only to public addresses, no fragment, the size limits in
 //!    `calimero_primitives::outbound`, no redirect followed. How many one run
 //!    may send is the component host's bound (`MAX_HTTP_REQUESTS`).
@@ -150,6 +155,50 @@ pub const NOT_APPROVED: &str = calimero_primitives::outbound::OutboundRefusal::N
 /// matches on it to show an admin what to approve.
 pub const AWAITING_APPROVAL: &str =
     calimero_primitives::outbound::OutboundRefusal::AwaitingApproval.word();
+
+/// The start of every refusal while the app's organization, or the instance,
+/// turned egress off. Stable: an app matches on it to tell its user why
+/// nothing can leave the cluster.
+pub const EGRESS_OFF: &str = calimero_primitives::outbound::OutboundRefusal::EgressOff.word();
+
+/// Whether egress is off for one app right now: `Some(who)` names who turned it
+/// off ("its organization", "the instance"). The node answers it from its
+/// replicated system state.
+pub type EgressCheck = Arc<dyn Fn() -> Option<&'static str> + Send + Sync>;
+
+/// `inner`, asking `off` before each request and refusing it with
+/// [`EGRESS_OFF`] while egress is off, before any other gate: nothing is
+/// resolved, filled in or sent.
+#[must_use]
+pub fn egress_gated(inner: Arc<dyn OutboundHost>, off: EgressCheck) -> Arc<dyn OutboundHost> {
+    Arc::new(EgressGated { inner, off })
+}
+
+/// [`egress_gated`]'s host.
+struct EgressGated {
+    inner: Arc<dyn OutboundHost>,
+    off: EgressCheck,
+}
+
+impl fmt::Debug for EgressGated {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EgressGated")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OutboundHost for EgressGated {
+    fn send(&self, request: &[u8]) -> Result<Vec<u8>, String> {
+        if let Some(who) = (self.off)() {
+            return Err(format!(
+                "{EGRESS_OFF}: {who} turned egress off, so no request leaves the cluster \
+                 for this app, whatever was approved"
+            ));
+        }
+        self.inner.send(request)
+    }
+}
 
 /// A secret, and the hosts it may be sent to.
 pub struct Secret {
@@ -562,10 +611,7 @@ impl OutboundService {
         if !self.any_host && !self.hosts.contains(&host) {
             bail!("{host} is not a host this node's operator allows");
         }
-        let Some(under) = declared
-            .iter()
-            .find(|d| prefix(d).is_some_and(|p| covers(&p, &url)))
-        else {
+        let Some(under) = covering(declared, &url) else {
             bail!(
                 "{} is under no URL prefix this app's manifest declares under `outbound`",
                 request.url
@@ -710,48 +756,72 @@ impl OutboundHost for RunOutbound {
         let started = Instant::now();
         let request = OutboundRequest::try_from_slice(request)
             .map_err(|e| format!("a malformed outbound request: {e}"))?;
-        let reserved = reqwest::Url::parse(&request.url)
+        // The host alone, for the log: the rest of the URL (its path and query) is the
+        // app's, and can carry a user's data or a token.
+        let host = reqwest::Url::parse(&request.url)
             .ok()
-            .and_then(|u| {
-                u.host_str()
-                    .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
-            })
-            .and_then(|host| Some((self.reserved.get(&host)?, host)));
-        if let Some((connector, host)) = reserved {
-            let reason = format!(
-                "{host} is reached only through the {connector} connector this app declares, \
-                 never by a raw request"
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+        let reserved = host
+            .as_deref()
+            .map(|h| h.trim_end_matches('.'))
+            .and_then(|h| Some((self.reserved.get(h)?, h)));
+        if let Some((connector, reserved_host)) = reserved {
+            warn!(
+                context = %self.context,
+                package = %self.app.package,
+                host = reserved_host,
+                connector = %connector,
+                refusal = "ConnectorHost",
+                "outbound request refused"
             );
-            warn!(context = %self.context, package = %self.app.package, %reason, "outbound request refused");
-            return Err(reason);
+            return Err(format!(
+                "{reserved_host} is reached only through the {connector} connector this app \
+                 declares, never by a raw request"
+            ));
         }
-        let prepared = match self.service.prepare(
+        let prepared =
+            match self
+                .service
+                .prepare(&self.app, &self.declared, self.approval.as_ref(), request)
+            {
+                Ok(prepared) => prepared,
+                Err(reason) => {
+                    // The node's name for the refusal, never its words: they quote the
+                    // request (its URL, a header or secret name the guest wrote) and this
+                    // line ships to the operator's log. The guest gets the words.
+                    let reason = reason.to_string();
+                    warn!(
+                        context = %self.context,
+                        package = %self.app.package,
+                        host = host.as_deref().unwrap_or("-"),
+                        refusal = refusal_kind(&reason),
+                        "outbound request refused"
+                    );
+                    return Err(reason);
+                }
+            };
+        let (status, body) = self.service.transmit(
             &self.app,
+            &self.context,
+            &self.sent,
             &self.declared,
-            self.approval.as_ref(),
-            request,
-        ) {
-            Ok(prepared) => prepared,
-            Err(reason) => {
-                warn!(context = %self.context, package = %self.app.package, %reason, "outbound request refused");
-                return Err(reason.to_string());
-            }
-        };
-        let (status, body) =
-            self.service
-                .transmit(&self.app, &self.context, &self.sent, &prepared, started)?;
+            &prepared,
+            started,
+        )?;
         borsh::to_vec(&OutboundResponse { status, body }).map_err(|e| e.to_string())
     }
 }
 
 impl OutboundService {
-    /// Sends a prepared request, counts it in `sent`, logs it and redacts its
-    /// secrets from the answer: every raw request and connector call ends here.
+    /// Sends a prepared request, counts it in `sent`, logs it (with the prefix of
+    /// `declared` that covers it, never its path) and redacts its secrets from
+    /// the answer: every raw request and connector call ends here.
     fn transmit(
         &self,
         app: &AppIdentity,
         context: &str,
         sent: &AtomicU64,
+        declared: &BTreeSet<String>,
         prepared: &Prepared,
         started: Instant,
     ) -> Result<(u16, Vec<u8>), String> {
@@ -783,7 +853,9 @@ impl OutboundService {
             context = %context,
             package = %app.package,
             host = %prepared.host,
-            path = %prepared.url.path(),
+            // The manifest's prefix that covers the URL, not its path: a path can
+            // name a user (`/users/{email}`), a prefix is what the app declared.
+            prefix = covering(declared, &prepared.url).map_or("-", String::as_str),
             status,
             request_bytes = prepared.body.len(),
             response_bytes = body.len(),
@@ -1039,6 +1111,27 @@ fn run_blocking<T: Send>(future: impl core::future::Future<Output = T> + Send) -
 /// A declared prefix this node can match against: `https`, a DNS host, no
 /// credentials, query or fragment. `None` for anything else, which then
 /// covers nothing.
+/// The prefix in `declared` that covers `url`, if any.
+fn covering<'a>(declared: &'a BTreeSet<String>, url: &reqwest::Url) -> Option<&'a String> {
+    declared
+        .iter()
+        .find(|d| prefix(d).is_some_and(|p| covers(&p, url)))
+}
+
+/// A refusal as the node's log names it: the word an app matches on
+/// ([`OutboundRefusal::word`]) for an approval refusal, `Invalid` for any other
+/// (a URL, header, size or secret the app got wrong). The full reason goes
+/// to the guest only.
+///
+/// [`OutboundRefusal::word`]: calimero_primitives::outbound::OutboundRefusal::word
+#[must_use]
+pub fn refusal_kind(reason: &str) -> &'static str {
+    calimero_primitives::outbound::OutboundRefusal::of(reason).map_or(
+        "Invalid",
+        calimero_primitives::outbound::OutboundRefusal::word,
+    )
+}
+
 fn prefix(declared: &str) -> Option<reqwest::Url> {
     let url = reqwest::Url::parse(declared).ok()?;
     let usable = url.scheme() == "https"
@@ -1172,3 +1265,6 @@ mod tests;
 
 #[cfg(test)]
 mod transport_tests;
+
+#[cfg(test)]
+mod log_tests;

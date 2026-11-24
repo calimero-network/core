@@ -28,6 +28,9 @@ an operation and passes JSON; the node builds the HTTP request.
   raw request: the operator's hosts, the approval (of the operation's URL
   prefix), writing runs only, the bounds; the credential is redacted from the
   answer.
+- [Egress off](/build/guides/outbound/#egress-off) stops connector calls too:
+  while the organization or the instance has it off, every call is refused
+  with `EgressOff` before anything is built or sent, whatever was approved.
 - An app whose release declares a connector may not reach that connector's
   host with a raw request (`api.stripe.com is reached only through the stripe
   connector this app declares, never by a raw request`): the connector is the

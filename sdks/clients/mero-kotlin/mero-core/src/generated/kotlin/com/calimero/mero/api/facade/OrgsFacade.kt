@@ -304,6 +304,26 @@ class OrgsFacade internal constructor(
         api(passkey, null, emptySet()).organizations.orgDelete(org = org)
 
     /**
+     * Turn the organization's egress off or on
+     *
+     * `egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /orgs/{org}/egress` (`org_egress`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun egress(
+        org: kotlin.String,
+        egress: kotlin.Boolean,
+        passkey: PasskeyProvider? = null,
+    ): AppSetEgress200Response =
+        api(passkey, null, emptySet()).organizations.orgEgress(org = org, orgEgressRequest = OrgEgressRequest(egress = egress))
+
+    /**
      * One organization
      *
      * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
@@ -356,7 +376,7 @@ class OrgsFacade internal constructor(
     /**
      * Approve outbound prefixes for the organization's apps
      *
-     * The owner; `412` first.
+     * The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *

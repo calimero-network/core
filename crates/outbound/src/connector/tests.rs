@@ -120,9 +120,24 @@ fn stripe_grant() -> ConnectorGrant {
     )
 }
 
+/// Egress on: what every test but the egress one runs with.
+fn egress_on() -> EgressCheck {
+    Arc::new(|| None)
+}
+
 /// The clients of a shop run declaring `outbound` and `connectors`, with every
 /// connector prefix and `outbound` approved.
 fn run(upstream: &Arc<Upstream>, outbound: &[&str], connectors: Vec<ConnectorGrant>) -> RunClients {
+    run_with_egress(upstream, outbound, connectors, egress_on())
+}
+
+/// [`run`], asking `egress` before each request or call.
+fn run_with_egress(
+    upstream: &Arc<Upstream>,
+    outbound: &[&str],
+    connectors: Vec<ConnectorGrant>,
+    egress: EgressCheck,
+) -> RunClients {
     let mut approved: Vec<String> = outbound.iter().map(|p| (*p).to_owned()).collect();
     for g in &connectors {
         approved.extend(connector(&g.name).unwrap().prefixes(g));
@@ -135,6 +150,7 @@ fn run(upstream: &Arc<Upstream>, outbound: &[&str], connectors: Vec<ConnectorGra
         Some(approving(&approved)),
         "ctx".to_owned(),
         Arc::default(),
+        egress,
     )
 }
 
@@ -393,6 +409,7 @@ fn a_connector_call_goes_through_every_gate_of_a_raw_request() {
             approval,
             "ctx".to_owned(),
             Arc::default(),
+            egress_on(),
         )
     };
     let approved = || Some(approving(&[INTENTS, &format!("{INTENTS}/")]));
@@ -443,6 +460,7 @@ fn a_connector_call_goes_through_every_gate_of_a_raw_request() {
         approved(),
         "ctx".to_owned(),
         Arc::clone(&sent),
+        egress_on(),
     );
     let _out = call(&clients, "stripe", "createPaymentIntent", input).unwrap();
     assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -572,4 +590,39 @@ mod openai {
         }
         assert!(upstream.sent().is_empty());
     }
+}
+
+/// Egress off (#5357) refuses a connector call as it refuses a raw request,
+/// before anything is built, resolved or sent, whatever was approved; turned
+/// back on, the same run's call goes out.
+#[test]
+fn egress_off_refuses_a_connector_call_before_anything_is_sent() {
+    let upstream = Upstream::answering(200, r#"{"id":"pi_1","status":"requires_payment_method"}"#);
+    let off = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let switch = Arc::clone(&off);
+    let clients = run_with_egress(
+        &upstream,
+        &["https://api.openai.com/v1/"],
+        vec![stripe_grant()],
+        Arc::new(move || {
+            switch
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .then_some("its organization")
+        }),
+    );
+    let input = r#"{"amount":2000,"currency":"usd"}"#;
+    let err = call(&clients, "stripe", "createPaymentIntent", input).unwrap_err();
+    assert!(err.starts_with(EGRESS_OFF), "{err}");
+    let raw_err = clients
+        .http
+        .as_ref()
+        .expect("a raw client")
+        .send(&raw("https://api.openai.com/v1/models", ""))
+        .unwrap_err();
+    assert!(raw_err.starts_with(EGRESS_OFF), "{raw_err}");
+    assert!(upstream.sent().is_empty(), "nothing left the cluster");
+
+    off.store(false, std::sync::atomic::Ordering::Relaxed);
+    let _out = call(&clients, "stripe", "createPaymentIntent", input).expect("egress back on");
+    assert_eq!(upstream.sent().len(), 1);
 }

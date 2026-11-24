@@ -14,9 +14,15 @@ A request is made only when every gate holds:
    is the app's organization (whoever holds `MANAGE_APPLICATION` org-wide, with
    a passkey assertion), or the operator where `--outbound-approvals operator`
    gives it the decision; every app is in an organization since 1.0.0-rc.20.
-4. The run writes (calls, follow-ups, timers; a component's actions and, D76, its calls,
-   timers and deliveries): never a view, `init`, a migration or compute.
-5. `https` on 443 to a name resolving only to public addresses, size limits from
+4. Egress is on for the app: neither its organization (`Org::egress_off`) nor the
+   instance (`AppRecord::egress_off`) turned it off (`SystemCmd::SetEgress`, an owner or
+   admin; on again only through the consent page). The node wraps every run's client in
+   `egress_gated`, which asks before each request and refuses with `EGRESS_OFF`
+   (`OutboundRefusal::EgressOff`) before any other gate, over every approval.
+5. The run writes (calls, follow-ups, timers; a component's actions and, D76, its calls,
+   timers and deliveries): never a view, `init`, a migration or compute (a compute run
+   has no network at all, so the switch never concerns a job node).
+6. `https` on 443 to a name resolving only to public addresses, size limits from
    `calimero_primitives::outbound`, no redirects; at most
    `calimero_app_host::MAX_HTTP_REQUESTS` (8) per run, counted by the host.
 
@@ -43,10 +49,19 @@ approval of the operation's prefix, `Connector::prefixes`, the secret's binding,
 bounds) and `transmit` (count, log, redaction), and the answer is cut to its
 declared outputs; a non-2xx answers only its status and `error.code`.
 `for_run_with_connectors` returns `RunClients`: the raw client refuses every
-declared connector's host, so the connector is the only way there. `STRIPE`
+declared connector's host, so the connector is the only way there, and both
+clients take the run's `EgressCheck` (`egress_gated`, `egress_gated_connectors`):
+egress off refuses a connector call with `EgressOff` as it refuses a raw request. `STRIPE`
 (PaymentIntents, API `2024-06-20`) and `OPENAI` (chat completions, `v1`) are in
 `CONNECTORS`. Not wired yet: the manifest's `connectors`, the consent page and
 the guest's `connector.call` (#5349); the node still calls `for_run_counted`.
+
+What it logs (every line reaches the operator): a refusal as `refusal_kind`
+(`NotApproved`, `AwaitingApproval`, `Invalid`; `ConnectorHost` for
+a raw request to a declared connector's host) with the URL's host, a refused
+connector call as its `refusal_kind` with the connector's name, a sent request
+with the declared prefix that covers it, never the URL's path, query, body or a
+name the guest wrote; the guest gets the refusal's words (`log_tests`).
 
 A failed request reaches the guest and the `outbound request failed` log line (which
 ships to the operator) only as its `FailureKind` (`timeout`, `connect`, `too large`,
@@ -72,6 +87,9 @@ slice). A secret should go only to a host that does not echo it.
   `for_run_counted(.., sent)` also counts each request handed to the transport
   (the node's `calimero_app_outbound_requests_total`).
 - `merge_approval` computes the approval an owner's selection leaves.
+- `egress_gated(inner, EgressCheck)`: the egress switch, asked per request (so one
+  turned off reaches a run already going); test
+  `egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again`.
 - `TURNSTILE_VERIFY_URL`: Cloudflare Turnstile's siteverify, for apps that check a
   token from a call (D76; `apps/fixture-captcha`) and for the `turnstile` stand-in.
 - Feature `outbound-testing`: `[outbound.testing] echo` answers `.test` hosts
