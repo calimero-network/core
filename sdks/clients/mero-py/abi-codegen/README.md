@@ -1,14 +1,10 @@
 # Calimero ABI Code Generator
 
+> **Deprecated.**
+> Use `meroctl app codegen --abi abi.json --lang python -o client` instead.
+> This tool's output calls `client.call(...)`, which the current client no longer has, so it fails at runtime.
+
 A Python tool for generating client wrappers from Calimero ABI schemas. This tool automatically creates Python client code that wraps the base Calimero client with methods corresponding to ABI-defined functions.
-
-## Features
-
-- Parse ABI JSON schemas (WASM ABI v1 and full ABI schemas)
-- Generate type-safe Python client wrappers
-- Support for both sync and async operations
-- Automatic type hints and documentation generation
-- Template-based code generation for easy customization
 
 ## Installation
 
@@ -23,33 +19,7 @@ pip install -e .
 
 ```bash
 # Generate client from ABI schema
-calimero-abi-codegen generate --input schemas/abi.expected.json --output generated_client.py
-
-# Generate with custom template
-calimero-abi-codegen generate --input schemas/abi.expected.json --output generated_client.py --template templates/custom_client.py.j2
-
-# Generate async client
-calimero-abi-codegen generate --input schemas/abi.expected.json --output async_client.py --async
-```
-
-### Python API
-
-```python
-from calimero_abi_codegen import ABICodeGenerator
-
-# Create generator
-generator = ABICodeGenerator()
-
-# Load ABI schema
-with open("schemas/abi.expected.json", "r") as f:
-    abi_schema = json.load(f)
-
-# Generate client code
-client_code = generator.generate_client(abi_schema, async_client=True)
-
-# Save to file
-with open("generated_client.py", "w") as f:
-    f.write(client_code)
+calimero-abi-codegen --input examples/schemas/example_abi.json --output generated_client
 ```
 
 ## ABI Schema Support
@@ -58,16 +28,6 @@ This tool supports:
 - WASM ABI v1 schema format
 - Full Calimero ABI schema (abi.expected.json)
 - Custom ABI schemas following Calimero conventions
-
-## Generated Client Features
-
-The generated client includes:
-- Type-safe method signatures
-- Input/output validation
-- Error handling
-- Documentation strings
-- Support for both sync and async operations
-- Integration with the base Calimero client
 
 ## Development
 

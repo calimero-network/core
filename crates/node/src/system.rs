@@ -2086,7 +2086,7 @@ impl SystemState {
     }
 
     // The lookups below are how a route reads a release a client names; anything else
-    // answers as if it were not installed (`tests/release_lookups.rs`).
+    // answers as if it were not installed (`tests/it/release_lookups.rs`).
 
     /// The releases of `package` that `who` may use ([`Self::sees_release`]); `frontend`: a
     /// session bound to the package's frontend ([`Self::sees_release_from`]).
