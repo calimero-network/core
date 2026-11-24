@@ -11,7 +11,7 @@ from __future__ import annotations
 import urllib.parse
 
 from upgrade_deep import (DeepCase, Failed, check, decisions, eq, fixture, install, join, kv_wasm, new_org, ops,
-                          people, person, refused, same_decisions, signed_ops, subset)
+                          people, person, refused, release_key, same_decisions, signed_ops, subset)
 from upgrade_path import FROM_RELEASE, TO_RELEASE, case
 
 OWNER = "cluster-owner"
@@ -20,6 +20,7 @@ OLDER = "2.3.999"  # a mero-tee release older than every node's
 PASSED = "2001-01-01T00:00:00Z"
 AHEAD = "2999-01-01T00:00:00Z"
 FAR = "9.0.0"  # a release announced with a deadline far ahead
+OFFERS_ONLY_SINCE = "1.0.0-rc.36"  # a customer instantiates only a deployment's offer (Feature::OffersOnly)
 
 
 def ungranted(w, *names):
@@ -126,11 +127,13 @@ class GrantedInstalls(DeepCase):
     name = "granted-installs"
     governance = ("granted",)
     area = "Deployments"
-    seeds = ("a granted account's install (`POST /packages/install`) and app of it; an ungranted member of its "
-             "organization (an admin) makes an instance of that release (no install, no grant)")
-    verifies = ("both apps read back; an ungranted account's install, bundle upload and `POST /apps` of a registry "
-                "release refused `403 DEPLOY_NOT_GRANTED` as on the old release; on the new release the granted "
-                "account installs another package")
+    seeds = ("a granted account's install (`POST /packages/install`) and app of it; an ungranted admin of its "
+             "organization makes an instance of that release, which it sees: allowed without a grant before "
+             f"{OFFERS_ONLY_SINCE}, refused `403 DEPLOY_NOT_GRANTED` from it (only a deployment's offer)")
+    verifies = ("the apps read back; an ungranted account's install, bundle upload and `POST /apps` of a registry "
+                "release (and, seeded on a release that has offers only, the admin's instance) refused "
+                "`403 DEPLOY_NOT_GRANTED` as on the old release; on the new release the granted account installs "
+                "another package")
 
     def populate(self, w):
         dev = person(w, "gus-dev")
@@ -138,29 +141,36 @@ class GrantedInstalls(DeepCase):
         org = new_org(dev, "Granted Org")
         join(dev, org, mate, role="admin")
         package, version = install(dev, w, "kv-b-1.0.0.mpk")
+        offers_only = release_key(w.fixtures["from_version"]) >= release_key(OFFERS_ONLY_SINCE)
+        seen = {"org": org, "package": package, "version": version} if offers_only else None
+        makers = (dev,) if offers_only else (dev, mate)
         apps = {}
-        for p in (dev, mate):
+        for p in makers:
             apps[p.name] = p.raw("post", "apps", {"name": p.name, "package": package, "version": version,
                                                   "org": org})["appId"]
             p.call(apps[p.name], "set", {"key": "k", "value": p.name})
-        s = {"apps": apps, "decisions": self._decide(w), "installed": [package]}
-        eq(set(s["decisions"].values()), {"DEPLOY_NOT_GRANTED"}, f"the ungranted account: {s['decisions']}")
+        s = {"apps": apps, "seen": seen, "decisions": self._decide(w, seen), "installed": [package]}
+        eq(set(s["decisions"].values()), {"DEPLOY_NOT_GRANTED"}, f"the ungranted accounts: {s['decisions']}")
         return s
 
-    def _decide(self, w):
+    def _decide(self, w, seen):
         nils = person(w, "nils-nogrant")
         package, version = w.registry.publish(fixture(w, "kv-c-1.0.0.mpk"))
-        return decisions({
+        table = {
             "install": lambda: nils.raw("post", "packages/install", {"package": package, "version": version}),
             "bundle": lambda: nils.deploy(kv_wasm(w), "nils-raw"),
             "create from the registry": lambda: nils.raw("post", "apps", {"name": "n", "package": package,
                                                                           "version": version}),
-        })
+        }
+        if seen:
+            table["admin instantiates a seen release"] = lambda: person(w, "mia-mate").raw(
+                "post", "apps", {"name": "mia-mate", **seen})
+        return decisions(table)
 
     def check(self, w, s):
         for name, app in s["apps"].items():
             eq(person(w, name).result(app, "get", {"key": "k"}), name, f"{name}'s app")
-        same_decisions(self._decide(w), s["decisions"], "an ungranted account's installs")
+        same_decisions(self._decide(w, s["seen"]), s["decisions"], "an ungranted account's installs")
         listed = {p["package"] for p in person(w, "gus-dev").get("packages")["packages"]}
         check(set(s["installed"]) <= listed, f"the granted account's packages: {sorted(listed)}")
 
