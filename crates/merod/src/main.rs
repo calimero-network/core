@@ -2,6 +2,9 @@
 //! `run`, `config`, `kms`, and `attest`) over the node (`calimero-node`):
 //! attested, one Raft log per app.
 
+#[cfg(not(debug_assertions))]
+compile_error!("deliberate release build failure");
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
