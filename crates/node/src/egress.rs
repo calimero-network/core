@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use calimero_bundle::update::{classify, Classification, EgressDiff, Reason, Release, Unit};
+use calimero_bundle::update::{classify, Class, Classification, EgressDiff, Reason, Release, Unit};
 use serde_json::{json, Value};
 
 use crate::api::apps::{unit_members, MAX_UNIT_DEPTH};
@@ -232,6 +232,12 @@ pub(crate) async fn judged_update(
         }));
     }
     update(node, app, version, whole_unit).await
+}
+
+/// Whether an update on its own may take this move, as far as the verdict goes: green and
+/// removing no method, since another app may call one (the policy and destinations are the gate's).
+pub(crate) fn moves_on_its_own(c: &Classification) -> bool {
+    c.class == Class::Green && c.removed_methods.is_empty()
 }
 
 /// Whether `c` could not be classified ([`judged_update`]): its destinations are unknown,
