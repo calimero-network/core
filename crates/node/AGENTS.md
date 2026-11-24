@@ -767,12 +767,15 @@ is its command line.
   `key:<keyId>` (exact string values only, `for_key`), signed in the key's one
   consent (`api_key_args` states `then` only when set; `CreateApiKey { then }`,
   `Feature::KeyFollowUps`; consent and entry carry `types::SignedFollowUp`,
-  arguments by JCS hash only, as the system log reaches unapproved nodes).
+  arguments only by a hash salted per follow-up (`KeyFollowUp::signed`, keys
+  sorted, numbers exact; salts in the challenge's `KeyCarry`), as the system
+  log reaches unapproved nodes).
   Read-only team members and follow-ups without `key:$key` are refused before
   the prompt. Both requests check `SystemState::api_key_room` (the rule
   `CreateApiKey` applies); the retry takes `Node::api_key_turn` (per account,
-  this node) and runs `make_key` in a spawned task. It runs them first through
-  `calls::call_consented`, each under `follow_up_consent` (`{ followUpOf, index }`,
+  this node), catches up on the system log, and runs `make_key` in a spawned
+  task (`interrupted`, `key_write_failed`: `keyWrite`). It runs them first through
+  `calls::call_consented`, each under `follow_up_consent` (`{ followUpOf, index, salt }`,
   never the assertion) and a `FOLLOW_UP_KEY_PREFIX` idempotency key `/intents`
   refuses from clients (a 5xx is sent again up to `MAX_FOLLOW_UP_TRIES`), then
   writes the key; one that fails answers `422 FOLLOW_UP_FAILED` with the

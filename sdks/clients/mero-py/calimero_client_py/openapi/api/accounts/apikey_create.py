@@ -118,9 +118,11 @@ def sync_detailed(
     consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
     JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
     key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
-    applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a
-    client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412`
-    first. The key is shown once.
+    applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and
+    `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted)
+    to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client
+    checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first.
+    The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -164,9 +166,11 @@ def sync(
     consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
     JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
     key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
-    applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a
-    client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412`
-    first. The key is shown once.
+    applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and
+    `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted)
+    to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client
+    checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first.
+    The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -205,9 +209,11 @@ async def asyncio_detailed(
     consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
     JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
     key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
-    applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a
-    client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412`
-    first. The key is shown once.
+    applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and
+    `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted)
+    to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client
+    checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first.
+    The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -249,9 +255,11 @@ async def asyncio(
     consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
     JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
     key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
-    applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a
-    client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412`
-    first. The key is shown once.
+    applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and
+    `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted)
+    to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client
+    checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first.
+    The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
