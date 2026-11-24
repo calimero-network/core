@@ -43,6 +43,8 @@ const CLUSTER: &str = "upgrade-replay";
 const OPS_TOKEN: &str = "opsrv2raft0000000000000000000000";
 /// Fields that move on their own and say nothing about the replayed state.
 const VOLATILE: &[&str] = &["fresh", "lastActiveAt", "lastActiveDay", "sessions"];
+/// Times a read is sent until the apps it names have opened (100 ms apart).
+const OPEN_TRIES: usize = 200;
 
 /// Totals of the UTC day the read is made on (`today`, `developerFuelToday`,
 /// `developerWritesToday`, ...): a replay on a later day than the release's
@@ -150,6 +152,15 @@ fn config(dir: &Path, port: u16, release: &str, node: &Value) -> Config {
         attestation_verifier_url: None,
         operator_key: None,
     }
+}
+
+/// The apps a report names with a last write: their groups have opened, which a
+/// slow runner may not have done when the first read is sent.
+fn written(report: &Value) -> BTreeSet<&str> {
+    let apps = report["apps"].as_array().into_iter().flatten();
+    apps.filter(|a| !a["lastWriteAt"].is_null())
+        .filter_map(|a| a["app"].as_str())
+        .collect()
 }
 
 /// `got` holds every field `want` holds, with the same value; `Err` names the first
@@ -335,15 +346,23 @@ async fn replay(fixture: &Path) {
         let who = read["as"].as_str().unwrap();
         let method = read["method"].as_str().unwrap();
         let path = read["path"].as_str().unwrap();
-        let (status, body) = send(
-            &http,
-            &base,
-            bearer(who).as_deref(),
-            method,
-            path,
-            &read["body"],
-        )
-        .await;
+        let mut got = (0, Value::Null);
+        for _ in 0..OPEN_TRIES {
+            got = send(
+                &http,
+                &base,
+                bearer(who).as_deref(),
+                method,
+                path,
+                &read["body"],
+            )
+            .await;
+            if written(&read["answer"]).is_subset(&written(&got.1)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let (status, body) = got;
         let what = format!("{method} {path} as {who}");
         if status != read["status"].as_u64().unwrap() as u16 {
             diffs.push(format!(
@@ -565,4 +584,19 @@ fn an_invite_the_release_answered_open_reads_expired_once_its_time_passes() {
         "invite"
     )
     .is_err());
+}
+
+#[test]
+fn an_app_is_open_once_the_report_names_its_last_write() {
+    let report = json!({ "apps": [
+        { "app": "a", "lastWriteAt": 5 },
+        { "app": "b", "lastWriteAt": null },
+        { "app": "c" },
+    ] });
+    assert_eq!(written(&report), BTreeSet::from(["a"]));
+    assert!(written(&json!({ "error": "x" })).is_empty());
+    assert!(written(&report).is_subset(&written(&report)));
+    assert!(!written(&report).is_subset(&written(
+        &json!({ "apps": [{ "app": "a", "lastWriteAt": null }] })
+    )));
 }
