@@ -101,22 +101,29 @@ pub(crate) fn compile_delay(public_url: &str) -> Option<Duration> {
         .map(|(_, d)| *d)
 }
 
-/// The timeout of the HTTP client nodes share for peers, job nodes and attestation, when a
-/// test set one: nodes started after [`shared_http_timeout`] in this process use it instead of
-/// [`crate::node::SHARED_HTTP_TIMEOUT`].
-static SHARED_HTTP_TIMEOUT: Mutex<Option<Duration>> = Mutex::new(None);
+/// Nodes whose shared HTTP client (peers, job nodes, attestation) has a test's timeout
+/// instead of [`crate::node::SHARED_HTTP_TIMEOUT`], by data directory: a test's own
+/// temporary directory, where a public URL's port can be handed to a later test's node.
+static SHARED_HTTP_TIMEOUT: Mutex<Vec<(std::path::PathBuf, Duration)>> = Mutex::new(Vec::new());
 
-/// Make nodes started from now on in this process give their shared HTTP client `timeout`, so
-/// a test can show a transfer outlives it without waiting out the 30 s a cluster uses.
-pub fn shared_http_timeout(timeout: Duration) {
+/// Make the node whose data directory is `data_dir` give its shared HTTP client `timeout`,
+/// so a test can show a transfer outlives it without waiting out the 30 s a cluster uses.
+/// The client is built when the node starts: set it in `Cluster::start_with`'s `configure`.
+pub fn shared_http_timeout(data_dir: &std::path::Path, timeout: Duration) {
     if let Ok(mut t) = SHARED_HTTP_TIMEOUT.lock() {
-        *t = Some(timeout);
+        t.retain(|(d, _)| d != data_dir);
+        t.push((data_dir.to_owned(), timeout));
     }
 }
 
-/// The timeout [`shared_http_timeout`] set, if any.
-pub(crate) fn shared_http_timeout_override() -> Option<Duration> {
-    SHARED_HTTP_TIMEOUT.lock().ok().and_then(|t| *t)
+/// The timeout [`shared_http_timeout`] set for the node whose data directory is `data_dir`.
+pub(crate) fn shared_http_timeout_override(data_dir: &std::path::Path) -> Option<Duration> {
+    SHARED_HTTP_TIMEOUT
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(d, _)| d == data_dir)
+        .map(|(_, t)| *t)
 }
 
 /// Backup directories whose file writes take long, each with its delay, and
