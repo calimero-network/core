@@ -35,11 +35,34 @@ error the guest's host call returns.
 | Outbound HTTP | 8 requests per action, one per call; bodies 1 MiB; 64 KiB recorded in a call's entry; 100 headers | `MAX_HTTP_REQUESTS`, `MAX_HTTP_BODY_BYTES`, `MAX_RECORDED_BODY_BYTES`, `MAX_HEADERS` |
 | Outbound secrets and their redaction | 32 distinct secret values per request (more is refused); each redacted from the response as sent and in 19 common encodings (hex, base64, percent, JSON), 20 patterns a secret, 640 a request; encodings only for a secret of 8 to 4096 bytes, as sent otherwise | `MAX_SECRETS_PER_REQUEST`, `PATTERNS_PER_SECRET`, `MAX_REDACTION_PATTERNS`, `MIN_ENCODED_SECRET_BYTES`, `MAX_ENCODED_SECRET_BYTES` |
 | Declared secrets (credential bindings) | 16 per release; name 64 bytes; description 256 bytes; one host, 1 to 8 path prefixes of 256 bytes each, and one place each (a header, or a body field); header name or body field 64 bytes; header `format` 64 bytes with `{}` once; no two on one host's same place on a shared path | `MAX_SECRETS`, `MAX_SECRET_NAME_BYTES`, `MAX_SECRET_DESCRIPTION_BYTES`, `MAX_SECRET_PATHS`, `MAX_SECRET_PATH_BYTES`, `MAX_SECRET_FIELD_BYTES`, `MAX_SECRET_FORMAT_BYTES` |
-| Search | 100 hits at most; query 256 bytes | `MAX_SEARCH_LIMIT`, `MAX_SEARCH_QUERY_BYTES` |
+| Search | 100 hits at most; query 256 bytes; 32 searches per run (`"too many searches in one run"`) | `MAX_SEARCH_LIMIT`, `MAX_SEARCH_QUERY_BYTES`, `MAX_SEARCHES_PER_RUN` |
 | Files | 16 open; 2 GiB each; 64 MiB written per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_READ_CHUNK` |
 | Blob download grant | 1 day at most | `MAX_GRANT_TTL_SECS` |
 | Compute runs started | 16 per run; 64 active per app; 64 inputs, 64 KiB of arguments | `MAX_STARTS_PER_RUN`, `MAX_ACTIVE_RUNS`, `MAX_RUN_INPUTS`, `MAX_COMPUTE_ARGS_BYTES` |
 | Call arguments | 512 KiB (`413 ARGS_TOO_LARGE`, before anything runs) | `MAX_ARGS_BYTES` |
+
+### What host work costs
+
+A run's fuel pays for the guest's own instructions and for the work its host
+calls make the node do (`crates/app-host/src/fuel.rs`). One fuel is about one
+nanosecond of host time; the search figures are the least-squares fit of a
+query's host time in `crates/search/bench`.
+
+| Host call | Fuel | Constants |
+| --- | --- | --- |
+| `storage.get`, `put`, `delete`, `add`, opening a range | 2000, plus 1 per byte of key and value | `FUEL_STATE_ACCESS`, `FUEL_PER_BYTE` |
+| Each `range.next` batch | 2000, plus 200 per entry and 1 per byte | `FUEL_STATE_ACCESS`, `FUEL_PER_RANGE_ENTRY`, `FUEL_PER_BYTE` |
+| `search.query` | 5000, plus 14 per matched document, 10 500 per hit, 70 per byte of the hits and 1 per byte of the query | `FUEL_SEARCH_QUERY`, `FUEL_PER_SEARCH_MATCH`, `FUEL_PER_SEARCH_HIT`, `FUEL_PER_SEARCH_BYTE` |
+| Context and directory reads (`app-owner`, `org`, `org-role`, `orgs-of`, `in-team`, `linked`, `unit-of`, `grant-scope`), `blobs.*`, `files.create`, `open`, `info`, `finish`, `runs.uploader`, `runs.publish` | 1000 | `FUEL_HOST_CALL` |
+| `emit`, `xcall.send`, synchronous xcalls, an action's `view` and `call`, outbound HTTP, file reads and writes, random bytes, a published file | 1000, plus 1 per byte sent, read, written or answered | `FUEL_HOST_CALL`, `FUEL_PER_BYTE` |
+
+The charge is taken when the call returns; a run whose fuel cannot pay it ends
+out of fuel (`422 TRAP`, kind `OutOfFuel`) as if the guest had run out, and a run
+that finishes owing more than its budget ends the same way. A synchronous
+xcall's target runs on its own budget. The charges apply once the cluster
+version is 1.0.0-rc.36 (`Feature::HostFuel`); below it a node charges no host
+work, as earlier releases did, so a call answers alike on every node through a
+rolling upgrade. Job nodes charge compute runs from that release on.
 
 A run's result also has to fit the log: its whole entry — arguments, diff,
 events — must stay under **1 MiB** (`calimero_log::MAX_ENTRY_BYTES`); a run

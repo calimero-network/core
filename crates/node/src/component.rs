@@ -1761,10 +1761,14 @@ impl AppMachine {
                 // every entry within what each replica applies, so one this replica cannot
                 // decode was written by a later release. Skipped, it would leave this replica
                 // on a state the others no longer have: the group stops on it instead.
+                // The log names the error, never its words: serde_json quotes the entry
+                // (a call's arguments), and this line, and the group's stop reason built
+                // from `fail`, reach the operator.
                 let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::App);
-                error!(index, error = %e, undecodable = n,
+                let named = crate::log_safe::serde(&e);
+                error!(index, error_kind = %named, undecodable = n,
                     "an app entry this node cannot decode: the group stops here; run a release that reads it");
-                tx.fail(format_args!("app entry {index} does not decode: {e}"));
+                tx.fail(format_args!("app entry {index} does not decode: {named}"));
                 return crate::app::applied_bytes(
                     index,
                     &Applied {
@@ -1809,7 +1813,8 @@ fn decode_in<T: serde::de::DeserializeOwned>(
         Ok(v) => Some(v),
         Err(e) => {
             tx.fail(format_args!(
-                "a row of family {family} does not decode: {e}"
+                "a row of family {family} does not decode: {}",
+                crate::log_safe::serde(&e)
             ));
             None
         }
@@ -2689,6 +2694,39 @@ mod tests {
         assert_eq!(r.machine.state.last_index, 1, "the group stopped before it");
         let ok = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
         assert!(!r.apply(2, &ok).conflict);
+    }
+
+    /// Reproduction (F6): the error that stops the group quoted the entry it could not
+    /// decode (serde_json's `invalid type: string "…"`), and the node logged it at ERROR
+    /// and again as the group's stop reason, which ship to the operator's log.
+    #[test]
+    fn an_entry_that_does_not_decode_is_logged_without_its_contents() {
+        const USER: &str = "alice@example.com";
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let mut entry: Value = serde_json::from_slice(&init(1)).unwrap();
+        entry["base_index"] = json!(USER);
+        let entry = serde_json::to_vec(&entry).unwrap();
+        let (committed, log) = crate::log_safe::tests::logged(|| {
+            let state = r.engine.group_state(5);
+            let mut tx = StateTx::new(&state);
+            let _out = calimero_log::Machine::apply(&mut r.machine, 2, &entry, &mut tx);
+            tx.commit().map_err(|e| format!("{e:#}"))
+        });
+        let stop = committed.expect_err("the group goes on past an entry it cannot decode");
+        assert!(
+            log.contains("an app entry this node cannot decode"),
+            "{log}"
+        );
+        assert!(log.contains("a JSON data error"), "{log}");
+        assert!(
+            !log.contains(USER),
+            "the operator's log carries the entry:\n{log}"
+        );
+        assert!(
+            !stop.contains(USER),
+            "the stop reason carries the entry: {stop}"
+        );
     }
 
     #[test]

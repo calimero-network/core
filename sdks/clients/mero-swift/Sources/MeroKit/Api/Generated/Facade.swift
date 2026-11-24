@@ -120,7 +120,7 @@ extension CalimeroClient {
 
         /// Where an app's unit may send data: `GET /apps/{app}/egress` (`app_egress`).
         ///
-        /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+        /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none. `egress`: `off` while its organization (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are absent while it is on), when none of the destinations is reached and `summary` says the app cannot send data outside the cluster.
         ///
         /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
         @discardableResult
@@ -377,6 +377,19 @@ extension CalimeroClient {
             let input = Operations.AppSecrets.Input(path: .init(app: app))
             return try await client.perform { api in
                 try await api.appSecrets(input).ok.body.json
+            }
+        }
+
+        /// Turn one app's egress off or on: `POST /apps/{app}/egress` (`app_set_egress`).
+        ///
+        /// As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func setEgress(app: Swift.String, egress: Swift.Bool, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.AppSetEgress.Output.Ok.Body.JsonPayload {
+            let input = Operations.AppSetEgress.Input(path: .init(app: app), body: .json(.init(egress: egress)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.appSetEgress(input).ok.body.json
             }
         }
 
@@ -1902,6 +1915,19 @@ extension CalimeroClient {
             }
         }
 
+        /// Turn the organization's egress off or on: `POST /orgs/{org}/egress` (`org_egress`).
+        ///
+        /// `egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func egress(org: Swift.String, egress: Swift.Bool, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.OrgEgress.Output.Ok.Body.JsonPayload {
+            let input = Operations.OrgEgress.Input(path: .init(org: org), body: .json(.init(egress: egress)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.orgEgress(input).ok.body.json
+            }
+        }
+
         /// One organization: `GET /orgs/{org}` (`org_get`).
         ///
         /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
@@ -1943,7 +1969,7 @@ extension CalimeroClient {
 
         /// Approve outbound prefixes for the organization's apps: `POST /orgs/{org}/outbound` (`org_outbound_approval`).
         ///
-        /// The owner; `412` first.
+        /// The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult

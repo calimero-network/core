@@ -17,6 +17,7 @@ class ConsentPageResultResponse200Kind(str, Enum):
     REVOKEINVITE = "revokeInvite"
     SETALLAPPS = "setAllApps"
     SETCAPABILITIES = "setCapabilities"
+    SETEGRESS = "setEgress"
     SETMEMBERROLE = "setMemberRole"
     SETMEMBERTEAMS = "setMemberTeams"
     UPDATEPOLICY = "updatePolicy"

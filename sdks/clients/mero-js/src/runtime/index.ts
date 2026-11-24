@@ -42,7 +42,7 @@ export type { AttestationDoc, NodePolicy, NodeReleasePolicy, NodeVerification } 
 
 // The node directory a cluster's node list is read from.
 export { CLOUD_ENVIRONMENTS, DEFAULT_DIRECTORY, DirectoryError, cloudEnvironment } from './directory.js';
-export type { CloudEnvironment, DirectoryFailure } from './directory.js';
+export type { CloudEnvironment, CloudEnvironmentInfo, DirectoryFailure } from './directory.js';
 
 // Passkeys (WebAuthn) for the step-up and the ceremonies.
 export { browserPasskey, b64url, fromB64url, passkeyConfirm } from './passkey.js';

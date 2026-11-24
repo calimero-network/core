@@ -24,6 +24,7 @@ turned them on, for its hosts or for any host an app declares.
 | `[outbound] enabled = true`, and the request's host is in `hosts` (or `hosts` holds `"*"`: any host an installed app declares) | The cluster's operator |
 | The request's URL is under a prefix in the app's signed release manifest (`outbound`): the same host, and the prefix's path or one below it at a `/`, with any query string | The app's publisher |
 | A prefix covering the URL is approved for the app's publisher | Whoever holds `MANAGE_APPLICATION` org-wide in the app's organization (its owner and admins; a member granted it), its personal organization included; the operator where the cluster was deployed with `--outbound-approvals operator` |
+| Egress is on for the app: neither its organization nor the instance turned it off. Off overrides every approval | The organization's owner or an admin ([Egress off](#egress-off)) |
 | The run is a call that writes: not a view, an `init`, a migration, or a call by a read-only member | The node |
 | One request per run; `GET`, `POST`, `PUT`, `PATCH` or `DELETE`; `https` on port 443 to a DNS name that resolves only to public addresses; no fragment; no redirect followed; no proxy | The node |
 | Request body ≤ 64 KiB, URL ≤ 2 KiB, ≤ 8 headers of ≤ 1 KiB, response body ≤ 1 MiB (a longer one is refused, not cut), 10 s for the whole request | The node (`calimero_primitives::outbound`) |
@@ -38,6 +39,9 @@ for a missing approval starts with a stable word an app can match on:
 - `AwaitingApproval:` a later release of the app declares the prefix and the
   owner has not been asked about it yet. The prefixes approved before keep
   working. Show the owner what to approve.
+- `EgressOff:` the app's organization, or the instance itself, turned egress
+  off: nothing leaves the cluster for this app, whatever was approved. Tell the
+  user their organization chose that; there is nothing to approve.
 
 A run with no outbound client at all (outbound is off, the app is not a signed
 release declaring a prefix, or the run is not a writing call) and a second
@@ -277,6 +281,43 @@ approve the step-up.
 An app's frontend can also ask for the approval on the node's consent page
 (`POST /consent/requests` with `kind: outbound`), where the person approves
 with their passkey.
+
+## Egress off
+
+The TEE keeps an app's data from the operator and from Calimero, not from the
+app's own code: code that reads the data and may send requests can send it to
+any host its manifest declares and its organization approved. For data that
+must never leave, the organization's owner or an admin turns egress off:
+
+```http
+POST /orgs/{org}/egress
+{ "egress": false }
+```
+
+or for one instance, `POST /apps/{app}/egress` with the same body. From each
+app's next request on, every outbound request of the apps it covers is refused
+`EgressOff:` before any other gate, whatever the release declares and whatever
+an approval (the organization's or the operator's) says, and while the
+organization's switch is off it approves no new host (`409 EGRESS_OFF`). The
+approvals stay recorded. Turning it off takes the same passkey step-up as
+approving a host, and takes effect at once.
+
+Turning egress back on is a red change: the node takes it only from its
+consent page (`POST /consent/requests` with `kind: setEgress`, `subject:
+{ org, app?, egress: true }`), which shows the hosts it lets data reach again;
+anywhere else it answers `403 CONSENT_PAGE_REQUIRED`. An instance sends again
+only while both its own switch and its organization's are on.
+
+`GET /apps/{app}/egress` answers `egress: "off"` with `offBy` (`organization`
+or `instance`) and the summary "This app cannot send data outside the
+cluster", and `GET /orgs/{org}` answers `egressOff`. With `meroctl`: `org egress
+<org> [off|on] [--app <app>]` (`on` prints the consent page to open).
+
+Compute runs and job nodes are not affected because they never send: a compute
+run has no network at all. Neither do views, `init` or migrations.
+
+For what an app may do with the secrets it is given, see the protocol chapter
+*Secrets and what an app can and cannot do with them*.
 
 ## The operator's side
 

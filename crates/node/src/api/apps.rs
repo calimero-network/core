@@ -720,6 +720,7 @@ async fn create_instance(
                 links,
                 attached: BTreeMap::new(),
                 restore_point: None,
+                egress_off: false,
             }),
             unit_offer: body.unit_offer,
             offers_only,

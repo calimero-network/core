@@ -880,7 +880,7 @@ async fn a_follower_answers_a_strong_view_after_a_read_index() {
     }
 }
 
-async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
+pub(crate) async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
     cl.apps()
         .view(
             app,
@@ -5565,7 +5565,7 @@ async fn dead_letters_move_with_the_app_and_any_node_lists_them() {
 
 /// A signed `.mpk` of `wasm` as `package@version` whose manifest declares the outbound
 /// URL prefixes `outbound` (S9), signed by `key`.
-fn mpk_declaring(
+pub(crate) fn mpk_declaring(
     package: &str,
     version: &str,
     wasm: &[u8],
@@ -5708,7 +5708,7 @@ fn mpk_bound(
 }
 
 /// Polls view `method` until `done` holds of its result.
-async fn eventually(
+pub(crate) async fn eventually(
     cl: &Client,
     app: &str,
     method: &str,
@@ -7415,7 +7415,17 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
 /// a timeout, which is not logged, D23) replays both answers instead of counting again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
-    let c = Cluster::start(3).await;
+    // The stalled run must end on the wall clock (`TIMEOUT`, not logged), and `slowBump`'s
+    // body is sized in wall time. Both draw host randomness, which costs fuel per byte
+    // (C7), so their fuel is lifted, as `timeouts_are_not_logged` lifts it: the wall clock
+    // ends them, never the fuel.
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
         .packages()
