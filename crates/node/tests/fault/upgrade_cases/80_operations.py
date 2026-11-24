@@ -166,6 +166,7 @@ class BackupKeys(DeepCase):
 DIGEST_COMPARE_SECS = 60  # `DIGEST_COMPARE_EVERY`: how often an app's leader compares its replicas' digests
 DIVERGED = "calimero_group_diverged{"  # a series present only while a replica's digest differs
 DIVERGENCES = "calimero_group_divergences_total"
+COMPARISONS = "calimero_group_digest_comparisons_total{"  # a release before this one does not count them
 
 
 def _divergences(w):
@@ -182,6 +183,19 @@ def _divergences(w):
     return found
 
 
+def _comparisons(w, apps):
+    """`{app: comparisons that could tell, over every node}`: the leader of a group is the one that counts."""
+    groups = {a["app"]: a["group"] for a in w.fleet.placement()["apps"]}
+    total = {a: 0 for a in apps}
+    for node in w.members():
+        for line in ops_text(w, "ops/metrics", node).splitlines():
+            if line.startswith(COMPARISONS):
+                for app in apps:
+                    if line.startswith(f'{COMPARISONS}group="{groups[app]}"}}'):
+                        total[app] += int(line.split()[-1])
+    return total
+
+
 @case
 class StateDigests(DeepCase):
     name = "state-digests"
@@ -189,8 +203,10 @@ class StateDigests(DeepCase):
     since = "1.0.0-rc.31"
     seeds = "two apps with data written, replicated on the old nodes (each leader compares its replicas' state digests)"
     verifies = ("on every node no replica is reported diverged and none ever was (`calimero_group_diverged`, "
-                "`calimero_group_divergences_total`), in the mixed cluster, after the roll once a comparison cycle "
-                "has passed over data written on the new release, and after a restart")
+                "`calimero_group_divergences_total`), in the mixed cluster, after the roll and after a restart; "
+                "once every node runs the new release each app's leader has compared its replicas "
+                "(`calimero_group_digest_comparisons_total` above zero for both groups) and compares again after "
+                "new writes and after a restart, which tells a comparison that agreed from one that never ran")
 
     def populate(self, w):
         dax = person(w, "dax")
@@ -201,13 +217,27 @@ class StateDigests(DeepCase):
         eq(_divergences(w), {n: 0 for n in w.members()}, "divergences while seeding")
         return s
 
+    def during_mix(self, w, s):
+        eq(_divergences(w), {n: 0 for n in w.members()}, "divergences while the cluster is mixed")
+
     def check(self, w, s):
-        eq(_divergences(w), {n: 0 for n in w.members()}, "divergences")
+        self.during_mix(w, s)
+
+        def compared():
+            seen = _comparisons(w, s["apps"])
+            check(all(seen.values()), f"no digest comparison has run for every app yet: {seen}")
+            return seen
+
+        until("each app's leader has compared its replicas", compared, DIGEST_COMPARE_SECS + 45)
 
     def exercise(self, w, s):
         dax = person(w, "dax")
+        before = _comparisons(w, s["apps"])
         for a in s["apps"]:
             for i in range(20):
                 dax.call(a, "set", {"key": f"new{i:02}", "value": f"n{i}"})
         time.sleep(DIGEST_COMPARE_SECS + 15)
+        after = _comparisons(w, s["apps"])
+        check(all(after[a] > before[a] for a in s["apps"]), f"a leader did not compare again: {before} then {after}")
         self.check(w, s)
+
