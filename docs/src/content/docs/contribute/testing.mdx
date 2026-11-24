@@ -1,6 +1,6 @@
 ---
 title: Testing strategy
-description: How Calimero Core is tested — crate unit tests, the in-process cluster tests, the merod and meroctl CLI tests, the SDK harnesses, scenario files, the process suite on `merod` processes — and how to run each locally.
+description: How Calimero Core is tested (crate unit tests, the in-process cluster tests, the merod and meroctl CLI tests, the SDK harnesses, scenario files, the process suite on `merod` processes) and how to run each locally.
 sidebar:
   label: Testing strategy
 ---
@@ -949,6 +949,24 @@ node (modelled as a release that skips what it cannot decode, as earlier release
 did; this one stops the group instead) and checks that nothing is proposed and every
 replica keeps the same state, then that each feature works once the older
 node leaves and the leader raises the cluster version.
+
+## Before adding a test
+
+A test earns its place by catching a break no other test catches.
+Name that break before writing the test: the line you could change that only this test would notice.
+Then prove it: make that change, watch the new test go red, and put the code back.
+
+Do not add:
+
+- a harness test that repeats an app's scenario file step for step (the scenario already runs on every PR, in the app's harness);
+- a test that asserts what it set up, a constant, a dependency's behaviour (`Url::join`, a missing `Option` reading as `None`), or a bound so loose it cannot fail (`fuel > 0`); a measurement is an `#[ignore]`d benchmark;
+- a second test of the same path with another input that no branch depends on (`test_hash_43` and `test_hash_44`);
+- a weaker copy of a check a known-answer vector or an exact-bytes assertion already makes;
+- a second CI run of a test another required job runs;
+- a test under `scripts/tests/` that no workflow runs (`ci-scope-test.py` fails on one).
+
+Keep a test that looks redundant when it is the only one of a branch or error path, a trust boundary (kicked, revoked or other-org actors, limit constants, a key bound to its cluster, salt or node), wire or format compatibility, or the only multi-node coverage.
+A property test beside a known-answer vector stays: whoever changes the derivation regenerates the vector, and only the property still says what the bytes must be bound to.
 
 ## Proving a fix
 
