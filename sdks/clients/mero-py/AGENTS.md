@@ -29,6 +29,7 @@ calimero_client_py/          # the Python package
   client.py, sealed.py, _facade.py, recovery.py   # hand-written
   openapi/                   # GENERATED: openapi-python-client's client of the node API
   facade.py                  # GENERATED: one Client method per operation
+  products/kv/client.py      # GENERATED: the Confidential KV's client (meroctl app codegen)
 calimero/                    # the `calimero` package: re-exports calimero_client_py
 openapi/generator.yaml       # openapi-python-client's settings
 scripts/                     # generate.sh (sdk.json `generate`), the generators, build.sh
@@ -87,6 +88,7 @@ tree (`../../../docs/public/openapi.json`). Nothing is vendored or fetched.
 - `calimero_client_py/facade.py`: `scripts/generate_facade.py`, one method per operation.
 - `docs/src/content/docs/clients/mero-py/reference/methods.mdx` (core's docs site, three directories up): `scripts/generate_api_docs.py`.
 - `abi-codegen/examples/generated_client/`: `calimero-abi-codegen` on its example schema.
+- `calimero_client_py/products/kv/client.py`: core's `meroctl app codegen` (`../../../scripts/app-codegen.sh`, so generating needs cargo) on the Confidential KV's released ABI, vendored once for every SDK at `sdks/abi/kv.abi.json` (its origin in `sdks/abi/SOURCE`), committed unedited (Black skips it). A newer KV release replaces that file, then regenerates.
 
 ```bash
 python3 scripts/sdks.py generate mero-py    # from core's root; or bash scripts/generate.sh here
