@@ -1,6 +1,6 @@
 ---
 title: Testing strategy
-description: How Calimero Core is tested — crate unit tests, the in-process cluster tests, the merod and meroctl CLI tests, the SDK harnesses, scenario files, the process suite on `merod` processes — and how to run each locally.
+description: How Calimero Core is tested (crate unit tests, the in-process cluster tests, the merod and meroctl CLI tests, the SDK harnesses, scenario files, the process suite on `merod` processes) and how to run each locally.
 sidebar:
   label: Testing strategy
 ---
@@ -59,11 +59,13 @@ one module per former `tests/*.rs` file), so they link wasmtime, RocksDB and tan
 instead of once per file. A test's name is `<module>::<test>`:
 `cargo test -p calimero-node --test it job_runs::` runs one module, and
 `cargo nextest run -p calimero-node -E 'binary(it) & test(/^job_runs::/)'` does under nextest.
-Three stay binaries of their own: `scenarios` (its own main), and `auto_updates` and
-`compute_runs`, which set a hook that is the whole process's (`testing::shift_update_clock`,
-`testing::shared_http_timeout`). Tests in `it` share one process under `cargo test`, so a
-test hook is keyed to the test's own nodes (a data directory or a public URL), never the
-process's; a test that needs a process-wide one gets a binary of its own.
+Two stay binaries of their own: `scenarios` (its own main), and `auto_updates`, which
+sets hooks that are the whole process's (`testing::shift_update_clock`,
+`testing::fail_restore_points`). Tests in `it` share one process under `cargo test`, so a
+test hook is keyed to the test's own nodes (a data directory or a public URL, set in
+`Cluster::start_with`'s `configure` when the node reads it at start, as
+`testing::shared_http_timeout` is), never the process's; a test that needs a process-wide
+one gets a binary of its own.
 
 The real-process fault tests start `merod` processes on ports 7600-7699 and need release `merod` and `meroctl` (`cargo build --release -p merod -p meroctl`):
 
@@ -674,6 +676,7 @@ a case is never skipped.
 | Apps | Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys (`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`) | - | - | no: it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied below cluster version 1.0.0-rc.33 (`Feature::OwnerApprovedUpgrades`), and the owner's upgrade after the roll is already the `kv-package` case's (`extend`: the organization's owner upgrades on the new release). `system::tests::only_an_organizations_owner_and_admins_approve_its_upgrades` covers the replay, and `a_member_needs_the_capability_to_create_apps_or_invite`, `the_leader_checks_upgrade_authority_again` and `an_upgrade_key_is_an_owners_or_admins_of_the_apps_organization` the refusals on one build |
 | Deployments | A deployment's customer accepting its offer on the consent page | - | - | no: the page is approved in a browser, and a consent request lives in one node's memory for minutes; what it logs is the `UpgradeApp` that `POST /apps/{app}/upgrade` without a version logs, which `deployment-offer-upgrades` covers with `GET /apps/{app}/update`'s `source: deployment`. `a_customer_accepts_its_deployments_offer_on_the_page` (`consent_page.rs`) covers the page on one build |
 | Apps | A green update applying on its own after its hold (`UpgradeApp::auto`, `lastUpgrade.auto`) | - | - | no: the hold is at least a day (`MIN_HOLD_HOURS`) of logged time from the release's install, which a deep run cannot wait on either release (the tests move the update clock with a testing hook a release `merod` lacks), so no automatic update is seeded or made; the policy that asks for one is the `upgrade-policies` case's, and the restore point every upgrade takes and its undo are `restore-points-undo`'s. An upgrade entry and a record without `auto` read and replay as before. `system::tests` (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`, `a_deployment_instances_hold_runs_from_its_offer`) and `tests/auto_updates.rs` cover it on one build |
+| Apps | An undo refused to a release no longer installed (`UndoUpgrade::release_installed`, `UNDO_RELEASE_GONE`) | - | - | no: it adds a refusal, not a stored shape: an entry without the flag replays as it applied below cluster version 1.0.0-rc.36 (`Feature::UndoToInstalledRelease`), and the undo itself is `restore-points-undo`'s. The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build |
 | Accounts | Account recovery started and finished with a new passkey | - | - | no: the start takes a WebAuthn registration made outside a session, which neither meroctl nor the suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The recovery code (`account-recovery-code`) is covered |
 | Accounts | Sign-up through a cluster sign-up invite, and issuing one | - | - | no: meroctl's login takes no invite and has no command to issue one (an operator-signed request); the policy and the invite list are read back (`ops-state`) |
 | Accounts | Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, `setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, `deleteOrg`, `setCapabilities`, `setAllApps`) and the page's verifier link | - | - | no: a consent request is approved in a browser on the node's consent page; the cluster test `consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as the API's route, which the organization and team cases cover; a `createOrg` asked from an app's frontend also makes that app's team in the same `CreateOrg`, the organization and team `ScopeApps` makes, which `app-teams` covers. The verifier link is a startup setting (`--attestation-verifier-url`) that stores nothing |
@@ -949,6 +952,24 @@ node (modelled as a release that skips what it cannot decode, as earlier release
 did; this one stops the group instead) and checks that nothing is proposed and every
 replica keeps the same state, then that each feature works once the older
 node leaves and the leader raises the cluster version.
+
+## Before adding a test
+
+A test earns its place by catching a break no other test catches.
+Name that break before writing the test: the line you could change that only this test would notice.
+Then prove it: make that change, watch the new test go red, and put the code back.
+
+Do not add:
+
+- a harness test that repeats an app's scenario file step for step (the scenario already runs on every PR, in the app's harness);
+- a test that asserts what it set up, a constant, a dependency's behaviour (`Url::join`, a missing `Option` reading as `None`), or a bound so loose it cannot fail (`fuel > 0`); a measurement is an `#[ignore]`d benchmark;
+- a second test of the same path with another input that no branch depends on (`test_hash_43` and `test_hash_44`);
+- a weaker copy of a check a known-answer vector or an exact-bytes assertion already makes;
+- a second CI run of a test another required job runs;
+- a test under `scripts/tests/` that no workflow runs (`ci-scope-test.py` fails on one).
+
+Keep a test that looks redundant when it is the only one of a branch or error path, a trust boundary (kicked, revoked or other-org actors, limit constants, a key bound to its cluster, salt or node), wire or format compatibility, or the only multi-node coverage.
+A property test beside a known-answer vector stays: whoever changes the derivation regenerates the vector, and only the property still says what the bytes must be bound to.
 
 ## Proving a fix
 

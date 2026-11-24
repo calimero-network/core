@@ -12,6 +12,41 @@
 /** The Calimero Cloud control plane's public node directory. */
 export const DEFAULT_DIRECTORY = 'https://manager.cloud.calimero.network/api/directory';
 
+/** A Calimero Cloud: production, or staging, which runs its own control plane and debug node images. */
+export type CloudEnvironment = 'production' | 'staging';
+
+/**
+ * Where each Calimero Cloud keeps its node directory and serves app
+ * frontends (`{label}.{appsDomain}`, on shared and dedicated clusters alike).
+ */
+export const CLOUD_ENVIRONMENTS: Readonly<Record<CloudEnvironment, { directory: string; appsDomain: string }>> = {
+  production: { directory: DEFAULT_DIRECTORY, appsDomain: 'apps.calimero.network' },
+  staging: {
+    directory: 'https://manager.staging.cloud.calimero.network/api/directory',
+    appsDomain: 'apps.relay.staging.cloud.calimero.network',
+  },
+};
+
+/**
+ * The Calimero Cloud whose apps domain `hostname` is under (by default the
+ * page's own, `location.hostname`), or `null` for any other host: a custom
+ * domain, Vercel, `localhost`, or no page at all.
+ *
+ * Read from the hostname alone, which the browser has authenticated over TLS,
+ * and never from anything a server answers: a page may use it to decide what
+ * it trusts (`allowDebugProfile: cloudEnvironment() === 'staging'`), and a
+ * production page cannot be made to think it runs on staging.
+ */
+export function cloudEnvironment(hostname?: string): CloudEnvironment | null {
+  const host = (hostname ?? (globalThis as { location?: { hostname?: string } }).location?.hostname ?? '')
+    .toLowerCase()
+    .replace(/\.$/, '');
+  for (const [env, { appsDomain }] of Object.entries(CLOUD_ENVIRONMENTS) as Array<[CloudEnvironment, { appsDomain: string }]>) {
+    if (host.endsWith(`.${appsDomain}`)) return env;
+  }
+  return null;
+}
+
 /** How long a listing stands when the directory does not say. */
 const DEFAULT_REFRESH_SECONDS = 60;
 

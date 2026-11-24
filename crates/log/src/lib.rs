@@ -415,9 +415,7 @@ impl<M: Machine> Group<M> {
     where
         F: FnMut(&M, u64) -> Proposal,
     {
-        let st = self
-            .shared
-            .read()
+        let st = machine::read_applied(&self.shared)
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
         let applied = st.applied_index();
         Ok((build(&st.machine, applied), applied))
@@ -547,12 +545,11 @@ impl<M: Machine> Group<M> {
         electing(self.node, &self.raft().metrics().borrow())
     }
 
-    /// Read this node's applied state.
+    /// Read this node's applied state. While an apply commits (its batch may wait
+    /// for the disk), this waits off the async workers ([`machine::read_applied`]).
     pub fn read_local<R>(&self, f: impl FnOnce(&M, u64) -> R) -> R {
-        let st = self
-            .shared
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let st =
+            machine::read_applied(&self.shared).unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&st.machine, st.applied_index())
     }
 
@@ -563,10 +560,8 @@ impl<M: Machine> Group<M> {
         if M::IN_MEMORY {
             return None;
         }
-        let st = self
-            .shared
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let st =
+            machine::read_applied(&self.shared).unwrap_or_else(std::sync::PoisonError::into_inner);
         Some(Digests {
             version: DIGEST_VERSION,
             applied: DigestAt {
@@ -936,6 +931,59 @@ pub struct Engine {
     config: Config,
     groups: RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>,
     factory: RwLock<Option<GroupFactory>>,
+    removals: Removals,
+}
+
+/// The groups whose data a removal is deleting now ([`Engine::remove_group`]),
+/// each with how many removals of it run: none of them starts until its last
+/// removal has finished, so no start opens a state a removal deletes under it.
+#[derive(Clone, Default)]
+struct Removals(Arc<std::sync::Mutex<HashMap<GroupId, u32>>>);
+
+impl Removals {
+    fn contains(&self, id: GroupId) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&id)
+    }
+
+    /// Mark `id` removed until the answer drops (once its data is deleted, or
+    /// the removal is given up).
+    fn begin(&self, id: GroupId) -> Removal {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(id)
+            .or_default() += 1;
+        Removal {
+            of: self.clone(),
+            id,
+        }
+    }
+}
+
+/// One removal of a group in progress ([`Removals::begin`]).
+struct Removal {
+    of: Removals,
+    id: GroupId,
+}
+
+impl Drop for Removal {
+    fn drop(&mut self) {
+        let mut running = self
+            .of
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = running.get_mut(&self.id) {
+            *n -= 1;
+            if *n == 0 {
+                let _done = running.remove(&self.id);
+            }
+        }
+    }
 }
 
 impl Engine {
@@ -965,6 +1013,7 @@ impl Engine {
             config,
             groups: RwLock::new(HashMap::new()),
             factory: RwLock::new(None),
+            removals: Removals::default(),
         }))
     }
 
@@ -1076,6 +1125,9 @@ impl Engine {
         if self.hosts(id) {
             eyre::bail!("group {id} is already running on this node");
         }
+        if self.removals.contains(id) {
+            eyre::bail!("group {id} is being removed from this node");
+        }
         let config = openraft::Config {
             cluster_name: format!("group-{id}"),
             heartbeat_interval: self.config.heartbeat_ms,
@@ -1128,11 +1180,23 @@ impl Engine {
             propose_lock: Mutex::new(()),
             caught_up: std::sync::atomic::AtomicU64::new(0),
         });
-        let _prev = self
-            .groups
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, Arc::clone(&group) as Arc<dyn RpcTarget>);
+        // Checked under the lock a removal takes the group out under: a
+        // removal that began while this opened the group wins.
+        let removing = {
+            let mut groups = self
+                .groups
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let removing = self.removals.contains(id);
+            if !removing {
+                let _prev = groups.insert(id, Arc::clone(&group) as Arc<dyn RpcTarget>);
+            }
+            removing
+        };
+        if removing {
+            group.shutdown().await;
+            eyre::bail!("group {id} is being removed from this node");
+        }
         drop(tokio::spawn(supervise(Arc::downgrade(&group))));
         Ok(group)
     }
@@ -1145,20 +1209,40 @@ impl Engine {
             .contains_key(&id)
     }
 
-    /// Stop a group and delete its data from this node.
+    /// Stop a group and delete its data from this node. Idempotent: a group
+    /// this node does not run has whatever data it left deleted.
+    ///
+    /// The delete runs on tokio's blocking pool and is awaited there: it is a
+    /// write, which queues behind any other write's fsync (RocksDB writes in
+    /// groups), and it first waits for an apply holding the group's state, so
+    /// on an async worker it stopped every group's heartbeats for as long as
+    /// the disk took. Until it finishes the group is refused a start
+    /// ([`Self::start_group`]): it is out of the engine then but its rows are
+    /// not yet gone. Regressions (`tests/slow_disk.rs`):
+    /// `removing_a_group_behind_the_disk_leaves_the_worker_free`,
+    /// `a_group_being_removed_does_not_start_again_until_its_data_is_gone`.
     pub async fn remove_group(&self, id: GroupId) -> eyre::Result<()> {
-        let target = self
-            .groups
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&id);
-        match target {
-            Some(t) => {
-                t.shutdown().await;
-                t.drop_data()
-            }
-            None => self.db.drop_group(id),
+        let (target, removal) = {
+            let mut groups = self
+                .groups
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (groups.remove(&id), self.removals.begin(id))
+        };
+        if let Some(t) = &target {
+            t.shutdown().await;
         }
+        let db = Arc::clone(&self.db);
+        // Once started, the delete runs to its end even if this future is
+        // dropped; the group stays refused a start until it has.
+        tokio::task::spawn_blocking(move || {
+            let _removal = removal;
+            match target {
+                Some(t) => t.drop_data(),
+                None => db.drop_group(id),
+            }
+        })
+        .await?
     }
 
     /// Whether the store is still open: it closes, releasing its lock, once

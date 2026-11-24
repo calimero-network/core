@@ -65,20 +65,36 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   and start elections across the cluster. `RaftLogStorage`'s append, `save_vote`,
   `truncate`, `purge` and `save_committed`, and the state machine's `apply` (the
   machine, its commit, the `shared` write lock that waits for a proposal's build),
-  snapshot build and install, `applied_state`, `StateMachine::open` in
-  `start_group` and a restart's `reload` run on tokio's blocking pool
+  snapshot build and install, `applied_state`, the receive file's unlink and
+  create (`begin_receiving_snapshot`), `StateMachine::open` in `start_group`, a
+  restart's `reload` and `Engine::remove_group`'s delete run on tokio's blocking pool
   (`store::off_workers`); each is still awaited, so an append is durable before
   its callback, a vote before the reply, and the commit index saved before the
   entries apply. An unsynced write waits for the disk too: RocksDB writes in
   groups, and one that arrives while another group's synced write is in its
   fsync joins or queues behind it (`save_committed` left inline stalled CI's
-  one worker 357 ms). Log reads and the small snapshot file opens stay inline
-  (a read takes no part in the write path). Regression:
+  one worker 357 ms). Log reads and opening the served snapshot file stay inline
+  (a read takes no part in the write path); `Engine::open` (RocksDB's open, the
+  stale snapshot files' deletion) runs inline at a node's start, before any group
+  does. The node writes to the store only through `node::disk::Disk`, off the
+  workers too (crates/node/AGENTS.md). Regression:
   `a_slow_disk_under_one_group_does_not_stall_the_others` (one worker thread; a
   group's synced writes slowed 250 ms stalled it 750 ms before; then the healthy
   group's commit reaches a node while a synced write of the slow group holds that
   node's write path, and the worker must run while the same write still waits:
   told by order, not latency, since a loaded runner's own fsync can take 300 ms).
+- A read of the applied state waits off the async workers too (`machine::read_applied`:
+  `Group::read_local`, a proposal's build, `digests`). An apply holds the state's write
+  lock while its batch commits, so readers never see a state the disk does not hold,
+  and that commit queues behind any other write's fsync; a reader that waited for the
+  lock on a worker stopped it for as long as the disk took (the node's `Node::sys` is
+  `read_local`, so one handler or background task did). A free lock is taken at once,
+  a held one is waited for through `store::wait_off_workers` (`block_in_place` on a
+  multi-threaded runtime, inline elsewhere). `testing::writes_queued(dir)` counts the
+  writes waiting behind a held synced write. Regression:
+  `a_state_read_waiting_for_an_apply_behind_the_disk_leaves_the_worker_free`
+  (`tests/slow_disk.rs`, one worker: it ticked 0 times in 300 ms before, as CI's node
+  `a_blob_put_waiting_for_the_disk_leaves_the_async_worker_free` once did).
 - `Engine::store_watch` reports the store open until RocksDB has closed and
   released its lock (`Db::closed`, the last field), not merely until the last
   `Arc<Db>` starts dropping.
@@ -134,6 +150,18 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `Engine::remove_group` drops a group's data under both locks and marks its
   `GroupState` removed (`Group::drop_data`); a build still running then fails
   (`refuse_if_removed`) and writes no checkpoint, record or file for it.
+  `remove_group` takes the group out of the engine, shuts its core down, then
+  deletes its rows (log, meta, state) in one batch on the blocking pool: the
+  delete is a write that queues behind another write's fsync and first waits
+  for an apply holding `shared`, so inline it stopped the worker (0 ticks in
+  300 ms). While it runs the group is marked removing (`Removals`), and
+  `start_group` refuses it, at its start and again under the groups' lock as it
+  registers, so a peer's RPC reaching the group factory never opens a state
+  being deleted. A removal whose future is dropped still finishes its delete;
+  one of a group this node does not run deletes what is left (idempotent).
+  Regressions (`tests/slow_disk.rs`):
+  `removing_a_group_behind_the_disk_leaves_the_worker_free`,
+  `a_group_being_removed_does_not_start_again_until_its_data_is_gone`.
   `Engine::open` deletes every `g<group>-*.snap` file no group's `snapshot`
   record names (a receive or build a crash cut short, a file a crash kept from
   being deleted, a removed group's), before any group starts
@@ -204,3 +232,16 @@ propose lock; an append takes no leadership round); 64 `Group::write`s in flight
 `client_write` as its own synced RocksDB write on the leader's core task, so
 these too commit no faster than one sync each); and one RocksDB write synced and unsynced on the same disk, the
 unit a commit's latency is made of.
+
+Bench: `cargo bench -p calimero-log --bench heartbeats` (`benches/heartbeats.rs`,
+B6): 1, 100 and 1,000 idle groups (`HEARTBEAT_GROUPS`) on 3 engines, all led by
+node 1, on `Config::default()`; it prints the messages node 1 sends one follower
+per second and per heartbeat interval, and the process CPU per Raft message.
+Each group's openraft core heartbeats each follower on its own (an empty append,
+in practice every 300 ms: openraft 0.9 checks `heartbeat_ms` only on its tick,
+every 1.5 x `heartbeat_ms`), so a peer gets about one message per shared group
+per 300 ms (663 per 200 ms at 1,000 groups); heartbeats are not batched per peer.
+Routing a message is a hash lookup here (`Engine::handle_rpc`) and in the node
+(`SystemMachine::app_of_group`, #5163), so the CPU per message stays flat (~31 µs
+at 100 and 1,000 groups in one process). Batching them per peer is designed, not
+built (B6).

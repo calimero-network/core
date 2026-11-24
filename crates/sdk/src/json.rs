@@ -7,7 +7,8 @@
 //! no leading zeros, no `-0`. The `*_auto` forms are for record fields: the JSON form in
 //! human-readable formats, the native CBOR form (integer, byte string) otherwise.
 
-use core::fmt::Display;
+use core::fmt::{self, Display};
+use core::marker::PhantomData;
 use core::str::FromStr;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -35,11 +36,48 @@ where
     text.parse().map_err(E::custom)
 }
 
+/// A 64-bit integer read from its decimal string; a JSON number is refused as "expected a
+/// u64 as a decimal string", so the caller learns the wire form.
+struct Dec<T>(T);
+
+impl<'de, T: FromStr> Deserialize<'de> for Dec<T>
+where
+    T::Err: Display,
+{
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct DecVisitor<T>(PhantomData<T>);
+
+        impl<T: FromStr> Visitor<'_> for DecVisitor<T>
+        where
+            T::Err: Display,
+        {
+            type Value = T;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "a {} as a decimal string", core::any::type_name::<T>())
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<T, E> {
+                parse_decimal(v)
+            }
+        }
+
+        d.deserialize_str(DecVisitor(PhantomData)).map(Dec)
+    }
+}
+
 fn de<'de, T: FromStr, D: Deserializer<'de>>(d: D) -> Result<T, D::Error>
 where
     T::Err: Display,
 {
-    parse_decimal(&String::deserialize(d)?)
+    Dec::deserialize(d).map(|Dec(v)| v)
+}
+
+fn de_opt<'de, T: FromStr, D: Deserializer<'de>>(d: D) -> Result<Option<T>, D::Error>
+where
+    T::Err: Display,
+{
+    Ok(Option::<Dec<T>>::deserialize(d)?.map(|Dec(v)| v))
 }
 
 macro_rules! str_int {
@@ -73,9 +111,7 @@ macro_rules! str_int {
 
             /// Deserialize from a decimal string, or null.
             pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<$t>, D::Error> {
-                Option::<String>::deserialize(d)?
-                    .map(|v| parse_decimal(&v))
-                    .transpose()
+                de_opt(d)
             }
         }
     };
@@ -125,9 +161,7 @@ macro_rules! auto_int {
             /// A string or null from JSON, an integer or null from CBOR.
             pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<$t>, D::Error> {
                 if d.is_human_readable() {
-                    Option::<String>::deserialize(d)?
-                        .map(|v| parse_decimal(&v))
-                        .transpose()
+                    de_opt(d)
                 } else {
                     Option::<$t>::deserialize(d)
                 }

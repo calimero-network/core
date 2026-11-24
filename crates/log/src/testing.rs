@@ -146,3 +146,14 @@ pub fn synced_write_waiting(dir: &Path, group: GroupId) -> Option<u64> {
             .map(|(_, _, n)| *n)
     })
 }
+
+/// How many writes of the node at `dir` wait now behind a synced write that
+/// [`slow_synced_writes`] holds (an apply's commit, a commit index, any write
+/// of another group), so a test knows one has reached the held write path.
+#[must_use]
+pub fn writes_queued(dir: &Path) -> usize {
+    crate::store::WRITES_QUEUED
+        .lock()
+        .map(|q| q.iter().filter(|d| *d == dir).count())
+        .unwrap_or(0)
+}
