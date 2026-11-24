@@ -211,6 +211,9 @@ pub enum Feature {
     /// version an `UpgradeApp` moving such an instance into another package is judged alike
     /// (`SystemState::upgrades_outside_offers`).
     OffersOnly,
+    /// `UndoUpgrade { release_installed }`: an undo goes back only to an installed release;
+    /// an earlier release would apply one to a release uninstalled under a shared bundle.
+    UndoToInstalledRelease,
     /// `UpgradeApp { auto, members_stay }`: an update on its own moves the instance alone,
     /// so it is refused where its release would move the unit's members
     /// (`SystemState::moves_members`). An earlier release would apply it and leave them behind.
@@ -218,7 +221,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 48] = [
+pub const FEATURES: [Feature; 49] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -266,6 +269,7 @@ pub const FEATURES: [Feature; 48] = [
     Feature::RestorePoints,
     Feature::UnclassifiedUpdates,
     Feature::OffersOnly,
+    Feature::UndoToInstalledRelease,
     Feature::AutoUpdateMembersStay,
 ];
 
@@ -321,6 +325,7 @@ impl Feature {
             Self::RestorePoints => "restorePoints",
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
             Self::OffersOnly => "offersOnly",
+            Self::UndoToInstalledRelease => "undoToInstalledRelease",
             Self::AutoUpdateMembersStay => "autoUpdateMembersStay",
         }
     }
@@ -373,8 +378,9 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
-            Self::OffersOnly => "1.0.0-rc.36",
-            Self::AutoUpdateMembersStay => "1.0.0-rc.36",
+            Self::OffersOnly | Self::UndoToInstalledRelease | Self::AutoUpdateMembersStay => {
+                "1.0.0-rc.36"
+            }
         }
     }
 }
@@ -671,7 +677,15 @@ impl SystemCmd {
             Self::SetUpgradePolicy { .. } | Self::ApproveUpgrade { .. } => {
                 vec![Feature::UpgradePolicies]
             }
-            Self::UndoUpgrade { .. } => vec![Feature::RestorePoints],
+            Self::UndoUpgrade {
+                release_installed, ..
+            } => {
+                let mut f = vec![Feature::RestorePoints];
+                if *release_installed {
+                    f.push(Feature::UndoToInstalledRelease);
+                }
+                f
+            }
             Self::CreateApiKey {
                 owner_approves: true,
                 ..
@@ -1210,6 +1224,9 @@ mod tests {
                 "org": "org", "confirmMethods": [], "replicas": [1],
                 "createdAt": 1, "initArgs": null, "metadata": null,
             }, "offers_only": true })),
+            Feature::UndoToInstalledRelease => entry(json!({ "op": "undoUpgrade",
+                "app_id": "app", "apps": { "app": [1] }, "actor": "alice", "at": 1,
+                "release_installed": true })),
             Feature::AutoUpdateMembersStay => entry(json!({ "op": "upgradeApp",
                 "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true,
                 "members_stay": true })),
@@ -1557,11 +1574,13 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.22's wait for every node on rc.22 (an entry naming several is refused for the
-        // first it needs: an unclassified approval for `upgradePolicies`).
+        // first it needs: an unclassified approval for `upgradePolicies`, an undo with the
+        // installed-release rule for `restorePoints`).
         for &feature in &last {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             let first = match feature {
                 Feature::UnclassifiedUpdates => Feature::UpgradePolicies,
+                Feature::UndoToInstalledRelease => Feature::RestorePoints,
                 Feature::AutoUpdateMembersStay => Feature::AutoUpdates,
                 _ => feature,
             };
@@ -1784,10 +1803,17 @@ mod tests {
         for &feature in &rc35 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.36's (an instance outside every deployment is a deployer's; an update on its own
-        // that keeps the unit's members) for every node on rc.36: an rc.35 node ignores the
-        // flags and would apply what rc.36 refuses.
-        assert_eq!(rc36, [Feature::OffersOnly, Feature::AutoUpdateMembersStay]);
+        // rc.36's (an instance outside every deployment is a deployer's, an undo only to a
+        // release still installed, an update on its own that keeps the unit's members) for every
+        // node on rc.36: an rc.35 node ignores the flags.
+        assert_eq!(
+            rc36,
+            [
+                Feature::OffersOnly,
+                Feature::UndoToInstalledRelease,
+                Feature::AutoUpdateMembersStay
+            ]
+        );
         for &feature in &rc36 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
