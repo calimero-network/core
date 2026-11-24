@@ -16,7 +16,7 @@ use crate::component::{Attempt, RunRecord};
 use crate::files::{
     noise_seed, run_token, unwrap_key, wrap_for_job_derived, JobWrap, WrapKind, SEGMENT_BYTES,
 };
-use crate::job_node::{LOG_HEADER, NEED_BUNDLE, TOKEN_HEADER, UNKNOWN_RUN};
+use crate::job_node::{NEED_BUNDLE, TOKEN_HEADER, UNKNOWN_RUN};
 use crate::job_wire::{
     assignment_digest, hash_bytes, verify_report, Assignment, Report, RunBudget, RunInput,
     BUNDLE_SIGNATURE_HEADER,
@@ -30,31 +30,6 @@ use crate::types::AppRecord;
 #[derive(Deserialize)]
 struct OutputKey {
     key: String,
-}
-
-/// A sealed file of an attempt a job node hands over: one of its outputs, or its log.
-#[derive(Clone, Copy)]
-pub(super) enum Held {
-    Output(usize),
-    Log,
-}
-
-impl Held {
-    /// The file's path under the attempt's.
-    fn path(self) -> String {
-        match self {
-            Self::Output(i) => format!("outputs/{i}"),
-            Self::Log => "log".to_owned(),
-        }
-    }
-
-    /// Where `Watch::fetched` counts the segments stored of the file.
-    pub(super) fn slot(self) -> usize {
-        match self {
-            Self::Output(i) => i,
-            Self::Log => usize::MAX,
-        }
-    }
 }
 
 /// What a job node says about an attempt.
@@ -237,14 +212,13 @@ impl Drive<'_> {
             return Polled::Lost;
         }
         let token = self.token(attempt.attempt);
-        let headers = self.run_headers(&token).await;
         let answer = self
             .node
             .job_call(
                 &peer,
                 Method::GET,
                 &self.path(attempt.attempt),
-                &headers,
+                &[(TOKEN_HEADER, token.as_str())],
                 Vec::new(),
                 MAX_JOB_STATUS_BYTES,
             )
@@ -322,25 +296,16 @@ impl Drive<'_> {
         Ok(())
     }
 
-    /// The headers of a request about a run: its token, and the log header only while every
-    /// replica reads a final entry that carries a log. The job node answers with a log only then.
-    async fn run_headers<'a>(&self, token: &'a str) -> Vec<(&'static str, &'a str)> {
-        let mut headers = vec![(TOKEN_HEADER, token)];
-        if self.node.replicas_take_logs().await {
-            headers.push((LOG_HEADER, "1"));
-        }
-        headers
-    }
-
+    /// Sends the assignment. No request about a run carries `x-run-log`, the header a job node of
+    /// 1.0.0-rc.35 or before answers with the run's log to: a leader asks for no log, as an
+    /// app's log lines may hold user data, so every job node answers its report without one.
     async fn assign_call(&self, peer: &JobPeer, body: &[u8]) -> eyre::Result<JobAnswer> {
-        let logging = self.node.replicas_take_logs().await;
-        let headers: &[(&str, &str)] = if logging { &[(LOG_HEADER, "1")] } else { &[] };
         self.node
             .job_transfer(
                 peer,
                 Method::POST,
                 "job/runs",
-                headers,
+                &[],
                 body.to_vec(),
                 MAX_JOB_STATUS_BYTES,
             )
@@ -414,7 +379,6 @@ impl Drive<'_> {
 
     pub(super) async fn delete_on(&self, peer: &JobPeer, attempt: u32) -> Deleted {
         let token = self.token(attempt);
-        let headers = self.run_headers(&token).await;
         let answer = self
             .node
             .job_call_within(
@@ -422,7 +386,7 @@ impl Drive<'_> {
                 peer,
                 Method::DELETE,
                 &self.path(attempt),
-                &headers,
+                &[(TOKEN_HEADER, token.as_str())],
                 Vec::new(),
                 MAX_JOB_STATUS_BYTES,
             )
@@ -442,6 +406,8 @@ impl Drive<'_> {
     }
 
     /// Whether `report` is the signed word of `attempt`'s job node for this run and assignment.
+    /// A report that names a log does not hold up: no job node keeps one for a leader that does
+    /// not ask (an app's log lines may hold user data), so one that names a log is misbehaving.
     pub(super) fn report_is_valid(
         &self,
         attempt: &Attempt,
@@ -454,7 +420,8 @@ impl Drive<'_> {
         ) else {
             return false;
         };
-        report.app == self.app.app_id
+        report.log.is_none()
+            && report.app == self.app.app_id
             && report.run == self.rec.run
             && report.attempt == attempt.attempt
             && verify_report(&key, &digest, report, signature)
@@ -474,15 +441,15 @@ impl Drive<'_> {
             .is_some_and(|a| a.node == peer.id && self.report_is_valid(a, report, signature))
     }
 
-    /// The data key of `held`, fetched from the job node.
+    /// The data key of output `i`, fetched from the job node.
     pub(super) async fn fetch_key(
         &self,
         peer: &JobPeer,
         attempt: u32,
-        held: Held,
+        i: usize,
     ) -> eyre::Result<Zeroizing<[u8; 32]>> {
         let token = self.token(attempt);
-        let path = format!("{}/{}/key", self.path(attempt), held.path());
+        let path = format!("{}/outputs/{i}/key", self.path(attempt));
         let key = self
             .node
             .job_call(
@@ -502,16 +469,16 @@ impl Drive<'_> {
         Ok(Zeroizing::new(key))
     }
 
-    /// Segment `k` of `held`, at most one segment, fetched from the job node.
+    /// Segment `k` of output `i`, at most one segment, fetched from the job node.
     pub(super) async fn fetch_segment(
         &self,
         peer: &JobPeer,
         attempt: u32,
-        held: Held,
+        i: usize,
         k: usize,
     ) -> eyre::Result<Vec<u8>> {
         let token = self.token(attempt);
-        let path = format!("{}/{}/{k}", self.path(attempt), held.path());
+        let path = format!("{}/outputs/{i}/{k}", self.path(attempt));
         let answer = self
             .node
             .job_transfer(
@@ -525,9 +492,8 @@ impl Drive<'_> {
             .await?;
         if answer.status != 200 {
             eyre::bail!(
-                "the job node answered {} for segment {k} of {}",
-                answer.status,
-                held.path()
+                "the job node answered {} for segment {k} of output {i}",
+                answer.status
             );
         }
         Ok(answer.body)

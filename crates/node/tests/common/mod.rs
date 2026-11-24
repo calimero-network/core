@@ -207,6 +207,7 @@ impl Cluster {
                     // The component fixtures are raw uploads (`POST /bundles`), development only.
                     allow_unsigned_bundles: true,
                     allow_package_uploads: true,
+                    app_logs: false,
                     outbound: None,
                     governance: Default::default(),
                     apps_domain: None,
