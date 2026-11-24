@@ -56,6 +56,11 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
+    ("Packages", "A passkey sign-in completed from a registered origin (a session bound to the package and naming it)",
+     "the harness's passkeys are the dev passkey's, which holds a credential under the cluster's rp-id only, and an "
+     "origin's own rp-id needs a credential made for that site in a browser; `package-origins` covers the begin "
+     "(the rp-id each registered origin gets and the refusal of any other), and the finish on a frontend the node "
+     "serves is `Bound`'s (the packages' own frontends)"),
     ("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
      "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
      "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
