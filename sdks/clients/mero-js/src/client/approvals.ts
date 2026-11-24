@@ -298,6 +298,7 @@ export interface ConsentOutcomes {
   install: Required<Pick<GeneratedOutcome, 'appId' | 'links'>>;
   updatePolicy: never;
   updates: never;
+  setEgress: never;
 }
 
 /** The route's generated answer, whose one `outcome` has every kind's fields optional. */

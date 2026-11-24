@@ -59,6 +59,8 @@ import com.calimero.mero.api.models.AppSecretClear200Response
 import com.calimero.mero.api.models.AppSecretSet200Response
 import com.calimero.mero.api.models.AppSecretSetRequest
 import com.calimero.mero.api.models.AppSecrets200Response
+import com.calimero.mero.api.models.AppSetEgress200Response
+import com.calimero.mero.api.models.AppSetEgressRequest
 import com.calimero.mero.api.models.AppStorage200Response
 import com.calimero.mero.api.models.AppTransferRequest
 import com.calimero.mero.api.models.AppUndo200Response
@@ -747,7 +749,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/egress
      * Where an app&#39;s unit may send data
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule). &#x60;destinations&#x60;: every destination (&#x60;outbound&#x60; prefix, and a declared secret&#39;s host no prefix names) of the release the instance runs and of each app it created with it (&#x60;links&#x60;, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). &#x60;members&#x60;: each member by its path (&#x60;&lt;name&gt;&#x60;, a member&#39;s own &#x60;&lt;name&gt;/&lt;name&gt;&#x60;) with its app id, release, signer and own destinations. A development bundle declares none.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule). &#x60;destinations&#x60;: every destination (&#x60;outbound&#x60; prefix, and a declared secret&#39;s host no prefix names) of the release the instance runs and of each app it created with it (&#x60;links&#x60;, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). &#x60;members&#x60;: each member by its path (&#x60;&lt;name&gt;&#x60;, a member&#39;s own &#x60;&lt;name&gt;/&lt;name&gt;&#x60;) with its app id, release, signer and own destinations. A development bundle declares none. &#x60;egress&#x60;: &#x60;off&#x60; while its organization (&#x60;offBy: organization&#x60;) or the instance (&#x60;instance&#x60;) turned egress off (&#x60;offBy&#x60; and &#x60;summary&#x60; are absent while it is on), when none of the destinations is reached and &#x60;summary&#x60; says the app cannot send data outside the cluster.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return AppEgress200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -779,7 +781,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/egress
      * Where an app&#39;s unit may send data
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule). &#x60;destinations&#x60;: every destination (&#x60;outbound&#x60; prefix, and a declared secret&#39;s host no prefix names) of the release the instance runs and of each app it created with it (&#x60;links&#x60;, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). &#x60;members&#x60;: each member by its path (&#x60;&lt;name&gt;&#x60;, a member&#39;s own &#x60;&lt;name&gt;/&lt;name&gt;&#x60;) with its app id, release, signer and own destinations. A development bundle declares none.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule). &#x60;destinations&#x60;: every destination (&#x60;outbound&#x60; prefix, and a declared secret&#39;s host no prefix names) of the release the instance runs and of each app it created with it (&#x60;links&#x60;, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). &#x60;members&#x60;: each member by its path (&#x60;&lt;name&gt;&#x60;, a member&#39;s own &#x60;&lt;name&gt;/&lt;name&gt;&#x60;) with its app id, release, signer and own destinations. A development bundle declares none. &#x60;egress&#x60;: &#x60;off&#x60; while its organization (&#x60;offBy: organization&#x60;) or the instance (&#x60;instance&#x60;) turned egress off (&#x60;offBy&#x60; and &#x60;summary&#x60; are absent while it is on), when none of the destinations is reached and &#x60;summary&#x60; says the app cannot send data outside the cluster.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<AppEgress200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -2279,6 +2281,83 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.GET,
             path = "/apps/{app}/secrets".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * POST /apps/{app}/egress
+     * Turn one app&#39;s egress off or on
+     * As &#x60;POST /orgs/{org}/egress&#x60;, for this instance alone, by its organization&#39;s owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, &#x60;kind: setEgress&#x60; with &#x60;app&#x60;) lets it send only while its organization&#39;s egress is on too.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appSetEgressRequest 
+     * @return AppSetEgress200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appSetEgress(app: kotlin.String, appSetEgressRequest: AppSetEgressRequest) : AppSetEgress200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appSetEgressWithHttpInfo(app = app, appSetEgressRequest = appSetEgressRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppSetEgress200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /apps/{app}/egress
+     * Turn one app&#39;s egress off or on
+     * As &#x60;POST /orgs/{org}/egress&#x60;, for this instance alone, by its organization&#39;s owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, &#x60;kind: setEgress&#x60; with &#x60;app&#x60;) lets it send only while its organization&#39;s egress is on too.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appSetEgressRequest 
+     * @return ApiResponse<AppSetEgress200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appSetEgressWithHttpInfo(app: kotlin.String, appSetEgressRequest: AppSetEgressRequest) : ApiResponse<AppSetEgress200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appSetEgressRequestConfig(app = app, appSetEgressRequest = appSetEgressRequest)
+
+        return@withContext request<AppSetEgressRequest, AppSetEgress200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appSetEgress
+     *
+     * @param app 
+     * @param appSetEgressRequest 
+     * @return RequestConfig
+     */
+    fun appSetEgressRequestConfig(app: kotlin.String, appSetEgressRequest: AppSetEgressRequest) : RequestConfig<AppSetEgressRequest> {
+        val localVariableBody = appSetEgressRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/apps/{app}/egress".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

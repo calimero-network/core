@@ -35,6 +35,9 @@ import kotlinx.serialization.Contextual
  * @param app 
  * @param destinations 
  * @param members 
+ * @param egress 
+ * @param offBy 
+ * @param summary 
  */
 @Serializable
 
@@ -47,10 +50,39 @@ data class AppEgress200Response (
     val destinations: kotlin.collections.List<kotlin.String>,
 
     @Contextual @SerialName(value = "members")
-    val members: kotlin.collections.Map<kotlin.String, UnitMember>
+    val members: kotlin.collections.Map<kotlin.String, UnitMember>,
+
+    @SerialName(value = "egress")
+    val egress: AppEgress200Response.Egress,
+
+    @SerialName(value = "offBy")
+    val offBy: AppEgress200Response.OffBy? = null,
+
+    @SerialName(value = "summary")
+    val summary: kotlin.String? = null
 
 ) {
 
+    /**
+     * 
+     *
+     * Values: ON,OFF
+     */
+    @Serializable
+    enum class Egress(val value: kotlin.String) {
+        @SerialName(value = "on") ON("on"),
+        @SerialName(value = "off") OFF("off");
+    }
+    /**
+     * 
+     *
+     * Values: ORGANIZATION,INSTANCE
+     */
+    @Serializable
+    enum class OffBy(val value: kotlin.String) {
+        @SerialName(value = "organization") ORGANIZATION("organization"),
+        @SerialName(value = "instance") INSTANCE("instance");
+    }
 
 }
 

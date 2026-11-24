@@ -17,6 +17,9 @@
 //!   holds outbound approvals: the app's organization (`MANAGE_APPLICATION`
 //!   org-wide, `POST /orgs/{org}/outbound`) or the operator
 //!   (`--outbound-approvals operator`) ([`OutboundSelection`]);
+//! - egress is on for the app: neither its organization nor the instance
+//!   turned it off (`POST /orgs/{org}/egress`, `POST /apps/{app}/egress`),
+//!   which overrides every approval ([`OutboundRefusal::EgressOff`]);
 //! - the run writes (a call, a follow-up, a timer, a delivery) or is a
 //!   component's action: never a view, `init`, a migration or compute;
 //! - the request fits the limits below, and its host resolves only to public
@@ -114,6 +117,10 @@ pub enum OutboundRefusal {
     /// A newer version of the app declares the prefix and nobody has been
     /// asked about it yet: an admin should approve it from the upgrade.
     AwaitingApproval,
+    /// The app's organization, or the instance itself, turned egress off: no
+    /// request leaves the cluster for it, whatever its manifest declares and
+    /// whatever was approved, until an owner or admin turns it back on.
+    EgressOff,
 }
 
 impl OutboundRefusal {
@@ -124,13 +131,14 @@ impl OutboundRefusal {
         match self {
             Self::NotApproved => "NotApproved",
             Self::AwaitingApproval => "AwaitingApproval",
+            Self::EgressOff => "EgressOff",
         }
     }
 
     /// The refusal a reason names, if it is one an app can act on.
     #[must_use]
     pub fn of(reason: &str) -> Option<Self> {
-        [Self::NotApproved, Self::AwaitingApproval]
+        [Self::NotApproved, Self::AwaitingApproval, Self::EgressOff]
             .into_iter()
             .find(|refusal| {
                 reason
@@ -199,6 +207,10 @@ mod selection_tests {
         assert_eq!(
             OutboundRefusal::of("no URL prefix the app declares covers it"),
             None
+        );
+        assert_eq!(
+            OutboundRefusal::of("EgressOff: the organization turned egress off"),
+            Some(OutboundRefusal::EgressOff)
         );
         assert_eq!(OutboundRefusal::of("NotApprovedYet: something else"), None);
     }
