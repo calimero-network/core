@@ -439,17 +439,10 @@ struct FinalPlan {
     report: Option<Report>,
     signature: Option<String>,
     outputs: Vec<FileMark>,
-    /// The attempt's module log, stored with the outputs.
-    log: Option<FileMark>,
     usage: ReportUsage,
 }
 
 impl FinalPlan {
-    /// Everything the final's staging stored: the outputs, then the log.
-    fn staged(&self) -> Vec<FileMark> {
-        self.outputs.iter().chain(&self.log).cloned().collect()
-    }
-
     /// The leader's own outcome: no report, no outputs, no usage.
     fn leader(rec: &RunRecord, outcome: FinalOutcome) -> Self {
         Self {
@@ -458,7 +451,6 @@ impl FinalPlan {
             report: None,
             signature: None,
             outputs: Vec::new(),
-            log: None,
             usage: ReportUsage::default(),
         }
     }
@@ -468,12 +460,7 @@ impl FinalPlan {
     }
 
     /// A job's outcome, as its signed report says.
-    fn reported(
-        report: Report,
-        signature: String,
-        outputs: Vec<FileMark>,
-        log: Option<FileMark>,
-    ) -> Self {
+    fn reported(report: Report, signature: String, outputs: Vec<FileMark>) -> Self {
         let outcome = match report.reason {
             None => FinalOutcome::Done,
             Some(reason) => FinalOutcome::Failed {
@@ -487,7 +474,6 @@ impl FinalPlan {
             report: Some(report),
             signature: Some(signature),
             outputs,
-            log,
         }
     }
 }
@@ -537,10 +523,6 @@ fn run_json(
             }
         })
         .collect();
-    let attempt = rec.final_.as_ref().map_or(0, |f| f.attempt);
-    let logs: Vec<Value> = (rec.log.iter())
-        .map(|l| json!({ "attempt": attempt, "id": l.id, "size": l.size, "sha256": l.sha256 }))
-        .collect();
     let mut out = json!({
         "run": rec.run,
         "method": rec.method,
@@ -570,7 +552,9 @@ fn run_json(
         out["queue"] = queue;
     }
     if files {
-        out["logs"] = Value::Array(logs);
+        // A run keeps no log (an app's log lines may hold user data); one an earlier release
+        // kept (`rec.log`) is answered to no one.
+        out["logs"] = json!([]);
     }
     out
 }
@@ -1351,7 +1335,7 @@ impl Drive<'_> {
     async fn after_final(&self, plan: &FinalPlan, watch: &mut Watch) {
         watch.finished = true;
         watch.proposed.clear();
-        if watch.staged.as_ref().is_some_and(|s| *s != plan.staged()) {
+        if watch.staged.as_ref().is_some_and(|s| *s != plan.outputs) {
             self.discard_staged(watch);
         }
         let (app_id, run) = (&self.app.app_id, &self.rec.run);
@@ -1471,7 +1455,8 @@ impl Drive<'_> {
                     report: plan.report.clone(),
                     signature: plan.signature.clone(),
                     outputs: plan.outputs.clone(),
-                    log: plan.log.clone(),
+                    // No log: a leader asks for none (an app's log lines may hold user data).
+                    log: None,
                     usage: plan.usage,
                     result: ran.outcome,
                     base_index: m.state.last_index,
@@ -1587,7 +1572,6 @@ mod tests {
             report: None,
             signature: None,
             outputs: Vec::new(),
-            log: None,
             usage: ReportUsage::default(),
         }
     }

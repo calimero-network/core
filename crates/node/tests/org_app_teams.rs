@@ -13,6 +13,10 @@
     clippy::result_large_err,
     reason = "the helpers pass on calimero_client::Error as the client returns it"
 )]
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
 
 use calimero_client::types::{
     AppCreateRequest, Grant, MemberSetTeamsRequestTeamsItem, OrgRole, TeamJoin,

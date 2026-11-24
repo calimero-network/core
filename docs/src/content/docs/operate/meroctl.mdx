@@ -196,7 +196,7 @@ id).
 | `cloud compute pipeline cancel APP RUN` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a run. |
 | `cloud compute pipeline retry APP RUN [--limit STEP.FIELD=N]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipeline-runs/{run}/retry` | Start a new run of an ended run's pipeline, release, inputs and params with some step limits raised (`fuel`, `memoryMib`, `wallSecs`, each within the method's caps); what already succeeded is answered from the step cache. |
 | `cloud compute pipeline receipt APP RUN [--verify] [--out FILE]` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | The node-signed receipt of an ended run; with `--verify`, check it under the node's attested key and compare each downloaded output with its hash. |
-| `cloud compute pipeline logs APP RUN --step STEP [--index I]` | `GET /apps/{app}/pipeline-runs/{run}`, then `GET /apps/{app}/runs/{run}/logs` | Print the module log of a step's compute run (`--index`, default `0`, is its item's place), as `cloud compute logs` does. |
+| `cloud compute pipeline logs APP RUN --step STEP [--index I]` | `GET /apps/{app}/pipeline-runs/{run}`, then `GET /apps/{app}/runs/{run}/logs` | Print the module log of a step's compute run (`--index`, default `0`, is its item's place), as `cloud compute logs` does: a current cluster keeps none. |
 | `cloud compute pipeline download APP RUN [--out DIR]` | the file export routes | Download every output of every step of an ended run as `STEP-INDEX.bin`. |
 
 ```bash
@@ -214,7 +214,7 @@ The old `run logs` is the same command.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
-| `cloud compute logs APP RUN [--attempt N]` | `GET /apps/{app}/runs/{run}/logs`, then the file export routes | Print a compute run's module log (stdout, stderr and `log` lines) to standard output: attempt `N`, else the latest that kept a log. The app's owner and its organization's members only. |
+| `cloud compute logs APP RUN [--attempt N]` | `GET /apps/{app}/runs/{run}/logs`, then the file export routes | Print a compute run's module log (stdout, stderr and `log` lines) to standard output: attempt `N`, else the latest that kept a log. The app's owner and its organization's members only. A cluster keeps no run's log (an app's log lines may hold user data), so against a current one it says the run kept no log; run the method locally with `meroctl local compute run` to see its lines. |
 
 ## context
 

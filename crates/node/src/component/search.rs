@@ -13,9 +13,9 @@
 //! own thread and never under the app's lock. Derived data: never in the log or a snapshot,
 //! rebuilt after a restart.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 
 use calimero_app_host::{SearchHit, SearchHost, SearchMode, SearchPage, SearchQuery, GENERATION};
 use calimero_primitives::search::{
@@ -34,6 +34,12 @@ use crate::types::AppId;
 const GENERATION_PREFIX: usize = 8;
 /// Bytes of text one document field is indexed from at most; the rest is cut.
 pub const MAX_FIELD_TEXT_BYTES: usize = 64 * 1024;
+/// Most tantivy writers kept open between refreshes, across every app's tables: those
+/// of the apps refreshed last. Each holds three threads (indexing, segment updater,
+/// merges) and an arena of up to `calimero_search::index::WRITER_MEMORY` while it
+/// indexes; an app refreshed again while it keeps its writers neither reopens them nor
+/// waits for the merges its last commit started.
+pub const MAX_OPEN_WRITERS: usize = 16;
 
 /// The table a stored key is a record of: its first key part, when the second is `"r"`
 /// (`(table, "r", key..)`, the SDK's record layout). `None` for any other key.
@@ -196,11 +202,7 @@ impl TableIndex {
         }
         changes.extend(held.into_keys().map(|id| (id, None)));
         let n = changes.len() as u64;
-        let _n = self
-            .index
-            .apply(changes.iter().map(|(id, doc)| (id, doc.as_ref())))
-            .map_err(|e| e.to_string())?;
-        self.index.commit(at, [0; 32]).map_err(|e| e.to_string())?;
+        self.write(&changes, at)?;
         Ok(n)
     }
 
@@ -219,11 +221,24 @@ impl TableIndex {
             }
             changes.push((id, doc));
         }
-        let _n = self
+        self.write(&changes, at)
+    }
+
+    /// Index `changes` and commit them as of `at`. The writer stays open for the app's
+    /// next refresh until `Writers` releases it; a batch that failed is released at once,
+    /// so its uncommitted changes go with its writer and never into a later commit (the
+    /// next refresh compares the index with the state).
+    fn write(&self, changes: &[([u8; 32], Option<SearchDoc>)], at: u64) -> Result<(), String> {
+        let written = self
             .index
             .apply(changes.iter().map(|(id, doc)| (id, doc.as_ref())))
-            .map_err(|e| e.to_string())?;
-        self.index.commit(at, [0; 32]).map_err(|e| e.to_string())
+            .and_then(|_n| self.index.commit(at, [0; 32]));
+        if written.is_err() {
+            if let Err(e) = self.index.release_writer() {
+                warn!(error = %e, "a search writer not released");
+            }
+        }
+        written.map_err(|e| e.to_string())
     }
 }
 
@@ -269,6 +284,77 @@ impl AppEntry {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+
+    /// Release every table's writer; each finishes its merges on a thread of its own.
+    /// `false` while a refresh or a query holds the indexes (never waited for: a full
+    /// scan of another app may take long).
+    fn release_writers(&self, app_id: &str) -> bool {
+        let ix = match self.indexes.try_lock() {
+            Ok(ix) => ix,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => return false,
+        };
+        for t in ix.tables.values() {
+            if let Err(e) = t.index.release_writer() {
+                warn!(app = %app_id, error = %e, "a search writer not released");
+            }
+        }
+        true
+    }
+}
+
+/// The apps whose indexes may hold writers, least recently refreshed first, with how
+/// many tables each has. Review finding C1: every index kept its writer from its first
+/// write until its app left the node, so 200 apps of 3 searchable tables held some 1,800
+/// OS threads. Past `MAX_OPEN_WRITERS` tables, the apps refreshed longest ago give theirs
+/// up; the app refreshed last keeps its own whatever its count.
+#[derive(Default)]
+struct Writers {
+    held: Mutex<VecDeque<(AppId, Arc<AppEntry>, usize)>>,
+}
+
+impl Writers {
+    /// `app_id` was just refreshed and its indexes' lock let go: it goes last, and the
+    /// apps first in line past `MAX_OPEN_WRITERS` tables release their writers.
+    fn refreshed(&self, app_id: &str, entry: &Arc<AppEntry>, tables: usize) {
+        let released: Vec<_> = {
+            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            held.retain(|(app, ..)| app != app_id);
+            held.push_back((app_id.to_owned(), Arc::clone(entry), tables));
+            let mut open: usize = held.iter().map(|(.., n)| n).sum();
+            let mut released = Vec::new();
+            while open > MAX_OPEN_WRITERS && held.len() > 1 {
+                let Some(oldest) = held.pop_front() else {
+                    break;
+                };
+                open -= oldest.2;
+                released.push(oldest);
+            }
+            released
+        };
+        let busy: Vec<_> = released
+            .into_iter()
+            .filter(|(app, entry, _)| !entry.release_writers(app))
+            .collect();
+        if busy.is_empty() {
+            return;
+        }
+        // Busy: back first in line, for the next refresh to release (one that was
+        // refreshing has put itself back last already).
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        for item in busy.into_iter().rev() {
+            if !held.iter().any(|(app, ..)| *app == item.0) {
+                held.push_front(item);
+            }
+        }
+    }
+
+    fn forget(&self, app_id: &str) {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(app, ..)| app != app_id);
+    }
 }
 
 /// Full-text search over the component apps hosted here: in memory, or kept on disk.
@@ -278,6 +364,7 @@ pub struct ComponentSearch {
     /// Where indexes are kept (`<data dir>/search`), only on a data disk the node knows is
     /// encrypted; `None`: in memory.
     root: Option<PathBuf>,
+    writers: Arc<Writers>,
 }
 
 /// What a view's state holds for its search: taken under the app's read lock (an
@@ -304,7 +391,9 @@ enum Prepared {
 
 /// A view's search, bound to its app's indexes.
 pub struct RunSearch {
+    app_id: AppId,
     entry: Arc<AppEntry>,
+    writers: Arc<Writers>,
     state: Mutex<Prepared>,
 }
 
@@ -319,7 +408,7 @@ impl RunSearch {
                     .indexes
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
-                match refresh(&mut ix, &p, self.entry.dir.as_deref()) {
+                let next = match refresh(&mut ix, &p, self.entry.dir.as_deref()) {
                     Ok(()) => {
                         *self
                             .entry
@@ -335,7 +424,11 @@ impl RunSearch {
                         warn!(app = %p.app_id, error = %e, "component search not brought up to date");
                         Prepared::Failed(format!("search is unavailable: {e}"))
                     }
-                }
+                };
+                let tables = ix.tables.len();
+                drop(ix);
+                self.writers.refreshed(&self.app_id, &self.entry, tables);
+                next
             }
             other => other,
         };
@@ -406,6 +499,7 @@ impl ComponentSearch {
         Self {
             apps: Mutex::default(),
             root,
+            writers: Arc::default(),
         }
     }
 
@@ -467,7 +561,9 @@ impl ComponentSearch {
             touched,
         };
         Some(Arc::new(RunSearch {
+            app_id: app_id.to_owned(),
             entry,
+            writers: Arc::clone(&self.writers),
             state: Mutex::new(Prepared::Pending(Box::new(pending))),
         }))
     }
@@ -479,6 +575,7 @@ impl ComponentSearch {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(app_id);
+        self.writers.forget(app_id);
         if let Some(root) = &self.root {
             let dir = app_dir(root, app_id);
             if let Err(e) = std::fs::remove_dir_all(&dir) {
@@ -990,5 +1087,126 @@ mod tests {
             3,
             "2 at first, then only 2 again"
         );
+    }
+
+    /// Index writers open across every app's tables, or one app's.
+    fn open_writers(search: &ComponentSearch, only: Option<&str>) -> usize {
+        let apps = search.apps.lock().unwrap();
+        apps.iter()
+            .filter(|(app, _)| only.is_none_or(|o| o == app.as_str()))
+            .map(|(_, entry)| {
+                let ix = entry.indexes.lock().unwrap();
+                ix.tables.values().filter(|t| t.index.has_writer()).count()
+            })
+            .sum()
+    }
+
+    /// Review finding C1: every index kept its tantivy writer (an indexing thread, a
+    /// segment updater, a merge thread and an arena of up to 15 MB) from its first write
+    /// until the app left the node, so 200 apps of 3 searchable tables held some 1,800 OS
+    /// threads. Only the apps refreshed last keep theirs, `MAX_OPEN_WRITERS` across every
+    /// app's tables; the others give them up, and their next refresh opens them again
+    /// (on disk too, where a writer holds the index's lock file until its merges end).
+    #[test]
+    fn at_most_max_open_writers_stay_open_across_every_apps_indexes() {
+        let dir = tempfile::tempdir().unwrap();
+        let tables: Fields = [
+            ("notes".to_owned(), vec!["title".to_owned()]),
+            ("tags".to_owned(), vec!["title".to_owned()]),
+        ]
+        .into();
+        for search in [
+            ComponentSearch::default(),
+            ComponentSearch::new(Some(dir.path().to_owned())),
+        ] {
+            for app in 0..20 {
+                let view = search
+                    .prepare(
+                        &format!("app{app}"),
+                        &tables,
+                        with_tags(&[("1", "hello")], &[("t", "hello")]),
+                        5,
+                        |_| None,
+                    )
+                    .unwrap();
+                assert_eq!(find_in(&*view, "notes", "hello"), Ok(1));
+                assert_eq!(find_in(&*view, "tags", "hello"), Ok(1));
+            }
+            assert!(
+                open_writers(&search, None) <= MAX_OPEN_WRITERS,
+                "{} writers open over 40 indexes",
+                open_writers(&search, None)
+            );
+            assert_eq!(
+                open_writers(&search, Some("app19")),
+                2,
+                "the latest keeps its own"
+            );
+            assert_eq!(
+                open_writers(&search, Some("app0")),
+                0,
+                "the oldest gave its up"
+            );
+
+            // The oldest app's next write opens its writers again, and its index answers
+            // what it wrote; the bound holds.
+            let touched = vec![hex::encode(stored(&["notes", "r", "2"]))];
+            let later = search
+                .prepare(
+                    "app0",
+                    &tables,
+                    with_tags(&[("1", "hello"), ("2", "hello again")], &[("t", "hello")]),
+                    7,
+                    |_| Some(touched),
+                )
+                .unwrap();
+            assert_eq!(find(&*later, "hello"), vec![key("1"), key("2")]);
+            assert_eq!(built_at(&search, "app0"), Some(7));
+            assert_eq!(
+                open_writers(&search, Some("app0")),
+                1,
+                "only notes was written"
+            );
+            assert!(open_writers(&search, None) <= MAX_OPEN_WRITERS);
+
+            // And one compared with the state (a restart, the ring passed) too.
+            let compared = search
+                .prepare(
+                    "app1",
+                    &tables,
+                    with_tags(&[("1", "bye")], &[("t", "hello")]),
+                    9_000,
+                    |_| None,
+                )
+                .unwrap();
+            assert_eq!(find_in(&*compared, "notes", "hello"), Ok(0));
+            assert_eq!(find_in(&*compared, "notes", "bye"), Ok(1));
+            assert!(open_writers(&search, None) <= MAX_OPEN_WRITERS);
+        }
+    }
+
+    /// An app whose writers are due to go while a query holds its indexes is not waited
+    /// for, and not forgotten either: the next refresh releases them.
+    #[test]
+    fn writers_due_to_go_while_their_indexes_are_busy_go_with_the_next_refresh() {
+        let search = ComponentSearch::default();
+        let view = |app: &str| {
+            let v = search
+                .prepare(app, &fields(), state(&[("1", "hello")]), 5, |_| None)
+                .unwrap();
+            assert_eq!(find(&*v, "hello"), vec![key("1")]);
+        };
+        view("busy");
+        let entry = Arc::clone(&search.apps.lock().unwrap()["busy"]);
+        {
+            let _query = entry.indexes.lock().unwrap();
+            for app in 0..MAX_OPEN_WRITERS {
+                view(&format!("app{app}"));
+            }
+        }
+        assert_eq!(open_writers(&search, Some("busy")), 1, "not waited for");
+        view("one more");
+        assert_eq!(open_writers(&search, Some("busy")), 0);
+        assert!(open_writers(&search, None) <= MAX_OPEN_WRITERS);
     }
 }

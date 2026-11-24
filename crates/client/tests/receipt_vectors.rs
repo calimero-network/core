@@ -3,6 +3,11 @@
 //! `UPDATE_RECEIPT_VECTORS=1 cargo test -p calimero-client --test receipt_vectors` rewrites the
 //! file; without it the test fails while the committed file differs from what is built now.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::path::PathBuf;
 
 use base64::engine::general_purpose::STANDARD;

@@ -24,9 +24,6 @@ tar.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
-
 [features]
 html = ["dep:html5ever"]
 
@@ -34,3 +31,6 @@ html = ["dep:html5ever"]
 calimero-primitives = { workspace = true, features = ["borsh"] }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 rand.workspace = true
+
+[lints]
+workspace = true
