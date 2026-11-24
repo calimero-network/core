@@ -10,6 +10,7 @@ from ..models.app_secrets_response_200_secrets_additional_property_source import
     AppSecretsResponse200SecretsAdditionalPropertySource,
 )
 from ..types import UNSET, Unset
+from typing import cast
 from typing import Union
 
 T = TypeVar("T", bound="AppSecretsResponse200SecretsAdditionalProperty")
@@ -20,6 +21,7 @@ class AppSecretsResponse200SecretsAdditionalProperty:
     """
     Attributes:
         host (str):
+        paths (list[str]):
         binding (str):
         description (str):
         required (bool):
@@ -33,6 +35,7 @@ class AppSecretsResponse200SecretsAdditionalProperty:
     """
 
     host: str
+    paths: list[str]
     binding: str
     description: str
     required: bool
@@ -47,6 +50,8 @@ class AppSecretsResponse200SecretsAdditionalProperty:
 
     def to_dict(self) -> dict[str, Any]:
         host = self.host
+
+        paths = self.paths
 
         binding = self.binding
 
@@ -73,6 +78,7 @@ class AppSecretsResponse200SecretsAdditionalProperty:
         field_dict.update(
             {
                 "host": host,
+                "paths": paths,
                 "binding": binding,
                 "description": description,
                 "required": required,
@@ -99,6 +105,8 @@ class AppSecretsResponse200SecretsAdditionalProperty:
         d = dict(src_dict)
         host = d.pop("host")
 
+        paths = cast(list[str], d.pop("paths"))
+
         binding = d.pop("binding")
 
         description = d.pop("description")
@@ -121,6 +129,7 @@ class AppSecretsResponse200SecretsAdditionalProperty:
 
         app_secrets_response_200_secrets_additional_property = cls(
             host=host,
+            paths=paths,
             binding=binding,
             description=description,
             required=required,

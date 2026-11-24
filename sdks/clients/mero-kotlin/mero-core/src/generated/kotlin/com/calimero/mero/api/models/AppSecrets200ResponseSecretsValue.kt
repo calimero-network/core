@@ -32,6 +32,7 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param host 
+ * @param paths 
  * @param binding 
  * @param description 
  * @param required 
@@ -49,6 +50,9 @@ data class AppSecrets200ResponseSecretsValue (
 
     @SerialName(value = "host")
     val host: kotlin.String,
+
+    @SerialName(value = "paths")
+    val paths: kotlin.collections.List<kotlin.String>,
 
     @SerialName(value = "binding")
     val binding: kotlin.String,
