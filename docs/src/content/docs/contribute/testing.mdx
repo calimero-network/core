@@ -451,7 +451,15 @@ the latest published one, against this tree:
 What is written and checked lives in cases, `upgrade_cases/NN_*.py`, each a
 `Case` with `seed`, `mixed`, `verify` and `extend` steps (the
 [module's docstring](https://github.com/calimero-network/core/blob/master/crates/node/tests/fault/upgrade_path.py)
-says when each runs); a new kind of stored data gets a case. Run it locally, as
+says when each runs); a new kind of stored data gets a case. Within a phase the
+cases run at once (eight at a time; `UPGRADE_JOBS=1` or `--jobs 1` runs them one
+by one with live output), each group's log printed whole when it ends, so a case
+is independent of the others: an account name belongs to one case (a second case
+that claims it fails the run, naming both, and `upgrade_runner_test.py` checks
+the literal names before the build starts), a case that changes what every case
+sees (a quota, a pool, a stopped node) is `exclusive` and runs alone after the
+rest of its phase, and cases that build on one another share a `group` and run in
+file order. Run it locally, as
 CI does, with `scripts/upgrade-path.sh` (it builds this tree's `merod`,
 `meroctl` and kv, fetches the release and builds its fixture), or with the
 binaries in hand:
@@ -539,7 +547,7 @@ functionality. To add one:
    area (or a new `NN_area.py`), with a unique `name`, its `area`, `since`, and
    one-line `seeds` and `verifies` for the matrix.
 2. `populate` signs its own people up (`person(w, name)`, names no other case
-   uses) and keeps every id and expected value in the record; `check` reads them
+   uses; the run fails when two cases claim one) and keeps every id and expected value in the record; `check` reads them
    back and records access decisions with `decisions({...})`, compared with
    `same_decisions`; `exercise` writes on the new release.
 3. Paste the output of `python3 -I crates/node/tests/fault/upgrade_deep.py --matrix`

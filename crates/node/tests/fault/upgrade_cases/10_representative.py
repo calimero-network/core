@@ -36,6 +36,7 @@ class Accounts(Case):
     """Accounts with passkeys, meroctl sessions and API keys."""
 
     name = "accounts-and-keys"
+    group = "representative"  # builds on the cases before it
 
     def seed(self, w):
         self.ids = {}
@@ -78,6 +79,7 @@ class Organization(Case):
     """An organization with members, a team with a member, an open invite and app teams."""
 
     name = "organization"
+    group = "representative"
 
     def seed(self, w):
         alice, bob = w.account("alice"), w.account("bob")
@@ -123,6 +125,7 @@ class KvPackage(Case):
     an app team, a read-only key; upgraded on the new release to a build of this tree."""
 
     name = "kv-package"
+    group = "representative"
 
     def seed(self, w):
         alice, bob = w.account("alice"), w.account("bob")
@@ -192,6 +195,7 @@ class Blobs(Case):
     """Plain blobs of the kv app, one referenced from its state."""
 
     name = "blobs"
+    group = "representative"
 
     def seed(self, w):
         alice = w.account("alice")
@@ -226,6 +230,7 @@ class FilesAndCompute(Case):
     compute run finished on the old release; on the new one a run reads the old files."""
 
     name = "files-and-compute"
+    group = "representative"
 
     def seed(self, w):
         alice = w.account("alice")

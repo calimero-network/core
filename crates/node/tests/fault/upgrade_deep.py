@@ -498,6 +498,7 @@ class Bound:
 
 
 def person(w, name) -> Person:
+    w.claim(name)
     people = w.shared.setdefault("deep_people", {})
     if name not in people:
         people[name] = Person(w, w.account(name))

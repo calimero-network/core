@@ -5,13 +5,188 @@
 
 from __future__ import annotations
 
+import ast
+import contextlib
+import io
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import upgrade_path  # noqa: E402
+
+
+def world(jobs):
+    return upgrade_path.World(None, None, {}, upgrade_path.say, jobs=jobs)
+
+
+def fake(name, body=None, group="", exclusive=False, step="seed"):
+    """A case whose `step` runs `body(world)`."""
+    attrs = {"name": name, "group": group, "exclusive": exclusive, step: lambda self, w: body and body(w)}
+    return type(f"Fake_{name}", (upgrade_path.Case,), attrs)()
+
+
+def run(cases, jobs, step="seed", fatal=False):
+    """(results, what the run printed, whether it raised) of `step` over `cases`."""
+    out, results, raised = io.StringIO(), [], None
+    with contextlib.redirect_stdout(out):
+        try:
+            upgrade_path.run_step(world(jobs), cases, step, results, fatal=fatal)
+        except upgrade_path.Failed as e:
+            raised = str(e)
+    return results, out.getvalue(), raised
+
+
+class Spans:
+    """When each case ran, from inside it."""
+
+    def __init__(self):
+        self.span, self.lock = {}, threading.Lock()
+
+    def case(self, name, seconds=0.2, **kw):
+        def body(w):
+            start = time.time()
+            time.sleep(seconds)
+            with self.lock:
+                self.span[name] = (start, time.time())
+        return fake(name, body, **kw)
+
+    def overlap(self, a, b):
+        (a0, a1), (b0, b1) = self.span[a], self.span[b]
+        return a0 < b1 and b0 < a1
+
+
+class Concurrency(unittest.TestCase):
+    def test_cases_of_a_phase_run_at_once_up_to_the_jobs(self):
+        sp = Spans()
+        t0 = time.time()
+        run([sp.case(f"c{i}", 0.3) for i in range(4)], jobs=4)
+        self.assertLess(time.time() - t0, 0.9)
+        self.assertTrue(sp.overlap("c0", "c3"))
+
+    def test_one_job_runs_them_one_by_one_in_order(self):
+        sp = Spans()
+        run([sp.case(f"c{i}", 0.05) for i in range(3)], jobs=1)
+        self.assertFalse(sp.overlap("c0", "c1"))
+        self.assertEqual(sorted(sp.span, key=lambda n: sp.span[n][0]), ["c0", "c1", "c2"])
+
+    def test_the_jobs_bound_the_cases_at_once(self):
+        now, peak, lock = [0], [0], threading.Lock()
+        def body(w):
+            with lock:
+                now[0] += 1
+                peak[0] = max(peak[0], now[0])
+            time.sleep(0.1)
+            with lock:
+                now[0] -= 1
+        run([fake(f"c{i}", body) for i in range(6)], jobs=2)
+        self.assertEqual(peak[0], 2)
+
+    def test_a_group_runs_in_order_and_never_at_once(self):
+        sp = Spans()
+        run([sp.case("a1", 0.1, group="a"), sp.case("a2", 0.1, group="a"), sp.case("b", 0.1)], jobs=4)
+        self.assertFalse(sp.overlap("a1", "a2"))
+        self.assertLess(sp.span["a1"][1], sp.span["a2"][0] + 1e-3)
+        self.assertTrue(sp.overlap("a1", "b"))
+
+    def test_an_exclusive_case_runs_alone_after_the_others(self):
+        sp = Spans()
+        run([sp.case("alone", 0.1, exclusive=True), sp.case("x", 0.2), sp.case("y", 0.2)], jobs=4)
+        self.assertFalse(sp.overlap("alone", "x") or sp.overlap("alone", "y"))
+        self.assertGreaterEqual(sp.span["alone"][0], max(sp.span["x"][1], sp.span["y"][1]) - 1e-3)
+
+    def test_results_come_back_in_case_order(self):
+        results, _, _ = run([fake("slow", lambda w: time.sleep(0.2)), fake("fast")], jobs=2)
+        self.assertEqual([r["case"] for r in results], ["slow", "fast"])
+
+
+class Reporting(unittest.TestCase):
+    def test_a_failure_names_its_case_and_phase_and_the_others_still_run(self):
+        def boom(w):
+            raise upgrade_path.Failed("the roles differ")
+        results, out, raised = run([fake("good"), fake("bad", boom), fake("also-good")], jobs=3)
+        self.assertEqual({r["case"]: r["status"] for r in results}, {"good": "pass", "bad": "fail", "also-good": "pass"})
+        self.assertIn("FAIL bad.seed (seed) in", out)
+        self.assertIn("the roles differ", out)
+        self.assertIsNone(raised)
+
+    def test_a_case_log_is_printed_whole(self):
+        def chatty(name):
+            def body(w):
+                for i in range(4):
+                    w.note(f"{name} line {i}")
+                    time.sleep(0.02)
+            return fake(name, body)
+        _, out, _ = run([chatty("p"), chatty("q"), chatty("r")], jobs=3)
+        lines = [l.strip() for l in out.splitlines() if " line " in l]
+        for name in "pqr":
+            at = [i for i, l in enumerate(lines) if l.startswith(f"{name} ")]
+            self.assertEqual(at, list(range(at[0], at[0] + 4)), lines)
+
+    def test_a_fatal_step_stops_the_run_naming_the_case(self):
+        ran = []
+        def boom(w):
+            raise upgrade_path.Failed("no seed")
+        _, out, raised = run([fake("first", boom), fake("second", lambda w: ran.append(1))], jobs=1, fatal=True)
+        self.assertIn("first.seed failed, so the run stops: Failed: no seed", raised)
+        self.assertEqual(ran, [])
+
+    def test_an_unexpected_error_prints_its_traceback_with_the_case(self):
+        def broken(w):
+            {}["missing"]
+        _, out, _ = run([fake("odd", broken)], jobs=2)
+        self.assertIn("KeyError", out)
+        self.assertIn("FAIL odd.seed (seed)", out)
+
+
+class Names(unittest.TestCase):
+    def claims(self, a, b, group_a="", group_b=""):
+        def claim(name, wait):
+            def body(w):
+                time.sleep(wait)
+                w.claim(name)
+            return body
+        results, out, _ = run([fake("one", claim(a, 0), group=group_a), fake("two", claim(b, 0.1), group=group_b)], jobs=2)
+        return {r["case"]: r for r in results}, out
+
+    def test_two_cases_claiming_one_name_fail_naming_both(self):
+        results, _ = self.claims("rob", "rob")
+        self.assertEqual(results["one"]["status"], "pass")
+        self.assertEqual(results["two"]["status"], "fail")
+        self.assertRegex(results["two"]["error"], r"'rob' is used by both one and two")
+
+    def test_different_names_do_not_collide(self):
+        results, _ = self.claims("rob", "ron")
+        self.assertEqual({r["status"] for r in results.values()}, {"pass"})
+
+    def test_cases_of_one_group_may_share_a_name(self):
+        results, _ = self.claims("rob", "rob", "g", "g")
+        self.assertEqual({r["status"] for r in results.values()}, {"pass"})
+
+
+def literal_names_by_case():
+    """account name -> the cases (or groups) whose class bodies name it in `person`, `people` or `account`."""
+    users: dict[str, set] = {}
+    for path in sorted((Path(__file__).resolve().parent / "upgrade_cases").glob("[0-9]*.py")):
+        for cls in [n for n in ast.parse(path.read_text()).body if isinstance(n, ast.ClassDef)]:
+            group = next((n.value.value for n in cls.body if isinstance(n, ast.Assign)
+                          and any(getattr(t, "id", "") == "group" for t in n.targets)), "")
+            for call in [n for n in ast.walk(cls) if isinstance(n, ast.Call)]:
+                f = call.func
+                if getattr(f, "id", getattr(f, "attr", "")) in ("person", "people", "account"):
+                    for a in call.args:
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                            users.setdefault(a.value, set()).add(group or f"{path.name}:{cls.name}")
+    return users
+
+
+class CaseNames(unittest.TestCase):
+    def test_no_two_cases_name_one_account(self):
+        shared = {n: sorted(c) for n, c in literal_names_by_case().items() if len(c) > 1}
+        self.assertEqual(shared, {}, "cases run at once: give each its own account names")
 
 
 class WaitForBuild(unittest.TestCase):
