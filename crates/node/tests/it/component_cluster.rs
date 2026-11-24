@@ -5385,14 +5385,18 @@ async fn eventually(
     done: impl Fn(&Value) -> bool,
 ) -> Value {
     let (args, done) = (&args, &done);
-    common::poll::eventually(common::poll::EVENTUALLY, method, move || async move {
-        let v = strong_view(cl, app, method, args.clone()).await;
-        if done(&v) {
-            Ok(v)
-        } else {
-            Err(v)
-        }
-    })
+    crate::harness::poll::eventually(
+        crate::harness::poll::EVENTUALLY,
+        method,
+        move || async move {
+            let v = strong_view(cl, app, method, args.clone()).await;
+            if done(&v) {
+                Ok(v)
+            } else {
+                Err(v)
+            }
+        },
+    )
     .await
 }
 
