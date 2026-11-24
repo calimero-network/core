@@ -1842,7 +1842,7 @@ pub struct AppRestore {
     pub extra: Map<String, Value>,
 }
 
-/// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`).
+/// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct App {
     #[serde(rename = "appId")]
@@ -1886,6 +1886,9 @@ pub struct App {
     #[serde(rename = "restorePoint")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_point: Option<RestorePoint>,
+    #[serde(rename = "egressOff")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_off: Option<bool>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -2258,7 +2261,7 @@ pub struct OrgNewWorkStopped {
     pub extra: Map<String, Value>,
 }
 
-/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).
+/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `egressOff`: its egress switch is off, so none of its apps sends anything out of the cluster (`POST /orgs/{org}/egress`). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Org {
     #[serde(rename = "orgId")]
@@ -2292,6 +2295,9 @@ pub struct Org {
     #[serde(rename = "allowPublicLinks")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_public_links: Option<bool>,
+    #[serde(rename = "egressOff")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_off: Option<bool>,
     #[serde(rename = "upgradePolicy")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upgrade_policy: Option<UpgradePolicy>,
@@ -3174,11 +3180,106 @@ pub struct AppDelegateResponse {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppEgressResponseEgress {
+    /// `on`.
+    On,
+    /// `off`.
+    Off,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppEgressResponseEgress {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppEgressResponseEgress {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppEgressResponseEgress {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "on" => Self::On,
+            "off" => Self::Off,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppEgressResponseOffBy {
+    /// `organization`.
+    Organization,
+    /// `instance`.
+    Instance,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppEgressResponseOffBy {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Organization => "organization",
+            Self::Instance => "instance",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppEgressResponseOffBy {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppEgressResponseOffBy {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "organization" => Self::Organization,
+            "instance" => Self::Instance,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppEgressResponse {
     pub app: String,
     pub destinations: Vec<String>,
     pub members: BTreeMap<String, UnitMember>,
+    pub egress: AppEgressResponseEgress,
+    #[serde(rename = "offBy")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off_by: Option<AppEgressResponseOffBy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppSetEgressResponse {
+    pub org: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    pub egress: bool,
+    #[serde(rename = "orgEgressOff")]
+    pub org_egress_off: bool,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -5011,6 +5112,14 @@ pub struct ConsentPageCreateRequestSetAllAppsSubject {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestSetEgressSubject {
+    pub org: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    pub egress: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConsentPageCreateRequestInstallSubjectNewOrg {
     pub name: String,
 }
@@ -5222,6 +5331,12 @@ pub enum ConsentPageCreateRequest {
         return_to: String,
         subject: ConsentPageCreateRequestSetAllAppsSubject,
     },
+    #[serde(rename = "setEgress")]
+    SetEgress {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestSetEgressSubject,
+    },
     #[serde(rename = "install")]
     Install {
         #[serde(rename = "returnTo")]
@@ -5294,6 +5409,8 @@ pub enum ConsentPageResultResponseKind {
     SetCapabilities,
     /// `setAllApps`.
     SetAllApps,
+    /// `setEgress`.
+    SetEgress,
     /// `install`.
     Install,
     /// `updatePolicy`.
@@ -5327,6 +5444,7 @@ impl ConsentPageResultResponseKind {
             Self::DeleteOrg => "deleteOrg",
             Self::SetCapabilities => "setCapabilities",
             Self::SetAllApps => "setAllApps",
+            Self::SetEgress => "setEgress",
             Self::Install => "install",
             Self::UpdatePolicy => "updatePolicy",
             Self::Updates => "updates",
@@ -5362,6 +5480,7 @@ impl<'de> Deserialize<'de> for ConsentPageResultResponseKind {
             "deleteOrg" => Self::DeleteOrg,
             "setCapabilities" => Self::SetCapabilities,
             "setAllApps" => Self::SetAllApps,
+            "setEgress" => Self::SetEgress,
             "install" => Self::Install,
             "updatePolicy" => Self::UpdatePolicy,
             "updates" => Self::Updates,
@@ -6776,6 +6895,19 @@ pub struct OrgAppsResponse {
     pub cluster_releases: Vec<ClusterRelease>,
     pub apps: Vec<ReportApp>,
     pub next: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgEgressResponse {
+    pub org: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    pub egress: bool,
+    #[serde(rename = "orgEgressOff")]
+    pub org_egress_off: bool,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

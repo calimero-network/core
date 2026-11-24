@@ -55,6 +55,9 @@ pub enum AuditFailure {
     /// A later release declares its prefix and nobody was asked yet
     /// ([`OutboundRefusal::AwaitingApproval`]).
     AwaitingApproval,
+    /// The instance's organization, or the instance, turned egress off
+    /// ([`OutboundRefusal::EgressOff`]): refused before any other gate.
+    EgressOff,
     /// A secret it named could not be filled in: not declared, not bound to the
     /// host, or no value.
     Secret,
@@ -204,6 +207,7 @@ pub(crate) fn refusal_kind(reason: &eyre::Report) -> AuditFailure {
     match OutboundRefusal::of(&reason.to_string()) {
         Some(OutboundRefusal::NotApproved) => AuditFailure::NotApproved,
         Some(OutboundRefusal::AwaitingApproval) => AuditFailure::AwaitingApproval,
+        Some(OutboundRefusal::EgressOff) => AuditFailure::EgressOff,
         None => AuditFailure::Refused,
     }
 }

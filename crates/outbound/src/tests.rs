@@ -881,6 +881,57 @@ fn the_audit_records_sent_and_refused_requests_without_values() {
     assert!(audit.entries("instance-2").is_empty());
 }
 
+#[test]
+fn egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again() {
+    use std::sync::atomic::AtomicBool;
+
+    let fake = Arc::new(Fake::default());
+    let run = service(&fake)
+        .for_run(
+            forms(),
+            vec![VERIFY.to_owned()],
+            Some(approving(&declared())),
+            "ctx".to_owned(),
+        )
+        .expect("the app declares a URL");
+    let off = Arc::new(AtomicBool::new(true));
+    let switch = Arc::clone(&off);
+    let audit = Arc::new(OutboundAudit::default());
+    let gated = egress_gated(
+        run,
+        Arc::new(move || switch.load(Ordering::SeqCst).then_some("its organization")),
+        Arc::clone(&audit),
+        "ctx".to_owned(),
+    );
+    let request = borsh::to_vec(&post(VERIFY, "response=tok")).unwrap();
+
+    let refused = gated.send(&request).expect_err("egress is off");
+    assert!(
+        refused.starts_with("EgressOff: its organization"),
+        "{refused}"
+    );
+    assert_eq!(
+        calimero_primitives::outbound::OutboundRefusal::of(&refused),
+        Some(calimero_primitives::outbound::OutboundRefusal::EgressOff)
+    );
+    assert!(
+        fake.0.lock().unwrap().is_empty(),
+        "nothing reached the transport"
+    );
+    // The owner's audit names the refusal as egress off, with the endpoint.
+    let entries = audit.entries("ctx");
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].failure, Some(AuditFailure::EgressOff));
+    assert_eq!(entries[0].host, HOST);
+    assert_eq!(entries[0].path, "/turnstile/v0/siteverify");
+    assert_eq!(entries[0].status, None);
+
+    // Asked again for each request: on again, the approved request goes out.
+    off.store(false, Ordering::SeqCst);
+    let _answer = gated.send(&request).expect("egress is on");
+    assert_eq!(fake.0.lock().unwrap().len(), 1);
+}
+
 /// A secret with bytes every encoding below changes: `/`, `+`, `=`, a quote, a
 /// non-ASCII letter, and bytes whose base64 differs between the standard and
 /// the URL-safe alphabet.

@@ -62,10 +62,15 @@ code, and app code beyond what its owner approved.
   passkey step-up for owners.
 - **Exfiltration over the network** — outbound HTTPS only to hosts the operator
   allows, under prefixes the app's signed manifest declares and its approver
-  approved, from writing runs only. The instance's owner and managers see each
-  request's host, path, status and secret names in its outbound audit, so a
-  release that turns an approved host or a secret to another use shows up there;
-  the audit reports, it does not stop anything.
+  approved, from writing runs only. The app's own code is not stopped from
+  sending what it reads to such a host; an organization that needs that
+  guarantee turns egress off (for itself or one instance), and then no request
+  leaves for its apps whatever an approval says
+  ([Egress off](/build/guides/outbound/#egress-off)). The instance's owner and
+  managers see each request's host, path, status and secret names in its
+  outbound audit, refusals while egress is off included, so a release that
+  turns an approved host or a secret to another use shows up there; the audit
+  reports, it does not stop anything.
 - **A stolen session** — 15-minute tokens, refresh tokens exchanged once they
   are an hour old whose reuse after that revokes the session (a copy taken
   within the hour refreshes beside its owner until then), revocation that

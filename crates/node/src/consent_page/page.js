@@ -100,6 +100,7 @@
     release: "Server version approval", upgrade: "Update request", upgradeUnit: "Update request",
     outbound: "Outbound access", createOrg: "New organization", createInvite: "Invite",
     acceptInvite: "Invitation", install: "New app", updatePolicy: "Update policy", updates: "Updates",
+    setEgress: "Data leaving the cluster",
   };
   // The updates page (`updates`): approving unlocks its list instead of leaving.
   var hub = false;

@@ -6,21 +6,34 @@
 //! `calimero_node::testing::slow_compiles` makes each install compile hold its
 //! thread longer. The runtime has one worker, so a compile on it stops a task
 //! ticking beside it. Told by order, not latency: while the install still
-//! compiles, the ticker must keep ticking.
+//! compiles, the ticker must keep ticking. The watch starts when the install is
+//! spawned, so what the install does on the worker before its compile (a `.mpk`
+//! verified there held it 50-75 ms idle, up to 300 ms loaded, before #5336) is
+//! watched too, and the longest gap between ticks is judged: a worker the install
+//! holds shows a gap as long as the hold.
 
 use crate::common;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use common::{mpk_with, Cluster, PUBLISHER};
 
 /// How long each compile holds its thread: far past the watch, so a worker that
 /// compiles cannot tick first.
 const COMPILE: Duration = Duration::from_secs(2);
-/// How long the test watches the ticker while the install compiles.
+/// How long the test watches the ticker, from the install's spawn, while it compiles.
 const WATCH: Duration = Duration::from_millis(300);
+/// Both tickers' period.
+const TICK: Duration = Duration::from_millis(10);
+/// The longest the worker may go without a tick during the watch, beyond the
+/// longest a thread of its own did (a runner that stalls both stalls them alike).
+/// Measured on four cores, idle and beside six busy loops (20 runs): the free
+/// worker's longest gap was 11-29 ms, the free thread's 10-33 ms; a `.mpk` verified
+/// on the worker (before #5336) gave 52-61 ms idle beside a free thread's 10-12 ms,
+/// and up to 324 ms loaded; a compile on it gives the whole `WATCH`.
+const MAX_EXTRA_GAP: Duration = Duration::from_millis(30);
 /// A free worker ticks at least this share of what a thread of its own ticks in
 /// `WATCH`: a loaded runner slows both, a blocked worker alone.
 const MIN_SHARE: f64 = 0.5;
@@ -37,26 +50,30 @@ async fn an_install_that_compiles_slowly_leaves_the_async_worker_free() {
 
     calimero_node::testing::slow_compiles(&node.config.public_url, COMPILE);
     let ticking = Arc::new(AtomicBool::new(true));
-    let ticks = Arc::new(AtomicU64::new(0));
+    let ticks = Arc::new(Mutex::new(Vec::<Instant>::new()));
     let ticker = {
         let (ticking, ticks) = (Arc::clone(&ticking), Arc::clone(&ticks));
         tokio::spawn(async move {
             while ticking.load(Ordering::Relaxed) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                let _n = ticks.fetch_add(1, Ordering::Relaxed);
+                tokio::time::sleep(TICK).await;
+                ticks.lock().unwrap().push(Instant::now());
             }
         })
     };
-    let control = Arc::new(AtomicU64::new(0));
+    let control = Arc::new(Mutex::new(Vec::<Instant>::new()));
     let control_thread = {
         let (ticking, control) = (Arc::clone(&ticking), Arc::clone(&control));
         std::thread::spawn(move || {
             while ticking.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(10));
-                let _n = control.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(TICK);
+                control.lock().unwrap().push(Instant::now());
             }
         })
     };
+    // Both tick before the install starts.
+    while ticks.lock().unwrap().is_empty() || control.lock().unwrap().is_empty() {
+        std::thread::sleep(TICK);
+    }
     // On the worker, as a request handler's install is (this test's body runs
     // on the thread that blocks on it, not on a worker).
     let install = {
@@ -67,17 +84,17 @@ async fn an_install_that_compiles_slowly_leaves_the_async_worker_free() {
         })
     };
     // This thread sleeps, not the runtime: a worker that blocks would stop the
-    // runtime's timers too.
-    std::thread::sleep(Duration::from_millis(50));
-    let before = (
-        ticks.load(Ordering::Relaxed),
-        control.load(Ordering::Relaxed),
-    );
+    // runtime's timers too. The watch starts with the install.
+    let start = Instant::now();
     std::thread::sleep(WATCH);
-    let during = ticks.load(Ordering::Relaxed) - before.0;
-    let free = control.load(Ordering::Relaxed) - before.1;
+    let end = Instant::now();
     let compiling = !install.is_finished();
-    eprintln!("the worker ticked {during} times, a free thread {free}, in {WATCH:?} while the install compiled");
+    let (during, worker_gap) = watched(&ticks, start, end);
+    let (free, free_gap) = watched(&control, start, end);
+    eprintln!(
+        "the worker ticked {during} times (longest gap {worker_gap:?}), a free thread {free} \
+         (longest gap {free_gap:?}), in {WATCH:?} while the install compiled"
+    );
 
     let installed = install.await.unwrap();
     ticking.store(false, Ordering::Relaxed);
@@ -86,10 +103,36 @@ async fn an_install_that_compiles_slowly_leaves_the_async_worker_free() {
 
     assert!(compiling, "the install did not wait for its compile");
     assert!(
+        worker_gap < free_gap + MAX_EXTRA_GAP,
+        "the async worker went {worker_gap:?} without a tick while an install compiled, \
+         a free thread {free_gap:?} (at most {MAX_EXTRA_GAP:?} more): the install held it"
+    );
+    assert!(
         free > 0 && during as f64 >= free as f64 * MIN_SHARE,
         "the async worker ticked {during} times in {WATCH:?} while an install compiled, \
          a free thread {free}: the install blocked it"
     );
     let installed = installed.expect("the release installs once it compiles");
     assert_eq!(installed["package"], "com.test.slow-compile");
+}
+
+/// How many of `ticks` fell in `start..=end`, and the longest gap between them,
+/// counting from `start` to the first and from the last to `end`.
+fn watched(ticks: &Mutex<Vec<Instant>>, start: Instant, end: Instant) -> (usize, Duration) {
+    let seen: Vec<Instant> = ticks
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .filter(|t| *t > start && *t <= end)
+        .collect();
+    let mut edges = vec![start];
+    edges.extend(&seen);
+    edges.push(end);
+    let longest = edges
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .max()
+        .unwrap_or(end - start);
+    (seen.len(), longest)
 }

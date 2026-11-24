@@ -159,13 +159,22 @@ public protocol APIProtocol: Sendable {
     func appUndelegate(_ input: Operations.AppUndelegate.Input) async throws -> Operations.AppUndelegate.Output
     /// Where an app's unit may send data
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none. `egress`: `off` while its organization (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are absent while it is on), when none of the destinations is reached and `summary` says the app cannot send data outside the cluster.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
     /// - Remark: HTTP `GET /apps/{app}/egress`.
     /// - Remark: Generated from `#/paths//apps/{app}/egress/get(app_egress)`.
     func appEgress(_ input: Operations.AppEgress.Input) async throws -> Operations.AppEgress.Output
+    /// Turn one app's egress off or on
+    ///
+    /// As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/egress`.
+    /// - Remark: Generated from `#/paths//apps/{app}/egress/post(app_set_egress)`.
+    func appSetEgress(_ input: Operations.AppSetEgress.Input) async throws -> Operations.AppSetEgress.Output
     /// An app's events as server-sent events
     ///
     /// Committed events from index `from`, then live ones, each to its audience.
@@ -1224,6 +1233,15 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /orgs/{org}/capabilities`.
     /// - Remark: Generated from `#/paths//orgs/{org}/capabilities/post(org_capabilities)`.
     func orgCapabilities(_ input: Operations.OrgCapabilities.Input) async throws -> Operations.OrgCapabilities.Output
+    /// Turn the organization's egress off or on
+    ///
+    /// `egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/egress`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/egress/post(org_egress)`.
+    func orgEgress(_ input: Operations.OrgEgress.Input) async throws -> Operations.OrgEgress.Output
     /// The organization's invites
     ///
     /// Their keys and terms, never a token: `expiresAt` Unix seconds; `createdBy` and `createdAt` are `null` on an invite from before they were kept.
@@ -1323,7 +1341,7 @@ public protocol APIProtocol: Sendable {
     func orgRename(_ input: Operations.OrgRename.Input) async throws -> Operations.OrgRename.Output
     /// Approve outbound prefixes for the organization's apps
     ///
-    /// The owner; `412` first.
+    /// The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -1973,7 +1991,7 @@ extension APIProtocol {
     }
     /// Where an app's unit may send data
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none. `egress`: `off` while its organization (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are absent while it is on), when none of the destinations is reached and `summary` says the app cannot send data outside the cluster.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -1986,6 +2004,25 @@ extension APIProtocol {
         try await appEgress(Operations.AppEgress.Input(
             path: path,
             headers: headers
+        ))
+    }
+    /// Turn one app's egress off or on
+    ///
+    /// As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/egress`.
+    /// - Remark: Generated from `#/paths//apps/{app}/egress/post(app_set_egress)`.
+    public func appSetEgress(
+        path: Operations.AppSetEgress.Input.Path,
+        headers: Operations.AppSetEgress.Input.Headers = .init(),
+        body: Operations.AppSetEgress.Input.Body
+    ) async throws -> Operations.AppSetEgress.Output {
+        try await appSetEgress(Operations.AppSetEgress.Input(
+            path: path,
+            headers: headers,
+            body: body
         ))
     }
     /// An app's events as server-sent events
@@ -4046,6 +4083,25 @@ extension APIProtocol {
             body: body
         ))
     }
+    /// Turn the organization's egress off or on
+    ///
+    /// `egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/egress`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/egress/post(org_egress)`.
+    public func orgEgress(
+        path: Operations.OrgEgress.Input.Path,
+        headers: Operations.OrgEgress.Input.Headers = .init(),
+        body: Operations.OrgEgress.Input.Body
+    ) async throws -> Operations.OrgEgress.Output {
+        try await orgEgress(Operations.OrgEgress.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
     /// The organization's invites
     ///
     /// Their keys and terms, never a token: `expiresAt` Unix seconds; `createdBy` and `createdAt` are `null` on an invite from before they were kept.
@@ -4253,7 +4309,7 @@ extension APIProtocol {
     }
     /// Approve outbound prefixes for the organization's apps
     ///
-    /// The owner; `412` first.
+    /// The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -7656,7 +7712,7 @@ public enum Components {
                 case targets
             }
         }
-        /// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`).
+        /// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.
         ///
         /// - Remark: Generated from `#/components/schemas/App`.
         public struct App: Codable, Hashable, Sendable {
@@ -7805,6 +7861,8 @@ public enum Components {
             public var attached: Components.Schemas.App.AttachedPayload?
             /// - Remark: Generated from `#/components/schemas/App/restorePoint`.
             public var restorePoint: Components.Schemas.RestorePoint?
+            /// - Remark: Generated from `#/components/schemas/App/egressOff`.
+            public var egressOff: Swift.Bool?
             /// Creates a new `App`.
             ///
             /// - Parameters:
@@ -7830,6 +7888,7 @@ public enum Components {
             ///   - links:
             ///   - attached:
             ///   - restorePoint:
+            ///   - egressOff:
             public init(
                 appId: Swift.String,
                 name: Swift.String,
@@ -7852,7 +7911,8 @@ public enum Components {
                 restore: Components.Schemas.App.RestorePayload? = nil,
                 links: Components.Schemas.App.LinksPayload? = nil,
                 attached: Components.Schemas.App.AttachedPayload? = nil,
-                restorePoint: Components.Schemas.RestorePoint? = nil
+                restorePoint: Components.Schemas.RestorePoint? = nil,
+                egressOff: Swift.Bool? = nil
             ) {
                 self.appId = appId
                 self.name = name
@@ -7876,6 +7936,7 @@ public enum Components {
                 self.links = links
                 self.attached = attached
                 self.restorePoint = restorePoint
+                self.egressOff = egressOff
             }
             public enum CodingKeys: String, CodingKey {
                 case appId
@@ -7900,6 +7961,7 @@ public enum Components {
                 case links
                 case attached
                 case restorePoint
+                case egressOff
             }
         }
         /// An app as `GET /apps` lists it: `package` and `version` name the release its bundle came from (`null` for a raw upload), `deployment` the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1).
@@ -8347,7 +8409,7 @@ public enum Components {
                 case upgrades
             }
         }
-        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).
+        /// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `egressOff`: its egress switch is off, so none of its apps sends anything out of the cluster (`POST /orgs/{org}/egress`). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).
         ///
         /// - Remark: Generated from `#/components/schemas/Org`.
         public struct Org: Codable, Hashable, Sendable {
@@ -8551,6 +8613,8 @@ public enum Components {
             public var allowGuests: Swift.Bool?
             /// - Remark: Generated from `#/components/schemas/Org/allowPublicLinks`.
             public var allowPublicLinks: Swift.Bool?
+            /// - Remark: Generated from `#/components/schemas/Org/egressOff`.
+            public var egressOff: Swift.Bool?
             /// - Remark: Generated from `#/components/schemas/Org/upgradePolicy`.
             public var upgradePolicy: Components.Schemas.UpgradePolicy?
             /// - Remark: Generated from `#/components/schemas/Org/appUpgradePolicies`.
@@ -8765,6 +8829,7 @@ public enum Components {
             ///   - personal:
             ///   - allowGuests:
             ///   - allowPublicLinks:
+            ///   - egressOff:
             ///   - upgradePolicy:
             ///   - appUpgradePolicies:
             ///   - pendingUpgrades:
@@ -8789,6 +8854,7 @@ public enum Components {
                 personal: Swift.Bool? = nil,
                 allowGuests: Swift.Bool? = nil,
                 allowPublicLinks: Swift.Bool? = nil,
+                egressOff: Swift.Bool? = nil,
                 upgradePolicy: Components.Schemas.UpgradePolicy? = nil,
                 appUpgradePolicies: Components.Schemas.Org.AppUpgradePoliciesPayload? = nil,
                 pendingUpgrades: Components.Schemas.Org.PendingUpgradesPayload? = nil,
@@ -8813,6 +8879,7 @@ public enum Components {
                 self.personal = personal
                 self.allowGuests = allowGuests
                 self.allowPublicLinks = allowPublicLinks
+                self.egressOff = egressOff
                 self.upgradePolicy = upgradePolicy
                 self.appUpgradePolicies = appUpgradePolicies
                 self.pendingUpgrades = pendingUpgrades
@@ -8838,6 +8905,7 @@ public enum Components {
                 case personal
                 case allowGuests
                 case allowPublicLinks
+                case egressOff
                 case upgradePolicy
                 case appUpgradePolicies
                 case pendingUpgrades
@@ -11931,6 +11999,88 @@ public enum Components {
                 )
                 self.subject = try container.decode(
                     Components.Schemas.ConsentPageCreateBodySetAllApps.SubjectPayload.self,
+                    forKey: .subject
+                )
+                self.returnTo = try container.decode(
+                    Swift.String.self,
+                    forKey: .returnTo
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "kind",
+                    "subject",
+                    "returnTo"
+                ])
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress`.
+        public struct ConsentPageCreateBodySetEgress: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case setEgress = "setEgress"
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/kind`.
+            public var kind: Components.Schemas.ConsentPageCreateBodySetEgress.KindPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/subject`.
+            public struct SubjectPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/subject/org`.
+                public var org: Swift.String
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/subject/app`.
+                public var app: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/subject/egress`.
+                public var egress: Swift.Bool
+                /// Creates a new `SubjectPayload`.
+                ///
+                /// - Parameters:
+                ///   - org:
+                ///   - app:
+                ///   - egress:
+                public init(
+                    org: Swift.String,
+                    app: Swift.String? = nil,
+                    egress: Swift.Bool
+                ) {
+                    self.org = org
+                    self.app = app
+                    self.egress = egress
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case org
+                    case app
+                    case egress
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/subject`.
+            public var subject: Components.Schemas.ConsentPageCreateBodySetEgress.SubjectPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodySetEgress/returnTo`.
+            public var returnTo: Swift.String
+            /// Creates a new `ConsentPageCreateBodySetEgress`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - subject:
+            ///   - returnTo:
+            public init(
+                kind: Components.Schemas.ConsentPageCreateBodySetEgress.KindPayload,
+                subject: Components.Schemas.ConsentPageCreateBodySetEgress.SubjectPayload,
+                returnTo: Swift.String
+            ) {
+                self.kind = kind
+                self.subject = subject
+                self.returnTo = returnTo
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case subject
+                case returnTo
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.kind = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodySetEgress.KindPayload.self,
+                    forKey: .kind
+                )
+                self.subject = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodySetEgress.SubjectPayload.self,
                     forKey: .subject
                 )
                 self.returnTo = try container.decode(
@@ -15063,7 +15213,7 @@ public enum Operations {
     }
     /// Where an app's unit may send data
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none.
+    /// For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination (`outbound` prefix, and a declared secret's host no prefix names) of the release the instance runs and of each app it created with it (`links`, transitively; never an attached app), sorted; empty when no data leaves Calimero. An external endpoint, a TEE included, is listed like any other: the platform never vouches for one (an app that trusts one verifies it in its own code). `members`: each member by its path (`<name>`, a member's own `<name>/<name>`) with its app id, release, signer and own destinations. A development bundle declares none. `egress`: `off` while its organization (`offBy: organization`) or the instance (`instance`) turned egress off (`offBy` and `summary` are absent while it is on), when none of the destinations is reached and `summary` says the app cannot send data outside the cluster.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -15140,25 +15290,53 @@ public enum Operations {
                         }
                         /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/members`.
                         public var members: Operations.AppEgress.Output.Ok.Body.JsonPayload.MembersPayload
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/egress`.
+                        @frozen public enum EgressPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                            case on = "on"
+                            case off = "off"
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/egress`.
+                        public var egress: Operations.AppEgress.Output.Ok.Body.JsonPayload.EgressPayload
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/offBy`.
+                        @frozen public enum OffByPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                            case organization = "organization"
+                            case instance = "instance"
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/offBy`.
+                        public var offBy: Operations.AppEgress.Output.Ok.Body.JsonPayload.OffByPayload?
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/json/summary`.
+                        public var summary: Swift.String?
                         /// Creates a new `JsonPayload`.
                         ///
                         /// - Parameters:
                         ///   - app:
                         ///   - destinations:
                         ///   - members:
+                        ///   - egress:
+                        ///   - offBy:
+                        ///   - summary:
                         public init(
                             app: Swift.String,
                             destinations: [Swift.String],
-                            members: Operations.AppEgress.Output.Ok.Body.JsonPayload.MembersPayload
+                            members: Operations.AppEgress.Output.Ok.Body.JsonPayload.MembersPayload,
+                            egress: Operations.AppEgress.Output.Ok.Body.JsonPayload.EgressPayload,
+                            offBy: Operations.AppEgress.Output.Ok.Body.JsonPayload.OffByPayload? = nil,
+                            summary: Swift.String? = nil
                         ) {
                             self.app = app
                             self.destinations = destinations
                             self.members = members
+                            self.egress = egress
+                            self.offBy = offBy
+                            self.summary = summary
                         }
                         public enum CodingKeys: String, CodingKey {
                             case app
                             case destinations
                             case members
+                            case egress
+                            case offBy
+                            case summary
                         }
                     }
                     /// - Remark: Generated from `#/paths/apps/{app}/egress/GET/responses/200/content/application\/json`.
@@ -15197,6 +15375,220 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.AppEgress.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Turn one app's egress off or on
+    ///
+    /// As `POST /orgs/{org}/egress`, for this instance alone, by its organization's owner or an admin: off, it sends nothing out of the cluster whatever was approved; on again (the consent page only, `kind: setEgress` with `app`) lets it send only while its organization's egress is on too.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/egress`.
+    /// - Remark: Generated from `#/paths//apps/{app}/egress/post(app_set_egress)`.
+    public enum AppSetEgress {
+        public static let id: Swift.String = "app_set_egress"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppSetEgress.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppSetEgress.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppSetEgress.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppSetEgress.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/requestBody/json/egress`.
+                    public var egress: Swift.Bool
+                    /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - egress:
+                    ///   - confirm:
+                    public init(
+                        egress: Swift.Bool,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.egress = egress
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case egress
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.egress = try container.decode(
+                            Swift.Bool.self,
+                            forKey: .egress
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "egress",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/requestBody/content/application\/json`.
+                case json(Operations.AppSetEgress.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppSetEgress.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppSetEgress.Input.Path,
+                headers: Operations.AppSetEgress.Input.Headers = .init(),
+                body: Operations.AppSetEgress.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/org`.
+                        public var org: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/app`.
+                        public var app: Swift.String?
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/egress`.
+                        public var egress: Swift.Bool
+                        /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/json/orgEgressOff`.
+                        public var orgEgressOff: Swift.Bool
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - org:
+                        ///   - app:
+                        ///   - egress:
+                        ///   - orgEgressOff:
+                        public init(
+                            org: Swift.String,
+                            app: Swift.String? = nil,
+                            egress: Swift.Bool,
+                            orgEgressOff: Swift.Bool
+                        ) {
+                            self.org = org
+                            self.app = app
+                            self.egress = egress
+                            self.orgEgressOff = orgEgressOff
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case org
+                            case app
+                            case egress
+                            case orgEgressOff
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/egress/POST/responses/200/content/application\/json`.
+                    case json(Operations.AppSetEgress.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppSetEgress.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppSetEgress.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppSetEgress.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/egress/post(app_set_egress)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppSetEgress.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppSetEgress.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):
@@ -31615,6 +32007,8 @@ public enum Operations {
                     case setAllApps(Components.Schemas.ConsentPageCreateBodySetAllApps)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodySetCapabilities`.
                     case setCapabilities(Components.Schemas.ConsentPageCreateBodySetCapabilities)
+                    /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodySetEgress`.
+                    case setEgress(Components.Schemas.ConsentPageCreateBodySetEgress)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodySetMemberRole`.
                     case setMemberRole(Components.Schemas.ConsentPageCreateBodySetMemberRole)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodySetMemberTeams`.
@@ -31667,6 +32061,8 @@ public enum Operations {
                             self = .setAllApps(try .init(from: decoder))
                         case "setCapabilities":
                             self = .setCapabilities(try .init(from: decoder))
+                        case "setEgress":
+                            self = .setEgress(try .init(from: decoder))
                         case "setMemberRole":
                             self = .setMemberRole(try .init(from: decoder))
                         case "setMemberTeams":
@@ -31718,6 +32114,8 @@ public enum Operations {
                         case let .setAllApps(value):
                             try value.encode(to: encoder)
                         case let .setCapabilities(value):
+                            try value.encode(to: encoder)
+                        case let .setEgress(value):
                             try value.encode(to: encoder)
                         case let .setMemberRole(value):
                             try value.encode(to: encoder)
@@ -31946,6 +32344,7 @@ public enum Operations {
                             case deleteOrg = "deleteOrg"
                             case setCapabilities = "setCapabilities"
                             case setAllApps = "setAllApps"
+                            case setEgress = "setEgress"
                             case install = "install"
                             case updatePolicy = "updatePolicy"
                             case updates = "updates"
@@ -37630,6 +38029,220 @@ public enum Operations {
             }
         }
     }
+    /// Turn the organization's egress off or on
+    ///
+    /// `egress: false` turns egress off for every app of the organization: from each app's next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization's or the operator's) says, and the organization approves no new outbound host (`409 EGRESS_OFF`). `egress: true` turns it back on, a red change made only on the consent page (`kind: setEgress`); from any other client `403 CONSENT_PAGE_REQUIRED`. The owner or an admin, with a passkey (`412` first); `403` to a member below admin, `404` to anyone outside it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /orgs/{org}/egress`.
+    /// - Remark: Generated from `#/paths//orgs/{org}/egress/post(org_egress)`.
+    public enum OrgEgress {
+        public static let id: Swift.String = "org_egress"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/path/org`.
+                public var org: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - org:
+                public init(org: Swift.String) {
+                    self.org = org
+                }
+            }
+            public var path: Operations.OrgEgress.Input.Path
+            /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgEgress.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.OrgEgress.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.OrgEgress.Input.Headers
+            /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/requestBody/json/egress`.
+                    public var egress: Swift.Bool
+                    /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - egress:
+                    ///   - confirm:
+                    public init(
+                        egress: Swift.Bool,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.egress = egress
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case egress
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.egress = try container.decode(
+                            Swift.Bool.self,
+                            forKey: .egress
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "egress",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/requestBody/content/application\/json`.
+                case json(Operations.OrgEgress.Input.Body.JsonPayload)
+            }
+            public var body: Operations.OrgEgress.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.OrgEgress.Input.Path,
+                headers: Operations.OrgEgress.Input.Headers = .init(),
+                body: Operations.OrgEgress.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/org`.
+                        public var org: Swift.String
+                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/app`.
+                        public var app: Swift.String?
+                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/egress`.
+                        public var egress: Swift.Bool
+                        /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/json/orgEgressOff`.
+                        public var orgEgressOff: Swift.Bool
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - org:
+                        ///   - app:
+                        ///   - egress:
+                        ///   - orgEgressOff:
+                        public init(
+                            org: Swift.String,
+                            app: Swift.String? = nil,
+                            egress: Swift.Bool,
+                            orgEgressOff: Swift.Bool
+                        ) {
+                            self.org = org
+                            self.app = app
+                            self.egress = egress
+                            self.orgEgressOff = orgEgressOff
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case org
+                            case app
+                            case egress
+                            case orgEgressOff
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/orgs/{org}/egress/POST/responses/200/content/application\/json`.
+                    case json(Operations.OrgEgress.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.OrgEgress.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.OrgEgress.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.OrgEgress.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//orgs/{org}/egress/post(org_egress)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.OrgEgress.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.OrgEgress.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
     /// The organization's invites
     ///
     /// Their keys and terms, never a token: `expiresAt` Unix seconds; `createdBy` and `createdAt` are `null` on an invite from before they were kept.
@@ -39734,7 +40347,7 @@ public enum Operations {
     }
     /// Approve outbound prefixes for the organization's apps
     ///
-    /// The owner; `412` first.
+    /// The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///

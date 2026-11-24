@@ -229,6 +229,27 @@ on approved.
 - The token reaches only counts, placement, quotas, backups and the decisions
   governance gave the operator.
 
+## What the TEE does not protect: the app's own code
+
+The TEE keeps an app's data from the operator and from Calimero. It does not
+keep it from the app itself: the app's code reads the data, and where the
+operator allows a host, the release declares it and the organization approved
+it, that code may send whatever it read there, the developer's analytics
+included. Approving a host is trusting the code with it.
+
+Egress off is the owner's hard guarantee against that. An organization's owner
+or an admin turns it off for the organization (`POST /orgs/{org}/egress`
+`{ "egress": false }`) or one instance (`POST /apps/{app}/egress`), with a
+passkey; `meroctl org egress <org> off [--app <app>]`. While it is off, no
+outbound request leaves the cluster for the apps it covers, whatever their code
+or manifest says and whatever an approval (the organization's or the
+operator's) says, and the organization approves no new host. Turning it back on
+is made only on the node's consent page, shown as a red change. Compute runs
+never send anything, so they need no switch. See
+[Egress off](/build/guides/outbound/#egress-off); what an app can do with
+secrets is in the protocol chapter *Secrets and what an app can and cannot do
+with them*.
+
 ## Outbound HTTPS and secrets
 
 Apps can make HTTPS requests only through the five gates described in

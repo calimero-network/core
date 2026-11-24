@@ -14,9 +14,15 @@ A request is made only when every gate holds:
    is the app's organization (whoever holds `MANAGE_APPLICATION` org-wide, with
    a passkey assertion), or the operator where `--outbound-approvals operator`
    gives it the decision; every app is in an organization since 1.0.0-rc.20.
-4. The run writes (calls, follow-ups, timers; a component's actions and, D76, its calls,
-   timers and deliveries): never a view, `init`, a migration or compute.
-5. `https` on 443 to a name resolving only to public addresses, size limits from
+4. Egress is on for the app: neither its organization (`Org::egress_off`) nor the
+   instance (`AppRecord::egress_off`) turned it off (`SystemCmd::SetEgress`, an owner or
+   admin; on again only through the consent page). The node wraps every run's client in
+   `egress_gated`, which asks before each request and refuses with `EGRESS_OFF`
+   (`OutboundRefusal::EgressOff`) before any other gate, over every approval.
+5. The run writes (calls, follow-ups, timers; a component's actions and, D76, its calls,
+   timers and deliveries): never a view, `init`, a migration or compute (a compute run
+   has no network at all, so the switch never concerns a job node).
+6. `https` on 443 to a name resolving only to public addresses, size limits from
    `calimero_primitives::outbound`, no redirects; at most
    `calimero_app_host::MAX_HTTP_REQUESTS` (8) per run, counted by the host.
 
@@ -29,6 +35,11 @@ declared name (`AppIdentity::own`, `OwnSecrets`: the instance owner's, else its
 deployment managers'; `calimero_node::component::run_secrets`) wins over the
 operator's for that name, still only to its declared hosts. The echo answers each
 filled-in value's length (`secretBytes`), never a value.
+
+What it logs (every line reaches the operator): a refusal as `refusal_kind`
+(`NotApproved`, `AwaitingApproval`, `Invalid`) with the URL's host, a sent request
+with the declared prefix that covers it, never the URL's path, query, body or a
+name the guest wrote; the guest gets the refusal's words (`log_tests`).
 
 A failed request reaches the guest and the `outbound request failed` log line (which
 ships to the operator) only as its `FailureKind` (`timeout`, `connect`, `too large`,
@@ -57,10 +68,14 @@ slice). A secret should go only to a host that does not echo it.
 - `OutboundAudit` (`audit.rs`): each request a `for_run_counted` client is handed,
   sent or refused, as an `AuditEntry` under the run's `context` (the instance): time,
   method, host, path (no query, `MAX_AUDIT_PATH_BYTES`), status or `AuditFailure`
-  (`SecretRefused` marks a secret refusal), the secret names (`secret_names`, the one
+  (`SecretRefused` marks a secret refusal; `EgressOff` for the egress switch's refusals), the secret names (`secret_names`, the one
   reader of a request's placeholders), body sizes. Never a value, body, query or
   header. Bounded per node: `MAX_AUDIT_ENTRIES`, `AUDIT_RETENTION_MS`,
   `MAX_AUDIT_INSTANCES`. The node owns one (`Node::outbound_audit`).
+- `egress_gated(inner, EgressCheck, audit, context)`: the egress switch, asked per
+  request (so one turned off reaches a run already going), each refusal recorded in
+  the audit as `EgressOff`; test
+  `egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again`.
 - `TURNSTILE_VERIFY_URL`: Cloudflare Turnstile's siteverify, for apps that check a
   token from a call (D76; `apps/fixture-captcha`) and for the `turnstile` stand-in.
 - Feature `outbound-testing`: `[outbound.testing] echo` answers `.test` hosts
