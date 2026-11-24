@@ -78,6 +78,7 @@ past it is logged trapped. Compute runs on job nodes have their own caps
 | Quotes (`GET /attestation`, a job node's and a waiting node's, `merod attest --serve`) | 1 made at a time, off the async workers; 8 more wait, each at most 3 s; past that `503 BUSY` with `Retry-After: 1` | `MAX_CONCURRENT_QUOTES`, `MAX_QUEUED_QUOTES`, `QUOTE_WAIT` |
 | Sealed-file exports | 30 a minute per account per node | `MAX_EXPORTS_PER_MINUTE` |
 | Sessions listed (`GET /auth/sessions`) | 256 | `MAX_SESSIONS_LISTED` |
+| API keys a fresh read found missing, refused with no system read | 4096 per node, each 60 s | `MAX_UNKNOWN_API_KEYS`, `UNKNOWN_API_KEY_TTL` |
 | Deployments | 16 per owner, 10 000 per cluster, 64 apps each | `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT` |
 | Organization and app-team names | 64 characters | `MAX_ORG_NAME_CHARS`, `MAX_APP_TEAM_NAME_CHARS` |
 | Team rows changed at once | 64 teams | `MAX_TEAM_BATCH` |

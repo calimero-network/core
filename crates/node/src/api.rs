@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::ops::Bound;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 
 use axum::body::Bytes as Body;
 use axum::extract::{Path, Query, State};
@@ -35,7 +37,7 @@ use crate::app::{AppMachine, Status};
 use crate::attest::{kms_report_data, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
-use crate::node::{CallRequest, JobAttestError, Node, ViewRequest};
+use crate::node::{CallRequest, Issuer, JobAttestError, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::cluster_version::{scope_app_features, Feature};
 use crate::system::{
@@ -500,6 +502,44 @@ impl Principal {
             .ok_or_else(|| ApiError::unauthenticated("sign in first"))
     }
 
+    /// Whether `gate`, which admitted this principal to `app_id` with method `*`, still
+    /// would on `s`, the facts that can change since judged again: the session not ended
+    /// and its passkey, origin and issuing release still holding; the API key not revoked
+    /// or expired; the account still reaching the app. What cannot change (a signature, the
+    /// key's own scope) is not. A visitor opens no stream (`*` refuses it). A session token's
+    /// own expiry does not end a stream: it is a refresh, not a revocation. For a stream,
+    /// through [`still_admitted`].
+    fn admitted_on(&self, s: &SystemState, app_id: &str, now: u64) -> bool {
+        let Some(app) = s.apps.get(app_id) else {
+            return false;
+        };
+        let credential = match (&self.session, &self.api_key) {
+            (Some(c), _) => {
+                !s.revoked_sessions.contains(&c.session)
+                    && c.passkey
+                        .as_ref()
+                        .is_none_or(|k| s.credentials.get(k) == Some(&c.account))
+                    && c.origin.as_ref().is_none_or(|o| {
+                        s.package_origins
+                            .get(o)
+                            .is_some_and(|r| Some(r.package.as_str()) == c.app.as_deref())
+                    })
+                    && self
+                        .issuer_release
+                        .as_ref()
+                        .is_none_or(|r| s.release_may_hold(app, Some(r)))
+            }
+            (None, Some(k)) => {
+                k.expires_at > now
+                    && s.api_keys
+                        .values()
+                        .any(|r| r.key_id == k.key_id && r.account == k.account)
+            }
+            (None, None) => !matches!(self.caller, Caller::Visitor { .. }),
+        };
+        credential && s.may_reach(app, self.caller.account())
+    }
+
     /// Whether the caller is an upgrade key ([`ApiKeyRecord::upgrades`]).
     pub(crate) fn upgrade_key(&self) -> bool {
         self.api_key.as_ref().is_some_and(|k| k.upgrades.is_some())
@@ -677,39 +717,27 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Who is calling, from the `Authorization` header, upgrade keys included.
+///
+/// A credential is judged on the cluster's latest system state (a read index,
+/// [`Node::sys_fresh_index`]): a session or key revoked through another node is
+/// refused here at once, not once this replica catches up. What needs no state
+/// is checked before that round, so a credential that cannot be valid costs the
+/// system leader nothing (D4): an API key's shape ([`api_key_shaped`]) and the
+/// keys a fresh read found missing ([`UnknownApiKeys`]), a visitor's signature,
+/// a session token's signature under its issuer's attested key and its expiry.
 async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
     let Some(token) = bearer(headers) else {
         return Ok(None);
     };
-    // A credential is judged on the cluster's latest system state (a read
-    // index): a session or key revoked through another node is refused here
-    // at once, not once this replica catches up.
-    let (sys_index, _caught_up) = node.sys_fresh_index().await;
     if let Some(rest) = token.strip_prefix(public_links::VISITOR_PREFIX) {
-        return public_links::visitor(node, rest, sys_index).map(Some);
+        return public_links::visitor(node, rest).await.map(Some);
     }
-    if let Some(_key) = token.strip_prefix("cal_") {
-        let hash = calimero_identity::api_key_hash(token);
-        let rec = node
-            .sys_until(|s| s.api_keys.get(&hash).cloned())
-            .await
-            .ok_or_else(|| ApiError::unauthenticated("unknown API key"))?;
-        if rec.expires_at <= now_secs() {
-            return Err(ApiError::unauthenticated("API key expired"));
-        }
-        return Ok(Some(Principal {
-            caller: Caller::ApiKey {
-                key: rec.key_id.clone(),
-                account: rec.account.clone(),
-            },
-            session: None,
-            api_key: Some(rec),
-            issuer_release: None,
-            consent_page: false,
-            sys_index,
-        }));
+    if token.starts_with("cal_") {
+        return api_key(node, token).await.map(Some);
     }
-    let (claims, issuer_release) = verify_token(node, token).await?;
+    let (claims, issuer) = signed_session(node, token).await?;
+    let (sys_index, _caught_up) = node.sys_fresh_index().await;
+    let issuer_release = session_issuer_serves(node, &claims, issuer)?;
     if node.sys(|s| s.revoked_sessions.contains(&claims.session)) {
         return Err(ApiError::unauthenticated("session revoked"));
     }
@@ -740,6 +768,104 @@ async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal
     }))
 }
 
+/// An API key's length: `cal_` and 32 random bytes in unpadded base64url
+/// (`calimero_identity::new_api_key`).
+const API_KEY_CHARS: usize = 4 + 43;
+
+/// Whether `token` has the shape of an API key this cluster makes; no other is
+/// looked up.
+fn api_key_shaped(token: &str) -> bool {
+    token.len() == API_KEY_CHARS
+        && token.strip_prefix("cal_").is_some_and(|k| {
+            k.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+}
+
+/// Most API key hashes [`UnknownApiKeys`] holds at once.
+pub(crate) const MAX_UNKNOWN_API_KEYS: usize = 4096;
+
+/// How long [`UnknownApiKeys`] remembers a missing key.
+pub(crate) const UNKNOWN_API_KEY_TTL: Duration = Duration::from_secs(60);
+
+/// The hashes of API keys a caught-up read found no key for, each kept
+/// [`UNKNOWN_API_KEY_TTL`], at most [`MAX_UNKNOWN_API_KEYS`] (past that a
+/// missing key is not remembered, and costs a round each time). A key it holds
+/// is refused with no system read. It never refuses a key that exists: a hash is
+/// added only after a read caught up to an index past every write committed
+/// before the request, a key is shown to its maker only once its creation is
+/// committed, and a new key is 256 random bits, so none is presented before it
+/// exists; a deleted key's hash does not come back. Per node, in memory.
+#[derive(Default)]
+pub struct UnknownApiKeys(Mutex<HashMap<String, Instant>>);
+
+impl UnknownApiKeys {
+    fn holds(&self, hash: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(hash)
+            .is_some_and(|at| at.elapsed() < UNKNOWN_API_KEY_TTL)
+    }
+
+    fn add(&self, hash: String) {
+        let mut keys = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if keys.len() >= MAX_UNKNOWN_API_KEYS {
+            keys.retain(|_, at| at.elapsed() < UNKNOWN_API_KEY_TTL);
+            if keys.len() >= MAX_UNKNOWN_API_KEYS {
+                return;
+            }
+        }
+        let _prev = keys.insert(hash, Instant::now());
+    }
+}
+
+/// The caller an API key names. A token of another shape, or one a fresh read
+/// found missing lately, is refused before the read-index round; a missing key
+/// is waited for ([`Node::sys_until`]) only when the round did not catch this
+/// replica up, since a caught-up state already holds every key made before the
+/// request.
+async fn api_key(node: &Node, token: &str) -> Result<Principal, ApiError> {
+    let unknown = || ApiError::unauthenticated("unknown API key");
+    if !api_key_shaped(token) {
+        return Err(unknown());
+    }
+    let hash = calimero_identity::api_key_hash(token);
+    if node.unknown_api_keys.holds(&hash) {
+        return Err(unknown());
+    }
+    let (sys_index, caught_up) = node.sys_fresh_index().await;
+    let find = |s: &SystemState| s.api_keys.get(&hash).cloned();
+    let found = if caught_up {
+        node.sys(find)
+    } else {
+        node.sys_until(find).await
+    };
+    let Some(rec) = found else {
+        if caught_up {
+            node.unknown_api_keys.add(hash);
+        }
+        return Err(unknown());
+    };
+    if rec.expires_at <= now_secs() {
+        return Err(ApiError::unauthenticated("API key expired"));
+    }
+    Ok(Principal {
+        caller: Caller::ApiKey {
+            key: rec.key_id.clone(),
+            account: rec.account.clone(),
+        },
+        session: None,
+        api_key: Some(rec),
+        issuer_release: None,
+        consent_page: false,
+        sys_index,
+    })
+}
+
 /// Whether `origin` is still registered for `package`.
 fn origin_holds(node: &Node, package: Option<&str>, origin: &str) -> bool {
     node.sys(|s| {
@@ -755,28 +881,19 @@ fn origin_gone() -> ApiError {
     )
 }
 
-/// Check a session token: signed by the receipt key of the node it names,
-/// which this node attests at that node's registered address, and whose
-/// attested release may serve the account
-/// (`SystemState::release_may_serve_account`). Answers the claims and the
-/// issuer's release, which each app access checks too (`Principal::within`).
-async fn verify_token(
-    node: &Node,
-    token: &str,
-) -> Result<(SessionClaims, Option<String>), ApiError> {
+/// The issuer a session token names, as this node attested it, under whose
+/// receipt key the token is signed and unexpired: what needs no fresh system
+/// state, so a token its issuer did not sign is refused before the read-index
+/// round. [`session_issuer_serves`] judges the issuer on the fresh state after.
+async fn signed_session(node: &Node, token: &str) -> Result<(SessionClaims, Issuer), ApiError> {
     let claims = peek_session(token).map_err(|_| ApiError::unauthenticated("malformed token"))?;
     let issuer_id = claims.node;
-    let unknown = || {
-        ApiError::unauthenticated(
-            "the token's issuing node is not a node of this cluster, or cannot be attested; refresh the session",
-        )
-    };
     // Answered from the key this node attested ahead of time: the issuer may
     // be stopped or frozen by now.
     let mut issuer = node
         .session_issuer(issuer_id, false)
         .await
-        .ok_or_else(unknown)?;
+        .ok_or_else(unknown_issuer)?;
     let named = calimero_identity::from_b64url(&claims.key).ok();
     if named.as_deref() != Some(issuer.key.as_slice()) {
         // Signed under another key than the one attested here: the issuer's
@@ -784,10 +901,33 @@ async fn verify_token(
         issuer = node
             .session_issuer(issuer_id, true)
             .await
-            .ok_or_else(unknown)?;
+            .ok_or_else(unknown_issuer)?;
     }
     let claims = verify_session(&issuer.key, token, now_secs())
         .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
+    Ok((claims, issuer))
+}
+
+fn unknown_issuer() -> ApiError {
+    ApiError::unauthenticated(
+        "the token's issuing node is not a node of this cluster, or cannot be attested; refresh the session",
+    )
+}
+
+/// Judged on fresh system state, after [`signed_session`]: the token's issuer
+/// is still a node of this cluster, and its attested release may serve the
+/// account (`SystemState::release_may_serve_account`). Answers the issuer's
+/// release, which each app access checks too (`Principal::within`).
+fn session_issuer_serves(
+    node: &Node,
+    claims: &SessionClaims,
+    issuer: Issuer,
+) -> Result<Option<String>, ApiError> {
+    let issuer_id = claims.node;
+    // A node removed before the request arrived: its sessions stop verifying.
+    if issuer_id != node.config.node_id && !node.is_peer(issuer_id) {
+        return Err(unknown_issuer());
+    }
     let release = issuer
         .release
         .ok_or_else(|| ApiError::unauthenticated("the token's issuing node names no release"))?;
@@ -799,7 +939,7 @@ async fn verify_token(
             "this session was signed by a node whose release the account's owners have not approved; sign in again",
         ));
     }
-    Ok((claims, Some(release)))
+    Ok(Some(release))
 }
 
 /// This node's release is not one the account's approvers approved: it
@@ -1240,10 +1380,11 @@ fn init_state(state: &crate::app::AppState) -> Option<Result<(), Value>> {
     }
 }
 
-/// The caller, if they may reach `app` with this request kind.
 /// Whether `account` holds a read-only row in the team `app` belongs to
 /// (checked again against the latest system state before saying yes: at or
 /// past `sys_index`, the index the request's round named, else a round's).
+/// The record is read again from that state ([`fresh_record`]): the one in hand
+/// can predate a change of its access or owner.
 pub async fn read_only_in(
     node: &Node,
     app: &crate::types::AppRecord,
@@ -1253,13 +1394,16 @@ pub async fn read_only_in(
     let Some(a) = account else {
         return false;
     };
-    // Only through teams: a name, or the whole organization, writes.
-    let teams = app.access.teams();
-    if teams.is_empty() || a == app.owner || app.access.org_wide() || app.access.names(a) {
-        return false;
-    }
     let check = || {
         node.sys(|s| {
+            let Some(app) = fresh_record(s, app) else {
+                return false;
+            };
+            // Only through teams: a name, or the whole organization, writes.
+            let teams = app.access.teams();
+            if teams.is_empty() || a == app.owner || app.access.org_wide() || app.access.names(a) {
+                return false;
+            }
             s.orgs
                 .get(&app.org)
                 .is_some_and(|o| teams.iter().all(|t| !o.writes_team(a, t)))
@@ -1271,16 +1415,24 @@ pub async fn read_only_in(
     }
 }
 
+/// `app`'s record as `s` holds it. A handler reads the record (`Node::app`) before
+/// `gate` makes the request's read-index round, so on a follower behind, the one in
+/// hand can predate an owner, organization or access change committed through another
+/// node; every check made after `gate` reads it again here. `None`: deleted since.
+/// Regression: `a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer`.
+fn fresh_record<'s>(
+    s: &'s SystemState,
+    app: &crate::types::AppRecord,
+) -> Option<&'s crate::types::AppRecord> {
+    s.apps.get(&app.app_id)
+}
+
 /// Whether `account` may reach `app`, judged on the app's record as applied
 /// now. Handlers read the record before `principal` makes its fresh system
 /// read, so the record in hand can predate a grant or revocation committed
 /// through another node; this reads it again.
 fn reaches(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
-    node.sys(|s| {
-        s.apps
-            .get(&app.app_id)
-            .is_some_and(|now| s.may_reach(now, account))
-    })
+    node.sys(|s| fresh_record(s, app).is_some_and(|now| s.may_reach(now, account)))
 }
 
 async fn gate(
@@ -1541,6 +1693,21 @@ async fn step_up(
     })
 }
 
+/// For a stream `gate` let open: whether `p` would still be admitted to `app_id`
+/// (`Principal::admitted_on`), judged on fresh system state: a read-index round begun
+/// now, applied here ([`Node::sys_caught_up`]), so it holds every system write committed
+/// before what the stream is about to send, a removal or revocation committed through
+/// another node included. False ends the stream, as does a replica that cannot catch up in
+/// `Config::read_wait`; the subscriber opens it again through `gate`. Every stream judges
+/// each batch it sends with it (`local_events` with the same round, the presence stream,
+/// a pipeline run's events, an event stream proxied from another replica), never only
+/// when it opened. Regressions: `a_removed_member_stops_receiving_presence`,
+/// `a_revoked_key_or_session_stops_its_event_and_presence_streams`,
+/// `a_removed_member_stops_receiving_a_runs_events`.
+pub(crate) async fn still_admitted(node: &Node, p: &Principal, app_id: &str) -> bool {
+    node.sys_caught_up().await && node.sys(|s| p.admitted_on(s, app_id, now_secs()))
+}
+
 /// How many events that reached this replica together one freshness round
 /// ([`Node::sys_caught_up`]) in [`local_events`] covers.
 pub const MAX_EVENT_BATCH: usize = 256;
@@ -1556,14 +1723,18 @@ pub const MAX_EVENT_BATCH: usize = 256;
 /// covers the backlog, and one each batch of live events that arrived together (at
 /// most [`MAX_EVENT_BATCH`]). When this replica cannot catch up in
 /// `Config::read_wait`, the stream ends: the subscriber resumes from the last id it
-/// got, judged afresh. An event of an app on wasmer has no audience and goes out as
-/// before. Regression:
-/// `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`.
+/// got, judged afresh. With `principal` (a stream opened here, not one a peer asks for:
+/// that peer judges its own), the same state judges the credential that opened it
+/// ([`still_admitted`]), so a revoked API key or an ended session ends it. An event of an
+/// app on wasmer has no audience and goes out as before. Regressions:
+/// `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`,
+/// `a_revoked_key_or_session_stops_its_event_and_presence_streams`.
 fn local_events(
     node: &Arc<Node>,
     app_id: &str,
     from: u64,
     subscriber: Option<String>,
+    principal: Option<Principal>,
 ) -> Option<impl Stream<Item = Result<Event, Infallible>>> {
     let g = node.hosted(app_id)?;
     let (backlog, rx) = g.read_local(|m, _| {
@@ -1582,8 +1753,9 @@ fn local_events(
     let (node, app) = (Arc::clone(node), app_id.to_owned());
     let judged = batches.then(move |batch| {
         let (node, app, subscriber) = (Arc::clone(&node), app.clone(), subscriber.clone());
+        let principal = principal.clone();
         async move {
-            if batch.iter().all(|e| e.audience.is_none()) {
+            if principal.is_none() && batch.iter().all(|e| e.audience.is_none()) {
                 return Some(batch);
             }
             // Every event of the batch is here already: a round begun now names an
@@ -1591,17 +1763,25 @@ fn local_events(
             if !node.sys_caught_up().await {
                 return None;
             }
-            Some(node.sys(|s| {
-                batch
-                    .into_iter()
-                    .filter(|e| match &e.audience {
-                        None => true,
-                        Some(audience) => s.apps.get(&app).is_some_and(|a| {
-                            s.receives(a, audience, e.caller.as_deref(), subscriber.as_deref())
-                        }),
-                    })
-                    .collect::<Vec<_>>()
-            }))
+            node.sys(|s| {
+                if principal
+                    .as_ref()
+                    .is_some_and(|p| !p.admitted_on(s, &app, now_secs()))
+                {
+                    return None;
+                }
+                Some(
+                    batch
+                        .into_iter()
+                        .filter(|e| match &e.audience {
+                            None => true,
+                            Some(audience) => s.apps.get(&app).is_some_and(|a| {
+                                s.receives(a, audience, e.caller.as_deref(), subscriber.as_deref())
+                            }),
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
         }
     });
     let stream = judged
@@ -1705,12 +1885,16 @@ fn parse_blob_id(id: &str) -> Result<[u8; 32], ApiError> {
 
 /// Whether `account` may upload and list the files of `app`: its owner and the members of its
 /// organization (not guests), even where the app is public; an organization's app's owner only
-/// while a member ([`crate::system::SystemState::owner_acts`]).
+/// while a member ([`crate::system::SystemState::owner_acts`]). Judged on the record as `s`
+/// holds it ([`fresh_record`]), not the one in hand.
 fn may_handle_files(
     s: &crate::system::SystemState,
     app: &crate::types::AppRecord,
     account: Option<&str>,
 ) -> bool {
+    let Some(app) = fresh_record(s, app) else {
+        return false;
+    };
     account.is_some_and(|a| {
         s.owner_acts(app, a)
             || s.orgs
@@ -1721,9 +1905,12 @@ fn may_handle_files(
 
 /// Whether `account` may manage `app`'s data (its owner, of an organization's
 /// app while a member of it, or an admin of its organization): delete its
-/// blobs ([`crate::system::SystemState::manages_app`]).
+/// blobs ([`crate::system::SystemState::manages_app`]). Judged on the record as applied
+/// now ([`fresh_record`]), not the one in hand.
 fn manages_app(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
-    account.is_some_and(|a| node.sys(|s| s.manages_app(app, a)))
+    account.is_some_and(|a| {
+        node.sys(|s| fresh_record(s, app).is_some_and(|app| s.manages_app(app, a)))
+    })
 }
 
 // ---------------------------------------------------------------- ops (mdma)
@@ -2319,8 +2506,43 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        admit_pending, typed_id, Pending, MAX_CHALLENGES_PER_ACCOUNT, MAX_PENDING_CHALLENGES,
+        admit_pending, api_key_shaped, typed_id, Pending, UnknownApiKeys,
+        MAX_CHALLENGES_PER_ACCOUNT, MAX_PENDING_CHALLENGES, MAX_UNKNOWN_API_KEYS,
     };
+
+    /// Every key the node makes passes the shape check that refuses a token
+    /// before its system read; nothing else of the `cal_` prefix does.
+    #[test]
+    fn every_made_api_key_is_shaped_and_junk_is_not() {
+        for _ in 0..1000 {
+            let (key, _hash) = calimero_identity::new_api_key();
+            assert!(api_key_shaped(&key), "{key}");
+        }
+        let made = calimero_identity::new_api_key().0;
+        for junk in [
+            "cal_",
+            "cal_short",
+            &made[..made.len() - 1],
+            &format!("{made}A"),
+            &format!("cal_{}", "!".repeat(43)),
+            &format!("cax_{}", &made[4..]),
+        ] {
+            assert!(!api_key_shaped(junk), "{junk}");
+        }
+    }
+
+    /// The missing-key memory holds what it was given and stops growing at
+    /// its bound rather than evicting a fresh entry.
+    #[test]
+    fn unknown_api_keys_are_bounded() {
+        let keys = UnknownApiKeys::default();
+        assert!(!keys.holds("h0"));
+        for i in 0..MAX_UNKNOWN_API_KEYS + 10 {
+            keys.add(format!("h{i}"));
+        }
+        assert!(keys.holds("h0"));
+        assert!(!keys.holds(&format!("h{MAX_UNKNOWN_API_KEYS}")));
+    }
 
     fn sign_up(expires: u64) -> Pending {
         Pending::Register {
