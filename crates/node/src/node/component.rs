@@ -850,6 +850,20 @@ impl Node {
         live
     }
 
+    /// Deletes the compiled artifacts in `<data_dir>/components` no app uses any more (see
+    /// [`Self::live_bundles`] and what this node keeps prepared), and those of another
+    /// wasmtime or engine config, each once unmodified for
+    /// [`calimero_app_engine_wasmtime::CACHE_SWEEP_GRACE`], so a release just installed keeps
+    /// its artifact until an app is made from it. Blocking file work: run off the async
+    /// workers.
+    pub fn sweep_component_cache(&self) -> calimero_app_engine_wasmtime::CacheSweep {
+        let mut live = self.live_bundles();
+        if let Ok(prepared) = self.prepared.lock() {
+            live.extend(prepared.keys().cloned());
+        }
+        self.wasm.sweep_cache(|component| live.contains(component))
+    }
+
     /// How many times this node ran the engine's `prepare`. Tests only.
     #[cfg(feature = "testing")]
     #[must_use]

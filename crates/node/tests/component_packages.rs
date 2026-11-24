@@ -14,6 +14,7 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use calimero_client::types::ViewsRequestConsistency;
 use calimero_client::Client;
@@ -281,6 +282,54 @@ async fn a_release_with_both_components_records_both_and_its_app_runs_calls() {
         .await
         .unwrap();
     assert_eq!(done.result, json!("0"));
+}
+
+/// Sets `path`'s modification time two hours back, past the component cache's sweep grace.
+fn age(path: &std::path::Path) {
+    let then = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(then)
+        .unwrap();
+}
+
+/// A node's component cache keeps what its apps run and deletes the artifacts of components
+/// no app uses any more, so an upgrade or a deleted app leaves no compiled code behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_component_cache_keeps_only_what_apps_run() {
+    let (c, owner, _pk) = compute_cluster().await;
+    let both = common::components("fixture-compute");
+    install(&owner, "1.0.0", &both.app, None).await;
+    let _app = create(&owner, "1.0.0").await;
+
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let dir = node.config.data_dir.join("components");
+    let main_hash = sha256_hex(&both.app);
+    let names = || -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let kept = names();
+    assert_eq!(kept.len(), 2, "the app's artifact and its .mac: {kept:?}");
+    assert!(kept.iter().all(|n| n.starts_with(&main_hash)), "{kept:?}");
+    // A component no app runs any more, compiled by this wasmtime and config.
+    let gone = "ab".repeat(32);
+    for name in &kept {
+        std::fs::write(dir.join(name.replace(&main_hash, &gone)), b"old").unwrap();
+    }
+    for name in names() {
+        age(&dir.join(name));
+    }
+
+    let swept = node.sweep_component_cache();
+    assert_eq!(swept.files, 2, "{swept:?}");
+    assert_eq!(names(), kept);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -927,6 +976,53 @@ async fn a_compute_only_package_with_a_pipeline_installs_and_lists_it() {
         .await
         .map(wire);
     assert_eq!(none.unwrap_err().code(), Some("NOT_FOUND"));
+}
+
+/// A compute component's methods and caps are read from its ABI, never by compiling it: a
+/// release with pipelines compiles its compute component once, at install, on the node that
+/// verified it, and checking a pipeline against it on any node (as a start, a module lookup
+/// or the run driver does) compiles nothing more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn reading_a_compute_components_caps_compiles_nothing() {
+    let (c, owner, _pk) = compute_cluster().await;
+    let compiles = || -> Vec<u64> {
+        c.nodes
+            .iter()
+            .flatten()
+            .map(|n| n.node.compute_engine().compiles())
+            .collect()
+    };
+    install_with_pipelines(&owner, &[("pipelines/p1.yaml", PIPELINE)])
+        .await
+        .unwrap();
+    assert_eq!(compiles(), [1, 0, 0], "the install's verification");
+    for n in c.nodes.iter().flatten() {
+        let started = Instant::now();
+        let release = loop {
+            let found = n.node.sys(|s| {
+                s.packages
+                    .get("com.test.job")
+                    .and_then(|p| p.versions.get("1.0.0"))
+                    .cloned()
+            });
+            if let Some(release) = found {
+                break release;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "release not replicated"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let checked = n
+            .node
+            .validate_pipeline(PIPELINE.as_bytes(), Some(&release), "owner")
+            .await
+            .unwrap();
+        assert_eq!(checked["ok"], true, "{checked}");
+        assert_eq!(checked["worstCaseFuel"], "20001000000", "{checked}");
+    }
+    assert_eq!(compiles(), [1, 0, 0], "no compile to read the caps");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
