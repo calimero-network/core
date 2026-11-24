@@ -639,6 +639,10 @@ pub fn verifier_policy(
         allowed_rtmr3: m.allowed_rtmr3.clone(),
         accept_mock: false,
         require_app_hash: true,
+        // The compiled-in floor on Intel's TCB evaluation data: peers, clients
+        // and job attestation are all judged here.
+        min_tcb_evaluation_data_number:
+            calimero_tee_attestation::DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER,
     }
 }
 
@@ -1651,6 +1655,8 @@ mod tests {
         let mut result =
             calimero_tee_attestation::verify_mock_attestation(&quote, &[2; 32], &[0; 32]).unwrap();
         result.tcb_status = Some("UpToDate".into());
+        result.tcb_evaluation_data_number =
+            Some(calimero_tee_attestation::DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER);
         result
     }
 
@@ -1684,6 +1690,25 @@ mod tests {
         assert!(err.to_string().contains("MeasurementMismatch"), "{err}");
         let err = judge(&result, &Policy::default(), None).await.unwrap_err();
         assert!(err.to_string().contains("no measurement policy"), "{err}");
+    }
+
+    /// Peers, clients and job attestation all reach `judge`: an `UpToDate`
+    /// computed against Intel TCB evaluation data below the floor (a
+    /// collateral source serving an older, still-signed baseline), or of
+    /// unknown age, admits nothing.
+    #[tokio::test]
+    async fn a_verdict_from_collateral_below_the_floor_is_refused() {
+        for number in [Some(17), None] {
+            let mut result = checked_quote();
+            result.tcb_evaluation_data_number = number;
+            let err = judge(&result, &pinned(&"00".repeat(48)), None)
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("TcbEvaluationDataTooOld"),
+                "{number:?}: {err}"
+            );
+        }
     }
 
     fn evidence() -> calimero_tee_attestation::KmsEvidence {

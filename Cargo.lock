@@ -1106,6 +1106,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tdx-quote",
+ "time",
  "tokio",
  "tracing",
 ]
