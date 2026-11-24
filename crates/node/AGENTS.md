@@ -2456,7 +2456,7 @@ API and system group:
 - **Outbound HTTP from calls** (D76; `RunExtras::outbound`, `TimedHttp`): calls (but a
   read-only member's), timers and deliveries get `NodeHttp` over `outbound_for`, as actions
   do, each response awaited at most `CALL_FETCH_TIMEOUT` (1.5 s, inside the 2 s budget;
-  then the app's fetch gets an error). The host core records each exchange
+  then the app's fetch gets an error), and never past the run's deadline (below). The host core records each exchange
   (`Outcome::http`, `component::HttpRecord`: the request with its placeholders, the
   redacted response, bodies cut to 64 KiB with their lengths) in the call's entry,
   whatever its status; followers never fetch, and a keyed retry replays. Tests:
@@ -2470,13 +2470,29 @@ API and system group:
   host core's derived key, `Caller::App(source)` and `CallRequest::sync_from` (the target
   checks the boundary again and runs it as `xcall-deliver`, so it reaches no further); a
   view through `Node::view` (strong). The run's thread waits at most `SYNC_XCALL_WAIT`
-  (3 s) while the runtime runs it; two apps calling each other at once both time out.
+  (3 s) while the runtime runs it, and never past its own deadline; two apps calling each
+  other at once both end `Timeout` at their deadline.
   A batch (`xcall.batch`, `NodeXcall::batch`) prepares each request as the same call or
   view would (`prepare_call`, `prepare_view`), spawns them all on the runtime and waits for
   them with one `SYNC_XCALL_WAIT` deadline (`wait_all`), so a run holds its own proposal lock
   for the slowest request, not their sum; requests to one target take turns on its lock.
   Tests: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
   (`apps/fixture-captcha`), `joined_sync_calls_run_at_once_and_a_rerun_replays_them`.
+- **A run's deadline covers its host calls** (C2): wasmtime's epoch deadline is checked only
+  while the guest's code runs, so a run waiting in a host call used to wait as long as the
+  host did (a sync xcall up to `SYNC_XCALL_WAIT`, past a 2 s budget). `run_with` (and the
+  action runner) take `deadline = now + budget.wall_clock` and hand it to the host core
+  (`HostCore::with_deadline`) and to every host that waits: `TimedHttp` (the lesser of its
+  `timeout` and the time left; actions' outbound goes through it too), `NodeXcall`
+  (`wait_all`) and `NodeAction` (`wait`). A wait that ends at or past the deadline ends the
+  run `Trap(Timeout, WALL_CLOCK_EXCEEDED)`, the status an overrun in the guest's own code
+  gets. Deterministic: the deadline only decides whether the leader, before the log, gets
+  an outcome to propose; a `Timeout` is never logged (`Outcome::is_retryable`; a call,
+  tick, `init` or delivery is run again) and replicas apply the logged outcome without
+  running anything, so no entry and no apply differs, and nothing is gated. Regression:
+  `a_run_waiting_in_a_host_call_ends_at_its_own_deadline` (`tests/it/component_cluster.rs`;
+  a 600 ms run waiting on two 600 ms calls in turn answered after 1.22 s before, at its
+  deadline after).
 - **Files** (`node/component/files.rs`; tests `component_files.rs`): a file is a sealed blob.
   It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
   A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key (`backup::file_key`, not the TEE key) and the app's blob records.

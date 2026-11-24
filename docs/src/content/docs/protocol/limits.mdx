@@ -20,7 +20,7 @@ error the guest's host call returns.
 | --- | --- | --- |
 | Fuel per call or view | 200 000 000 | `DEFAULT_FUEL` |
 | Memory | 1024 pages = 64 MiB, one memory | `DEFAULT_MEMORY_PAGES`, `MAX_MEMORIES` |
-| Wall clock | 2 s for a call, view, timer or delivery; 10 s for an action | `CALL_WALL_CLOCK`, `ACTION_WALL_CLOCK` |
+| Wall clock | 2 s for a call, view, timer or delivery; 10 s for an action. A deadline for the whole run, host calls included: one that waits (outbound HTTP, a synchronous xcall, an action's view or call) waits no longer than the run has left, and one that ends past it ends the run `Timeout` (`wall clock exceeded`), not logged | `CALL_WALL_CLOCK`, `ACTION_WALL_CLOCK`, `WALL_CLOCK_EXCEEDED` |
 | Stack | 200 KiB | `MAX_WASM_STACK` |
 | Table elements, instances, tables, resources | 100 000, 20, 2, 4096 | `MAX_TABLE_ELEMENTS`, `MAX_INSTANCES`, `MAX_TABLES`, `MAX_RESOURCES` |
 | Storage key | 1 KiB | `MAX_KEY_BYTES` |

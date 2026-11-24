@@ -21,8 +21,9 @@ const COUNT_LIMIT_PREFIX: &str = "resource limit exceeded";
 #[error("memory or table limit reached")]
 pub(crate) struct GrowRefused;
 
-/// The detail of a run that used its whole wall-clock budget.
-pub const WALL_CLOCK_EXCEEDED: &str = "wall clock exceeded";
+/// The detail of a run that used its whole wall-clock budget (the host core's, which a host
+/// call that ends past the deadline answers too).
+pub use calimero_app_host::WALL_CLOCK_EXCEEDED;
 /// The detail of a memory growth the operating system refused.
 pub(crate) const MEMORY_UNAVAILABLE: &str = "memory allocation failed";
 /// The detail of a run ended by its interrupt flag.
