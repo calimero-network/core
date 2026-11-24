@@ -2825,6 +2825,72 @@ public struct Client: APIProtocol {
             }
         )
     }
+    /// An app's outbound requests
+    ///
+    /// The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/outbound-log`.
+    /// - Remark: Generated from `#/paths//apps/{app}/outbound-log/get(app_outbound_log)`.
+    public func appOutboundLog(_ input: Operations.AppOutboundLog.Input) async throws -> Operations.AppOutboundLog.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppOutboundLog.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/outbound-log",
+                    parameters: [
+                        input.path.app
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .get
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                return (request, nil)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppOutboundLog.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Operations.AppOutboundLog.Output.Ok.Body.JsonPayload.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
     /// An app's pipeline runs
     ///
     /// The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.
