@@ -5,6 +5,11 @@
 //! proof itself. Only a passkey session gets one: no API key, no anonymous
 //! caller; and only the operator reads the keys.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_client::attest::AccountProof;
 use calimero_client::{Client, Error, Request};
 use serde_json::{json, Value};

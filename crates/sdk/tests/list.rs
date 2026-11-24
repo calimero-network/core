@@ -1,6 +1,11 @@
 //! `List`: an ordered list where inserting and moving anywhere is a few writes, with ids that
 //! survive moves.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_sdk::collections::{List, UnorderedMap};
 use calimero_sdk::env::mock;
 use calimero_sdk::{MemStore, StorageError};

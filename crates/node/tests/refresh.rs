@@ -7,6 +7,11 @@
 //! token presented again after it was exchanged revokes its session.
 //! (`tests/cluster.rs` runs the harness's zero: every refresh exchanges.)
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::time::Duration;
 
 use calimero_client::{Client, Passkey, Session};

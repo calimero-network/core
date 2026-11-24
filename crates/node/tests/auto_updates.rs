@@ -7,6 +7,11 @@
 //! `harness/cluster.rs`). Run one at a time (`--test-threads 1`): the clock shift is the
 //! process's.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::time::Duration;
 
 use calimero_client::types::ViewsRequestConsistency;
@@ -29,10 +34,21 @@ const DAY: u64 = 24 * 3600;
 
 /// A signed single-service `.mpk` of `PACKAGE` at `version`, declaring no destination.
 fn release(version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
+    release_of(PACKAGE, version, wasm, key, Value::Null)
+}
+
+/// [`release`] of `package`, its manifest's `uses` set to `uses` (JSON; `null` for none).
+fn release_of(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    uses: Value,
+) -> Vec<u8> {
     let sha = |b: &[u8]| hex::encode(calimero_identity::sha256(b));
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
-        package: PACKAGE.to_owned(),
+        package: package.to_owned(),
         app_version: version.to_owned(),
         signer_id: Some(calimero_bundle::derive_signer_id_did_key(
             key.verifying_key().as_bytes(),
@@ -54,7 +70,7 @@ fn release(version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u
         frontend_aliases: Vec::new(),
         outbound: Vec::new(),
         secrets: None,
-        uses: None,
+        uses: serde_json::from_value(uses).unwrap(),
         upgrades: None,
         instance_org: None,
         guests: None,
@@ -134,6 +150,39 @@ fn state_version(wasm: &[u8], version: u64) -> Vec<u8> {
         }
     }
     panic!("no state version to change in the fixture's ABI");
+}
+
+/// `wasm` whose embedded ABI no longer lists method `from` and lists `to` (same length)
+/// instead: to the node and the classifier, a release that removed `from`.
+fn rename_method(wasm: &[u8], from: &str, to: &str) -> Vec<u8> {
+    assert_eq!(
+        from.len(),
+        to.len(),
+        "a same-length edit keeps the section's size"
+    );
+    let data = wasmparser::Parser::new(0)
+        .parse_all(wasm)
+        .find_map(|p| match p {
+            Ok(wasmparser::Payload::CustomSection(s)) if s.name() == "calimero:abi" => {
+                let at = usize::try_from(s.data_offset()).unwrap();
+                Some(at..at + s.data().len())
+            }
+            _ => None,
+        })
+        .expect("the fixture embeds its ABI");
+    let (from, to) = (format!("\"{from}\""), format!("\"{to}\""));
+    let edited = String::from_utf8(wasm[data.clone()].to_vec())
+        .unwrap()
+        .replace(&from, &to);
+    let abi: Value = serde_json::from_str(&edited).unwrap();
+    assert!(
+        abi["methods"].get(from.trim_matches('"')).is_none(),
+        "{abi}"
+    );
+    assert!(abi["methods"].get(to.trim_matches('"')).is_some(), "{abi}");
+    let mut out = wasm.to_vec();
+    out[data].copy_from_slice(edited.as_bytes());
+    out
 }
 
 #[allow(
@@ -712,5 +761,185 @@ async fn a_pass_off_the_system_leader_moves_nothing() {
         0,
         "a node that does not lead the system group upgraded an app"
     );
+    shift_update_clock(0);
+}
+
+/// A green update of an instance whose release creates apps (`uses`, `mode: create`), with
+/// no destination in the unit, applies on its own even though the new release pins newer
+/// releases of its members: it moves the instance alone and the members stay where they
+/// are, until an owner or admin upgrades the unit. `meroctl app check`'s line and the
+/// protocol docs say so; this is the rule they describe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_update_whose_members_differ_applies_on_its_own_and_moves_the_instance_alone() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    let uses = |kv: &str| json!({ "kv": { "package": "com.test.auto-kv", "range": "^0.1", "version": kv } });
+    for (package, version, uses, tag) in [
+        ("com.test.auto-kv", "0.1.0", Value::Null, "kv10"),
+        ("com.test.auto-kv", "0.1.1", Value::Null, "kv11"),
+        ("com.test.auto-unit", "0.1.0", uses("0.1.0"), "u10"),
+    ] {
+        let _ = alice
+            .packages()
+            .upload(release_of(
+                package,
+                version,
+                &variant(&kv_wasm(), tag),
+                &publisher,
+                uses,
+            ))
+            .await
+            .unwrap();
+    }
+    let org = home_org(&alice).await;
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": "com.test.auto-unit", "version": "0.1.0", "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    let _ = alice
+        .packages()
+        .upload(release_of(
+            "com.test.auto-unit",
+            "0.2.0",
+            &variant(&kv_wasm(), "u20"),
+            &publisher,
+            uses("0.1.1"),
+        ))
+        .await
+        .unwrap();
+    let update = get_until(&alice, &format!("apps/{notes}/update"), 15, |u| {
+        u["available"]["version"] == "0.2.0"
+    })
+    .await;
+    assert_eq!(update["available"]["class"], "green", "{update}");
+    assert_eq!(update["unit"], true, "{update}");
+
+    shift_update_clock(DAY + 600);
+    passes_until(
+        &c,
+        || async { running(&alice, &notes).await == "0.2.0" },
+        "the instance never applied on its own",
+    )
+    .await;
+    let moved = get(&alice, &format!("apps/{notes}")).await.unwrap();
+    assert_eq!(moved["lastUpgrade"]["by"], "policy:auto-update", "{moved}");
+    assert_eq!(moved["lastUpgrade"]["auto"], true, "{moved}");
+    assert_eq!(running(&alice, &kv).await, "0.1.0");
+    assert_eq!(pass(&c).await, 0);
+    assert_eq!(running(&alice, &kv).await, "0.1.0");
+    shift_update_clock(0);
+}
+
+/// A green update that drops a method waits for a person: another app may call it (here
+/// the plugin's `askWho` calls the calendar's `whoView`), so it never applies on its own,
+/// and a quiet release below it still does. A person may still approve it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_green_update_that_drops_a_method_waits_for_a_person() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[47; 32]);
+    let uses = json!({
+        "cal": { "package": PACKAGE, "range": "^1", "mode": "attach", "methods": ["whoView"] },
+    });
+    for mpk in [
+        release("1.0.0", &kv_wasm(), &publisher),
+        release_of("com.test.plugin", "1.0.0", &kv_wasm(), &publisher, uses),
+    ] {
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let org = home_org(&alice).await;
+    let create = |name: &str, package: &str| {
+        typed(json!({ "name": name, "package": package, "version": "1.0.0", "org": org }))
+    };
+    let calendar = alice
+        .apps()
+        .create(create("calendar", PACKAGE))
+        .await
+        .unwrap()
+        .app_id;
+    let plugin = alice
+        .apps()
+        .create(create("plugin", "com.test.plugin"))
+        .await
+        .unwrap()
+        .app_id;
+    let ask = || {
+        alice.apps().call(
+            &plugin,
+            "askWho",
+            Some(json!({ "app": calendar })),
+            None,
+            None,
+        )
+    };
+    assert_eq!(ask().await.unwrap().result, json!(format!("app:{plugin}")));
+
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    let dropped = rename_method(&kv_wasm(), "whoView", "whoVieX");
+    for mpk in [
+        release("1.0.1", &variant(&kv_wasm(), "v101"), &publisher),
+        release("1.1.0", &dropped, &publisher),
+    ] {
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let update = get_until(&alice, &format!("apps/{calendar}/update"), 15, |u| {
+        u["available"]["version"] == "1.1.0"
+    })
+    .await;
+    assert_eq!(update["available"]["class"], "green", "{update}");
+    assert_eq!(
+        update["available"]["removedMethods"],
+        json!(["whoView"]),
+        "{update}"
+    );
+
+    // Past the hold, the quiet 1.0.1 applies on its own and 1.1.0 never does.
+    shift_update_clock(DAY + 600);
+    passes_until(
+        &c,
+        || async { running(&alice, &calendar).await == "1.0.1" },
+        "the release below it never applied",
+    )
+    .await;
+    for _ in 0..3 {
+        assert_eq!(
+            pass(&c).await,
+            0,
+            "a release that drops a method applied on its own"
+        );
+    }
+    assert_eq!(running(&alice, &calendar).await, "1.0.1");
+    assert_eq!(ask().await.unwrap().result, json!(format!("app:{plugin}")));
+    let waiting = get(&alice, &format!("apps/{calendar}/update"))
+        .await
+        .unwrap();
+    assert_eq!(waiting["available"]["version"], "1.1.0", "{waiting}");
+    assert_eq!(waiting["mayApprove"], true, "{waiting}");
     shift_update_clock(0);
 }

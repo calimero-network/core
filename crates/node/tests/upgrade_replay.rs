@@ -16,6 +16,11 @@
 //! value (this release may add fields, never drop or change one). Then the
 //! replayed state takes a write.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -111,6 +116,7 @@ fn config(dir: &Path, port: u16, release: &str) -> Config {
         registry: None,
         allow_unsigned_bundles: true,
         allow_package_uploads: true,
+        app_logs: false,
         outbound: None,
         governance: Default::default(),
         apps_domain: None,
