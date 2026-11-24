@@ -15,6 +15,7 @@ __author__ = "Calimero Network"
 __email__ = "team@calimero.network"
 
 from calimero_client_py import (
+    Calimero,
     Client,
     CloudClient,
     CloudError,
@@ -27,6 +28,7 @@ from calimero_client_py import (
 )
 
 __all__ = [
+    "Calimero",
     "Client",
     "CloudClient",
     "CloudError",
