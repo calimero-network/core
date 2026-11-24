@@ -1299,7 +1299,7 @@ async fn app_transfer(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor)) {
+    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_TRANSFER));
     }
     // Before organizations are ordinary, an app in a personal organization handed to
@@ -1376,7 +1376,7 @@ async fn app_move(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor)) {
+    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_MOVE));
     }
     if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
@@ -2072,7 +2072,10 @@ async fn app_link(
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
     let target = node.app(&target_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor) && s.manages_app(&target, &actor)) {
+    if !node.sys(|s| {
+        fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))
+            && fresh_record(s, &target).is_some_and(|target| s.manages_app(target, &actor))
+    }) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
     }
     if target_id == app_id || target.org != app.org {
@@ -2132,7 +2135,7 @@ async fn app_unlink(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor)) {
+    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
     }
     if !app.attached.contains_key(&name) {

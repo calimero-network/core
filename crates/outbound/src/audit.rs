@@ -4,7 +4,7 @@
 //! Every request a run hands its [`crate::OutboundHost`] is recorded here, sent or
 //! refused, as one [`AuditEntry`]: when, the method, the host, the path as sent
 //! (no query string, at most [`MAX_AUDIT_PATH_BYTES`]), the status or why it
-//! failed ([`FailureKind`]), the names of the secrets it asked for, and the
+//! failed ([`AuditFailure`]), the names of the secrets it asked for, and the
 //! request's and the response's sizes. Never a secret's value, a body, a query
 //! string, a header (name or value) or the whole URL.
 //!
@@ -44,7 +44,7 @@ pub const MAX_AUDIT_SECRET_NAMES: usize = 16;
 /// Why a request was not answered by its host.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum FailureKind {
+pub enum AuditFailure {
     /// The run's request could not be read.
     Malformed,
     /// A gate refused it: the operator's hosts, the release's declared prefixes,
@@ -82,7 +82,7 @@ pub struct AuditEntry {
     pub status: Option<u16>,
     /// Why it was not answered, when it was not (absent otherwise).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<FailureKind>,
+    pub failure: Option<AuditFailure>,
     /// The names of the secrets the request asked for (`{{secret:NAME}}`), sorted.
     pub secrets: Vec<String>,
     /// The request body's size as the run gave it, before any secret was filled in.
@@ -120,7 +120,7 @@ impl AuditEntry {
             path: String::new(),
             path_truncated: false,
             status: None,
-            failure: Some(FailureKind::Malformed),
+            failure: Some(AuditFailure::Malformed),
             secrets: Vec::new(),
             request_bytes: 0,
             response_bytes: 0,
@@ -197,14 +197,14 @@ const fn method_name(method: OutboundMethod) -> &'static str {
 }
 
 /// The failure kind of a refusal `prepare` returned.
-pub(crate) fn refusal_kind(reason: &eyre::Report) -> FailureKind {
+pub(crate) fn refusal_kind(reason: &eyre::Report) -> AuditFailure {
     if reason.downcast_ref::<crate::SecretRefused>().is_some() {
-        return FailureKind::Secret;
+        return AuditFailure::Secret;
     }
     match OutboundRefusal::of(&reason.to_string()) {
-        Some(OutboundRefusal::NotApproved) => FailureKind::NotApproved,
-        Some(OutboundRefusal::AwaitingApproval) => FailureKind::AwaitingApproval,
-        None => FailureKind::Refused,
+        Some(OutboundRefusal::NotApproved) => AuditFailure::NotApproved,
+        Some(OutboundRefusal::AwaitingApproval) => AuditFailure::AwaitingApproval,
+        None => AuditFailure::Refused,
     }
 }
 

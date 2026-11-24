@@ -502,6 +502,44 @@ impl Principal {
             .ok_or_else(|| ApiError::unauthenticated("sign in first"))
     }
 
+    /// Whether `gate`, which admitted this principal to `app_id` with method `*`, still
+    /// would on `s`, the facts that can change since judged again: the session not ended
+    /// and its passkey, origin and issuing release still holding; the API key not revoked
+    /// or expired; the account still reaching the app. What cannot change (a signature, the
+    /// key's own scope) is not. A visitor opens no stream (`*` refuses it). A session token's
+    /// own expiry does not end a stream: it is a refresh, not a revocation. For a stream,
+    /// through [`still_admitted`].
+    fn admitted_on(&self, s: &SystemState, app_id: &str, now: u64) -> bool {
+        let Some(app) = s.apps.get(app_id) else {
+            return false;
+        };
+        let credential = match (&self.session, &self.api_key) {
+            (Some(c), _) => {
+                !s.revoked_sessions.contains(&c.session)
+                    && c.passkey
+                        .as_ref()
+                        .is_none_or(|k| s.credentials.get(k) == Some(&c.account))
+                    && c.origin.as_ref().is_none_or(|o| {
+                        s.package_origins
+                            .get(o)
+                            .is_some_and(|r| Some(r.package.as_str()) == c.app.as_deref())
+                    })
+                    && self
+                        .issuer_release
+                        .as_ref()
+                        .is_none_or(|r| s.release_may_hold(app, Some(r)))
+            }
+            (None, Some(k)) => {
+                k.expires_at > now
+                    && s.api_keys
+                        .values()
+                        .any(|r| r.key_id == k.key_id && r.account == k.account)
+            }
+            (None, None) => !matches!(self.caller, Caller::Visitor { .. }),
+        };
+        credential && s.may_reach(app, self.caller.account())
+    }
+
     /// Whether the caller is an upgrade key ([`ApiKeyRecord::upgrades`]).
     pub(crate) fn upgrade_key(&self) -> bool {
         self.api_key.as_ref().is_some_and(|k| k.upgrades.is_some())
@@ -1342,10 +1380,11 @@ fn init_state(state: &crate::app::AppState) -> Option<Result<(), Value>> {
     }
 }
 
-/// The caller, if they may reach `app` with this request kind.
 /// Whether `account` holds a read-only row in the team `app` belongs to
 /// (checked again against the latest system state before saying yes: at or
 /// past `sys_index`, the index the request's round named, else a round's).
+/// The record is read again from that state ([`fresh_record`]): the one in hand
+/// can predate a change of its access or owner.
 pub async fn read_only_in(
     node: &Node,
     app: &crate::types::AppRecord,
@@ -1355,13 +1394,16 @@ pub async fn read_only_in(
     let Some(a) = account else {
         return false;
     };
-    // Only through teams: a name, or the whole organization, writes.
-    let teams = app.access.teams();
-    if teams.is_empty() || a == app.owner || app.access.org_wide() || app.access.names(a) {
-        return false;
-    }
     let check = || {
         node.sys(|s| {
+            let Some(app) = fresh_record(s, app) else {
+                return false;
+            };
+            // Only through teams: a name, or the whole organization, writes.
+            let teams = app.access.teams();
+            if teams.is_empty() || a == app.owner || app.access.org_wide() || app.access.names(a) {
+                return false;
+            }
             s.orgs
                 .get(&app.org)
                 .is_some_and(|o| teams.iter().all(|t| !o.writes_team(a, t)))
@@ -1373,16 +1415,24 @@ pub async fn read_only_in(
     }
 }
 
+/// `app`'s record as `s` holds it. A handler reads the record (`Node::app`) before
+/// `gate` makes the request's read-index round, so on a follower behind, the one in
+/// hand can predate an owner, organization or access change committed through another
+/// node; every check made after `gate` reads it again here. `None`: deleted since.
+/// Regression: `a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer`.
+fn fresh_record<'s>(
+    s: &'s SystemState,
+    app: &crate::types::AppRecord,
+) -> Option<&'s crate::types::AppRecord> {
+    s.apps.get(&app.app_id)
+}
+
 /// Whether `account` may reach `app`, judged on the app's record as applied
 /// now. Handlers read the record before `principal` makes its fresh system
 /// read, so the record in hand can predate a grant or revocation committed
 /// through another node; this reads it again.
 fn reaches(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
-    node.sys(|s| {
-        s.apps
-            .get(&app.app_id)
-            .is_some_and(|now| s.may_reach(now, account))
-    })
+    node.sys(|s| fresh_record(s, app).is_some_and(|now| s.may_reach(now, account)))
 }
 
 async fn gate(
@@ -1643,6 +1693,21 @@ async fn step_up(
     })
 }
 
+/// For a stream `gate` let open: whether `p` would still be admitted to `app_id`
+/// (`Principal::admitted_on`), judged on fresh system state: a read-index round begun
+/// now, applied here ([`Node::sys_caught_up`]), so it holds every system write committed
+/// before what the stream is about to send, a removal or revocation committed through
+/// another node included. False ends the stream, as does a replica that cannot catch up in
+/// `Config::read_wait`; the subscriber opens it again through `gate`. Every stream judges
+/// each batch it sends with it (`local_events` with the same round, the presence stream,
+/// a pipeline run's events, an event stream proxied from another replica), never only
+/// when it opened. Regressions: `a_removed_member_stops_receiving_presence`,
+/// `a_revoked_key_or_session_stops_its_event_and_presence_streams`,
+/// `a_removed_member_stops_receiving_a_runs_events`.
+pub(crate) async fn still_admitted(node: &Node, p: &Principal, app_id: &str) -> bool {
+    node.sys_caught_up().await && node.sys(|s| p.admitted_on(s, app_id, now_secs()))
+}
+
 /// How many events that reached this replica together one freshness round
 /// ([`Node::sys_caught_up`]) in [`local_events`] covers.
 pub const MAX_EVENT_BATCH: usize = 256;
@@ -1658,14 +1723,18 @@ pub const MAX_EVENT_BATCH: usize = 256;
 /// covers the backlog, and one each batch of live events that arrived together (at
 /// most [`MAX_EVENT_BATCH`]). When this replica cannot catch up in
 /// `Config::read_wait`, the stream ends: the subscriber resumes from the last id it
-/// got, judged afresh. An event of an app on wasmer has no audience and goes out as
-/// before. Regression:
-/// `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`.
+/// got, judged afresh. With `principal` (a stream opened here, not one a peer asks for:
+/// that peer judges its own), the same state judges the credential that opened it
+/// ([`still_admitted`]), so a revoked API key or an ended session ends it. An event of an
+/// app on wasmer has no audience and goes out as before. Regressions:
+/// `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`,
+/// `a_revoked_key_or_session_stops_its_event_and_presence_streams`.
 fn local_events(
     node: &Arc<Node>,
     app_id: &str,
     from: u64,
     subscriber: Option<String>,
+    principal: Option<Principal>,
 ) -> Option<impl Stream<Item = Result<Event, Infallible>>> {
     let g = node.hosted(app_id)?;
     let (backlog, rx) = g.read_local(|m, _| {
@@ -1684,8 +1753,9 @@ fn local_events(
     let (node, app) = (Arc::clone(node), app_id.to_owned());
     let judged = batches.then(move |batch| {
         let (node, app, subscriber) = (Arc::clone(&node), app.clone(), subscriber.clone());
+        let principal = principal.clone();
         async move {
-            if batch.iter().all(|e| e.audience.is_none()) {
+            if principal.is_none() && batch.iter().all(|e| e.audience.is_none()) {
                 return Some(batch);
             }
             // Every event of the batch is here already: a round begun now names an
@@ -1693,17 +1763,25 @@ fn local_events(
             if !node.sys_caught_up().await {
                 return None;
             }
-            Some(node.sys(|s| {
-                batch
-                    .into_iter()
-                    .filter(|e| match &e.audience {
-                        None => true,
-                        Some(audience) => s.apps.get(&app).is_some_and(|a| {
-                            s.receives(a, audience, e.caller.as_deref(), subscriber.as_deref())
-                        }),
-                    })
-                    .collect::<Vec<_>>()
-            }))
+            node.sys(|s| {
+                if principal
+                    .as_ref()
+                    .is_some_and(|p| !p.admitted_on(s, &app, now_secs()))
+                {
+                    return None;
+                }
+                Some(
+                    batch
+                        .into_iter()
+                        .filter(|e| match &e.audience {
+                            None => true,
+                            Some(audience) => s.apps.get(&app).is_some_and(|a| {
+                                s.receives(a, audience, e.caller.as_deref(), subscriber.as_deref())
+                            }),
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
         }
     });
     let stream = judged
@@ -1807,12 +1885,16 @@ fn parse_blob_id(id: &str) -> Result<[u8; 32], ApiError> {
 
 /// Whether `account` may upload and list the files of `app`: its owner and the members of its
 /// organization (not guests), even where the app is public; an organization's app's owner only
-/// while a member ([`crate::system::SystemState::owner_acts`]).
+/// while a member ([`crate::system::SystemState::owner_acts`]). Judged on the record as `s`
+/// holds it ([`fresh_record`]), not the one in hand.
 fn may_handle_files(
     s: &crate::system::SystemState,
     app: &crate::types::AppRecord,
     account: Option<&str>,
 ) -> bool {
+    let Some(app) = fresh_record(s, app) else {
+        return false;
+    };
     account.is_some_and(|a| {
         s.owner_acts(app, a)
             || s.orgs
@@ -1823,9 +1905,12 @@ fn may_handle_files(
 
 /// Whether `account` may manage `app`'s data (its owner, of an organization's
 /// app while a member of it, or an admin of its organization): delete its
-/// blobs ([`crate::system::SystemState::manages_app`]).
+/// blobs ([`crate::system::SystemState::manages_app`]). Judged on the record as applied
+/// now ([`fresh_record`]), not the one in hand.
 fn manages_app(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
-    account.is_some_and(|a| node.sys(|s| s.manages_app(app, a)))
+    account.is_some_and(|a| {
+        node.sys(|s| fresh_record(s, app).is_some_and(|app| s.manages_app(app, a)))
+    })
 }
 
 // ---------------------------------------------------------------- ops (mdma)

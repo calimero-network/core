@@ -157,7 +157,7 @@ refused request in its place.
 | Synchronous xcalls one run makes, batched or not (`MAX_SYNC_XCALLS`); a batch that would pass it is refused whole | 16 |
 | Arguments of one (`MAX_SYNC_XCALL_ARGS_BYTES`) | 512 KiB |
 | Answer handed back for one (`MAX_SYNC_XCALL_RESULT_BYTES`) | 1 MiB |
-| How long a run waits (`SYNC_XCALL_WAIT`): for one call, or for a whole batch (one deadline) | 3 s |
+| How long a run waits (`SYNC_XCALL_WAIT`): for one call, or for a whole batch (one deadline); never past the run's own wall clock, which then ends it `Timeout` | 3 s |
 
 A request still running at the deadline is told it timed out; a call may still
 commit in its target, and the sender's retry replays it. A component built

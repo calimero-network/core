@@ -862,11 +862,11 @@ fn the_audit_records_sent_and_refused_requests_without_values() {
     assert_eq!(sent.secrets, ["TURNSTILE_SECRET"]);
     assert_eq!(sent.request_bytes, body.len() as u64);
     assert!(sent.response_bytes > 0);
-    assert_eq!(entries[1].failure, Some(FailureKind::Secret));
+    assert_eq!(entries[1].failure, Some(AuditFailure::Secret));
     assert_eq!(entries[1].secrets, ["NOT_BOUND"]);
-    assert_eq!(entries[2].failure, Some(FailureKind::Refused));
+    assert_eq!(entries[2].failure, Some(AuditFailure::Refused));
     assert_eq!(entries[2].path, "/other");
-    assert_eq!(entries[3].failure, Some(FailureKind::Malformed));
+    assert_eq!(entries[3].failure, Some(AuditFailure::Malformed));
 
     let json = serde_json::to_string(&entries).unwrap();
     for leak in [
@@ -879,4 +879,167 @@ fn the_audit_records_sent_and_refused_requests_without_values() {
         assert!(!json.contains(leak), "{leak} in {json}");
     }
     assert!(audit.entries("instance-2").is_empty());
+}
+
+/// A secret with bytes every encoding below changes: `/`, `+`, `=`, a quote, a
+/// non-ASCII letter, and bytes whose base64 differs between the standard and
+/// the URL-safe alphabet.
+const AWKWARD: &str = "k3y/+=\"é\"?>~?>~";
+
+/// The encodings of [`AWKWARD`] an upstream might echo, worked out outside this
+/// crate (Python's `base64`, `bytes.hex`, `urllib.parse.quote`, `json.dumps`), so
+/// the test does not check the code against itself.
+const AWKWARD_ECHOES: &[(&str, &str)] = &[
+    ("raw", AWKWARD),
+    ("base64", "azN5Lys9IsOpIj8+fj8+fg=="),
+    ("base64, no padding", "azN5Lys9IsOpIj8+fj8+fg"),
+    ("base64url", "azN5Lys9IsOpIj8-fj8-fg=="),
+    ("base64url, no padding", "azN5Lys9IsOpIj8-fj8-fg"),
+    ("hex", "6b33792f2b3d22c3a9223f3e7e3f3e7e"),
+    ("HEX", "6B33792F2B3D22C3A9223F3E7E3F3E7E"),
+    ("percent", "k3y%2F%2B%3D%22%C3%A9%22%3F%3E~%3F%3E~"),
+    ("percent, lower", "k3y%2f%2b%3d%22%c3%a9%22%3f%3e~%3f%3e~"),
+    ("JSON", r#"k3y/+=\"é\"?>~?>~"#),
+    ("JSON, ASCII only", r#"k3y/+=\"\u00e9\"?>~?>~"#),
+    // Inside a longer value: HTTP Basic `user:` + secret, and one at each other
+    // offset of base64's 3-byte groups.
+    ("Basic credentials", "dXNlcjprM3kvKz0iw6kiPz5+Pz5+"),
+    ("base64url, inside", "YWI6azN5Lys9IsOpIj8-fj8-fiE="),
+    ("base64, inside", "eGszeS8rPSLDqSI/Pn4/Pn55eg=="),
+];
+
+/// [`AWKWARD`], for mero-forms, bound to Cloudflare.
+#[derive(Debug)]
+struct Awkward;
+
+impl SecretProvider for Awkward {
+    fn secret(&self, _app: &AppIdentity, name: &str) -> EyreResult<Option<Secret>> {
+        Ok((name == "TURNSTILE_SECRET").then(|| Secret {
+            value: Zeroizing::new(AWKWARD.to_owned()),
+            hosts: vec![HOST.to_owned()],
+        }))
+    }
+}
+
+/// Answers with every echo of [`AWKWARD`], one per line, or fails with them.
+#[derive(Debug)]
+struct EchoesEncoded {
+    fail: bool,
+}
+
+impl Transport for EchoesEncoded {
+    fn send(&self, _request: &Prepared) -> EyreResult<(u16, Vec<u8>)> {
+        let lines: Vec<String> = AWKWARD_ECHOES
+            .iter()
+            .map(|(label, echo)| format!("{label}: <{echo}>"))
+            .collect();
+        if self.fail {
+            bail!("upstream refused: {}", lines.join("; "));
+        }
+        Ok((400, lines.join("\n").into_bytes()))
+    }
+}
+
+fn awkward_run(fail: bool) -> Arc<dyn OutboundHost> {
+    OutboundService::with_parts(
+        &[HOST],
+        Some(Arc::new(Awkward)),
+        Arc::new(EchoesEncoded { fail }),
+    )
+    .for_run(
+        forms(),
+        vec![VERIFY.to_owned()],
+        Some(approving(&declared())),
+        "ctx".to_owned(),
+    )
+    .expect("the app declares a URL")
+}
+
+/// Every echo of [`AWKWARD`] still in `text`, by label.
+fn leaked(text: &str) -> Vec<&'static str> {
+    AWKWARD_ECHOES
+        .iter()
+        .filter(|(_, echo)| text.contains(echo))
+        .map(|(label, _)| *label)
+        .collect()
+}
+
+#[test]
+fn a_secret_echoed_in_a_common_encoding_is_redacted_from_the_response() {
+    let request = post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}");
+    let answer = awkward_run(false)
+        .send(&borsh::to_vec(&request).unwrap())
+        .expect("sent");
+    let body = String::from_utf8(OutboundResponse::try_from_slice(&answer).unwrap().body).unwrap();
+    assert_eq!(
+        leaked(&body),
+        Vec::<&str>::new(),
+        "encodings of the secret reached the app:\n{body}"
+    );
+    assert_eq!(
+        body.lines().filter(|l| l.contains("[redacted]")).count(),
+        AWKWARD_ECHOES.len(),
+        "each echo is redacted where it was:\n{body}"
+    );
+}
+
+#[test]
+fn a_failure_names_only_its_kind_never_the_transports_words() {
+    // The transport's words can quote what it was sent; they reach neither the
+    // guest nor the node's `outbound request failed` log line, which ships to
+    // the operator.
+    let request = post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}");
+    let reason = awkward_run(true)
+        .send(&borsh::to_vec(&request).unwrap())
+        .expect_err("the transport failed");
+    assert_eq!(reason, format!("the request to {HOST} failed: other"));
+}
+
+#[test]
+fn a_secret_echoed_in_a_common_encoding_is_redacted_from_a_failure() {
+    // The same reason goes to the guest and into the node's `outbound request
+    // failed` log line.
+    let request = post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}");
+    let reason = awkward_run(true)
+        .send(&borsh::to_vec(&request).unwrap())
+        .expect_err("the transport failed");
+    assert_eq!(
+        leaked(&reason),
+        Vec::<&str>::new(),
+        "encodings of the secret reached the app and the log: {reason}"
+    );
+}
+
+#[test]
+fn the_audit_records_a_transport_failure_by_kind_never_its_words() {
+    // An owner reads the audit: like the guest and the log, it learns only that
+    // the request failed in transit, never what the transport said about it.
+    let audit = Arc::new(OutboundAudit::default());
+    let run = OutboundService::with_parts(
+        &[HOST],
+        Some(Arc::new(Awkward)),
+        Arc::new(EchoesEncoded { fail: true }),
+    )
+    .for_run_counted(
+        forms(),
+        vec![VERIFY.to_owned()],
+        Some(approving(&declared())),
+        "ctx".to_owned(),
+        Arc::default(),
+        Arc::clone(&audit),
+    )
+    .expect("the app declares a URL");
+    let request = post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}");
+    let _e = run
+        .send(&borsh::to_vec(&request).unwrap())
+        .expect_err("the transport failed");
+
+    let entries = audit.entries("ctx");
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].failure, Some(AuditFailure::Failed));
+    assert_eq!(entries[0].status, None);
+    assert_eq!(entries[0].response_bytes, 0);
+    let json = serde_json::to_string(&entries).unwrap();
+    assert_eq!(leaked(&json), Vec::<&str>::new(), "{json}");
+    assert!(!json.contains("upstream refused"), "{json}");
 }
