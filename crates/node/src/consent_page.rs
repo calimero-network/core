@@ -807,7 +807,7 @@ async fn release_facts(
         return Ok(f);
     }
     let mpk = node.release_mpk(package, v).await?;
-    let (bundle, wasm) = crate::packages::verify(mpk)?;
+    let (bundle, wasm) = crate::packages::verify(mpk).await?;
     Ok(remember(node, &v.mpk, &bundle, &wasm))
 }
 

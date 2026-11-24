@@ -15,6 +15,7 @@ shape in Tier 2.
 ## Tier 2 - criterion benches (REPORTING ONLY)
 
     cargo bench -p calimero-log --bench log                         # append + commit, 1 vs 3 nodes; one synced RocksDB write
+    cargo bench -p calimero-log --bench heartbeats                  # Raft messages per peer and CPU per message at 1/100/1000 groups
     cargo bench -p calimero-sealed --bench sealed                   # a request sealed vs plain, 1 KiB / 64 KiB / 1 MiB
 
 Criterion compiles benches with release optimisations; never read numbers from a debug build.

@@ -543,6 +543,8 @@ pub struct Node {
     pub(crate) export_limits: crate::api::ExportLimits,
     /// Visitors' calls through each public link, per visitor key (`api::VisitorLimits`).
     pub(crate) visitor_limits: crate::api::VisitorLimits,
+    /// API keys a fresh read found missing lately, refused with no read (`api::credential`).
+    pub(crate) unknown_api_keys: crate::api::UnknownApiKeys,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -589,7 +591,7 @@ pub struct Node {
     cluster_key: [u8; 32],
     /// Bounds the cluster-key releases this node answers at once.
     pub(crate) key_releases: tokio::sync::Semaphore,
-    pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
+    pub challenges: Mutex<crate::api::Ceremonies>,
     /// The release each peer's verified attestation named, by address.
     peer_releases: Mutex<HashMap<String, Arc<Mutex<Option<String>>>>>,
     /// The runtime each peer named, by node, and when (`Self::runtime_of_node`).
@@ -1117,6 +1119,7 @@ impl Node {
             blob_guards: Arc::default(),
             export_limits: crate::api::ExportLimits::default(),
             visitor_limits: crate::api::VisitorLimits::default(),
+            unknown_api_keys: crate::api::UnknownApiKeys::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,
@@ -1136,7 +1139,7 @@ impl Node {
             compiler,
             peers: Mutex::new(HashMap::new()),
             http,
-            challenges: Mutex::new(HashMap::new()),
+            challenges: Mutex::new(crate::api::Ceremonies::default()),
             event_streams: std::sync::Arc::default(),
             pipeline_subscribers: Mutex::new(HashMap::new()),
             presence: crate::presence::Presence::default(),
