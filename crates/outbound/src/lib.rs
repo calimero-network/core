@@ -53,8 +53,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
+mod audit;
 mod settings;
 
+pub use audit::*;
 pub use settings::*;
 
 /// Sends a run's outbound request: borsh `OutboundRequest` in, borsh
@@ -391,6 +393,19 @@ pub struct OutboundService {
     transport: Arc<dyn Transport>,
 }
 
+/// A secret a request named could not be filled in: the refusal's kind in the
+/// audit ([`FailureKind::Secret`]). Its message is the reason the app reads.
+#[derive(Debug)]
+struct SecretRefused(String);
+
+impl fmt::Display for SecretRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SecretRefused {}
+
 impl OutboundService {
     /// The service `[outbound]` describes, or `None` when it is off.
     ///
@@ -471,12 +486,21 @@ impl OutboundService {
         approval: Option<Approval>,
         context: String,
     ) -> Option<Arc<dyn OutboundHost>> {
-        self.for_run_counted(app, declared, approval, context, Arc::default())
+        self.for_run_counted(
+            app,
+            declared,
+            approval,
+            context,
+            Arc::default(),
+            Arc::default(),
+        )
     }
 
     /// [`Self::for_run`], adding one to `sent` for each request it hands the
     /// transport: a refused or malformed request left nothing and counts
-    /// nothing. The node meters an app's outbound requests with it.
+    /// nothing. The node meters an app's outbound requests with it. Every
+    /// request the run hands it, sent or refused, is recorded in `audit` under
+    /// `context` (the node's per-instance outbound audit).
     #[must_use]
     pub fn for_run_counted(
         self: &Arc<Self>,
@@ -485,6 +509,7 @@ impl OutboundService {
         approval: Option<Approval>,
         context: String,
         sent: Arc<AtomicU64>,
+        audit: Arc<OutboundAudit>,
     ) -> Option<Arc<dyn OutboundHost>> {
         let declared: BTreeSet<String> = declared
             .into_iter()
@@ -500,6 +525,7 @@ impl OutboundService {
             approval,
             context,
             sent,
+            audit,
         }))
     }
 
@@ -589,12 +615,16 @@ impl OutboundService {
             if FORBIDDEN_HEADERS.contains(&lower.as_str()) || lower.starts_with("proxy-") {
                 bail!("header {name} may not be set");
             }
-            let value = self.substitute(app, &host, value.into_bytes(), &mut used)?;
+            let value = self
+                .substitute(app, &host, value.into_bytes(), &mut used)
+                .map_err(secret_refused)?;
             let value = String::from_utf8(value.to_vec())
                 .map_err(|_| eyre!("header {name} is not UTF-8"))?;
             headers.push((name, Zeroizing::new(value)));
         }
-        let body = self.substitute(app, &host, request.body, &mut used)?;
+        let body = self
+            .substitute(app, &host, request.body, &mut used)
+            .map_err(secret_refused)?;
         Ok(Prepared {
             method: request.method,
             url,
@@ -674,13 +704,22 @@ struct RunOutbound {
     context: String,
     /// Requests handed to the transport.
     sent: Arc<AtomicU64>,
+    /// The node's outbound audit, recorded under `context`.
+    audit: Arc<OutboundAudit>,
 }
 
 impl OutboundHost for RunOutbound {
     fn send(&self, request: &[u8]) -> Result<Vec<u8>, String> {
         let started = Instant::now();
-        let request = OutboundRequest::try_from_slice(request)
-            .map_err(|e| format!("a malformed outbound request: {e}"))?;
+        let audit = &self.audit;
+        let request = match OutboundRequest::try_from_slice(request) {
+            Ok(request) => request,
+            Err(e) => {
+                audit.record(&self.context, AuditEntry::malformed(audit::now_ms()));
+                return Err(format!("a malformed outbound request: {e}"));
+            }
+        };
+        let mut entry = AuditEntry::of(&request, audit::now_ms());
         let prepared = match self.service.prepare(
             &self.app,
             &self.declared,
@@ -689,6 +728,8 @@ impl OutboundHost for RunOutbound {
         ) {
             Ok(prepared) => prepared,
             Err(reason) => {
+                entry.failure = Some(audit::refusal_kind(&reason));
+                audit.record(&self.context, entry);
                 warn!(context = %self.context, package = %self.app.package, %reason, "outbound request refused");
                 return Err(reason.to_string());
             }
@@ -698,6 +739,8 @@ impl OutboundHost for RunOutbound {
         let (status, mut body) = match result {
             Ok(answer) => answer,
             Err(reason) => {
+                entry.failure = Some(FailureKind::Failed);
+                audit.record(&self.context, entry);
                 warn!(
                     context = %self.context,
                     package = %self.app.package,
@@ -712,6 +755,9 @@ impl OutboundHost for RunOutbound {
         for secret in &prepared.secrets {
             body = redact(&body, secret.as_bytes());
         }
+        entry.status = Some(status);
+        entry.response_bytes = body.len() as u64;
+        audit.record(&self.context, entry);
         info!(
             context = %self.context,
             package = %self.app.package,
@@ -932,6 +978,11 @@ fn covers(prefix: &reqwest::Url, url: &reqwest::Url) -> bool {
         || path
             .strip_prefix(base)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// `report` as a [`SecretRefused`], its message unchanged.
+fn secret_refused(report: eyre::Report) -> eyre::Report {
+    eyre::Report::new(SecretRefused(report.to_string()))
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {

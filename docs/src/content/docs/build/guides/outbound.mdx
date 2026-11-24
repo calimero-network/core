@@ -337,6 +337,51 @@ call, an `#[app::action]` runs outside the log on the leader: it fetches with
     { from: 1, to: 0, label: 'result + receipt', dashed: true },
   ]} />
 
+## What the owner sees
+
+Every request a run hands its node is recorded in the instance's **outbound
+audit**, sent or refused, so its owner can tell a release that calls
+`/v1/refunds` from one that calls `/v1/charges`. The instance's owner and its
+organization's admins read it; anyone else is refused (`403`, or `404` to one
+who does not reach the instance):
+
+```bash
+meroctl instance outbound-log my-instance     # GET /apps/{app}/outbound-log
+```
+
+```json
+{ "entries": [
+    { "atMs": 1764000000000, "method": "GET", "host": "api.example.com",
+      "path": "/v1/customers/cus_123", "pathTruncated": false,
+      "status": 200, "secrets": ["EXAMPLE_KEY"],
+      "requestBytes": 0, "responseBytes": 412 },
+    { "atMs": 1763999990000, "method": "POST", "host": "api.example.com",
+      "path": "/v1/refunds", "pathTruncated": false,
+      "failure": "notApproved", "secrets": ["EXAMPLE_KEY"],
+      "requestBytes": 38, "responseBytes": 0 } ],
+  "partial": false }
+```
+
+| An entry holds | It never holds |
+| --- | --- |
+| When (`atMs`, the node's clock), the method, the host | A secret's value: only the names in the request's `{{secret:NAME}}` placeholders |
+| The path, as sent, cut at 128 bytes (`pathTruncated`) | The query string or fragment, or a full URL |
+| The host's `status`, or the `failure`: `malformed`, `refused` (a gate: host, prefix, size, header), `notApproved`, `awaitingApproval`, `secret` (a secret not filled in), `failed` (connection, timeout, response too large) | A body, request or response |
+| The request body's size before secrets are filled in, the response's after redaction | A header, name or value |
+
+The path is kept as the app sent it, id-like segments included: the endpoint is
+what an owner needs to see, and a rule that guessed at ids would blur it. Do not
+put what you would not show the instance's admins in a path; put it in the body.
+
+Each node keeps the requests its own runs made, in memory: at most 100 per
+instance and none older than 7 days ([Limits](/protocol/limits/#node-limits)).
+It is not replicated and does not survive a restart; the route merges what the
+instance's replicas hold, newest first, and says `partial: true` when a replica
+did not answer. A request a run never reached the gate with (outbound off on the
+node, a release declaring no prefix, a view) is not recorded: nothing could
+leave. The audit is served by this route alone: it is not written to the node's
+log or `/ops/metrics`.
+
 ## Where it stops
 
 - A request never runs in a view. Read the answer back from state.

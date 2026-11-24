@@ -623,6 +623,7 @@ fn a_counted_run_counts_only_the_requests_it_sent() {
             Some(approving(&declared())),
             "ctx".to_owned(),
             Arc::clone(&sent),
+            Arc::default(),
         )
         .unwrap();
     let _answer = approved
@@ -639,6 +640,7 @@ fn a_counted_run_counts_only_the_requests_it_sent() {
             None,
             "ctx".to_owned(),
             Arc::clone(&sent),
+            Arc::default(),
         )
         .unwrap();
     let _refused = unapproved
@@ -817,4 +819,64 @@ fn an_instances_own_value_wins_for_its_declared_name_only() {
     assert_eq!(&*p.body, format!("secret={SECRET}").as_bytes());
     // Never in a debug print.
     assert!(!format!("{:?}", declared_for(HOST)).contains("owners-own"));
+}
+
+/// Every request a run hands the node lands in its instance's audit, sent or refused,
+/// with the host, the path without its query, the secret's name and the sizes: never
+/// the secret's value, a body, a query string or a header.
+#[test]
+fn the_audit_records_sent_and_refused_requests_without_values() {
+    let fake = Arc::new(Fake::default());
+    let audit = Arc::new(OutboundAudit::default());
+    let run = service(&fake)
+        .for_run_counted(
+            forms(),
+            vec![VERIFY.to_owned()],
+            Some(approving(&declared())),
+            "instance-1".to_owned(),
+            Arc::default(),
+            Arc::clone(&audit),
+        )
+        .expect("the app declares a URL");
+    let body = "secret={{secret:TURNSTILE_SECRET}}&response=tok-private";
+    let request = post(&format!("{VERIFY}?remoteip=10.1.2.3"), body);
+    let _answer = run.send(&borsh::to_vec(&request).unwrap()).expect("sent");
+    let unknown = post(VERIFY, "secret={{secret:NOT_BOUND}}");
+    let _e = run
+        .send(&borsh::to_vec(&unknown).unwrap())
+        .expect_err("no such secret");
+    let elsewhere = post("https://challenges.cloudflare.com/other", "");
+    let _e = run
+        .send(&borsh::to_vec(&elsewhere).unwrap())
+        .expect_err("not declared");
+    let _e = run.send(b"\xff").expect_err("malformed");
+
+    let entries = audit.entries("instance-1");
+    assert_eq!(entries.len(), 4, "{entries:?}");
+    let sent = &entries[0];
+    assert_eq!(sent.method, "POST");
+    assert_eq!(sent.host, HOST);
+    assert_eq!(sent.path, "/turnstile/v0/siteverify");
+    assert_eq!(sent.status, Some(200));
+    assert_eq!(sent.failure, None);
+    assert_eq!(sent.secrets, ["TURNSTILE_SECRET"]);
+    assert_eq!(sent.request_bytes, body.len() as u64);
+    assert!(sent.response_bytes > 0);
+    assert_eq!(entries[1].failure, Some(FailureKind::Secret));
+    assert_eq!(entries[1].secrets, ["NOT_BOUND"]);
+    assert_eq!(entries[2].failure, Some(FailureKind::Refused));
+    assert_eq!(entries[2].path, "/other");
+    assert_eq!(entries[3].failure, Some(FailureKind::Malformed));
+
+    let json = serde_json::to_string(&entries).unwrap();
+    for leak in [
+        SECRET,
+        "remoteip",
+        "10.1.2.3",
+        "tok-private",
+        "Content-Type",
+    ] {
+        assert!(!json.contains(leak), "{leak} in {json}");
+    }
+    assert!(audit.entries("instance-2").is_empty());
 }

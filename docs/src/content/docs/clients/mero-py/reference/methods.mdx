@@ -60,6 +60,7 @@ Generated from core's `docs/public/openapi.json`.
 | `method(app, method, args=…, idempotency_key=…, consistency=…, min_index=…, confirm=None)` | `POST /apps/{app}/methods/{method}` | Call a method by its path. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `400 RESERVED_METHOD`, `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 NOT_CAUGHT_UP`, `503 TIMEOUT` |
 | `move(app, to_org, bring_members=…, confirm=None)` | `POST /apps/{app}/move` | Move an app to another organization. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
 | `openapi(app)` | `GET /apps/{app}/openapi.json` | An app's OpenAPI document. *Refusals:* `410 UNSUPPORTED_ENGINE`, `422 BAD_ABI` |
+| `outbound_log(app)` | `GET /apps/{app}/outbound-log` | An app's outbound requests |
 | `pipeline_receipt_receipt(app, run, version=…)` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | A pipeline run's receipt. *Refusals:* `400 BAD_VERSION`, `409 RUN_NOT_ENDED` |
 | `pipelines_cancel(app, run)` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a pipeline run |
 | `pipelines_estimate_run(app, name, inputs=…, counts=…, params=…)` | `POST /apps/{app}/pipelines/{name}/estimate` | Estimate a pipeline run. *Refusals:* `400 BAD_INPUTS`, `400 BAD_PARAMS`, `404 NO_SUCH_PIPELINE` |

@@ -283,6 +283,14 @@ export function createRoutes(api: RouteClient) {
       openapi: (args: operations['app_openapi']['parameters']['path'], options?: MethodOptions): Promise<operations['app_openapi']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/apps/{app}/openapi.json","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_openapi']['responses'][200]['content']['application/json']>,
       /**
+       * An app's outbound requests.
+       *
+       * `GET /apps/{app}/outbound-log` (`app_outbound_log`). **Who:** signed in (a session or an API key).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      outboundLog: (args: operations['app_outbound_log']['parameters']['path'], options?: MethodOptions): Promise<operations['app_outbound_log']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/outbound-log","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_outbound_log']['responses'][200]['content']['application/json']>,
+      /**
        * A pipeline run's receipt.
        *
        * `GET /apps/{app}/pipeline-runs/{run}/receipt` (`pipeline_receipt_receipt`). **Who:** signed in (a session or an API key).

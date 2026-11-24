@@ -710,6 +710,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/apps/{app}/outbound-log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * An app's outbound requests
+         * @description The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
+         *
+         *     **Who:** signed in (a session or an API key).
+         */
+        get: operations["app_outbound_log"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/apps/{app}/pipeline-runs": {
         parameters: {
             query?: never;
@@ -4826,6 +4848,24 @@ export interface components {
                 message: string;
             } | null;
         };
+        /** @description One outbound request of an instance: `atMs` (Unix milliseconds, the node's clock), `method`, `host` and `path` (no query string, at most 128 bytes, `pathTruncated` when cut; both empty for a URL that did not parse), the host's `status` or, absent that, the `failure` that stopped it (`malformed`, `refused` by a gate, `notApproved`, `awaitingApproval`, `secret` not filled in, `failed` in transit), the names of the `secrets` it asked for, and the request's and response's body sizes. Never a secret value, a body, a query string or a header. */
+        OutboundAuditEntry: {
+            /** Format: int64 */
+            atMs: number;
+            method: string;
+            host: string;
+            path: string;
+            pathTruncated: boolean;
+            /** Format: int64 */
+            status?: number;
+            /** @enum {string} */
+            failure?: "malformed" | "refused" | "notApproved" | "awaitingApproval" | "secret" | "failed";
+            secrets: string[];
+            /** Format: int64 */
+            requestBytes: number;
+            /** Format: int64 */
+            responseBytes: number;
+        };
         /** @description What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only. */
         UsageDay: {
             date: string;
@@ -8235,6 +8275,58 @@ export interface operations {
             };
             /** @description `BAD_ABI` */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    app_outbound_log: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        entries: components["schemas"]["OutboundAuditEntry"][];
+                        partial: boolean;
+                    };
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
                 headers: {
                     [name: string]: unknown;
                 };

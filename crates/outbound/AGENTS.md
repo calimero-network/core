@@ -31,9 +31,16 @@ operator's for that name, still only to its declared hosts. The echo answers eac
 filled-in value's length (`secretBytes`), never a value.
 
 - `OutboundService::from_settings` → `for_run(app, declared, approval, context)`;
-  `for_run_counted(.., sent)` also counts each request handed to the transport
+  `for_run_counted(.., sent, audit)` also counts each request handed to the transport
   (the node's `calimero_app_outbound_requests_total`).
 - `merge_approval` computes the approval an owner's selection leaves.
+- `OutboundAudit` (`audit.rs`): each request a `for_run_counted` client is handed,
+  sent or refused, as an `AuditEntry` under the run's `context` (the instance): time,
+  method, host, path (no query, `MAX_AUDIT_PATH_BYTES`), status or `FailureKind`
+  (`SecretRefused` marks a secret refusal), the secret names (`secret_names`, the one
+  reader of a request's placeholders), body sizes. Never a value, body, query or
+  header. Bounded per node: `MAX_AUDIT_ENTRIES`, `AUDIT_RETENTION_MS`,
+  `MAX_AUDIT_INSTANCES`. The node owns one (`Node::outbound_audit`).
 - `TURNSTILE_VERIFY_URL`: Cloudflare Turnstile's siteverify, for apps that check a
   token from a call (D76; `apps/fixture-captcha`) and for the `turnstile` stand-in.
 - Feature `outbound-testing`: `[outbound.testing] echo` answers `.test` hosts

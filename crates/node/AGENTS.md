@@ -667,6 +667,13 @@ is its command line.
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again. A component's calls, timers and deliveries get the same gate
   (D76, "Component executor").
+  Every request a run hands the gate, sent or refused, lands in `Node::outbound_audit`
+  (`calimero_outbound::OutboundAudit`, in memory, per instance); `GET
+  /apps/{app}/outbound-log` (`api::apps::app_outbound_log`, owner or org admin via
+  `manages_app` after `gate`) merges this node's ring with each replica's
+  (`Node::outbound_log` -> `internal/outbound-log`, `caller_may_hold_app`), newest
+  first, `partial` when one did not answer. Never logged as such, never a metric.
+  Regression: `an_instances_owner_reads_its_outbound_requests_without_values`.
 - **Files** (`files.rs`, `files/seal.rs`, `files/wrap.rs`): a file is 64 KiB AES-256-GCM STREAM chunks
   (`FileSealer`, `FileOpener`) under a random data key.
   The nonce is 4 zero bytes then the big-endian chunk index; the AAD is `calimero.file.v1` then a last-chunk flag byte.

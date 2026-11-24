@@ -60,6 +60,7 @@ past it is logged trapped. Compute runs on job nodes have their own caps
 | Passkey label | 64 characters | `MAX_LABEL_CHARS` |
 | Upgrade runs kept per organization | 20 | `UPGRADE_RUNS_KEPT` |
 | Events kept per app | 10 000 | `EVENT_RING` |
+| Outbound audit (`GET /apps/{app}/outbound-log`), in memory per node | 100 entries per instance, each 7 days at most, 1024 instances (the one whose last request is oldest goes first); a path cut at 128 bytes, 16 secret names an entry | `MAX_AUDIT_ENTRIES`, `AUDIT_RETENTION_MS`, `MAX_AUDIT_INSTANCES`, `MAX_AUDIT_PATH_BYTES`, `MAX_AUDIT_SECRET_NAMES` |
 | Entries whose touched entities search remembers | 4096 | `TOUCHED_RING` |
 | Presence | 512 authors per app, 4 KiB state, 7 s TTL | `MAX_AUTHORS_PER_APP`, `MAX_STATE_BYTES`, `PRESENCE_TTL_MS` |
 | Event and presence streams per node | 4096 | `MAX_EVENT_STREAMS` |

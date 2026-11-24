@@ -602,6 +602,22 @@ async fn internal_xcalls(
     Ok(Json(g.read_local(|m, _| m.xcalls_report())))
 }
 
+/// `internal/outbound-log`: the outbound requests this node's runs of `app` made
+/// ([`Node::outbound_log`]), for a peer whose caller may read them. Only to a
+/// node approved to hold the app, as its xcalls are.
+async fn internal_outbound_log(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Json(body): Json<LastWriteBody>,
+) -> ApiResult {
+    let caller = peer(&node, &headers, key).await?;
+    caller_may_hold_app(&node, &caller, &body.app).await?;
+    Ok(Json(
+        json!({ "entries": node.outbound_audit.entries(&body.app) }),
+    ))
+}
+
 /// `internal/restore-point`: a peer asks this replica of `app` to take a restore point
 /// before an upgrade (`take`), whether it holds one and what the app wrote since
 /// (`check`), or to seed the app's undo into `group` from it (`seed`;
@@ -970,6 +986,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/internal/last-write", post(internal_last_write))
         .route("/internal/restore-point", post(internal_restore_point))
         .route("/internal/xcalls", post(internal_xcalls))
+        .route("/internal/outbound-log", post(internal_outbound_log))
         .route("/internal/presence", post(internal_presence))
         .route("/internal/view", post(internal_view))
         .route("/internal/app-ready", post(internal_app_ready))
