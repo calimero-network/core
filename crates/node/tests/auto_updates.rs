@@ -1083,7 +1083,7 @@ async fn a_green_update_that_drops_a_method_waits_for_a_person() {
         release("1.0.0", &kv_wasm(), &publisher),
         release_of("com.test.plugin", "1.0.0", &kv_wasm(), &publisher, uses),
     ] {
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let org = home_org(&alice).await;
     let create = |name: &str, package: &str| {
@@ -1126,7 +1126,7 @@ async fn a_green_update_that_drops_a_method_waits_for_a_person() {
         release("1.0.1", &variant(&kv_wasm(), "v101"), &publisher),
         release("1.1.0", &dropped, &publisher),
     ] {
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let update = get_until(&alice, &format!("apps/{calendar}/update"), 15, |u| {
         u["available"]["version"] == "1.1.0"

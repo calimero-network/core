@@ -365,6 +365,17 @@ pub(crate) async fn upgrade_app(
     if let Err(why) = node.sys(|s| s.within_deployment(&app, release.as_ref(), None)) {
         return Err(crate::node::rejected(why));
     }
+    let may = || {
+        node.sys(|s| {
+            s.upgrades_outside_offers(&app, &account, release.as_ref(), &bundle, now_secs())
+        })
+    };
+    if !may() {
+        let _caught_up = node.sys_fresh().await;
+        if !may() {
+            return Err(crate::node::not_a_deployer());
+        }
+    }
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
         return Err(crate::node::rejected("unknown bundle"));
     }
@@ -550,6 +561,11 @@ async fn run_upgrade(
         }
         if let Err(why) = s.within_deployment(a, release.as_ref(), who.run.as_deref()) {
             return Some(crate::node::rejected(why));
+        }
+        if !who.by_operator
+            && !s.upgrades_outside_offers(a, &who.actor, release.as_ref(), &bundle, begun)
+        {
+            return Some(crate::node::not_a_deployer());
         }
         if s.components_of(release.as_ref()) != a.components {
             return Some(ApiError::new(

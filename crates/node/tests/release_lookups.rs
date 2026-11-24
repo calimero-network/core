@@ -52,7 +52,10 @@ const READS_ALLOWED: &[(&str, &str, &str)] = &[
 
 /// Every `.rs` file under `dir`.
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
-    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+    for entry in std::fs::read_dir(dir)
+        .expect("read a source directory")
+        .flatten()
+    {
         let path = entry.path();
         if path.is_dir() {
             sources(&path, out);
