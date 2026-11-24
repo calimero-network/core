@@ -359,7 +359,7 @@ pub struct RetryAfter {
     pub retry_after: u64,
 }
 
-/// `details` of a `400 UNSUPPORTED_BUNDLE`, `400 BAD_BUNDLE` or `400 COMPUTE_ABI_MISMATCH` refusing one service of a release: the service, and `compute: true` when it was that service's compute component. Absent when the refusal is of a raw bundle.
+/// `details` of a `400 UNSUPPORTED_BUNDLE`, `400 BAD_BUNDLE`, `400 COMPUTE_ABI_MISMATCH` or `422 COMPILE_TIMEOUT` refusing one service of a release: the service, and `compute: true` when it was that service's compute component. Absent when the refusal is of a raw bundle.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ServiceRefused {
     pub service: String,
@@ -852,7 +852,7 @@ impl<'de> Deserialize<'de> for UpgradePolicyAutoApply {
     }
 }
 
-/// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.
+/// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update that removes no method, of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UpgradePolicy {
     #[serde(rename = "autoApply")]

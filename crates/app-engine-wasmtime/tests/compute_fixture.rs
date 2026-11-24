@@ -2,6 +2,11 @@
 //! shape the node hands it (the whole object, as the SDK's `ComputeOutcome`) and keeps the
 //! outputs by `BlobRef`.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;

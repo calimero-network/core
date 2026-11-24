@@ -502,7 +502,7 @@ public protocol APIProtocol: Sendable {
     func appRun(_ input: Operations.AppRun.Input) async throws -> Operations.AppRun.Output
     /// A compute run's attempt logs
     ///
-    /// Each attempt's module log, as a sealed file of the app: `{ attempt, id, size, sha256 }`. Only for those who may handle the app's files; the bytes are a files export.
+    /// Deprecated: always `{ logs: [] }`. A run keeps no log, as an app's log lines (stdout, stderr, `log`) may hold user data, which neither Calimero nor the operator may see; a log a release up to 1.0.0-rc.35 kept is answered to no one, and the files export does not know it. Only for those who may handle the app's files. To read a compute method's log lines, run it locally (`meroctl local compute run`).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -2665,7 +2665,7 @@ extension APIProtocol {
     }
     /// A compute run's attempt logs
     ///
-    /// Each attempt's module log, as a sealed file of the app: `{ attempt, id, size, sha256 }`. Only for those who may handle the app's files; the bytes are a files export.
+    /// Deprecated: always `{ logs: [] }`. A run keeps no log, as an app's log lines (stdout, stderr, `log`) may hold user data, which neither Calimero nor the operator may see; a log a release up to 1.0.0-rc.35 kept is answered to no one, and the files export does not know it. Only for those who may handle the app's files. To read a compute method's log lines, run it locally (`meroctl local compute run`).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -5786,7 +5786,7 @@ public enum Components {
                 case maxFuelPerDeveloperPerDay
             }
         }
-        /// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.
+        /// How an organization's owner and admins let an app's updates apply (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins. `autoApply` (default `never`; `noDestinations`: a green update that removes no method, of an app whose unit has no destinations before or after it, so no data leaves Calimero) and `holdHours` (24 to 168, default 24): such an update applies on its own once `holdHours` have passed since the release was logged (its install, or its deployment's offer), after a restore point.
         ///
         /// - Remark: Generated from `#/components/schemas/UpgradePolicy`.
         public struct UpgradePolicy: Codable, Hashable, Sendable {
@@ -22399,7 +22399,7 @@ public enum Operations {
     }
     /// A compute run's attempt logs
     ///
-    /// Each attempt's module log, as a sealed file of the app: `{ attempt, id, size, sha256 }`. Only for those who may handle the app's files; the bytes are a files export.
+    /// Deprecated: always `{ logs: [] }`. A run keeps no log, as an app's log lines (stdout, stderr, `log`) may hold user data, which neither Calimero nor the operator may see; a log a release up to 1.0.0-rc.35 kept is answered to no one, and the files export does not know it. Only for those who may handle the app's files. To read a compute method's log lines, run it locally (`meroctl local compute run`).
     ///
     /// **Who:** signed in (a session or an API key).
     ///

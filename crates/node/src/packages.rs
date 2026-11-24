@@ -24,6 +24,7 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
+use crate::compile::Engine;
 use crate::error::ApiError;
 use crate::node::Node;
 use crate::system::{
@@ -111,6 +112,17 @@ pub fn of_service(e: ApiError, service: &str, compute: bool) -> ApiError {
         details["compute"] = serde_json::json!(true);
     }
     e.with_details(details)
+}
+
+/// A compile's refusal of `service`'s component ([`Node::compile`]): one of the
+/// component itself (`BAD_BUNDLE`, `COMPILE_TIMEOUT`) names the service; one of
+/// the node's load (`BUSY`) or size (`TOO_LARGE`) is answered as it is.
+fn compile_refusal(e: ApiError, service: &str, compute: bool) -> ApiError {
+    if e.code == crate::node::BAD_BUNDLE || e.code == crate::compile::COMPILE_TIMED_OUT {
+        of_service(e, service, compute)
+    } else {
+        e
+    }
 }
 
 /// Verify a `.mpk`: signature, digests, runtime version, and that it has WASM.
@@ -447,17 +459,10 @@ impl Node {
                     ApiError::bad_request("BAD_PACKAGE", "the package ships no WASM")
                 })?;
                 let job_hash = hex::encode(calimero_identity::sha256(&job));
-                let prepared = {
-                    use calimero_app_host::Engine as _;
-                    self.compute_engine()
-                        .prepare(&job_hash, &job)
-                        .map_err(|e| {
-                            ApiError::bad_request(crate::node::BAD_BUNDLE, &e.to_string())
-                                .with_details(
-                                    serde_json::json!({ "service": service, "compute": true }),
-                                )
-                        })?
-                };
+                let (prepared, job) = self
+                    .compile(Engine::Compute, &job_hash, job)
+                    .await
+                    .map_err(|e| compile_refusal(e, &service, true))?;
                 if !prepared
                     .abi
                     .methods
@@ -484,27 +489,17 @@ impl Node {
             if crate::types::Executor::of(&bytes) != crate::types::Executor::Component {
                 return Err(of_service(ApiError::unsupported_bundle(), &service, false));
             }
-            let main = {
-                use calimero_app_host::Engine as _;
-                self.app_engine()
-                    .prepare(&hash, &bytes)
-                    .map_err(|e| ApiError::bad_request(crate::node::BAD_BUNDLE, &e.to_string()))?
-            };
+            let (main, bytes) = self
+                .compile(Engine::App, &hash, bytes)
+                .await
+                .map_err(|e| compile_refusal(e, &service, false))?;
             let mut job_caps = None;
             if let Some(job) = job {
                 let job_hash = hex::encode(calimero_identity::sha256(&job));
-                let prepared = {
-                    use calimero_app_host::Engine as _;
-                    self.compute_engine()
-                        .prepare(&job_hash, &job)
-                        .map_err(|e| {
-                            of_service(
-                                ApiError::bad_request(crate::node::BAD_BUNDLE, &e.to_string()),
-                                &service,
-                                true,
-                            )
-                        })?
-                };
+                let (prepared, job) = self
+                    .compile(Engine::Compute, &job_hash, job)
+                    .await
+                    .map_err(|e| compile_refusal(e, &service, true))?;
                 compute_abi_agrees(&main.abi, &prepared.abi).map_err(|why| {
                     of_service(
                         ApiError::bad_request(COMPUTE_ABI_MISMATCH, &why),
@@ -725,24 +720,19 @@ impl Node {
         }))
     }
 
-    /// The release `app` runs: the one its record names
-    /// (`AppRecord::release`), else, for a record from before, the release
-    /// its bundle came out of ([`Self::release_of`]).
+    /// The release `app` runs ([`SystemState::running_release`]): the one its
+    /// record names, else the only release its bundle ships in; none when
+    /// several share it.
     pub fn release_of_app(&self, app: &crate::types::AppRecord) -> Option<Release> {
-        let Some(at) = &app.release else {
-            return self.release_of(&app.bundle);
-        };
         self.sys(|s| {
+            let at = s.running_release(app)?;
             let version = s
                 .packages
                 .get(&at.package)?
                 .versions
                 .get(&at.version)?
                 .clone();
-            Some(Release {
-                at: at.clone(),
-                version,
-            })
+            Some(Release { at, version })
         })
     }
 

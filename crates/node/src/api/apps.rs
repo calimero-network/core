@@ -502,6 +502,30 @@ async fn app_create(
     create_instance(&node, &p, owner, body, 0).await.map(Json)
 }
 
+/// Refused `403 DEPLOY_NOT_GRANTED` when `owner` may not create an instance from no
+/// deployment ([`crate::system::SystemState::creates_outside_offers`]); else whether its
+/// `CreateApp` carries the rule, once every node reads it.
+async fn outside_offers(
+    node: &Node,
+    owner: &str,
+    release: Option<&PackageRef>,
+    now: u64,
+) -> Result<bool, ApiError> {
+    let may = || node.sys(|s| s.creates_outside_offers(owner, release, now));
+    if !may() {
+        let _caught_up = node.sys_fresh().await;
+        if !may() {
+            return Err(crate::node::not_a_deployer());
+        }
+    }
+    let granted = node.sys(|s| s.governance().deployments == crate::system::Deployments::Granted);
+    Ok(granted
+        && node
+            .require_features(&[crate::system::cluster_version::Feature::OffersOnly])
+            .await
+            .is_ok())
+}
+
 /// How deep `create` references may nest: an app, the apps it creates, theirs.
 pub(crate) const MAX_UNIT_DEPTH: usize = 3;
 
@@ -563,6 +587,10 @@ async fn create_instance(
             )
             .await?
         }
+    };
+    let offers_only = match body.deployment {
+        None => outside_offers(node, &owner, release.as_ref(), now).await?,
+        Some(_) => false,
     };
     // The executor is decided once, here, from the WASM the bundle names (a
     // package's service, or the raw upload), and recorded with the app. A core
@@ -727,6 +755,7 @@ async fn create_instance(
                 restore_point: None,
             }),
             unit_offer: body.unit_offer,
+            offers_only,
         })
         .await?;
     // Wait for the app's first entry (init) to commit somewhere; a compute-only app's is empty,

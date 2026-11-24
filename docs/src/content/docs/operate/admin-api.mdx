@@ -106,9 +106,10 @@ with `details` when there is more to say (for example `leaderUrl` with
 | 413 | `TOO_LARGE` | Over a size limit (a bundle over 16 MiB, a log entry over 1 MiB). |
 | 421 | `NOT_LEADER` | Send it to the leader named in `details.leaderUrl`. |
 | 422 | `INIT_FAILED`, `APP_ERROR`, `UPGRADE_FAILED` | The app's code refused. |
+| 422 | `COMPILE_TIMEOUT` | A package install or raw bundle upload: a component did not compile within 60 s (`details` names the service, as `BAD_BUNDLE`'s do). |
 | 429 | `QUOTA_EXCEEDED`, `RATE_LIMITED` | An account quota, or a node's limit on open streams or ceremonies. |
 | 503 | `UNAVAILABLE`, `NOT_CAUGHT_UP` | The cluster cannot answer now, or a replica is behind `minIndex`. |
-| 503 | `BUSY` | `GET /attestation`: too many quotes asked for at once; send it again after `Retry-After` (1 s). |
+| 503 | `BUSY` | `GET /attestation`: too many quotes asked for at once; a package install or raw bundle upload: too many components compiling at once. Send it again after `Retry-After` (1 s). |
 
 ## Public
 

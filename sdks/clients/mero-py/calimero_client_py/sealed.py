@@ -51,6 +51,9 @@ BASE_URL = "http://sealed.invalid"
 # replica names one that may itself redirect once more.
 LEADER_HOPS = 3
 
+# A KV right as a refusal's sentence says it.
+RIGHT_VERBS = {"read": "view", "write": "edit", "admin": "manage"}
+
 Answer = Tuple[int, List[Tuple[str, str]], bytes]
 
 
@@ -76,13 +79,36 @@ def _refusal(content: bytes) -> Tuple[str, str, Any]:
     )
 
 
+def _app_error_sentence(details: Any) -> Optional[str]:
+    """A sentence for the refusals every app shares: a KV's `NotGranted` and a
+    `uses` link's `NotLinked`. The node puts the app's error in `details` as
+    `{code, fields}`; an older node nests it under `details.error`."""
+    if not isinstance(details, dict):
+        return None
+    source = details if isinstance(details.get("code"), str) else details.get("error")
+    if not isinstance(source, dict) or not isinstance(source.get("fields"), dict):
+        return None
+    code, fields = source.get("code"), source["fields"]
+    bucket, need, name = fields.get("bucket"), fields.get("need"), fields.get("name")
+    if code == "NotGranted" and isinstance(bucket, str) and isinstance(need, str):
+        verb = RIGHT_VERBS.get(need)
+        return None if verb is None else f"You can't {verb} bucket {bucket}."
+    if code == "NotLinked" and isinstance(name, str):
+        what = "a KV store" if name == "kv" else f"its {name}"
+        return f"This app isn't connected to {what} yet."
+    return None
+
+
 def error_from(status: int, content: bytes) -> CloudError:
     """The exception a node's error answer stands for, with the arguments the
     client always raised: `(message, status, code, details)`, `details` as
     JSON text. `LoginRequired` for `401 UNAUTHENTICATED`, `WrongNode` for
     `421 WRONG_NODE` and `FeatureNotActive` for `409 FEATURE_NOT_ACTIVE`, all
-    `CloudError`s."""
+    `CloudError`s. A `422 APP_ERROR`'s `NotGranted` or `NotLinked` message
+    is a sentence."""
     code, message, details = _refusal(content)
+    if (status, code) == (422, "APP_ERROR"):
+        message = _app_error_sentence(details) or message
     args = (
         f"{status} {code}: {message}",
         status,
