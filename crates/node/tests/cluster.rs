@@ -7948,32 +7948,22 @@ async fn an_uninstall_of_a_release_its_actor_may_not_use_logs_nothing() {
     assert_eq!(logged(&c), before, "nothing logged");
 }
 
-/// On a granted cluster, a stranger's session on a public release's frontend creates an
-/// instance of it: another organization installed it, and the stranger needs no install
-/// and no deployer grant of their own.
+/// A stranger's session on a public release's frontend creates an instance of it: another
+/// organization installed it, and the stranger needs no install of their own. (Where
+/// deployments are granted, a non-deployer creates only from an offer: `OffersOnly`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_strangers_frontend_session_creates_from_a_public_release_another_org_installed() {
-    use calimero_node::system::Deployments;
     let registry = FakeRegistry::default();
     let url = registry.serve().await;
     let c = Cluster::start_with(3, |cfg| {
         cfg.apps_domain = Some("localhost".into());
         cfg.registry = Some(url.clone());
-        cfg.governance.deployments = Deployments::Granted;
     })
     .await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
     let (alice, _a) = signed_up(&c, 0, "alice").await;
     let (_bob, bob_pk) = signed_up(&c, 1, "bob").await;
     let _acme = new_org(&alice, "Acme").await;
-    let alice_id = account_id(&alice).await;
-    let _ok = harness::ops_signed(
-        &ops_at(&c, 0).await,
-        "ops/deployers",
-        json!({ "deployer": { "account": alice_id } }),
-    )
-    .await
-    .unwrap();
     registry.publish(
         "com.test.site",
         "1.0.0",
@@ -7985,7 +7975,6 @@ async fn a_strangers_frontend_session_creates_from_a_public_release_another_org_
         .await
         .unwrap();
 
-    // Bob holds no grant, so an install of his own would be refused.
     let site = on_frontend(&c, 1, &bob_pk, "com.test.site").await;
     let made = site
         .apps()

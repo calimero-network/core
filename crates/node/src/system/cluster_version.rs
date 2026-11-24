@@ -1781,12 +1781,9 @@ mod tests {
         for &feature in &rc35 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.36's (who may use a release: public, or private to the organizations it was
-        // installed for) for every node on rc.36: an rc.35 node drops both fields.
-        assert_eq!(rc36, [Feature::PrivateReleases]);
-        // rc.36's (an instance outside every deployment is a deployer's) for every node on
-        // rc.36: an rc.35 node ignores the flag and would create what rc.36 refuses.
-        assert_eq!(rc36, [Feature::OffersOnly]);
+        // rc.36's for every node on rc.36: who may use a release (an rc.35 node drops both
+        // fields), and an instance outside every deployment is a deployer's (it ignores the flag).
+        assert_eq!(rc36, [Feature::PrivateReleases, Feature::OffersOnly]);
         for &feature in &rc36 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
