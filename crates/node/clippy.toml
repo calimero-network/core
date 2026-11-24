@@ -1,3 +1,7 @@
+# Clippy reads this file instead of the root clippy.toml, so it repeats the root's
+# settings: a test may unwrap (CODING_STANDARDS.md, "Errors and panics").
+allow-unwrap-in-tests = true
+
 # The store's writes wait for the disk (a synced write, or one queued behind
 # another's fsync), and every Raft group of the node shares the async workers:
 # the node writes only through `node::disk::Disk`, which runs each off them

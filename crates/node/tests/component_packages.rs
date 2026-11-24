@@ -4,6 +4,10 @@
 //! A package whose WASM is a component runs on the component executor like a raw
 //! component upload does.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
 // Tests corrupt or drop a node's stored bytes directly, off any runtime path.
 #![allow(clippy::disallowed_methods)]
 
