@@ -176,6 +176,7 @@ DIGEST_COMPARE_SECS = 60  # `DIGEST_COMPARE_EVERY`: how often an app's leader co
 DIVERGED = "calimero_group_diverged{"  # a series present only while a replica's digest differs
 DIVERGENCES = "calimero_group_divergences_total"
 COMPARISONS = "calimero_group_digest_comparisons_total{"  # a release before this one does not count them
+COMPARISONS_HELP = "# HELP calimero_group_digest_comparisons_total"
 
 
 def _divergences(w):
@@ -193,11 +194,15 @@ def _divergences(w):
 
 
 def _comparisons(w, apps):
-    """`{app: comparisons that could tell, over every node}`: the leader of a group is the one that counts."""
+    """`{app: comparisons that could tell, over every node}` (the leader of a group counts them), or `None`
+    while no node is on a release that counts them."""
+    texts = [ops_text(w, "ops/metrics", node) for node in w.members()]
+    if not any(COMPARISONS_HELP in t for t in texts):
+        return None
     groups = {a["app"]: a["group"] for a in w.fleet.placement()["apps"]}
     total = {a: 0 for a in apps}
-    for node in w.members():
-        for line in ops_text(w, "ops/metrics", node).splitlines():
+    for text in texts:
+        for line in text.splitlines():
             if line.startswith(COMPARISONS):
                 for app in apps:
                     if line.startswith(f'{COMPARISONS}group="{groups[app]}"}}'):
@@ -234,8 +239,7 @@ class StateDigests(DeepCase):
 
         def compared():
             seen = _comparisons(w, s["apps"])
-            check(all(seen.values()), f"no digest comparison has run for every app yet: {seen}")
-            return seen
+            check(seen is None or all(seen.values()), f"no digest comparison has run for every app yet: {seen}")
 
         until("each app's leader has compared its replicas", compared, DIGEST_COMPARE_SECS + 45)
 
