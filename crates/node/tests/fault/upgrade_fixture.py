@@ -81,12 +81,12 @@ def pack_pipelines(frm: Path, work: Path) -> Path:
 
 
 def seed_cases(w) -> None:
-    """Every upgrade case's seed, as the upgrade path writes it on the old release: the log then
-    holds the entries those cases' features write. A case that fails to seed stops the recording."""
+    """Every upgrade case's seed that runs on an open cluster, as the upgrade path writes it on the old
+    release: the log then holds the entries those cases' features write. A case that fails to seed stops the recording."""
     import upgrade_path  # imported once main has set the release's binaries (RV2_MEROD)
 
     upgrade_path.load_cases(HERE / "upgrade_cases")
-    cases = [c() for c in upgrade_path.CASES if c.name not in SKIPPED]
+    cases = [c() for c in upgrade_path.CASES if c.name not in SKIPPED and "open" in c.governance]
     results: list[dict] = []
     upgrade_path.run_step(w, cases, "seed", results)
     failed = [r["case"] for r in results if r["status"] != "pass"]
