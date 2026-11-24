@@ -5,6 +5,11 @@
 //! Builds the component `apps/team-space` from this checkout
 //! (cached under `$CARGO_TARGET_DIR/app-components`).
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_client::types::ViewsRequestConsistency;
 use calimero_client::Client;
 use serde_json::{json, Value};

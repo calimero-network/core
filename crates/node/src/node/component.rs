@@ -691,6 +691,19 @@ impl Node {
         self.probes.system_outage.store(on, Ordering::Relaxed);
     }
 
+    /// Makes this node refuse the system group's Raft messages, so its system replica falls
+    /// behind while its app groups go on applying. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn hold_system_log(&self, on: bool) {
+        self.probes.system_log_held.store(on, Ordering::Relaxed);
+    }
+
+    /// Whether a test holds this node's system replica back ([`Node::hold_system_log`]).
+    #[cfg(feature = "testing")]
+    pub(crate) fn system_log_held(&self) -> bool {
+        self.probes.system_log_held.load(Ordering::Relaxed)
+    }
+
     /// The waits that end a run the leader gets no answer for.
     pub(super) fn limits(&self) -> ComputeLimits {
         #[cfg(feature = "testing")]
@@ -721,6 +734,16 @@ impl Node {
     #[must_use]
     pub fn app_engine(&self) -> &calimero_app_engine_wasmtime::WasmtimeEngine {
         &self.wasm
+    }
+
+    /// [`Self::app_engine`], to move onto another thread.
+    pub(crate) fn app_engine_arc(&self) -> Arc<calimero_app_engine_wasmtime::WasmtimeEngine> {
+        Arc::clone(&self.wasm)
+    }
+
+    /// [`Self::compute_engine`], to move onto another thread.
+    pub(crate) fn compute_engine_arc(&self) -> Arc<calimero_app_engine_wasmtime::WasmtimeEngine> {
+        Arc::clone(&self.compute_wasm)
     }
 
     /// The engine a release's compute components are prepared on.
@@ -913,11 +936,15 @@ impl Node {
         let owner = self
             .sys(|s| s.apps.get(app_id).map(|a| a.owner.clone()))
             .unwrap_or_default();
+        let (kind, method) = (invocation.kind, invocation.method.clone());
         match HostCore::new(app_id, state, applied, invocation, directory)
             .and_then(|host| host.with_via(via))
         {
             Ok(host) => {
-                let host = host.with_blobs(blobs).with_files(files.clone());
+                let host = host
+                    .with_blobs(blobs)
+                    .with_files(files.clone())
+                    .with_logs(self.config.app_logs);
                 let host = match extras.runs {
                     Some(runs) => host
                         .with_compute(prepared.abi.clone(), runs)
@@ -937,6 +964,7 @@ impl Node {
                     None => host,
                 };
                 let mut out = self.wasm.invoke(prepared, host, self.budget());
+                print_app_logs(app_id, kind, &method, &out.logs);
                 let mut blobs: Vec<Blob> = out.new_files.iter_mut().flat_map(blobs_of).collect();
                 // A blob the app already holds (or that another publish of this run made) is
                 // neither stored nor charged again.
@@ -2443,6 +2471,7 @@ impl Node {
             ..self.budget()
         };
         let (wasm, prepared, app) = (Arc::clone(&self.wasm), prepared.clone(), app_id.to_owned());
+        let (keep_logs, method) = (self.config.app_logs, record.method.clone());
         let ran = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
                 match HostCore::new(
@@ -2452,15 +2481,18 @@ impl Node {
                     invocation,
                     directory,
                 ) {
-                    Ok(host) => Outcome::from_host(
-                        wasm.invoke(
+                    Ok(host) => {
+                        let out = wasm.invoke(
                             &prepared,
                             host.with_action(runner)
                                 .with_http(http)
-                                .with_xcall_host(xcalls),
+                                .with_xcall_host(xcalls)
+                                .with_logs(keep_logs),
                             budget,
-                        ),
-                    ),
+                        );
+                        print_app_logs(&app, InvocationKind::Action, &method, &out.logs);
+                        Outcome::from_host(out)
+                    }
                     Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
                 }
             })
@@ -3247,6 +3279,16 @@ fn to_host_applied(a: Applied) -> crate::app::Applied {
         error: a.error,
         events: Vec::new(),
         conflict: a.conflict,
+    }
+}
+
+/// A development node's (`Config::app_logs`, `--dev`) view of an app run's log lines: each
+/// printed to the node's own log, tagged with the app, the kind and the method. The host
+/// collected them only because the node asked; a production node asks for none, so `logs` is
+/// empty there and nothing is printed, stored or answered.
+fn print_app_logs(app: &str, kind: InvocationKind, method: &str, logs: &[String]) {
+    for line in logs {
+        tracing::info!(target: "app_log", %app, ?kind, %method, "{line}");
     }
 }
 

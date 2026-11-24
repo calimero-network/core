@@ -1,5 +1,6 @@
 //! What goes into an invocation and what comes out of it (spec section 3).
 
+use std::fmt;
 use std::time::Duration;
 
 use thiserror::Error;
@@ -208,8 +209,9 @@ pub struct Usage {
     pub peak_memory: u64,
 }
 
-/// Everything the executor sees of an invocation; exactly what the log stores.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Everything the executor sees of an invocation. Its `Debug` counts the log lines and never
+/// prints them: they are the app's own output and may hold user data.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Outcome {
     pub status: Status,
     pub result: Vec<u8>,
@@ -219,7 +221,8 @@ pub struct Outcome {
     pub xcalls: Vec<Xcall>,
     /// The actions the run started (D17); empty unless `Ok`.
     pub actions: Vec<crate::action::ActionStart>,
-    /// The owner-only app log (stdout, stderr, `log`); kept whatever the status.
+    /// The app's own log lines (stdout, stderr, `log`), whatever the status. They may hold
+    /// user data: the node keeps none of them, in a log entry or on a job node.
     pub logs: Vec<String>,
     /// A logged run's outbound requests and their responses, for its log entry (D76);
     /// kept whatever the status, since they left the node. Empty for views and actions.
@@ -233,6 +236,26 @@ pub struct Outcome {
     pub compute_starts: Vec<StartedRun>,
     pub compute_cancels: Vec<String>,
     pub usage: Usage,
+}
+
+impl fmt::Debug for Outcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Outcome")
+            .field("status", &self.status)
+            .field("result", &self.result)
+            .field("diff", &self.diff)
+            .field("events", &self.events)
+            .field("xcalls", &self.xcalls)
+            .field("actions", &self.actions)
+            .field("logs", &self.logs.len())
+            .field("http", &self.http)
+            .field("new_files", &self.new_files)
+            .field("published", &self.published)
+            .field("compute_starts", &self.compute_starts)
+            .field("compute_cancels", &self.compute_cancels)
+            .field("usage", &self.usage)
+            .finish()
+    }
 }
 
 /// A role in an org, ordered from least to most privileged.
@@ -310,4 +333,35 @@ pub enum InvalidInvocation {
     /// A `via` on a run another app did not deliver, or whose caller is not a person.
     #[error("only a person's call another app delivered carries the app it came through")]
     ViaOutsideXcall,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_outcomes_debug_counts_its_log_lines_and_never_prints_them() {
+        let out = Outcome {
+            status: Status::Ok,
+            result: Vec::new(),
+            diff: Vec::new(),
+            events: Vec::new(),
+            xcalls: Vec::new(),
+            actions: Vec::new(),
+            logs: vec![
+                "user typed: my secret diagnosis".to_owned(),
+                "two".to_owned(),
+            ],
+            http: Vec::new(),
+            new_files: Vec::new(),
+            published: Vec::new(),
+            compute_starts: Vec::new(),
+            compute_cancels: Vec::new(),
+            usage: Usage::default(),
+        };
+        for printed in [format!("{out:?}"), format!("{out:#?}")] {
+            assert!(!printed.contains("secret diagnosis"), "{printed}");
+            assert!(printed.contains("logs: 2"), "{printed}");
+        }
+    }
 }

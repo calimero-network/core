@@ -90,9 +90,9 @@ pub struct Outcome {
     pub diff: Vec<Write>,
     #[serde(default)]
     pub events: Vec<EventOut>,
-    /// The owner-only app log (spec section 5); kept whatever the status.
-    #[serde(default)]
-    pub logs: Vec<String>,
+    // No app log: the run's log lines (`env::log`, stdout, stderr) may hold user data, so the
+    // entry keeps none, and apply never read them. An entry an earlier release logged carries a
+    // `logs` key, which is ignored on read (`a_runs_log_lines_never_reach_its_entry`).
     /// The xcalls the run sent (D25); empty unless `Ok`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub xcalls: Vec<XcallOut>,
@@ -343,10 +343,9 @@ impl Outcome {
 
     /// The engine's outcome in the log's shape. Any status but `Ok` drops the diff
     /// and the events (the host core already did); a result or event that is not
-    /// JSON is a `Fault`, and nothing of it is applied.
+    /// JSON is a `Fault`, and nothing of it is applied. The run's log lines are dropped.
     #[must_use]
     pub fn from_host(out: host::Outcome) -> Self {
-        let logs = out.logs;
         let measured = out.usage;
         let http = out.http.into_iter().map(HttpRecord::from).collect();
         let files = out.new_files;
@@ -364,7 +363,6 @@ impl Outcome {
             },
             host::Status::Trap { kind, detail } => Self::trap(kind, &detail),
         };
-        outcome.logs = logs;
         outcome.http = http;
         if outcome.status == Status::Ok {
             outcome.files = files.into_iter().map(FileMark::from).collect();
@@ -471,7 +469,6 @@ impl Outcome {
                 })
                 .collect(),
             events: out,
-            logs: Vec::new(),
             usage: RunUsage::default(),
             xcalls: sent,
             actions: started,
@@ -2259,6 +2256,83 @@ mod tests {
             detail: String::new(),
         }));
         assert!(trapped.files.is_empty());
+    }
+
+    /// App logs (`env::log`, stdout, stderr) can hold user data, so neither a call's nor a
+    /// timer's entry keeps them, whatever the status; an entry an earlier release logged with
+    /// `logs` still decodes and applies.
+    #[test]
+    fn a_runs_log_lines_never_reach_its_entry() {
+        const LINE: &str = "user typed: my secret diagnosis";
+        let run = |status| host::Outcome {
+            status,
+            result: b"null".to_vec(),
+            diff: Vec::new(),
+            events: Vec::new(),
+            xcalls: Vec::new(),
+            actions: Vec::new(),
+            logs: vec![LINE.to_owned()],
+            http: Vec::new(),
+            new_files: Vec::new(),
+            published: Vec::new(),
+            compute_starts: Vec::new(),
+            compute_cancels: Vec::new(),
+            usage: host::Usage::default(),
+        };
+        let statuses = [
+            host::Status::Ok,
+            host::Status::AppError {
+                code: "No".into(),
+                message: "{}".into(),
+            },
+            host::Status::Trap {
+                kind: host::TrapKind::Fault,
+                detail: String::new(),
+            },
+        ];
+        for status in statuses {
+            let outcome = Outcome::from_host(run(status));
+            let call = serde_json::to_vec(&ComponentCmd::Call(Box::new(CallEntry {
+                method: "m".into(),
+                args: Value::Null,
+                caller: Caller::Account {
+                    account: "a".into(),
+                },
+                idempotency_key: None,
+                consent: None,
+                ts_ms: 1,
+                base_index: 1,
+                id_term: 1,
+                id_seq: 1,
+                outcome: outcome.clone(),
+                xcall: None,
+            })))
+            .unwrap();
+            let timer = serde_json::to_vec(&ComponentCmd::Tick(Box::new(TickEntry {
+                timer: "beat".into(),
+                scheduled_ms: 1,
+                previous_ms: None,
+                ts_ms: 1,
+                base_index: 1,
+                id_term: 1,
+                id_seq: 1,
+                outcome,
+            })))
+            .unwrap();
+            for bytes in [call, timer] {
+                let text = String::from_utf8(bytes).unwrap();
+                assert!(!text.contains(LINE), "{text}");
+                assert!(!text.contains("\"logs\""), "{text}");
+            }
+        }
+        // An entry an earlier release logged, lines and all, still reads and applies.
+        let old = br#"{"op":"componentCall","method":"m","args":null,
+            "caller":{"kind":"account","account":"a"},"tsMs":1,"baseIndex":1,"idTerm":1,"idSeq":1,
+            "outcome":{"status":"ok","result":null,"error":null,"diff":[],"events":[],
+            "logs":["user typed: my secret diagnosis"]}}"#;
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        assert!(!r.apply(2, old).conflict);
     }
 
     #[test]

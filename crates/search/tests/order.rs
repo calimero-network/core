@@ -1,6 +1,11 @@
 //! A query can return hits by a number field instead of by relevance: the
 //! newest messages that match, paged in that order.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_primitives::search::{
     SearchDoc, SearchFieldKind, SearchFieldSchema, SearchIndexSchema, SearchMode, SearchOrder,
     SearchRequest, SearchValue,

@@ -205,6 +205,9 @@ pub(crate) struct Probes {
     pub replica_behind: std::sync::atomic::AtomicBool,
     /// While set, this node's system reads fail.
     pub system_outage: std::sync::atomic::AtomicBool,
+    /// While set, this node refuses the system group's Raft messages, so it stops applying
+    /// system entries while its app groups go on.
+    pub system_log_held: std::sync::atomic::AtomicBool,
     /// The fewest bytes the pending budget had left.
     pub pending_low: Arc<std::sync::atomic::AtomicUsize>,
     /// The fewest bytes the push budget had left.
@@ -268,6 +271,7 @@ impl Default for Probes {
             limits: std::sync::Mutex::new(crate::node::ComputeLimits::default()),
             replica_behind: std::sync::atomic::AtomicBool::new(false),
             system_outage: std::sync::atomic::AtomicBool::new(false),
+            system_log_held: std::sync::atomic::AtomicBool::new(false),
             pending_low: Arc::new(std::sync::atomic::AtomicUsize::new(MAX_PENDING_FILE_BYTES)),
             push_low: std::sync::atomic::AtomicUsize::new(MAX_PUSH_BYTES),
             upload_window: std::sync::atomic::AtomicUsize::new(super::uploads::UPLOAD_WINDOW),

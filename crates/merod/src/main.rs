@@ -610,6 +610,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
         registry: args.registry_url.clone(),
         allow_unsigned_bundles: args.allow_unsigned_bundles.unwrap_or(false) || dev,
         allow_package_uploads: dev,
+        app_logs: dev,
         outbound: outbound
             .map(|o| calimero_outbound::OutboundService::from_settings(&o))
             .transpose()?

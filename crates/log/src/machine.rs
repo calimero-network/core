@@ -1372,7 +1372,8 @@ pub(crate) fn replace_state_rows<M: Machine>(
     Ok(count)
 }
 
-#[cfg(all(test, feature = "testing"))]
+#[cfg(test)]
+#[cfg(feature = "testing")]
 mod build_races;
 
 #[cfg(test)]

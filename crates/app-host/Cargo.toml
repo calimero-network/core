@@ -24,3 +24,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 calimero-app-host = { path = ".", features = ["testing"] }
+
+[lints]
+workspace = true

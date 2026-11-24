@@ -1,5 +1,10 @@
 //! The shared fixture helper builds both components, and the cache serves the second call.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod common;
 
 use std::time::Instant;

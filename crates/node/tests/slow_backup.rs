@@ -11,6 +11,11 @@
 //! a backup that writes on it stops a task ticking beside it. Told by order,
 //! not latency: while that write still waits, the ticker must keep ticking.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod common;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

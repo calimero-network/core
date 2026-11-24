@@ -1,5 +1,10 @@
 //! The host core's `files` policy, limits and outcome.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::sync::Arc;
