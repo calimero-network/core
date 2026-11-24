@@ -691,6 +691,19 @@ impl Node {
         self.probes.system_outage.store(on, Ordering::Relaxed);
     }
 
+    /// Makes this node refuse the system group's Raft messages, so its system replica falls
+    /// behind while its app groups go on applying. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn hold_system_log(&self, on: bool) {
+        self.probes.system_log_held.store(on, Ordering::Relaxed);
+    }
+
+    /// Whether a test holds this node's system replica back ([`Node::hold_system_log`]).
+    #[cfg(feature = "testing")]
+    pub(crate) fn system_log_held(&self) -> bool {
+        self.probes.system_log_held.load(Ordering::Relaxed)
+    }
+
     /// The waits that end a run the leader gets no answer for.
     pub(super) fn limits(&self) -> ComputeLimits {
         #[cfg(feature = "testing")]
