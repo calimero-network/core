@@ -198,6 +198,15 @@ class DeepCase(Case):
         if self._seeded():
             self.during_mix(w, self.s)
 
+    def old_job(self, w):
+        if self._retired(w):
+            return
+        if self._seeded():
+            self.with_old_job(w, self.s)
+
+    def with_old_job(self, w, s: dict):
+        pass
+
     def verify(self, w):
         if self._retired(w):
             return

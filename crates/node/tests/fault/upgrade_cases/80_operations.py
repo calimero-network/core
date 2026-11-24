@@ -409,9 +409,10 @@ class JobNodeAttestation(DeepCase):
     area = "Ops"
     since = "1.0.0-rc.25"
     seeds = "the job node the cluster registered (compute runs use it); nothing is stored beyond its registration"
-    verifies = ("the operator's read of each registered job node's attestation answers `admitted`, as the old "
-                "release's nodes judge the old job node in the mixed cluster and as the new release's nodes judge "
-                "the new one after the roll; a replica's id is refused `404`")
+    verifies = ("the operator's read of each registered job node's attestation answers `admitted`: the old "
+                "release's nodes judging the old job node, then every new node judging that old job node once it "
+                "serves again after the roll, then the new nodes judging the new one; while the cluster is mixed the "
+                "old job node, which the pipelines case stopped, may be `unreachable`; a replica's id is refused `404`")
 
     def populate(self, w):
         _attested(w)
@@ -426,4 +427,10 @@ class JobNodeAttestation(DeepCase):
     def during_mix(self, w, s):
         # The pipelines case stops the old job node before the roll, so it is still registered and unreachable.
         self.check(w, s, ("admitted", "unreachable"))
+
+    def with_old_job(self, w, s):
+        for job in sorted(w.fleet.jobs):
+            for node in w.members():
+                until(f"node {node} admits the old job node {job}", lambda: _in_states(
+                    ops(w, "GET", f"ops/job-nodes/{job}/attestation", node=node), job, ("admitted",)), 60)
 
