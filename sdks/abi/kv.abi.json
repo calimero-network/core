@@ -1,0 +1,882 @@
+{
+  "abiVersion": 1,
+  "errors": {
+    "BadCursor": {},
+    "BadName": {
+      "name": "string"
+    },
+    "BadPrincipal": {
+      "principal": "string"
+    },
+    "BadRight": {
+      "right": "string"
+    },
+    "BatchTooLarge": {
+      "max": "u64"
+    },
+    "BucketExists": {
+      "bucket": "string"
+    },
+    "BucketFull": {
+      "max": "u64"
+    },
+    "BucketNotEmpty": {
+      "bucket": "string",
+      "entries": "u64"
+    },
+    "ChangesTrimmed": {
+      "oldest": "u64"
+    },
+    "Conflict": {
+      "current": "u64"
+    },
+    "EmptyKey": {},
+    "GrantRefused": {
+      "reason": "string"
+    },
+    "KeyTooLarge": {
+      "max": "u64"
+    },
+    "NoSuchBucket": {
+      "bucket": "string"
+    },
+    "NotGranted": {
+      "bucket": "string",
+      "need": "string"
+    },
+    "NotOwner": {},
+    "NotStoreAdmin": {},
+    "PasskeyRequired": {
+      "bucket": "string"
+    },
+    "PersonRequired": {
+      "bucket": "string"
+    },
+    "ValueTooLarge": {
+      "max": "u64"
+    }
+  },
+  "events": {},
+  "methods": {
+    "addAdmin": {
+      "allowSystem": false,
+      "confirm": true,
+      "doc": "Makes `account` a store admin. The owner only.",
+      "kind": "call",
+      "params": [
+        [
+          "account",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "audit": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The audit log of `bucket` (`\"\"`: the store's own changes), newest first. A bucket's:\nits admins (the instance that created the store, on `default`) and store admins; the\nstore's: store admins.",
+      "kind": "view",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "cursor",
+          "option<string>"
+        ],
+        [
+          "limit",
+          "option<u32>"
+        ]
+      ],
+      "public": false,
+      "returns": "AuditPage"
+    },
+    "buckets": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The buckets the caller holds any right on (every bucket for a store admin), with\nthe caller's rights on each.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "list<BucketView>"
+    },
+    "changesSince": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The writes after version `after` (`\"0\"` for every write still kept), oldest first.\n`ChangesTrimmed` when `after` is older than the bucket keeps: list the bucket again.\nNeeds `read`.",
+      "kind": "view",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "after",
+          "u64"
+        ],
+        [
+          "limit",
+          "option<u32>"
+        ]
+      ],
+      "public": false,
+      "returns": "ChangesPage"
+    },
+    "createBucket": {
+      "allowSystem": false,
+      "confirm": true,
+      "doc": "Creates a bucket; the caller becomes its admin. Store admins only.",
+      "kind": "call",
+      "params": [
+        [
+          "name",
+          "string"
+        ],
+        [
+          "servicesOnly",
+          "option<bool>"
+        ],
+        [
+          "passkeyWrites",
+          "option<bool>"
+        ],
+        [
+          "maxValueBytes",
+          "option<u64>"
+        ],
+        [
+          "maxEntries",
+          "option<u64>"
+        ],
+        [
+          "appAlone",
+          "option<bool>"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "dataMethods": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The methods an API key may call, for scoping a key: grants still decide per bucket.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "DataMethods"
+    },
+    "delete": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Removes `key`; with `expectedVersion`, only if the entry is at it. Whether a value\nwas removed. Needs `write` (and `read` with `expectedVersion`).",
+      "kind": "call",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "key",
+          "string"
+        ],
+        [
+          "expectedVersion",
+          "option<u64>"
+        ]
+      ],
+      "public": false,
+      "returns": "bool"
+    },
+    "deleteBucket": {
+      "allowSystem": false,
+      "confirm": true,
+      "doc": "Removes an empty bucket and its grants. Bucket admins.",
+      "kind": "call",
+      "params": [
+        [
+          "name",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "deleteConfirmed": {
+      "allowSystem": false,
+      "confirm": true,
+      "doc": "`delete` with a passkey. Needs `write` (and `read` with `expectedVersion`).",
+      "kind": "call",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "key",
+          "string"
+        ],
+        [
+          "expectedVersion",
+          "option<u64>"
+        ]
+      ],
+      "public": false,
+      "returns": "bool"
+    },
+    "get": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The value under `key`, or `null` when it is absent or expired. Needs `read`.",
+      "kind": "view",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "key",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "option<EntryView>"
+    },
+    "getMany": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The values under `keys`, in order, `null` for each absent one. Needs `read`.",
+      "kind": "view",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "keys",
+          "list<string>"
+        ]
+      ],
+      "public": false,
+      "returns": "list<option<EntryView>>"
+    },
+    "grant": {
+      "allowSystem": false,
+      "confirm": true,
+      "doc": "Gives `principal` `right` (`read`, `write` or `admin`) on `bucket`. Bucket admins\nand store admins. `admin` goes only to people; on a `servicesOnly` bucket `read` and\n`write` go only to keys and apps.",
+      "kind": "call",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "principal",
+          "string"
+        ],
+        [
+          "right",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "grants": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Every grant on `bucket`. Its admins (the instance that created the store, on\n`default`) and store admins.",
+      "kind": "view",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "list<GrantView>"
+    },
+    "init": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Creates the `default` bucket with the owner as its admin, `servicesOnly` and\n`passkeyWrites` as `createBucket` takes them. Run as a member of an app's unit, it\ngrants that app (`env::unit_of()`) `read`, `write` and `admin` on it; else it grants\nthe owner `read` and `write`, unless `default` is `servicesOnly`.",
+      "kind": "init",
+      "params": [
+        [
+          "servicesOnly",
+          "option<bool>"
+        ],
+        [
+          "passkeyWrites",
+          "option<bool>"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "list": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Keys starting with `prefix` (all keys for `\"\"`), in key order, `limit` a page (at\nmost 1,000; 100 when absent). Values too unless `keysOnly`. Needs `read`.",
+      "kind": "view",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "prefix",
+          "string"
+        ],
+        [
+          "cursor",
+          "option<string>"
+        ],
+        [
+          "limit",
+          "option<u32>"
+        ],
+        [
+          "keysOnly",
+          "option<bool>"
+        ]
+      ],
+      "public": false,
+      "returns": "ListPage"
+    },
+    "purge": {
+      "allowSystem": false,
+      "confirm": true,
+      "doc": "Removes up to 500 entries of a bucket; how many remain. Bucket admins.",
+      "kind": "call",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "u64"
+    },
+    "removeAdmin": {
+      "allowSystem": false,
+      "confirm": true,
+      "doc": "Removes a store admin; whether they were one. The owner only.",
+      "kind": "call",
+      "params": [
+        [
+          "account",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "bool"
+    },
+    "revoke": {
+      "allowSystem": false,
+      "confirm": true,
+      "doc": "Takes `right` on `bucket` from `principal`; whether it held it. Bucket admins and\nstore admins.",
+      "kind": "call",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "principal",
+          "string"
+        ],
+        [
+          "right",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "bool"
+    },
+    "set": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Stores `value` under `key`, expiring after `ttlMs` when given. Needs `write`.\nReturns the entry's new version.",
+      "kind": "call",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "key",
+          "string"
+        ],
+        [
+          "value",
+          "string"
+        ],
+        [
+          "ttlMs",
+          "option<u64>"
+        ]
+      ],
+      "public": false,
+      "returns": "u64"
+    },
+    "setAccess": {
+      "allowSystem": false,
+      "confirm": true,
+      "doc": "Sets `principal`'s rights on `bucket` to exactly `role`'s: `view` is `read`, `edit`\n`read` and `write`, `manage` all three, `none` none. Grants and revokes only what\ndiffers, as `grant` and `revoke` would, all or nothing. On a `servicesOnly` bucket,\n`manage` gives people `admin` alone. Bucket admins and store admins.",
+      "kind": "call",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "principal",
+          "string"
+        ],
+        [
+          "role",
+          "Access"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "setAppAlone": {
+      "allowSystem": false,
+      "confirm": true,
+      "doc": "Whether an app's grant alone admits it to `bucket`, with no person behind the call.\nBucket admins and store admins.",
+      "kind": "call",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "appAlone",
+          "bool"
+        ]
+      ],
+      "public": false,
+      "returns": null
+    },
+    "setConfirmed": {
+      "allowSystem": false,
+      "confirm": true,
+      "doc": "`set` with a passkey: the only write a `passkeyWrites` bucket takes. Needs `write`;\nwith `expectedVersion`, only if the entry is at it (`\"0\"`: only if absent), and\n`read` too.",
+      "kind": "call",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "key",
+          "string"
+        ],
+        [
+          "value",
+          "string"
+        ],
+        [
+          "ttlMs",
+          "option<u64>"
+        ],
+        [
+          "expectedVersion",
+          "option<u64>"
+        ]
+      ],
+      "public": false,
+      "returns": "u64"
+    },
+    "setIf": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "`set` only if the entry is at `expectedVersion` (`\"0\"`: only if absent);\n`Conflict { current }` otherwise. Needs `read` and `write`.",
+      "kind": "call",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "key",
+          "string"
+        ],
+        [
+          "value",
+          "string"
+        ],
+        [
+          "expectedVersion",
+          "u64"
+        ],
+        [
+          "ttlMs",
+          "option<u64>"
+        ]
+      ],
+      "public": false,
+      "returns": "u64"
+    },
+    "setMany": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Stores up to 100 entries, all or none. Needs `write`. Returns the last version.",
+      "kind": "call",
+      "params": [
+        [
+          "bucket",
+          "string"
+        ],
+        [
+          "entries",
+          "list<SetItem>"
+        ]
+      ],
+      "public": false,
+      "returns": "u64"
+    },
+    "sweepExpired": {
+      "allowSystem": true,
+      "confirm": false,
+      "doc": "Deletes up to 500 expired entries, oldest expiry first. A view runs at the time of\nthe last log entry, so an expired entry stays readable until the next write or this\nsweep: at most about ten minutes on a quiet store.",
+      "every": "10m",
+      "kind": "timer",
+      "params": [],
+      "public": false,
+      "returns": null
+    },
+    "whoami": {
+      "allowApps": [
+        "*"
+      ],
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The caller as grants name it.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "WhoAmI"
+    }
+  },
+  "state": {
+    "fields": {
+      "admins": "unorderedMap",
+      "audit": "unorderedMap",
+      "auditSeq": "cell",
+      "buckets": "unorderedMap",
+      "changes": "unorderedMap",
+      "entries": "unorderedMap",
+      "expiry": "unorderedMap",
+      "grants": "unorderedMap"
+    },
+    "search": {
+      "admins": [],
+      "audit": [],
+      "auditSeq": [],
+      "buckets": [],
+      "changes": [],
+      "entries": [],
+      "expiry": [],
+      "grants": []
+    },
+    "version": 1
+  },
+  "types": {
+    "Access": {
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "view"
+        },
+        {
+          "name": "edit"
+        },
+        {
+          "name": "manage"
+        },
+        {
+          "name": "none"
+        }
+      ]
+    },
+    "AuditPage": {
+      "fields": [
+        [
+          "items",
+          "list<AuditView>"
+        ],
+        [
+          "next",
+          "option<string>"
+        ]
+      ],
+      "kind": "record"
+    },
+    "AuditView": {
+      "fields": [
+        [
+          "seq",
+          "u64"
+        ],
+        [
+          "at",
+          "u64"
+        ],
+        [
+          "actor",
+          "string"
+        ],
+        [
+          "op",
+          "string"
+        ],
+        [
+          "key",
+          "option<string>"
+        ],
+        [
+          "detail",
+          "option<string>"
+        ]
+      ],
+      "kind": "record"
+    },
+    "BucketView": {
+      "fields": [
+        [
+          "name",
+          "string"
+        ],
+        [
+          "servicesOnly",
+          "bool"
+        ],
+        [
+          "passkeyWrites",
+          "bool"
+        ],
+        [
+          "maxValueBytes",
+          "u64"
+        ],
+        [
+          "maxEntries",
+          "u64"
+        ],
+        [
+          "entries",
+          "u64"
+        ],
+        [
+          "createdBy",
+          "string"
+        ],
+        [
+          "appAlone",
+          "bool"
+        ],
+        [
+          "rights",
+          "list<string>"
+        ]
+      ],
+      "kind": "record"
+    },
+    "ChangeView": {
+      "fields": [
+        [
+          "version",
+          "u64"
+        ],
+        [
+          "key",
+          "string"
+        ],
+        [
+          "op",
+          "string"
+        ],
+        [
+          "by",
+          "string"
+        ]
+      ],
+      "kind": "record"
+    },
+    "ChangesPage": {
+      "fields": [
+        [
+          "changes",
+          "list<ChangeView>"
+        ],
+        [
+          "next",
+          "u64"
+        ],
+        [
+          "more",
+          "bool"
+        ]
+      ],
+      "kind": "record"
+    },
+    "DataMethods": {
+      "fields": [
+        [
+          "read",
+          "list<string>"
+        ],
+        [
+          "write",
+          "list<string>"
+        ]
+      ],
+      "kind": "record"
+    },
+    "EntryView": {
+      "fields": [
+        [
+          "key",
+          "string"
+        ],
+        [
+          "value",
+          "option<string>",
+          {
+            "optional": true
+          }
+        ],
+        [
+          "version",
+          "u64"
+        ],
+        [
+          "updatedBy",
+          "string"
+        ],
+        [
+          "updatedAt",
+          "u64"
+        ],
+        [
+          "expiresAt",
+          "option<u64>"
+        ]
+      ],
+      "kind": "record"
+    },
+    "GrantView": {
+      "fields": [
+        [
+          "principal",
+          "string"
+        ],
+        [
+          "right",
+          "string"
+        ],
+        [
+          "grantedBy",
+          "string"
+        ],
+        [
+          "grantedAt",
+          "u64"
+        ]
+      ],
+      "kind": "record"
+    },
+    "ListPage": {
+      "fields": [
+        [
+          "items",
+          "list<EntryView>"
+        ],
+        [
+          "next",
+          "option<string>"
+        ]
+      ],
+      "kind": "record"
+    },
+    "SetItem": {
+      "fields": [
+        [
+          "key",
+          "string"
+        ],
+        [
+          "value",
+          "string"
+        ],
+        [
+          "ttlMs",
+          "option<u64>",
+          {
+            "optional": true
+          }
+        ]
+      ],
+      "kind": "record"
+    },
+    "WhoAmI": {
+      "fields": [
+        [
+          "principal",
+          "string"
+        ],
+        [
+          "account",
+          "option<string>"
+        ],
+        [
+          "storeAdmin",
+          "bool"
+        ]
+      ],
+      "kind": "record"
+    }
+  },
+  "world": "calimero:app@0.5.5"
+}

@@ -191,6 +191,23 @@ print(ops.ops.backup().written, "snapshots written")
 `merod` (set `MEROD_BINARY` and `KV_STORE_WASM`, or keep a `core` checkout
 beside this one).
 
+## Confidential KV
+
+A service reaches a Confidential KV store from its environment
+(`CALIMERO_CLUSTER`, `CALIMERO_API_KEY`, `CALIMERO_KV_STORE`, `CALIMERO_MIN_RELEASE`):
+
+```python
+import json
+
+from calimero_client_py import Calimero
+
+kv = Calimero.from_env().kv()
+kv.set("default", "flags/beta", json.dumps({"enabled": True}))
+```
+
+`kv()` is a `KvClient` generated from the store's ABI. Every variable is in the
+[Confidential KV guide](https://calimero-network.github.io/core/clients/mero-py/guides/confidential-kv/).
+
 ## Development
 
 Build from source with [maturin](https://www.maturin.rs/):

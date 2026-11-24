@@ -21,12 +21,19 @@
     "rust-toolchain.toml",
     ".github/actions/rust-toolchain",
     "crates/app-abi/tests/py",
-    "crates/app-abi/tests/golden/*.py"
+    "crates/app-abi/tests/golden/*.py",
+    "sdks/abi/kv.abi.json",
+    "scripts/app-codegen.sh",
+    "crates/app-abi/src",
+    "crates/app-build/src/codegen.rs",
+    "crates/app-build/src/abi_tools.rs",
+    "crates/app-build/examples/codegen.rs"
   ],
   "generate": "bash scripts/generate.sh",
   "generated": [
     "calimero_client_py/openapi",
     "calimero_client_py/facade.py",
+    "calimero_client_py/products/kv/client.py",
     "../../../docs/src/content/docs/clients/mero-py/reference/methods.mdx",
     "abi-codegen/examples/generated_client"
   ],

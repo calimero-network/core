@@ -52,6 +52,9 @@ describe('the package root', () => {
       'createRouteClient',
       'DEFAULT_DIRECTORY',
       'DEFAULT_ORG_CAPABILITIES',
+      'Calimero',
+      'KvClient',
+      'Kv',
     ]) {
       expect(root, name).toHaveProperty(name);
     }

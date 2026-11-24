@@ -651,7 +651,7 @@ def main(argv=None):
         need(args.kv_mpk_next, "kv-store 1.1.0 .mpk", how + ", or --kv-mpk-next")
     if "rooms-fault" in names:
         args.rooms_wasm = args.rooms_wasm or default_rooms()
-        need(args.rooms_wasm, "the Rooms component", "cargo test --release -p calimero-node --test rooms")
+        need(args.rooms_wasm, "the Rooms component", "cargo test --release -p calimero-node --test it rooms::")
 
     ctx = Ctx(args)
     print(f"merod {rv2.MEROD}\nmeroctl {rv2.CLI}\ntests {names} x{args.iterations}, "
