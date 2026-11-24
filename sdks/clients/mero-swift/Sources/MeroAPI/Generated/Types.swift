@@ -511,7 +511,7 @@ public protocol APIProtocol: Sendable {
     func appRunLogs(_ input: Operations.AppRunLogs.Input) async throws -> Operations.AppRunLogs.Output
     /// The secrets an app's release declares
     ///
-    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments; `/` for every path) and the one place the node attaches it (`header` with its `format`, or `bodyField`), with `binding` saying it in one line ("sends OPENAI_API_KEY as the Authorization header (*** to api.openai.com under /v1/"), its description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -520,7 +520,7 @@ public protocol APIProtocol: Sendable {
     func appSecrets(_ input: Operations.AppSecrets.Input) async throws -> Operations.AppSecrets.Output
     /// Set an app's own value of a declared secret
     ///
-    /// Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+    /// Attached by the node only where the secret's binding says (its host, header or body field), never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -1059,7 +1059,7 @@ public protocol APIProtocol: Sendable {
     func deploymentSecrets(_ input: Operations.DeploymentSecrets.Input) async throws -> Operations.DeploymentSecrets.Output
     /// Set a deployment's value of a secret
     ///
-    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -2680,7 +2680,7 @@ extension APIProtocol {
     }
     /// The secrets an app's release declares
     ///
-    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments; `/` for every path) and the one place the node attaches it (`header` with its `format`, or `bodyField`), with `binding` saying it in one line ("sends OPENAI_API_KEY as the Authorization header (*** to api.openai.com under /v1/"), its description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -2697,7 +2697,7 @@ extension APIProtocol {
     }
     /// Set an app's own value of a declared secret
     ///
-    /// Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+    /// Attached by the node only where the secret's binding says (its host, header or body field), never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -3706,7 +3706,7 @@ extension APIProtocol {
     }
     /// Set a deployment's value of a secret
     ///
-    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -6021,7 +6021,7 @@ public enum Components {
                 case destinations
             }
         }
-        /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
+        /// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
         ///
         /// - Remark: Generated from `#/components/schemas/UpdateReason`.
         @frozen public enum UpdateReason: Codable, Hashable, Sendable {
@@ -6263,17 +6263,64 @@ public enum Components {
             public struct Case7Payload: Codable, Hashable, Sendable {
                 /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/code`.
                 @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
-                    case unclassified = "unclassified"
+                    case secretBindingChanged = "secretBindingChanged"
                 }
                 /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/code`.
                 public var code: Components.Schemas.UpdateReason.Case7Payload.CodePayload
                 /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/member`.
                 public var member: Swift.String?
-                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/package`.
-                public var package: Swift.String
-                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/version`.
-                public var version: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/name`.
+                public var name: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/before`.
+                public var before: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case7/after`.
+                public var after: Swift.String
                 /// Creates a new `Case7Payload`.
+                ///
+                /// - Parameters:
+                ///   - code:
+                ///   - member:
+                ///   - name:
+                ///   - before:
+                ///   - after:
+                public init(
+                    code: Components.Schemas.UpdateReason.Case7Payload.CodePayload,
+                    member: Swift.String? = nil,
+                    name: Swift.String,
+                    before: Swift.String? = nil,
+                    after: Swift.String
+                ) {
+                    self.code = code
+                    self.member = member
+                    self.name = name
+                    self.before = before
+                    self.after = after
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case code
+                    case member
+                    case name
+                    case before
+                    case after
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case7`.
+            case case7(Components.Schemas.UpdateReason.Case7Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case8`.
+            public struct Case8Payload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/code`.
+                @frozen public enum CodePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case unclassified = "unclassified"
+                }
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/code`.
+                public var code: Components.Schemas.UpdateReason.Case8Payload.CodePayload
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/member`.
+                public var member: Swift.String?
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/package`.
+                public var package: Swift.String
+                /// - Remark: Generated from `#/components/schemas/UpdateReason/case8/version`.
+                public var version: Swift.String
+                /// Creates a new `Case8Payload`.
                 ///
                 /// - Parameters:
                 ///   - code:
@@ -6281,7 +6328,7 @@ public enum Components {
                 ///   - package:
                 ///   - version:
                 public init(
-                    code: Components.Schemas.UpdateReason.Case7Payload.CodePayload,
+                    code: Components.Schemas.UpdateReason.Case8Payload.CodePayload,
                     member: Swift.String? = nil,
                     package: Swift.String,
                     version: Swift.String
@@ -6298,8 +6345,8 @@ public enum Components {
                     case version
                 }
             }
-            /// - Remark: Generated from `#/components/schemas/UpdateReason/case7`.
-            case case7(Components.Schemas.UpdateReason.Case7Payload)
+            /// - Remark: Generated from `#/components/schemas/UpdateReason/case8`.
+            case case8(Components.Schemas.UpdateReason.Case8Payload)
             public init(from decoder: any Decoder) throws {
                 var errors: [any Error] = []
                 do {
@@ -6344,6 +6391,12 @@ public enum Components {
                 } catch {
                     errors.append(error)
                 }
+                do {
+                    self = .case8(try .init(from: decoder))
+                    return
+                } catch {
+                    errors.append(error)
+                }
                 throw Swift.DecodingError.failedToDecodeOneOfSchema(
                     type: Self.self,
                     codingPath: decoder.codingPath,
@@ -6365,6 +6418,8 @@ public enum Components {
                 case let .case6(value):
                     try value.encode(to: encoder)
                 case let .case7(value):
+                    try value.encode(to: encoder)
+                case let .case8(value):
                     try value.encode(to: encoder)
                 }
             }
@@ -22542,7 +22597,7 @@ public enum Operations {
     }
     /// The secrets an app's release declares
     ///
-    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its binding, the one `host`, the path prefixes there it is attached under (`paths`, on whole segments; `/` for every path) and the one place the node attaches it (`header` with its `format`, or `bodyField`), with `binding` saying it in one line ("sends OPENAI_API_KEY as the Authorization header (*** to api.openai.com under /v1/"), its description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -22599,8 +22654,18 @@ public enum Operations {
                         public struct SecretsPayload: Codable, Hashable, Sendable {
                             /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties`.
                             public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
-                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/hosts`.
-                                public var hosts: [Swift.String]
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/host`.
+                                public var host: Swift.String
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/paths`.
+                                public var paths: [Swift.String]
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/header`.
+                                public var header: Swift.String?
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/format`.
+                                public var format: Swift.String?
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/bodyField`.
+                                public var bodyField: Swift.String?
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/binding`.
+                                public var binding: Swift.String
                                 /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/description`.
                                 public var description: Swift.String
                                 /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/required`.
@@ -22622,7 +22687,12 @@ public enum Operations {
                                 /// Creates a new `AdditionalPropertiesPayload`.
                                 ///
                                 /// - Parameters:
-                                ///   - hosts:
+                                ///   - host:
+                                ///   - paths:
+                                ///   - header:
+                                ///   - format:
+                                ///   - bodyField:
+                                ///   - binding:
                                 ///   - description:
                                 ///   - required:
                                 ///   - source:
@@ -22630,7 +22700,12 @@ public enum Operations {
                                 ///   - setBy:
                                 ///   - setAt:
                                 public init(
-                                    hosts: [Swift.String],
+                                    host: Swift.String,
+                                    paths: [Swift.String],
+                                    header: Swift.String? = nil,
+                                    format: Swift.String? = nil,
+                                    bodyField: Swift.String? = nil,
+                                    binding: Swift.String,
                                     description: Swift.String,
                                     required: Swift.Bool,
                                     source: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.SourcePayload,
@@ -22638,7 +22713,12 @@ public enum Operations {
                                     setBy: Swift.String? = nil,
                                     setAt: Swift.Int64? = nil
                                 ) {
-                                    self.hosts = hosts
+                                    self.host = host
+                                    self.paths = paths
+                                    self.header = header
+                                    self.format = format
+                                    self.bodyField = bodyField
+                                    self.binding = binding
                                     self.description = description
                                     self.required = required
                                     self.source = source
@@ -22647,7 +22727,12 @@ public enum Operations {
                                     self.setAt = setAt
                                 }
                                 public enum CodingKeys: String, CodingKey {
-                                    case hosts
+                                    case host
+                                    case paths
+                                    case header
+                                    case format
+                                    case bodyField
+                                    case binding
                                     case description
                                     case required
                                     case source
@@ -22766,7 +22851,7 @@ public enum Operations {
     }
     /// Set an app's own value of a declared secret
     ///
-    /// Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+    /// Attached by the node only where the secret's binding says (its host, header or body field), never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -34059,7 +34144,7 @@ public enum Operations {
     }
     /// Set a deployment's value of a secret
     ///
-    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -44951,6 +45036,8 @@ public enum Operations {
                         ///
                         /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/secrets`.
                         public var secrets: OpenAPIRuntime.OpenAPIValueContainer
+                        /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/secretBindings`.
+                        public var secretBindings: [Swift.String]
                         /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                         ///
                         /// - Remark: Generated from `#/paths/packages/{package}/{version}/capabilities/GET/responses/200/content/json/uses`.
@@ -44995,6 +45082,7 @@ public enum Operations {
                         ///   - author:
                         ///   - outbound:
                         ///   - secrets: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+                        ///   - secretBindings:
                         ///   - uses: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                         ///   - abi: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
                         ///   - destinations:
@@ -45011,6 +45099,7 @@ public enum Operations {
                             author: Swift.String? = nil,
                             outbound: [Swift.String],
                             secrets: OpenAPIRuntime.OpenAPIValueContainer,
+                            secretBindings: [Swift.String],
                             uses: OpenAPIRuntime.OpenAPIValueContainer,
                             abi: OpenAPIRuntime.OpenAPIValueContainer,
                             destinations: [Swift.String]? = nil,
@@ -45027,6 +45116,7 @@ public enum Operations {
                             self.author = author
                             self.outbound = outbound
                             self.secrets = secrets
+                            self.secretBindings = secretBindings
                             self.uses = uses
                             self.abi = abi
                             self.destinations = destinations
@@ -45044,6 +45134,7 @@ public enum Operations {
                             case author
                             case outbound
                             case secrets
+                            case secretBindings
                             case uses
                             case abi
                             case destinations
