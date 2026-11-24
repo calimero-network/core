@@ -197,6 +197,17 @@ the key is shown once. A key may be scoped:
 - `upgrades: { app, package? }`: an [upgrade key](#upgrade-keys), which takes
   none of the fields above but `ttlSecs`.
 
+### Follow-ups
+
+A key is often useless until an app grants it access, and that grant is usually a confirm method: a second passkey prompt.
+`then: [{ app, method, args }]` folds it into the key's one prompt.
+Each entry names a confirm method of one of the key's own `apps` (at most four, 64 KiB as JSON; none on an upgrade key), judged as `POST /apps/{app}/intents` judges the caller.
+The first request makes the key's id and writes it into the arguments: every string value that is exactly `key:$key` becomes `key:<keyId>` (no substring is replaced).
+The `412` details list the calls so written (`then`), and the person's passkey signs the key and them in one consent (`__create_api_key`'s arguments gain `then`, only when it is set, so a plain key's consent reads as before).
+The retry checks its own `then` against the signed one, runs each call in order as the person with that consent, and only then makes the key; the answer adds `then: [{ index, result }]`.
+If a call fails, no key is made and the answer is `422 FOLLOW_UP_FAILED` naming it (`details: { index, app, method, error }`); a call before it stays applied, naming a key id that never exists.
+A node logs a key with follow-ups only from cluster version 1.0.0-rc.36 (`Feature::KeyFollowUps`).
+
 ## Upgrade keys
 
 A deploy from CI cannot answer a passkey step-up. An **upgrade key** is an API
