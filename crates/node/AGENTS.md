@@ -1322,7 +1322,8 @@ is its command line.
   `removed`), `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
   unit's moves its direct members as `unit_plan` does. The class decides how it applies:
   under `secondApprover` a red one takes two approvers (C8), under `noDestinations` a
-  green one of a unit with no destination before or after applies on its own, moving the app alone (C9).
+  green one of a unit with no destination before or after that removes no method applies on
+  its own, moving the app alone (C9).
   Regressions: `a_units_destinations_are_judged_over_its_members`
   (`tests/consent_page.rs`), `calimero_bundle::update::tests`,
   `an_update_whose_members_differ_applies_on_its_own_and_moves_the_instance_alone`
@@ -1383,8 +1384,8 @@ is its command line.
   the instance's `links` (`upgrade_run_apps`). `POST /apps/{app}/upgrade-approvals` answers `approval` in the
   `pendingApprovals` shape (`api::upgrades::approval_json`).
   The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
-  `autoApply` (`noDestinations`: a green update of an app whose unit has no destinations
-  before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
+  `autoApply` (`noDestinations`: a green update that removes no method, of an app whose
+  unit has no destinations before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
   /apps/{app}/upgrade-policy` (`policy_json`), `GET /apps/{app}/update` adds `policy`,
   `pendingApprovals`, `available.approvalsNeeded`/`approvedBy`
   (`api::upgrades::update_view`), `GET /orgs/{org}/updates?after=` (owners and admins,
@@ -1417,7 +1418,9 @@ is its command line.
   `MAX_AUTO_UPDATE_CLASSES_PER_PASS` a pass) and runs each app's first green one through
   `api::upgrades::auto_upgrade` -> `run_upgrade` (`Upgrader::auto`, `Caller::System`,
   actor `system::AUTO_UPDATE`): a release red only by its code (state version, delegated
-  methods) never holds back a green one below it. Only the release's own failure is
+  methods) never holds back a green one below it, and a green one that drops a method
+  (`removed_methods`, read from the leader's verdict, `api::upgrades::move_verdict`) waits
+  for a person as a red one does: another app may call it. Only the release's own failure is
   noted (`UpgradeFailed`: the group ran it and it failed or refused it); one before
   anything ran (refusal, restore point, runtime, no leader) is not, and the leader
   retries that move after a backoff (`node::auto_updates::AutoUpdateMemory`, in memory:

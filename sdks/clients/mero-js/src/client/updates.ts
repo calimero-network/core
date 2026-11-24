@@ -33,8 +33,8 @@ export type InstallSubject = ConsentOf<'install'>['subject'];
 
 /**
  * An update policy (core's `UpgradePolicy`): `autoApply` (`never`, or `noDestinations`: a
- * green update of an app that sends no data out of Calimero applies on its own after
- * `holdHours`), `holdHours` (24 to 168) and `secondApprover` (a red update needs two owners
+ * green update that removes no method, of an app that sends no data out of Calimero, applies
+ * on its own after `holdHours`), `holdHours` (24 to 168) and `secondApprover` (a red update needs two owners
  * or admins). A field left out is its default.
  */
 export type UpdatePolicy = NonNullable<ConsentOf<'updatePolicy'>['subject']['policy']>;
