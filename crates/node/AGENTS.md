@@ -726,6 +726,11 @@ is its command line.
   (a read index), so a removal committed elsewhere holds before the next request; an event
   stream judges each event the same way (Events below). Regression:
   `a_revocation_holds_on_a_follower_that_has_not_applied_it_yet`.
+  The owner, admin and read-only checks made after `gate` (`manages_app`,
+  `may_handle_files`, `read_only_in`) read the app's record again from that state
+  (`api::fresh_record`), never the one the handler read before the round, so a transfer
+  or move committed elsewhere holds too. Regression:
+  `a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer`.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and

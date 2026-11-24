@@ -1380,10 +1380,11 @@ fn init_state(state: &crate::app::AppState) -> Option<Result<(), Value>> {
     }
 }
 
-/// The caller, if they may reach `app` with this request kind.
 /// Whether `account` holds a read-only row in the team `app` belongs to
 /// (checked again against the latest system state before saying yes: at or
 /// past `sys_index`, the index the request's round named, else a round's).
+/// The record is read again from that state ([`fresh_record`]): the one in hand
+/// can predate a change of its access or owner.
 pub async fn read_only_in(
     node: &Node,
     app: &crate::types::AppRecord,
@@ -1393,13 +1394,16 @@ pub async fn read_only_in(
     let Some(a) = account else {
         return false;
     };
-    // Only through teams: a name, or the whole organization, writes.
-    let teams = app.access.teams();
-    if teams.is_empty() || a == app.owner || app.access.org_wide() || app.access.names(a) {
-        return false;
-    }
     let check = || {
         node.sys(|s| {
+            let Some(app) = fresh_record(s, app) else {
+                return false;
+            };
+            // Only through teams: a name, or the whole organization, writes.
+            let teams = app.access.teams();
+            if teams.is_empty() || a == app.owner || app.access.org_wide() || app.access.names(a) {
+                return false;
+            }
             s.orgs
                 .get(&app.org)
                 .is_some_and(|o| teams.iter().all(|t| !o.writes_team(a, t)))
@@ -1411,16 +1415,24 @@ pub async fn read_only_in(
     }
 }
 
+/// `app`'s record as `s` holds it. A handler reads the record (`Node::app`) before
+/// `gate` makes the request's read-index round, so on a follower behind, the one in
+/// hand can predate an owner, organization or access change committed through another
+/// node; every check made after `gate` reads it again here. `None`: deleted since.
+/// Regression: `a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer`.
+fn fresh_record<'s>(
+    s: &'s SystemState,
+    app: &crate::types::AppRecord,
+) -> Option<&'s crate::types::AppRecord> {
+    s.apps.get(&app.app_id)
+}
+
 /// Whether `account` may reach `app`, judged on the app's record as applied
 /// now. Handlers read the record before `principal` makes its fresh system
 /// read, so the record in hand can predate a grant or revocation committed
 /// through another node; this reads it again.
 fn reaches(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
-    node.sys(|s| {
-        s.apps
-            .get(&app.app_id)
-            .is_some_and(|now| s.may_reach(now, account))
-    })
+    node.sys(|s| fresh_record(s, app).is_some_and(|now| s.may_reach(now, account)))
 }
 
 async fn gate(
@@ -1873,12 +1885,16 @@ fn parse_blob_id(id: &str) -> Result<[u8; 32], ApiError> {
 
 /// Whether `account` may upload and list the files of `app`: its owner and the members of its
 /// organization (not guests), even where the app is public; an organization's app's owner only
-/// while a member ([`crate::system::SystemState::owner_acts`]).
+/// while a member ([`crate::system::SystemState::owner_acts`]). Judged on the record as `s`
+/// holds it ([`fresh_record`]), not the one in hand.
 fn may_handle_files(
     s: &crate::system::SystemState,
     app: &crate::types::AppRecord,
     account: Option<&str>,
 ) -> bool {
+    let Some(app) = fresh_record(s, app) else {
+        return false;
+    };
     account.is_some_and(|a| {
         s.owner_acts(app, a)
             || s.orgs
@@ -1889,9 +1905,12 @@ fn may_handle_files(
 
 /// Whether `account` may manage `app`'s data (its owner, of an organization's
 /// app while a member of it, or an admin of its organization): delete its
-/// blobs ([`crate::system::SystemState::manages_app`]).
+/// blobs ([`crate::system::SystemState::manages_app`]). Judged on the record as applied
+/// now ([`fresh_record`]), not the one in hand.
 fn manages_app(node: &Node, app: &crate::types::AppRecord, account: Option<&str>) -> bool {
-    account.is_some_and(|a| node.sys(|s| s.manages_app(app, a)))
+    account.is_some_and(|a| {
+        node.sys(|s| fresh_record(s, app).is_some_and(|app| s.manages_app(app, a)))
+    })
 }
 
 // ---------------------------------------------------------------- ops (mdma)
