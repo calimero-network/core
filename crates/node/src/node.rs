@@ -43,6 +43,12 @@ mod segments;
 
 pub use segments::{SegmentPin, SEGMENT_GRACE, SWEEP_EVERY};
 
+/// How often a node deletes the compiled components no app uses any more
+/// ([`Node::sweep_component_cache`]). The first sweep waits this long after start, so the
+/// system group has caught up and names every app's bundle.
+pub const COMPONENT_CACHE_SWEEP_EVERY: std::time::Duration =
+    std::time::Duration::from_secs(60 * 60);
+
 #[cfg(feature = "testing")]
 pub use component::ComputeLimits;
 pub(crate) use job::JobAttestError;
@@ -102,15 +108,6 @@ impl From<StatsWire> for crate::app::StorageStats {
 /// The timeout of the HTTP client a node shares for its peers, job nodes and attestation
 /// fetches. Transfers that may take longer (job transfers) bound themselves.
 pub const SHARED_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// [`SHARED_HTTP_TIMEOUT`], or the timeout a test set (`testing::shared_http_timeout`).
-fn shared_http_timeout() -> Duration {
-    #[cfg(feature = "testing")]
-    if let Some(timeout) = crate::testing::shared_http_timeout_override() {
-        return timeout;
-    }
-    SHARED_HTTP_TIMEOUT
-}
 
 /// Node configuration.
 #[derive(Clone, Debug)]
@@ -1084,8 +1081,13 @@ impl Node {
         let compute_wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?);
         let clock = Clock::new(config.clock_offset_ms);
         let quoter = crate::attest::Quoter::new(config.attestation);
+        let http_timeout = SHARED_HTTP_TIMEOUT;
+        // A test may give this node a shorter one (`testing::shared_http_timeout`).
+        #[cfg(feature = "testing")]
+        let http_timeout =
+            crate::testing::shared_http_timeout_override(&config.data_dir).unwrap_or(http_timeout);
         let http = crate::peer_tls::peer_client(&config.tls_extra_roots)
-            .timeout(shared_http_timeout())
+            .timeout(http_timeout)
             .build()?;
         #[cfg(feature = "testing")]
         let quoter = quoter.for_node(&config.public_url);
