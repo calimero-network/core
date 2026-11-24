@@ -1,6 +1,10 @@
 //! An index holds a writer (its threads and arena) only while something writes:
 //! opening leaves none, and one closed is opened again by the next write.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
 use calimero_primitives::search::{
     SearchDoc, SearchFieldKind, SearchFieldSchema, SearchIndexSchema, SearchMode, SearchOrder,
     SearchRequest, SearchValue,
