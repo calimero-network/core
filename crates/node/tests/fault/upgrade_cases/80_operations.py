@@ -455,7 +455,7 @@ class JobNodeAttestation(DeepCase):
             check(nodes, "the run is not placed yet")
             return nodes
 
-        eq(until("the run is placed", placed, 120)[0], job, "the node the run was placed on")
+        eq(until("the run is placed", placed, 120)[0], job + 1, "the node the run was placed on")
 
         def ended():
             outcome = jory.result(app, "outcome", {"run": run})
