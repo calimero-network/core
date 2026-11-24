@@ -1231,7 +1231,7 @@ mod tests {
                 "release_installed": true })),
             Feature::KeyFollowUps => entry(json!({ "op": "createApiKey", "hash": "h",
                 "record": { "keyId": "k", "account": "a", "label": "", "expiresAt": 1 },
-                "then": [{ "app": "app", "method": "setAccess", "args": {} }] })),
+                "then": [{ "app": "app", "method": "setAccess", "argsHash": "h" }] })),
             Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",

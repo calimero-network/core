@@ -113,11 +113,13 @@ async fn a_key_and_its_grant_take_one_passkey() {
     let made = create(&alice, &retry).await.unwrap();
     let key_id = made["keyId"].as_str().unwrap();
     assert_eq!(principal, format!("key:{key_id}"));
+    let ran = &made["then"];
+    assert_eq!(ran.as_array().map(Vec::len), Some(1), "{made}");
     assert_eq!(
-        made["then"],
-        json!([{ "index": 0, "result": null }]),
-        "{made}"
+        (&ran[0]["index"], &ran[0]["result"]),
+        (&json!(0), &Value::Null)
     );
+    assert_eq!(ran[0]["receipt"]["app"], json!(app), "{made}");
     assert_eq!(
         note(&alice, &app, "n1").await,
         json!(format!("{principal}\nnot key:$key"))
@@ -212,6 +214,9 @@ async fn follow_ups_are_refused_before_the_passkey() {
     )
     .await;
     refused("BAD_FOLLOW_UP", one.clone(), json!({ "apps": null })).await;
+    // A call that does not name the new key is no grant of it.
+    refused("BAD_FOLLOW_UP", one.clone(), json!({})).await;
+    let one = json!([set(&app, "n", "key:$key", "x")]);
 
     // Someone who does not reach the app, though the key names it.
     let (bob, _bob_pk) = signed_up(&c, 1, "bob").await;
@@ -272,7 +277,8 @@ async fn a_changed_or_failing_follow_up_makes_no_key() {
     assert_eq!(note(&alice, &app, "n1").await, Value::Null);
 
     // The second call fails: no key, and the answer names the call.
-    let missing_args = json!({ "app": app, "method": "set", "args": { "id": "n3" } });
+    let missing_args = json!({ "app": app, "method": "set",
+        "args": { "id": "n3", "title": "key:$key" } });
     let body = json!({
         "apps": [app],
         "then": [set(&app, "n2", "key:$key", "a"), missing_args],
@@ -332,4 +338,122 @@ async fn a_full_key_quota_runs_no_follow_up() {
     // Full before the prompt: refused before it.
     let e = create(&alice, &body).await.unwrap_err();
     assert_eq!(e.code(), Some("QUOTA_EXCEEDED"), "{e}");
+}
+
+/// Two keys made at once on one node, with room for one: the account's turn
+/// runs one after the other, so the second runs no follow-up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keys_made_at_once_take_turns_for_the_quota() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let app = notes(&alice, "notes").await;
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    let mut quotas = ops.ops().quotas_get().await.map(wire).unwrap();
+    quotas["maxApiKeysPerAccount"] = json!(1);
+    let _ok = ops
+        .ops()
+        .quotas_set(typed(quotas), Some(&operator_sign))
+        .await
+        .unwrap();
+
+    let body = |n: &str| json!({ "apps": [app], "then": [set(&app, n, "key:$key", "a")] });
+    let (one, two) = (body("n1"), body("n2"));
+    let asked_one = create(&alice, &one).await.unwrap_err();
+    let asked_two = create(&alice, &two).await.unwrap_err();
+    let (retry_one, retry_two) = (
+        approved(&one, &asked_one, &mut pk),
+        approved(&two, &asked_two, &mut pk),
+    );
+    let (a, b) = tokio::join!(create(&alice, &retry_one), create(&alice, &retry_two));
+    assert_eq!(
+        usize::from(a.is_ok()) + usize::from(b.is_ok()),
+        1,
+        "{a:?} {b:?}"
+    );
+    let written = [
+        note(&alice, &app, "n1").await,
+        note(&alice, &app, "n2").await,
+    ];
+    assert_eq!(
+        written.iter().filter(|n| !n.is_null()).count(),
+        1,
+        "only the key that was made ran its follow-up: {written:?}"
+    );
+}
+
+/// Someone read-only in the app's team cannot grant through it: refused
+/// before the prompt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_only_member_is_refused_before_the_passkey() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let id = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = id(
+        alice
+            .orgs()
+            .create("Docs", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+        "orgId",
+    );
+    let token = id(
+        alice
+            .orgs()
+            .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut a))
+            .await
+            .map(wire)
+            .unwrap(),
+        "token",
+    );
+    let _r = bob.orgs().invite_redeem(&token).await.unwrap();
+    let bob_id = id(bob.auth().me().await.map(wire).unwrap(), "accountId");
+    let team = id(
+        alice
+            .orgs()
+            .team_create(
+                &org,
+                "Team",
+                calimero_client::types::TeamJoin::Everyone,
+                None,
+            )
+            .await
+            .map(wire)
+            .unwrap(),
+        "teamId",
+    );
+    let _ok = alice
+        .orgs()
+        .team_set_member(
+            &org,
+            &team,
+            typed(json!({ "account": bob_id, "role": "readOnly" })),
+            Some(&mut a),
+        )
+        .await
+        .unwrap();
+    let bundle = alice
+        .packages()
+        .bundle_put(fixture("apps/fixture-notes-v2"))
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "bundle": &bundle, "org": org,
+            "grants": [{ "kind": "team", "team": team }] }),
+        ))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let e = create(
+        &bob,
+        &json!({ "apps": [app], "then": [set(&app, "n", "key:$key", "x")] }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
 }

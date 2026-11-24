@@ -1516,17 +1516,17 @@ fn credentials_need_the_accounts_own_passkey() {
 
     // A key made with follow-up calls: its consent states them, and the entry
     // must carry the same ones.
-    let then = vec![crate::types::KeyFollowUp {
+    let then = vec![crate::types::SignedFollowUp {
         app: "app".into(),
         method: "setAccess".into(),
-        args: json!({ "principal": "key:k2" }),
+        args_hash: "a1".into(),
     }];
     let record = crate::types::ApiKeyRecord {
         key_id: "k2".into(),
         ..record
     };
     let args = super::api_key_args("h2", &record, &then);
-    let with = |then: Vec<crate::types::KeyFollowUp>| {
+    let with = |then: Vec<crate::types::SignedFollowUp>| {
         let record = record.clone();
         move |consent| SystemCmd::CreateApiKey {
             hash: "h2".into(),
@@ -1541,7 +1541,7 @@ fn credentials_need_the_accounts_own_passkey() {
     let c = consent(&mut alice, "account:alice", "__create_api_key", &args);
     assert!(m.run(with(Vec::new())(c)).is_err(), "follow-ups dropped");
     let mut other = args.clone();
-    other["then"][0]["args"]["principal"] = json!("key:k3");
+    other["then"][0]["argsHash"] = json!("a2");
     needs_consent(
         &mut m,
         &mut alice,
@@ -1551,6 +1551,42 @@ fn credentials_need_the_accounts_own_passkey() {
         with(then),
     );
     assert!(m.state.api_keys.contains_key("h2"));
+}
+
+/// A key's consent, and so the system log every node holds, states each
+/// follow-up's arguments by hash alone, never the app's data.
+#[test]
+fn a_keys_statement_names_follow_up_arguments_by_hash_only() {
+    let record: crate::types::ApiKeyRecord = serde_json::from_value(json!({
+        "keyId": "k1", "account": "alice", "label": "ci", "expiresAt": 99,
+    }))
+    .unwrap();
+    let call = crate::types::KeyFollowUp {
+        app: "app".into(),
+        method: "setAccess".into(),
+        args: json!({ "role": "writer", "bucket": "payroll-secret" }),
+    };
+    let signed = call.signed().unwrap();
+    let stated = super::api_key_args("h1", &record, std::slice::from_ref(&signed)).to_string();
+    assert!(!stated.contains("payroll-secret"), "{stated}");
+    assert_eq!(
+        stated,
+        json!({ "hash": "h1", "keyId": "k1", "label": "ci", "apps": null, "methods": null,
+            "readOnly": false, "allowConfirm": false, "expiresAt": 99,
+            "then": [{ "app": "app", "method": "setAccess", "argsHash": signed.args_hash }] })
+        .to_string()
+    );
+    // The same arguments in another key order hash alike; other ones do not.
+    let reordered = crate::types::KeyFollowUp {
+        args: json!({ "bucket": "payroll-secret", "role": "writer" }),
+        ..call.clone()
+    };
+    assert_eq!(reordered.signed().unwrap().args_hash, signed.args_hash);
+    let other = crate::types::KeyFollowUp {
+        args: json!({ "role": "owner", "bucket": "payroll-secret" }),
+        ..call
+    };
+    assert_ne!(other.signed().unwrap().args_hash, signed.args_hash);
 }
 
 /// A key without follow-ups states the bytes it did before they existed, so

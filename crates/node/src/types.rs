@@ -953,6 +953,31 @@ pub struct KeyFollowUp {
     pub args: serde_json::Value,
 }
 
+impl KeyFollowUp {
+    /// The follow-up as the key's consent and the system log state it; `None`
+    /// for arguments JCS cannot write.
+    #[must_use]
+    pub fn signed(&self) -> Option<SignedFollowUp> {
+        let canonical = serde_json_canonicalizer::to_vec(&self.args).ok()?;
+        Some(SignedFollowUp {
+            app: self.app.clone(),
+            method: self.method.clone(),
+            args_hash: hex::encode(calimero_identity::sha256(&canonical)),
+        })
+    }
+}
+
+/// A follow-up with its arguments only by hash (SHA-256 of their JCS, hex):
+/// the system log reaches nodes the app's organization never approved, so it
+/// holds none of an app's data.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignedFollowUp {
+    pub app: AppId,
+    pub method: String,
+    pub args_hash: String,
+}
+
 /// What an upgrade key ([`ApiKeyRecord::upgrades`]) may do: upgrade `app`
 /// to a release of `package` signed by `signer`, proving each upgrade with
 /// the Ed25519 key its secret stands for (`proof::api_key_public`), so a

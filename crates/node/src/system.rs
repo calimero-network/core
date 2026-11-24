@@ -5038,7 +5038,7 @@ impl SystemCmd {
 pub fn api_key_args(
     hash: &str,
     record: &ApiKeyRecord,
-    then: &[crate::types::KeyFollowUp],
+    then: &[crate::types::SignedFollowUp],
 ) -> Value {
     let mut args = json!({
         "hash": hash,
@@ -5913,7 +5913,7 @@ pub enum SystemCmd {
         /// The confirm calls the consent approved with the key, run before it
         /// ([`api_key_args`]'s `then`; [`cluster_version::Feature::KeyFollowUps`]).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        then: Vec<crate::types::KeyFollowUp>,
+        then: Vec<crate::types::SignedFollowUp>,
     },
     RevokeApiKey {
         key_id: String,

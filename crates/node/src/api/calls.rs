@@ -180,7 +180,7 @@ pub(super) async fn call_consented(
     follow_up: &crate::types::KeyFollowUp,
     idempotency_key: String,
     consent: Value,
-) -> Result<Value, ApiError> {
+) -> Result<(u64, Value), ApiError> {
     let a = node
         .call_component(&CallRequest {
             idempotency_key: Some(idempotency_key),
@@ -194,7 +194,7 @@ pub(super) async fn call_consented(
             )
         })
         .await?;
-    applied_refusal(&a).map_or(Ok(a.result), Err)
+    applied_refusal(&a).map_or(Ok((a.index, a.result)), Err)
 }
 
 async fn intents(

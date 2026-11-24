@@ -12,6 +12,10 @@ const MAX_KEY_FOLLOW_UPS: usize = 4;
 const MAX_KEY_FOLLOW_UP_BYTES: usize = 64 * 1024;
 /// What a follow-up's arguments write for the key being made: `key:<its id>`.
 const KEY_PLACEHOLDER: &str = "key:$key";
+/// How often a follow-up whose outcome is unknown (a 5xx) is sent again under its key.
+const MAX_FOLLOW_UP_TRIES: usize = 3;
+/// The wait before sending such a follow-up again.
+const FOLLOW_UP_RETRY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// A sign-in's session: its refresh token logged with the sign-in's
 /// assertion, then the session token.
@@ -1150,7 +1154,10 @@ async fn follow_ups(
             )));
         }
         let app = node.app(&app_id).await?;
-        let _p = gate(node, headers, &app, &f.method, true).await?;
+        let p = gate(node, headers, &app, &f.method, true).await?;
+        if read_only_in(node, &app, p.caller.account(), p.sys_index).await {
+            return Err(ApiError::forbidden("read-only in this team"));
+        }
         app.require_app_component()?;
         let confirm = node
             .prepared_for(&node.running_bundle(&app))
@@ -1165,12 +1172,31 @@ async fn follow_ups(
                 f.method, f.app
             )));
         }
+        if !names_key(&f.args) {
+            return Err(bad_follow_up(&format!(
+                "a follow-up must name the new key: {} on {} has no `{KEY_PLACEHOLDER}`",
+                f.method, f.app
+            )));
+        }
+        if f.signed().is_none() {
+            return Err(bad_follow_up("a follow-up's arguments cannot be hashed"));
+        }
         out.push(crate::types::KeyFollowUp {
             app: app_id,
             ..f.clone()
         });
     }
     Ok(out)
+}
+
+/// Whether some string value of `args` is exactly [`KEY_PLACEHOLDER`].
+fn names_key(args: &Value) -> bool {
+    match args {
+        Value::String(s) => s == KEY_PLACEHOLDER,
+        Value::Array(items) => items.iter().any(names_key),
+        Value::Object(fields) => fields.values().any(names_key),
+        _ => false,
+    }
 }
 
 /// `413 ARGS_TOO_LARGE` for follow-ups past [`MAX_KEY_FOLLOW_UP_BYTES`] as JSON.
@@ -1229,13 +1255,37 @@ fn for_key(
         .collect()
 }
 
+/// The follow-ups as the key's consent states them.
+fn stated(
+    then: &[crate::types::KeyFollowUp],
+) -> Result<Vec<crate::types::SignedFollowUp>, ApiError> {
+    then.iter()
+        .map(|f| {
+            f.signed()
+                .ok_or_else(|| bad_follow_up("a follow-up's arguments cannot be hashed"))
+        })
+        .collect()
+}
+
+/// Whether a call that answered `e` may still have applied: a node that
+/// failed or timed out, a leader race, a forward that got no answer.
+fn outcome_unknown(e: &ApiError) -> bool {
+    e.status >= 500
+}
+
 /// `422 FOLLOW_UP_FAILED`: follow-up `index` answered `e`, so no key was made;
-/// the ones before it applied.
+/// the ones before it applied (`applied`), and it may have (`unknown`) when
+/// its answer could not say.
 pub(super) fn follow_up_failed(
     index: usize,
     f: &crate::types::KeyFollowUp,
     e: &ApiError,
 ) -> ApiError {
+    let unknown: Vec<usize> = if outcome_unknown(e) {
+        vec![index]
+    } else {
+        Vec::new()
+    };
     ApiError::new(
         422,
         "FOLLOW_UP_FAILED",
@@ -1250,6 +1300,7 @@ pub(super) fn follow_up_failed(
         "method": f.method,
         "error": e,
         "applied": (0..index).collect::<Vec<_>>(),
+        "unknown": unknown,
     }))
 }
 
@@ -1264,8 +1315,9 @@ fn follow_up_key(key_id: &str, index: usize, f: &crate::types::KeyFollowUp) -> S
     )
 }
 
-/// Run the approved follow-ups in order as `p`, each once under an idempotency
-/// key of its own, stopping at the first that fails.
+/// Run the approved follow-ups in order as `p`, each under an idempotency key
+/// of its own, so one sent again after an unknown outcome replays; stop at the
+/// first that fails. Each answer carries the call's receipt, as `/intents` does.
 async fn run_follow_ups(
     node: &Node,
     p: &Principal,
@@ -1277,11 +1329,56 @@ async fn run_follow_ups(
     for (index, f) in then.iter().enumerate() {
         let consent = follow_up_consent(approval, index)?;
         let key = follow_up_key(key_id, index, f);
-        let result = super::calls::call_consented(node, p, f, key, consent)
-            .await
-            .map_err(|e| follow_up_failed(index, f, &e))?;
-        results.push(json!({ "index": index, "result": result }));
+        let mut tries = 1;
+        let answer = loop {
+            match super::calls::call_consented(node, p, f, key.clone(), consent.clone()).await {
+                Err(e) if outcome_unknown(&e) && tries < MAX_FOLLOW_UP_TRIES => {
+                    tries += 1;
+                    tokio::time::sleep(FOLLOW_UP_RETRY_WAIT).await;
+                }
+                other => break other,
+            }
+        };
+        let (log_index, result) = answer.map_err(|e| follow_up_failed(index, f, &e))?;
+        let receipt = node.receipt(&f.app, log_index, &result);
+        results.push(json!({ "index": index, "result": result, "receipt": receipt }));
     }
+    Ok(results)
+}
+
+/// In `record.account`'s turn on this node: check its key quota again, run the
+/// follow-ups, then write the key, so no other key of the account lands between.
+async fn make_key(
+    node: Arc<Node>,
+    p: Principal,
+    hash: String,
+    record: ApiKeyRecord,
+    consent: Value,
+    owner_approves: bool,
+    then: Vec<crate::types::KeyFollowUp>,
+) -> Result<Vec<Value>, ApiError> {
+    let _turn = node.api_key_turn(&record.account).await;
+    key_room(&node, &record.account)?;
+    let follow_ups = stated(&then)?;
+    let results = run_follow_ups(&node, &p, &then, &record.key_id, &consent).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::CreateApiKey {
+            hash,
+            record,
+            consent,
+            owner_in_org: true,
+            owner_in_team: true,
+            owner_approves,
+            then: follow_ups,
+        })
+        .await
+        .map_err(|e| {
+            if then.is_empty() {
+                e
+            } else {
+                super::orgs::with_detail(e, "applied", json!((0..then.len()).collect::<Vec<_>>()))
+            }
+        })?;
     Ok(results)
 }
 
@@ -1343,7 +1440,7 @@ async fn apikey_create(
     // Judged on both requests, so the retry runs no follow-up for a key
     // the log would refuse.
     key_room(&node, &account)?;
-    let args = crate::system::api_key_args(&hash, &record, &then);
+    let args = crate::system::api_key_args(&hash, &record, &stated(&then)?);
     let c = consent_minted(
         &node,
         &p,
@@ -1376,7 +1473,7 @@ async fn apikey_create(
         ..record
     };
     let then = for_key(&follow_ups, &record.key_id);
-    if crate::system::api_key_args(&hash, &record, &then) != c.args
+    if crate::system::api_key_args(&hash, &record, &stated(&then)?) != c.args
         || record.expires_at > now_secs() + MAX_API_KEY_TTL
     {
         return Err(ApiError::bad_request(
@@ -1386,27 +1483,20 @@ async fn apikey_create(
     }
     let key_id = record.key_id.clone();
     // The calls first: one that fails leaves no key, and those before it name
-    // a key id that never exists.
-    let results = run_follow_ups(&node, &p, &then, &key_id, &c.consent).await?;
-    let applied: Vec<usize> = (0..then.len()).collect();
-    let _ok = node
-        .sys_write(&SystemCmd::CreateApiKey {
-            hash,
-            record,
-            consent: c.consent,
-            owner_in_org: true,
-            owner_in_team: true,
-            owner_approves,
-            then,
-        })
+    // a key id that never exists. In a task of its own, so a caller that
+    // disconnects does not stop it between a committed call and the key.
+    let made = make_key(
+        Arc::clone(&node),
+        p,
+        hash,
+        record,
+        c.consent,
+        owner_approves,
+        then,
+    );
+    let results = tokio::spawn(made)
         .await
-        .map_err(|e| {
-            if applied.is_empty() {
-                e
-            } else {
-                super::orgs::with_detail(e, "applied", json!(applied))
-            }
-        })?;
+        .map_err(|e| ApiError::internal(&e.to_string()))??;
     Ok(Json(
         json!({ "keyId": key_id, "key": key, "then": results }),
     ))
@@ -1684,6 +1774,31 @@ mod tests {
             ..method(MethodKind::Call, true)
         };
         assert!(!takes_follow_up(&compute_result));
+    }
+
+    /// A call that failed or timed out on a node may have applied: it is sent
+    /// again and, if still unknown, reported as such, never as not applied.
+    #[test]
+    fn a_follow_up_whose_answer_could_not_say_is_reported_unknown() {
+        let f = crate::types::KeyFollowUp {
+            app: "a".into(),
+            method: "m".into(),
+            args: Value::Null,
+        };
+        let refused = ApiError::new(422, "APP_ERROR", "the app refused the call");
+        let failed = follow_up_failed(1, &f, &refused);
+        assert_eq!(
+            (&failed.details["applied"], &failed.details["unknown"]),
+            (&json!([0]), &json!([]))
+        );
+        let unanswered = ApiError::unavailable("the call raced a leader change");
+        let failed = follow_up_failed(1, &f, &unanswered);
+        assert_eq!(
+            (&failed.details["applied"], &failed.details["unknown"]),
+            (&json!([0]), &json!([1]))
+        );
+        assert!(outcome_unknown(&crate::node::timeout_error()));
+        assert!(!outcome_unknown(&ApiError::forbidden("read-only")));
     }
 
     /// An app's log names the approval a follow-up ran under, never the
