@@ -15,6 +15,11 @@
 //! held on a node, the healthy group's commit reaching that node must leave
 //! this test's only worker running while the same write still waits.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};

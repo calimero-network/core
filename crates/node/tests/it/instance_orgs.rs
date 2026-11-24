@@ -12,7 +12,6 @@
     clippy::result_large_err,
     reason = "the helpers pass on calimero_client::Error as the client returns it"
 )]
-
 use calimero_client::{Client, Error};
 use serde_json::{json, Value};
 

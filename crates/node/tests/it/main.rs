@@ -16,6 +16,11 @@
 //! a hook a test sets is keyed to its own nodes (a data directory or a public URL),
 //! never the process's.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 #[path = "../common/mod.rs"]
 mod common;
 #[path = "../harness/cluster.rs"]

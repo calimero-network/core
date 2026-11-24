@@ -13,7 +13,6 @@
     clippy::result_large_err,
     reason = "the helpers pass on calimero_client::Error as the client returns it"
 )]
-
 use calimero_client::types::{
     AppCreateRequest, Grant, MemberSetTeamsRequestTeamsItem, OrgRole, TeamJoin,
 };

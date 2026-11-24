@@ -16,3 +16,6 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -13,7 +13,6 @@
     clippy::result_large_err,
     reason = "the helpers pass on calimero_client::Error as the client returns it"
 )]
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
