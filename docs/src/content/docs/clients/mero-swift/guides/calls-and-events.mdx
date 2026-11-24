@@ -135,6 +135,8 @@ let answer = try await visitorClient.call(app, "submit", ["text": "Hi"])
 request afresh (`Bearer vis1.…`, valid within 5 minutes of the node's clock),
 and only the app's `#[app::public]` methods answer it; `useApiKey` or
 `useSession` replaces it ([Public links](/protocol/organizations/#public-links)).
+`forget()` drops it without a request; `signOut()` does too, but first tries the revoke, which the node
+refuses with `403 VISITOR_ONLY` (a visitor has no session), and throws that after the credential is gone.
 
 ## Blobs and presence
 

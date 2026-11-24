@@ -115,6 +115,7 @@ jobs:
       e2e: ${{ steps.plan.outputs.e2e }}
       node: ${{ steps.plan.outputs.node }}
       clients: ${{ steps.plan.outputs.clients }}
+      consent_page: ${{ steps.plan.outputs.consent_page }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -175,10 +176,17 @@ jobs:
           fi
           clients=$node
           if [ "$e2e" = true ] && [ "$sdk_clients" = true ]; then clients=true; fi
+          # The consent page's browser tests run on every PR that reaches the page (its code, its
+          # tests, this workflow), labelled or not: nothing else in the suite exercises the page.
+          consent_page=false
+          if [ "$all" = true ] || grep -qE '^(crates/node/src/consent_page(/|\.rs$)|crates/node/tests/consent-page/)' <<<"$files"; then
+            consent_page=true
+          fi
           echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
           echo "node=$node" >> "$GITHUB_OUTPUT"
           echo "clients=$clients" >> "$GITHUB_OUTPUT"
-          echo "event=$EVENT labelled=$LABELLED rust=$rust node_closure=$node_closure sdk_clients=$sdk_clients all=$all -> e2e=$e2e node=$node clients=$clients"
+          echo "consent_page=$consent_page" >> "$GITHUB_OUTPUT"
+          echo "event=$EVENT labelled=$LABELLED rust=$rust node_closure=$node_closure sdk_clients=$sdk_clients all=$all -> e2e=$e2e node=$node clients=$clients consent_page=$consent_page"
           if [ "$EVENT" = pull_request ] && [ "$wanted" != true ]; then
             echo "::notice::e2e runs in the merge queue; add the ci:e2e label to run it on this PR now"
           fi
@@ -187,7 +195,7 @@ jobs:
   result:
     name: E2E result
     if: ${{ !cancelled() }}
-    needs: [plan, build-release, build-scenarios, scenarios, process-suite, compute-e2e, clients, clients-swift]
+    needs: [plan, build-release, build-scenarios, scenarios, process-suite, compute-e2e, clients, clients-swift, consent-page]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -207,7 +215,7 @@ jobs:
   build-release:
     name: build merod and the fixtures
     needs: plan
-    if: needs.plan.outputs.e2e == 'true'
+    if: needs.plan.outputs.e2e == 'true' || needs.plan.outputs.consent_page == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -957,6 +965,73 @@ jobs:
           MEROD_BIN: ${{ github.workspace }}/target/release/merod
           MERO_KV_MPK: ${{ github.workspace }}/dist/com.calimero.kv-store-1.0.0.mpk
         run: scripts/cluster-test.sh --no-daemon
+
+  # The consent page in a browser: three merod processes, Chromium, a virtual WebAuthn
+  # authenticator (crates/node/tests/consent-page). Runs on a change that reaches the page,
+  # whatever the `ci:e2e` label says (`plan`'s `consent_page`).
+  consent-page:
+    name: consent page in a browser
+    needs: [plan, build-release]
+    if: needs.plan.outputs.consent_page == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Download merod and the kv fixture
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-release
+          path: .
+
+      - name: Point the tests at them
+        run: |
+          chmod +x target/release/merod target/release/meroctl
+          echo "MEROD_BINARY=$PWD/target/release/merod" >> "$GITHUB_ENV"
+          echo "MEROCTL=$PWD/target/release/meroctl" >> "$GITHUB_ENV"
+          echo "KV_STORE_WASM=$PWD/target/app-components/kv.wasm" >> "$GITHUB_ENV"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: sdks/package.json
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      # The tests bundle mero-js from source, as an app's page carries it.
+      - name: Install the JS workspace
+        working-directory: sdks
+        run: pnpm install --frozen-lockfile
+
+      - name: Install the tests and Chromium
+        working-directory: crates/node/tests/consent-page
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Format
+        working-directory: crates/node/tests/consent-page
+        run: npm run check
+
+      - name: Consent page tests
+        working-directory: crates/node/tests/consent-page
+        run: npm test
+
+      - name: Keep the sheets as screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: consent-page-screens
+          path: crates/node/tests/consent-page/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
   # mero-swift's live-node suite (MeroKitE2ETests): MeroKit needs CryptoKit, so
   # macOS, and `merod` built there from this tree (build-release's is Linux);
