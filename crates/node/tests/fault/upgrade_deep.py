@@ -101,6 +101,10 @@ NOT_COVERED = [
      "the suite's packages carry no frontend, and the node routes a frontend by Host under the apps "
      "domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test "
      "`app_frontends_are_served_and_their_sessions_are_bound` covers serving"),
+    ("Organizations", "The all-apps flag of a member (`POST /orgs/{org}/all-apps`, `Org::all_apps`)",
+     "the flag is stored and no route reads it: its effect is the row an app team made later gives the member, "
+     "which an open app team (`join: everyone`, what `POST /orgs/{org}/app-teams` makes) gives every member anyway. "
+     "`org-rename-defaults` sets it and compares the app team's rows; `system::tests` cover the flag's own rows"),
     ("Governance", "Owner-held release approvals",
      "the rolled cluster gives release approvals to the operator (`--release-approvals operator`), as "
      "Calimero Cloud does; the operator's approval of the new release is the rollout's first step"),
