@@ -77,6 +77,30 @@ pub(crate) fn quote_delay(public_url: &str) -> Option<Duration> {
         .map(|(_, d)| *d)
 }
 
+/// Nodes whose component compiles take long, by public URL.
+static SLOW_COMPILES: Mutex<Vec<(String, Duration)>> = Mutex::new(Vec::new());
+
+/// Make each compile a package install or bundle upload runs on the node at
+/// `public_url` take `delay` more on the thread that compiles it
+/// (`std::thread::sleep`), as cranelift holds its thread for seconds on a large
+/// (componentize-js) component, so a test sees what a compile holds while it runs.
+pub fn slow_compiles(public_url: &str, delay: Duration) {
+    if let Ok(mut s) = SLOW_COMPILES.lock() {
+        s.retain(|(u, _)| u != public_url);
+        s.push((public_url.to_owned(), delay));
+    }
+}
+
+/// The delay [`slow_compiles`] set for the node at `public_url`.
+pub(crate) fn compile_delay(public_url: &str) -> Option<Duration> {
+    SLOW_COMPILES
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(u, _)| u == public_url)
+        .map(|(_, d)| *d)
+}
+
 /// The timeout of the HTTP client nodes share for peers, job nodes and attestation, when a
 /// test set one: nodes started after [`shared_http_timeout`] in this process use it instead of
 /// [`crate::node::SHARED_HTTP_TIMEOUT`].

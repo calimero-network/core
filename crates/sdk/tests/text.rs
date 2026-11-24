@@ -1,6 +1,11 @@
 //! `Text` costs: what one edit or read asks of the host, pinned with `MemStore`'s counters at
 //! 100, 1,000 and 10,000 runs, so a change that brings back whole-document edits fails here.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod costs {
     use calimero_sdk::{MemStore, StorageError, Text};
 

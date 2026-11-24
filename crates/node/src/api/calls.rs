@@ -505,8 +505,9 @@ async fn app_run(
     Ok(Json(answer.result))
 }
 
-/// The module log of each attempt of a run that kept one, as `{ logs: [{ attempt, id, size,
-/// sha256 }] }`, for those who may handle the app's files; the bytes are a files export.
+/// Deprecated (`api-deprecations.toml`): `{ logs: [] }` for a run those who may handle the app's
+/// files can read. A run keeps no log, as an app's log lines may hold user data, and a log an
+/// earlier release kept is answered to no one.
 async fn app_run_logs(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -527,7 +528,7 @@ async fn app_run_logs(
     if answer.result.is_null() {
         return Err(ApiError::not_found("no such run"));
     }
-    Ok(Json(json!({ "logs": [1] })))
+    Ok(Json(json!({ "logs": [] })))
 }
 
 #[derive(Deserialize)]

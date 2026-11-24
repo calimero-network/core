@@ -6,6 +6,11 @@
 //! below admin is refused, and someone outside it is answered as if it did
 //! not exist.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use serde_json::{json, Value};
