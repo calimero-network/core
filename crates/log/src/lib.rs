@@ -415,9 +415,7 @@ impl<M: Machine> Group<M> {
     where
         F: FnMut(&M, u64) -> Proposal,
     {
-        let st = self
-            .shared
-            .read()
+        let st = machine::read_applied(&self.shared)
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
         let applied = st.applied_index();
         Ok((build(&st.machine, applied), applied))
@@ -547,12 +545,11 @@ impl<M: Machine> Group<M> {
         electing(self.node, &self.raft().metrics().borrow())
     }
 
-    /// Read this node's applied state.
+    /// Read this node's applied state. While an apply commits (its batch may wait
+    /// for the disk), this waits off the async workers ([`machine::read_applied`]).
     pub fn read_local<R>(&self, f: impl FnOnce(&M, u64) -> R) -> R {
-        let st = self
-            .shared
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let st =
+            machine::read_applied(&self.shared).unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&st.machine, st.applied_index())
     }
 
@@ -563,10 +560,8 @@ impl<M: Machine> Group<M> {
         if M::IN_MEMORY {
             return None;
         }
-        let st = self
-            .shared
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let st =
+            machine::read_applied(&self.shared).unwrap_or_else(std::sync::PoisonError::into_inner);
         Some(Digests {
             version: DIGEST_VERSION,
             applied: DigestAt {
