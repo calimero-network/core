@@ -14,8 +14,11 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import rollout  # noqa: E402
+import rv2  # noqa: E402
 import upgrade_path  # noqa: E402
 
 
@@ -187,6 +190,77 @@ class CaseNames(unittest.TestCase):
     def test_no_two_cases_name_one_account(self):
         shared = {n: sorted(c) for n, c in literal_names_by_case().items() if len(c) > 1}
         self.assertEqual(shared, {}, "cases run at once: give each its own account names")
+
+
+class FakeFleet:
+    """`placement` and `operate("move")` of a `Fleet`, over apps on nodes 1-3 and new nodes 4-6."""
+
+    def __init__(self, apps, failing=()):
+        self.replicas = {a: [1, 2, 3] for a in apps}
+        self.failing = set(failing)
+        self.lock = threading.Lock()
+        self.inflight = self.peak = 0
+
+    def placement(self):
+        with self.lock:
+            return {"apps": [{"app": a, "replicas": list(r)} for a, r in self.replicas.items()],
+                    "nodes": [{"id": i, "apps": 0} for i in range(1, 7)]}
+
+    def operate(self, *args):
+        _, app, _, target = args
+        with self.lock:
+            self.inflight += 1
+            self.peak = max(self.peak, self.inflight)
+        try:
+            time.sleep(0.05)
+            if app in self.failing:
+                raise rv2.CliError(args, "refused\n")
+            with self.lock:
+                self.replicas[app] = [int(n) for n in target.split(",")]
+        finally:
+            with self.lock:
+                self.inflight -= 1
+
+    def on_new(self):
+        return sorted(a for a, r in self.replicas.items() if set(r) <= {4, 5, 6})
+
+
+class MoveApps(unittest.TestCase):
+    def move(self, fleet, jobs, mixed=None):
+        return rollout.move_apps(fleet, {1, 2, 3}, [4, 5, 6], lambda s: None, mixed, jobs=jobs)
+
+    def test_the_first_app_moves_alone_then_the_mixed_checks_run_then_the_rest_move_at_once(self):
+        fleet = FakeFleet([f"a{i:02}" for i in range(12)])
+        seen = []
+        moved = self.move(fleet, 4, lambda: seen.append((fleet.on_new(), fleet.inflight)))
+        self.assertEqual(seen, [(["a00"], 0)])
+        self.assertEqual(sorted(moved), sorted(fleet.replicas))
+        self.assertEqual(len(fleet.on_new()), 12)
+        self.assertEqual(fleet.peak, 4)
+
+    def test_one_job_moves_them_one_by_one(self):
+        fleet = FakeFleet([f"a{i}" for i in range(5)])
+        self.move(fleet, 1)
+        self.assertEqual(fleet.peak, 1)
+        self.assertEqual(len(fleet.on_new()), 5)
+
+    def test_a_refused_move_fails_the_roll_naming_the_app_after_the_others_moved(self):
+        fleet = FakeFleet(["a0", "a1", "a2", "a3"], failing=["a2"])
+        with mock.patch.object(rollout, "MOVE_TIMEOUT_S", 0.3), self.assertRaisesRegex(rollout.RolloutError, "a2"):
+            self.move(fleet, 4)
+        self.assertEqual(fleet.on_new(), ["a0", "a1", "a3"])
+
+    def test_with_no_app_to_move_the_mixed_checks_still_run_once(self):
+        ran = []
+        self.move(FakeFleet([]), 4, lambda: ran.append(1))
+        self.assertEqual(ran, [1])
+
+    def test_each_choice_counts_toward_the_load_of_the_next(self):
+        apps = [{"app": f"a{i}", "replicas": [1, 2, 3]} for i in range(4)]
+        placement = {"nodes": [{"id": i, "apps": 0} for i in range(1, 8)]}
+        plan = rollout._plan(apps, [4, 5, 6, 7], placement)
+        loads = [sum(n in target for _, target in plan) for n in (4, 5, 6, 7)]
+        self.assertEqual(loads, [3, 3, 3, 3])
 
 
 class WaitForBuild(unittest.TestCase):

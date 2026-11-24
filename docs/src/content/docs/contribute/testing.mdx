@@ -434,7 +434,8 @@ the latest published one, against this tree:
    approves the new release (`POST /ops/releases`), three nodes on this tree's
    `merod` join one at a time (`POST /ops/nodes`, each a system-group learner),
    every app moves onto them (`POST /ops/apps/{app}/replicas`, until
-   `GET /ops/placement` shows it), and the old nodes are removed one at a time
+   `GET /ops/placement` shows it: the first alone, so the mixed checks run with
+   nothing in flight, then eight at a time, `ROLLOUT_MOVE_JOBS`), and the old nodes are removed one at a time
    while the system group has a leader and its voters (`DELETE /ops/nodes/{id}`).
    Every decision is signed with the operator key. Once the first app has moved,
    apps sit on both releases and everything is read back (**mixed**).
