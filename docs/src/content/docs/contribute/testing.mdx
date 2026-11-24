@@ -426,6 +426,10 @@ the latest published one, against this tree:
    from the release's tag and signed with its own tools
    (`scripts/build-release-fixtures.sh`), with a sealed file of three segments
    and a compute run finished on the job node.
+   This tree's `merod` and `meroctl` build in the background meanwhile
+   (`scripts/upgrade-path.sh`), since the seed needs only the release; the
+   roll waits for that build, and a failed build fails the job with its cargo
+   output.
 3. **Roll forward**, as mdma's rollout does it (`rollout.py`): the operator
    approves the new release (`POST /ops/releases`), three nodes on this tree's
    `merod` join one at a time (`POST /ops/nodes`, each a system-group learner),

@@ -68,6 +68,8 @@ OLD_JOB, NEW_JOB = 9, 10
 FROM_RELEASE = "2.3.1000"
 TO_RELEASE = "2.3.1001"
 UPLOAD_TRIES = 5
+BUILD_WAIT_S = 1800  # the most the roll waits for this tree's build
+PHASES: dict[str, float] = {}  # seconds each phase took, in run order
 
 
 class Failed(AssertionError):
@@ -305,6 +307,14 @@ def say(s=""):
 def run_step(w, cases, step, results, fatal=False, label=None):
     w.phase = label or step
     say(f"== {w.phase}")
+    phase_start = time.time()
+    try:
+        _run_cases(w, cases, step, results, fatal)
+    finally:
+        PHASES[w.phase] = round(time.time() - phase_start, 1)
+
+
+def _run_cases(w, cases, step, results, fatal):
     for c in cases:
         t0 = time.time()
         try:
@@ -319,6 +329,24 @@ def run_step(w, cases, step, results, fatal=False, label=None):
         say(f"   {status.upper()} {c.name}.{step} ({w.phase}) in {took}s" + (f": {error}" if error else ""))
         if error and fatal:
             raise Failed(f"{c.name}.{step} failed, so the run stops: {error}")
+
+
+def wait_for_build(status_file, timeout=BUILD_WAIT_S):
+    """Block until the build of this tree's binaries (started alongside the seed) has ended."""
+    deadline = time.time() + timeout
+    while not os.path.exists(status_file):
+        if time.time() > deadline:
+            raise Failed(f"this tree's build did not end within {timeout}s")
+        time.sleep(1)
+    code = Path(status_file).read_text().strip()
+    if code != "0":
+        raise Failed(f"this tree's build failed (exit {code}); its output is printed at the end of the run")
+
+
+def check_built(paths):
+    for p in paths:
+        if not Path(p).exists():
+            raise Failed(f"missing {p}")
 
 
 def restart_from_disk(w, node):
@@ -344,6 +372,9 @@ def main(argv=None):
     ap.add_argument("--pipelines-mpk", required=True,
                     help="the compute fixture built from this tree with its pipeline, as a compute-only package "
                          "(pipeline cases seed it after the roll)")
+    ap.add_argument("--build-status", help="a file that holds the exit status of this tree's build once it ends: "
+                    "the roll waits for it, so the build can run while the old cluster seeds; without it the "
+                    "binaries must exist already")
     ap.add_argument("--cases", default=str(HERE / "upgrade_cases"))
     ap.add_argument("--only", help="comma-separated case names")
     ap.add_argument("--workdir", default=str(TARGET / "upgrade-path"))
@@ -361,7 +392,9 @@ def main(argv=None):
     }
     old_merod, old_meroctl = str(frm / "merod"), str(frm / "meroctl")
     new_merod, new_meroctl = str(Path(args.to_merod).resolve()), str(Path(args.to_meroctl).resolve())
-    for p in (old_merod, old_meroctl, new_merod, new_meroctl, *[v for k, v in fixtures.items() if k != "from_version"]):
+    from_side = [old_merod, old_meroctl, fixtures["kv_from"], fixtures["compute_from"]]
+    this_tree = [new_merod, new_meroctl, fixtures["kv_next"], fixtures["pipelines"]]
+    for p in from_side + ([] if args.build_status else this_tree):
         if not Path(p).exists():
             raise SystemExit(f"missing {p}")
 
@@ -390,6 +423,13 @@ def main(argv=None):
         def mixed():
             run_step(w, cases, "mixed", results)
 
+        w.phase = "build"
+        if args.build_status:
+            t = time.time()
+            say("== waiting for the build of this tree")
+            wait_for_build(args.build_status)
+            PHASES["build wait"] = round(time.time() - t, 1)
+        check_built(this_tree)
         w.phase = "rollout"
         timings = rollout.roll_forward(fleet, new_merod, TO_RELEASE, NEW_IDS, log=say, on_mixed=mixed)
         # Clients move to this tree's meroctl; the job node is replaced as the replicas were.
@@ -417,13 +457,14 @@ def main(argv=None):
     total = round(time.time() - t0, 1)
     failed = [r for r in results if r["status"] != "pass"]
     say(f"DONE {len(results) - len(failed)}/{len(results)} steps passed in {total}s "
-        f"({', '.join(f'{k} {v:.0f}s' for k, v in timings.items())})"
+        f"(phases: {', '.join(f'{k} {v:.0f}s' for k, v in PHASES.items())}; "
+        f"rollout: {', '.join(f'{k} {v:.0f}s' for k, v in timings.items())})"
         + (f"; failed: {[(r['case'], r['step']) for r in failed]}" if failed else ""))
     if args.json:
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json).write_text(json.dumps({
             "from": fixtures["from_version"], "to": new_merod, "seconds": total, "rollout": timings,
-            "results": results, "workdir": str(wd)}, indent=2) + "\n")
+            "phases": PHASES, "results": results, "workdir": str(wd)}, indent=2) + "\n")
     if not failed and not args.keep:
         shutil.rmtree(wd, ignore_errors=True)
     return 1 if failed else 0
