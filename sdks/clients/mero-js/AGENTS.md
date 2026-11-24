@@ -19,6 +19,7 @@ calls apps. See [README.md](README.md) and its guides on core's docs site (`docs
 - `src/routes/`: the route client the generated methods call through.
 - `src/client/`: `CalimeroClient` and its helpers. `receipts.ts` mirrors core's `calimero-client` receipt checks; its vectors, `fixtures/receipt-vectors.json`, are a copy of core's `crates/client/tests/fixtures/receipt-vectors.json` made by `pnpm generate`, never hand-edited.
 - `src/generated/`: **generated, do not edit** (see below).
+- `src/products/kv/`: the Confidential KV's client, **generated, do not edit**, from `sdks/abi/kv.abi.json` (see below).
 - `tests/cluster/`: the cluster suite (`vitest.cluster.config.ts`); `tests/consumer/` is what `typecheck:consumer` compiles; unit tests sit beside the code as `src/**/*.test.ts`, and `typecheck:tests` (`tsconfig.test.json`) compiles them with `tests/cluster` and `tests/support`.
 - `examples/`: one directory per example (see below).
 - `sdk.json`: how core's CI treats this SDK (`scripts/sdks.py`).
@@ -51,8 +52,13 @@ hand-edit them.
 - `pnpm generate` (what `sdk.json`'s `generate` runs, and
   `python3 scripts/sdks.py generate mero-js` from core's root) regenerates
   everything `sdk.json` lists under `generated`: `pnpm gen:api`
-  (`openapi-typescript`, then `scripts/gen-methods.mjs`) and
+  (`openapi-typescript`, then `scripts/gen-methods.mjs`), `pnpm gen:kv` and
   `pnpm refresh:receipt-vectors` (copies core's receipt vectors).
+- `pnpm gen:kv` writes `src/products/kv/client.ts`, core's `meroctl app codegen`
+  output (`scripts/app-codegen.sh`, so it needs cargo) for the Confidential KV's
+  released ABI, vendored once for every SDK at `sdks/abi/kv.abi.json` (its
+  origin in `sdks/abi/SOURCE`). A newer KV release replaces that file, then
+  regenerates; never edit `client.ts`.
 - `pnpm check:api` regenerates and fails when the committed output differs.
 - A wrong route, body or type is fixed in the server (which regenerates
   `docs/public/openapi.json`) or in the generator, not in the output. When the

@@ -1,0 +1,3 @@
+# Apps' released ABIs the SDKs generate clients from (python3 scripts/sdks.py generate),
+# vendored unchanged. A newer release replaces the file and its lines here.
+kv.abi.json: calimero-network/mdma products/confidential-kv/kv/res/released/0.1.0.json (Confidential KV 0.1.0)
