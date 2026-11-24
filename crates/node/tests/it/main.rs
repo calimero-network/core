@@ -19,7 +19,6 @@
     reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
 )]
 
-#[path = "../common/mod.rs"]
 mod common;
 #[path = "../harness/cluster.rs"]
 #[allow(

@@ -2668,7 +2668,7 @@ cargo test -p calimero-node --test it component_cluster::end_to_end -- --exact -
 cargo test -p calimero-node --test auto_updates -- --test-threads 1
 # component fixtures (apps/fixture-kv, apps/team-space,
 # apps/rooms, any app a scenario installs) are built on first use (harness/cluster.rs::fixture,
-# tests/common/mod.rs) into $CARGO_TARGET_DIR/app-components (needs the wasm32-wasip2 target)
+# tests/it/common.rs) into $CARGO_TARGET_DIR/app-components (needs the wasm32-wasip2 target)
 cargo test --release -p calimero-node --test it rooms::   # Rooms A1 (shared scenario), A3, A5
 # every scenario file on an in-process cluster (runner: tests/harness/scenario.rs): apps/*/scenarios/*.json
 # (+ <name>.org.json), apps/*/scenarios/cluster/**/*.json, workflows/**/scenarios/**/*.json;
