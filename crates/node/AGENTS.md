@@ -2571,8 +2571,8 @@ rollback epoch in the attested KMS evidence, search indexes that survive a resta
 ```bash
 cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
 # the integration tests are one binary, `it` (tests/it/main.rs: a module per file), so one
-# test is <module>::<test>; auto_updates, compute_runs (process-wide test hooks) and
-# scenarios (its own main) stay binaries of their own (docs: contribute/testing)
+# test is <module>::<test>; auto_updates (process-wide test hooks) and scenarios (its
+# own main) stay binaries of their own (docs: contribute/testing)
 cargo test -p calimero-node --test it cluster::        # one module (a filter: any prefix)
 cargo test -p calimero-node --test it component_cluster::end_to_end -- --exact --nocapture
 cargo test -p calimero-node --test auto_updates -- --test-threads 1
