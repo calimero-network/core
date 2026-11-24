@@ -49,6 +49,16 @@ pub(crate) async fn move_class(
     class_of(node, app_id, release, false).await
 }
 
+/// [`move_class`] as the classifier's whole verdict, with what the log does not keep
+/// (`removed_methods`), for the leader's updates on their own.
+pub(crate) async fn move_verdict(
+    node: &Node,
+    app_id: &str,
+    release: Option<&PackageRef>,
+) -> Option<calimero_bundle::update::Classification> {
+    verdict_of(node, app_id, release, false).await
+}
+
 /// The class an upgrade run's `UpgradeApp` of `app_id` carries: for the instance of a
 /// unit's run, the whole unit's (its members moving to the run's targets), as apply
 /// judges it ([`crate::system::SystemState::run_update_gate`]); else [`move_class`].
@@ -69,6 +79,18 @@ async fn class_of(
     release: Option<&PackageRef>,
     whole_unit: bool,
 ) -> Option<crate::types::UpgradeClass> {
+    verdict_of(node, app_id, release, whole_unit)
+        .await
+        .and_then(upgrade_class)
+}
+
+/// The verdict [`class_of`] logs as a class.
+async fn verdict_of(
+    node: &Node,
+    app_id: &str,
+    release: Option<&PackageRef>,
+    whole_unit: bool,
+) -> Option<calimero_bundle::update::Classification> {
     let to = release?;
     if node
         .require_features(&[Feature::UpgradeClasses])
@@ -100,7 +122,7 @@ async fn class_of(
         {
             None
         }
-        Ok(c) => c.and_then(upgrade_class),
+        Ok(c) => c,
         Err(e) => {
             warn!(app = %app_id, error = %e.message, "the upgrade was not classified");
             None
