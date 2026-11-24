@@ -84,4 +84,6 @@ visitor_client.apps.call(app=app, method="submit", args={"text": "Hi"})
 `expires_at` (Unix seconds) is optional. `use_visitor` signs every request
 afresh (`Bearer vis1.…`, valid within 5 minutes of the node's clock), and only
 the app's `#[app::public]` methods answer it; `use_api_key` or `use_session`
-replaces it.
+replaces it. `sign_out()` drops it: a visitor has no session to end, so the
+node refuses the revoke with `403 VISITOR_ONLY`, which `sign_out()` raises after
+the credential is gone, and no request after it carries one.

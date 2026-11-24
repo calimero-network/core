@@ -20,7 +20,7 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | `blob list/upload/download/info/delete` | an instance's blobs | `/apps/{app}/blobs*` |
 | `file upload FILE -i INSTANCE` | an instance's sealed files: one request up to 16 MiB, else resumable parts (`Client::upload_file`) | `/apps/{app}/files*` |
 | `file download INSTANCE ID -o OUT` | a sealed file's plaintext, streamed to `OUT.part` and renamed onto `OUT` only after every check passed (`Client::export_file_to`); `pipeline download` does the same per output | `/apps/{app}/files/{id}/export`, `.../segments/{k}` |
-| `run logs APP RUN [--attempt N]`, `pipeline logs APP RUN --step S [--index I]` | print a compute run's module log (stdout, stderr and `log` lines) read through the files export; the latest attempt unless `--attempt`; a pipeline step's run is its `--index`th | `/apps/{app}/runs/{run}/logs`, `/apps/{app}/files/{id}/export` |
+| `run logs APP RUN [--attempt N]`, `pipeline logs APP RUN --step S [--index I]` | print a compute run's module log (stdout, stderr and `log` lines) read through the files export; the latest attempt unless `--attempt`; a pipeline step's run is its `--index`th. A cluster keeps no run log, so against a current one it fails saying so and pointing at `local compute run` (`run::NO_RUN_LOGS`) | `/apps/{app}/runs/{run}/logs`, `/apps/{app}/files/{id}/export` |
 | (new) `pipeline validate/estimate/run/retry/get/cancel/watch/runs/receipt/logs/download` | an instance's pipeline runs: check a pipeline source, estimate, start, follow (`watch`, SSE), the signed receipt (`receipt --verify`) | `/pipelines/validate`, `/apps/{app}/pipelines/*`, `/apps/{app}/pipeline-runs*` |
 | `org ...` | organizations: members, invites, teams, metadata, capabilities, outbound and release approvals | `/orgs*`, `/invites/*` |
 | `team ...` | teams: members, metadata, reparent, subteams, settings; `team upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
@@ -31,6 +31,7 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | (new) `app new/build/codegen/abi show\|diff/uses update\|check/signer new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone, plus an `AGENTS.md` for coding agents (`agents_md`) and a `CLAUDE.md` importing it; test `dev_new_starts_a_project_from_an_app_of_the_apps_repo`), `calimero-app-build`'s builder and `abi_tools`, `uses update NAME --from <crate\|.mpk\|.wasm\|abi.json>` (`make/uses.rs`: checks the package, the semver range and the listed methods, then `calimero_app_build::uses::vendor` writes `calimero.lock` and `calimero/abi/NAME.json`) and `uses check` (`uses::check` plus the range), `meroctl-sign`, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), `pack --service NAME=PATH` (or the crate's `services`) writes a multi-service manifest, and `pack` opens what it wrote with `VerifiedBundle` before writing it; the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
 | (new) `app check [DIR\|--mpk F] --against VERSION\|F.mpk [--fail-on red\|egress] [--allow-egress P]...` | `app/check.rs`: the candidate (packed with `app pack`'s flags, or `--mpk`) against the release it replaces, both as units (`uses` mode `create`, at most 3 deep, members from `--uses-mpk` then the node), judged by `calimero_bundle::update::classify`; the summary reports only destinations (`Data: stays in Calimero` or `Data can go to: <destinations>`; an external endpoint, a TEE included, is listed like any other) or `--json`; exit 0 judged, 1 the gate failed, 2 could not judge. Offline with `--against FILE.mpk` (`AppCmd::is_offline`). Tests: `tests/app_check.rs` | `/packages/{p}/{v}/capabilities`, `/packages/{p}` |
 | (new) `local up/down/status/dev/test/compute run` | `merod local` (the release's image by default, `docker_ready` checking Docker first; `--local` or `MEROD`: the binary; `--registry-url`, default the public registry) in the background, state in `--dir`/`meroctl-local.json`, saved as node `local`; `dev` builds, uploads a raw bundle as a fresh deployer, writes `app/.env.development.local`, runs `pnpm dev` on :5173 and rebuilds on save; `compute run` is `mero-compute` (feature `compute`, default on) | `/bundles` |
+| (new) `registry login/logout/list/search/versions/get` | the app registry's `GET /api/bundles` (`registry.rs`, no node): `search` filters the listing here (the registry has no search route); a key (`--api-key`, `CALIMERO_REGISTRY_API_KEY`, else the one `login` checked and saved per registry URL in `{home}/meroctl/registry.json`, 0600) lists private packages (`include_private=1`) and `--mine`; `app publish`, `app release --publish` (which refuses a version the registry already lists before building) and a version-less `app install PACKAGE` (the registry's latest) use it too. Tests: `tests/registry.rs` | registry |
 | (new) `cloud login/logout/orgs/clusters list\|create/use`, `cloud compute pipeline\|logs` | the Cloud manager (mdma) with a console session in `{home}/meroctl/cloud.json` (refreshed from `X-MDMA-Session-Refresh`); `use` saves a cluster's node as the default | `/api/orgs`, `/api/clusters` |
 | `network status` | `/health` | |
 | (new) `login`, `logout [--all]`, `whoami`, `attest [node\|app INSTANCE]` | file passkeys on dev clusters; cluster verification | `/auth/*`, `/attestation` |
@@ -78,7 +79,7 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   `tests/cli.rs` (release, offer, a secret from stdin, a customer counted,
   take-down), `deployment_and_release_commands_parse`.
 
-- `main` runs the commands that need no node (`node`, `local`, `cloud` but
+- `main` runs the commands that need no node (`node`, `local`, `registry`, `cloud` but
   `cloud compute`, `app`'s offline ones: `AppCmd::is_offline`) before it
   resolves a node, so they never read `--node`/`--api`. The old spellings
   (`dev new`, `pipeline`, `run logs`, `attest-release`, `attest --context`, `context` (now `instance`) and `--context`/`-c` (now `--instance`/`-i`),
@@ -116,6 +117,6 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
 
 ```bash
 cargo test -p meroctl        # every command group against an in-process 3-node cluster (builds apps/fixture-kv)
-cargo test -p meroctl --test app_offline --test cloud --test dev_new   # no node, no network
+cargo test -p meroctl --test app_offline --test cloud --test registry --test dev_new   # no node, no network
 cargo run -p meroctl -- --help
 ```

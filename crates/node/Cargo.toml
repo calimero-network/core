@@ -107,3 +107,6 @@ harness = false
 outbound-testing = ["calimero-outbound/outbound-testing"]
 # `Node::advance_clock`, the applied-tick ring and the log's crash hook, for tests.
 testing = ["calimero-log/testing"]
+
+[lints]
+workspace = true

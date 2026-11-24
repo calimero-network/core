@@ -1,6 +1,11 @@
 //! `meroctl app codegen` and `meroctl app abi diff` on ABI files (no guest build), as
 //! `mero-app-build`'s tests held them.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

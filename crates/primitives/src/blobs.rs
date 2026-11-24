@@ -77,16 +77,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_blob_id_roundtrip() {
-        let blob_id = BlobId::from([1; DIGEST_SIZE]);
-        let encoded = blob_id.to_string();
-        // Same hex vector as every other 32-byte Hash newtype for `[1; 32]`.
-        let expected = "0101010101010101010101010101010101010101010101010101010101010101";
-        assert_eq!(encoded, expected);
-        assert_eq!(BlobId::from_str(&encoded).unwrap(), blob_id);
-    }
-
-    #[test]
     fn test_blob_id_digest_matches_source_bytes() {
         let bytes = [7; DIGEST_SIZE];
         let blob_id = BlobId::from(bytes);

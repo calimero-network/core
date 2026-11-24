@@ -11,6 +11,9 @@ use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::attest::Mode;
 use calimero_node::{run, Config, Running};
 
+#[path = "eventually.rs"]
+pub mod poll;
+
 pub const ORIGIN: &str = "http://localhost:3000";
 
 /// The kv fixture (`apps/fixture-kv`: `set`, `get`, `entries`, `remove`, ...) as a
@@ -127,7 +130,7 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         },
         read_wait: Duration::from_secs(2),
         // Every refresh exchanges its token in the log, as the tests of
-        // rotation and reuse expect; `tests/refresh.rs` runs the production
+        // rotation and reuse expect; `tests/it/refresh.rs` runs the production
         // `api::REFRESH_ROTATE_AFTER`.
         refresh_rotate_after: Duration::ZERO,
         tee_release: None,
@@ -141,6 +144,7 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         registry: None,
         allow_unsigned_bundles: true,
         allow_package_uploads: true,
+        app_logs: false,
         outbound: None,
         governance: Default::default(),
         apps_domain: None,

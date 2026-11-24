@@ -1,6 +1,11 @@
 //! A reader must keep working across the writer's merges and garbage
 //! collection: segment files a live searcher still reads must not vanish.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_primitives::search::{
     SearchDoc, SearchFieldKind, SearchFieldSchema, SearchIndexSchema, SearchMode, SearchOrder,
     SearchRequest, SearchValue,

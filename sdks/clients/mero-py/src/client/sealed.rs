@@ -162,6 +162,9 @@ impl Node for SealedNode {
     async fn use_visitor(&self, visitor: calimero_client::visitor::Visitor) {
         self.client.use_visitor(visitor).await;
     }
+    async fn forget(&self) {
+        self.client.forget().await;
+    }
     /// Exchange the refresh token on this node's channel, as core's
     /// `Client::refresh` does on its own: the session goes to core's client
     /// too, for the event streams.

@@ -184,7 +184,7 @@ async fn id_of(env: &Env, arg: &str) -> eyre::Result<String> {
 /// The value of a secret: stdin when it is not a terminal (a pipe or a
 /// file; one trailing newline dropped), else typed at a prompt on stderr
 /// that does not echo it. Never empty.
-fn read_secret(name: &str) -> eyre::Result<Zeroizing<String>> {
+pub(crate) fn read_secret(name: &str) -> eyre::Result<Zeroizing<String>> {
     let stdin = std::io::stdin();
     let mut value = Zeroizing::new(String::new());
     if stdin.is_terminal() {

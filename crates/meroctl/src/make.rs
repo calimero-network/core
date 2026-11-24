@@ -19,6 +19,8 @@ use eyre::{bail, eyre, WrapErr};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::env::Home;
+
 pub mod uses;
 
 /// The default component file names, as `mero-app-build` wrote them.
@@ -250,7 +252,7 @@ pub struct PublishArgs {
     #[arg(
         long,
         env = "CALIMERO_REGISTRY_URL",
-        default_value = "https://apps.calimero.network"
+        default_value = crate::registry::DEFAULT_REGISTRY
     )]
     pub registry: String,
     /// The registry API key (the registry's Organizations page, CLI Access),
@@ -289,7 +291,7 @@ pub struct ReleaseArgs {
     #[arg(
         long,
         env = "CALIMERO_REGISTRY_URL",
-        default_value = "https://apps.calimero.network"
+        default_value = crate::registry::DEFAULT_REGISTRY
     )]
     pub registry: String,
     /// The registry API key, or with `--org` the Cloud organization's
@@ -1267,7 +1269,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
 /// `app publish`: the registry's `POST /api/bundles/push`, the signed
 /// manifest's own fields (all of them: the signature covers every key) with
 /// the whole `.mpk` as hex in `_binary`.
-pub async fn publish(a: &PublishArgs) -> eyre::Result<Value> {
+pub async fn publish(a: &PublishArgs, home: &Home) -> eyre::Result<Value> {
     let data = std::fs::read(&a.mpk).wrap_err_with(|| format!("reading {}", a.mpk.display()))?;
     let (manifest, _) = extract_bundle_manifest(&data, &semver::Version::new(u64::MAX, 0, 0))?;
     let Value::Object(mut body) = manifest else {
@@ -1279,14 +1281,22 @@ pub async fn publish(a: &PublishArgs) -> eyre::Result<Value> {
     if a.public {
         let _ = body.insert("_visibility".into(), json!("public"));
     }
-    let key = a
-        .api_key
-        .clone()
-        .ok_or_else(|| eyre!("give --api-key or CALIMERO_REGISTRY_API_KEY"))?;
     let registry = a.registry.trim_end_matches('/');
     if !registry.starts_with("https://") && !is_loopback(registry) {
         bail!("--registry must be https:// (an API key is never sent in the clear)");
     }
+    // The key `registry login` saved is a registry key, never an org's Cloud key.
+    let saved = || {
+        a.org
+            .is_none()
+            .then(|| home.registry_key(registry))
+            .flatten()
+    };
+    let key = a.api_key.clone().or_else(saved).ok_or_else(|| {
+        eyre!(
+            "give --api-key or CALIMERO_REGISTRY_API_KEY, or sign in with `meroctl registry login`"
+        )
+    })?;
     let http = reqwest::Client::new();
     let token = match &a.org {
         Some(org) => registry_token(&http, &a.cloud, &key, org).await?,
