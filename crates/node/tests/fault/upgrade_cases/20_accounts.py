@@ -114,6 +114,7 @@ class Sessions(DeepCase):
         sam.raw("delete", f"auth/sessions/{sid}", node=w.members()[0])
         refused("UNAUTHENTICATED", lambda: sam.http("GET", "auth/me", token=_tok(mine, "session_token"), node=n),
                 "a session revoked on the new release", retry_for=5)
+        check(False, "deliberate break to prove the concurrent runner fails the job")
 
 
 @case
