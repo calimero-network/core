@@ -51,15 +51,15 @@ It prints progress as the run reports it, then the result, each output and the u
 | `issue-tracker`          | Issue tracker | `Table` indexes, a label table and maintained counts: filter, count and page by field values without scanning |
 | `team-space`             | Team space | Access control in layers: organization standing (`env::org_role` / `env::in_team`) for the pinned and team notes, then the app's own rows: an owned config with transfer, one writer-set mechanism (status line, settings, roles) and its rotation; `scenarios/cluster/` changes a team mid-run; also the node's org and writer-set fixture (`crates/node/tests`) |
 | `name-registry`          | Usernames | Claim, verdict and admin tables: one owner per name, decided by the admins (the first claim applied wins); the app owner is the first admin, `setAdmins` hands the role on, a lost claim is renewed with `rebid` after a release |
-| `rooms`                  | Room booking | The node's Rooms tests (`crates/node/tests/rooms.rs`) and the fault test |
+| `rooms`                  | Room booking | The node's Rooms tests (`crates/node/tests/it/rooms.rs`) and the fault test |
 | `calendar`               | Each caller's events | The app the units examples build on: a person's and an app's own events; `env::via()` keeps private events from an app acting for the person |
 | `planner`                | Team planner | `uses` with `mode = "create"`: a calendar created with each instance, called as the planner through its generated client (`uses::calendar`) |
 | `booking`                | Booking page | `uses` with `mode = "attach"` and `methods`: a calendar the owner attaches, called as the person with their grant; the calendar's own error comes back typed (`uses::calendar::Error`) |
 | `compute-redact`         | CSV redaction | `#[app::compute]` runs: a preview then one run per part, a queue of at most 4 active runs, the compute component (`meroctl app build --compute-out`) that may import only the compute world; the policy is set by an admin and copied into each job; `share` publishes a done job's outputs (`compute::publish`) and `link` grants a download (`blobs.grant`) |
 | `fixture-kv`             | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls (`bumpBoth` joins two synchronous calls, `slowBump` is their slow target), actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
-| `fixture-compute`        | The compute fixture | Compute methods that stream files, report progress and break each cap; `crates/node/tests/job_runs.rs` and `crates/meroctl/compute/tests` |
-| `fixture-notes-v1`, `fixture-notes-v2` | Two releases of one app | The consent page's upgrade diff (`an_upgrades_page_names_what_the_components_abis_change` in `crates/node/tests/consent_page.rs`) |
-| `fixture-captcha`        | Captcha service | Synchronous xcalls (`env::xcall_call`) from other apps of the org, and a Turnstile check with `env::fetch`; `crates/node/tests/component_cluster.rs` |
+| `fixture-compute`        | The compute fixture | Compute methods that stream files, report progress and break each cap; `crates/node/tests/it/job_runs.rs` and `crates/meroctl/compute/tests` |
+| `fixture-notes-v1`, `fixture-notes-v2` | Two releases of one app | The consent page's upgrade diff (`an_upgrades_page_names_what_the_components_abis_change` in `crates/node/tests/it/consent_page.rs`) |
+| `fixture-captcha`        | Captcha service | Synchronous xcalls (`env::xcall_call`) from other apps of the org, and a Turnstile check with `env::fetch`; `crates/node/tests/it/component_cluster.rs` |
 | `fixture-files`          | The files fixture | Deterministic files kept by `BlobRef`, and the refusal to stream them back outside a compute run; `crates/node/tests` |
 
 ## Component apps

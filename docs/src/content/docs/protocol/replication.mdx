@@ -99,7 +99,7 @@ entry the machine applied. Blank entries (a new leader's first) and membership
 changes do not count: they change no app state, and counting them on one side
 only made the first call after every election conflict once. Regression:
 `the_first_call_after_a_leader_change_commits_without_a_rerun` in
-`crates/node/tests/cluster.rs`; `calimero_build_conflicts_total` in
+`crates/node/tests/it/cluster.rs`; `calimero_build_conflicts_total` in
 `/ops/metrics` counts the conflicts a node's entries met. If they differ, other entries came in between (a new leader's,
 or a write that was not yet applied when the call ran) and the diff was computed
 against replaced state: the entry applies as a no-op with `conflict: true`,
@@ -259,7 +259,7 @@ logged, and `calimero_group_stopped` and `calimero_group_restarts_total` show it
 `a_fault_that_outlasts_a_restart_backs_off_and_shows_in_the_status` in
 `crates/log/tests/cluster.rs`;
 `a_node_whose_system_group_stopped_on_a_disk_error_rejoins_on_its_own` in
-`crates/node/tests/cluster.rs`.
+`crates/node/tests/it/cluster.rs`.
 
 A **snapshot** is a file of sealed frames under `<data-dir>/snapshots`, written
 from a consistent RocksDB view of the group's rows, never the whole state in
