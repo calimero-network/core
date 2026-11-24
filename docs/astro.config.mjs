@@ -115,6 +115,7 @@ export default defineConfig({
                 'build/guides/blobs',
                 'build/guides/search',
                 'build/guides/outbound',
+                'build/guides/connectors',
                 'build/guides/timers-and-actions',
                 'build/guides/compute-actions',
                 'build/guides/files-and-pipelines',

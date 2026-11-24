@@ -53,8 +53,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
+mod connector;
 mod settings;
 
+pub use connector::*;
 pub use settings::*;
 
 /// Sends a run's outbound request: borsh `OutboundRequest` in, borsh
@@ -486,6 +488,21 @@ impl OutboundService {
         context: String,
         sent: Arc<AtomicU64>,
     ) -> Option<Arc<dyn OutboundHost>> {
+        self.run_outbound(app, declared, BTreeMap::new(), approval, context, sent)
+    }
+
+    /// The raw client for a run, refusing every host of `reserved` (a declared
+    /// connector's host, by the connector's name); `None` when the app
+    /// declared no prefix this node can use.
+    fn run_outbound(
+        self: &Arc<Self>,
+        app: AppIdentity,
+        declared: Vec<String>,
+        reserved: BTreeMap<String, String>,
+        approval: Option<Approval>,
+        context: String,
+        sent: Arc<AtomicU64>,
+    ) -> Option<Arc<dyn OutboundHost>> {
         let declared: BTreeSet<String> = declared
             .into_iter()
             .filter(|u| u.len() <= MAX_URL && prefix(u).is_some())
@@ -497,6 +514,7 @@ impl OutboundService {
             service: Arc::clone(self),
             app,
             declared,
+            reserved,
             approval,
             context,
             sent,
@@ -670,6 +688,8 @@ struct RunOutbound {
     service: Arc<OutboundService>,
     app: AppIdentity,
     declared: BTreeSet<String>,
+    /// Hosts reached only through a connector the app declares, by its name.
+    reserved: BTreeMap<String, String>,
     approval: Option<Approval>,
     context: String,
     /// Requests handed to the transport.
@@ -681,6 +701,21 @@ impl OutboundHost for RunOutbound {
         let started = Instant::now();
         let request = OutboundRequest::try_from_slice(request)
             .map_err(|e| format!("a malformed outbound request: {e}"))?;
+        let reserved = reqwest::Url::parse(&request.url)
+            .ok()
+            .and_then(|u| {
+                u.host_str()
+                    .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
+            })
+            .and_then(|host| Some((self.reserved.get(&host)?, host)));
+        if let Some((connector, host)) = reserved {
+            let reason = format!(
+                "{host} is reached only through the {connector} connector this app declares, \
+                 never by a raw request"
+            );
+            warn!(context = %self.context, package = %self.app.package, %reason, "outbound request refused");
+            return Err(reason);
+        }
         let prepared = match self.service.prepare(
             &self.app,
             &self.declared,
@@ -693,14 +728,31 @@ impl OutboundHost for RunOutbound {
                 return Err(reason.to_string());
             }
         };
-        let _before = self.sent.fetch_add(1, Ordering::Relaxed);
-        let result = self.service.transport.send(&prepared);
-        let (status, mut body) = match result {
+        let (status, body) =
+            self.service
+                .transmit(&self.app, &self.context, &self.sent, &prepared, started)?;
+        borsh::to_vec(&OutboundResponse { status, body }).map_err(|e| e.to_string())
+    }
+}
+
+impl OutboundService {
+    /// Sends a prepared request, counts it in `sent`, logs it and redacts its
+    /// secrets from the answer: every raw request and connector call ends here.
+    fn transmit(
+        &self,
+        app: &AppIdentity,
+        context: &str,
+        sent: &AtomicU64,
+        prepared: &Prepared,
+        started: Instant,
+    ) -> Result<(u16, Vec<u8>), String> {
+        let _before = sent.fetch_add(1, Ordering::Relaxed);
+        let (status, mut body) = match self.transport.send(prepared) {
             Ok(answer) => answer,
             Err(reason) => {
                 warn!(
-                    context = %self.context,
-                    package = %self.app.package,
+                    context = %context,
+                    package = %app.package,
                     host = %prepared.host,
                     path = %prepared.url.path(),
                     %reason,
@@ -713,8 +765,8 @@ impl OutboundHost for RunOutbound {
             body = redact(&body, secret.as_bytes());
         }
         info!(
-            context = %self.context,
-            package = %self.app.package,
+            context = %context,
+            package = %app.package,
             host = %prepared.host,
             path = %prepared.url.path(),
             status,
@@ -724,7 +776,7 @@ impl OutboundHost for RunOutbound {
             elapsed_ms = started.elapsed().as_millis() as u64,
             "outbound request"
         );
-        borsh::to_vec(&OutboundResponse { status, body }).map_err(|e| e.to_string())
+        Ok((status, body))
     }
 }
 

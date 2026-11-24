@@ -30,6 +30,24 @@ deployment managers'; `calimero_node::component::run_secrets`) wins over the
 operator's for that name, still only to its declared hosts. The echo answers each
 filled-in value's length (`secretBytes`), never a value.
 
+**Connectors** (`connector.rs`, `connector/`): for a service where a key is worth
+more than the app (Stripe, an OpenAI-compatible API), the node builds the request.
+A `Connector` is a name, a pinned upstream API version, one host, the `Credential`
+it attaches (a secret binding, written into a header by the node; an input naming
+`{{secret:` is refused) and `Operation`s, each fixing method, path and where each
+typed `Field` (`Kind`: bounded integer, id, code, owner- or release-limited choice
+or map, chat messages) goes, and which `Output`s come back. An unknown operation
+or field, a wrong type, a value no `ConnectorGrant` limit allows is refused before
+anything is sent; the request then goes through `prepare` (operator hosts, the
+approval of the operation's prefix, `Connector::prefixes`, the secret's binding,
+bounds) and `transmit` (count, log, redaction), and the answer is cut to its
+declared outputs; a non-2xx answers only its status and `error.code`.
+`for_run_with_connectors` returns `RunClients`: the raw client refuses every
+declared connector's host, so the connector is the only way there. `STRIPE`
+(PaymentIntents, API `2024-06-20`) and `OPENAI` (chat completions, `v1`) are in
+`CONNECTORS`. Not wired yet: the manifest's `connectors`, the consent page and
+the guest's `connector.call` (#5349); the node still calls `for_run_counted`.
+
 - `OutboundService::from_settings` → `for_run(app, declared, approval, context)`;
   `for_run_counted(.., sent)` also counts each request handed to the transport
   (the node's `calimero_app_outbound_requests_total`).
