@@ -8,7 +8,7 @@
 //! from this checkout (see `harness/cluster.rs`).
 
 use calimero_identity::testing::SoftAuthenticator;
-use calimero_node::api::{Held, Pending};
+use calimero_node::api::Pending;
 use serde_json::{json, Value};
 
 use crate::harness;
@@ -142,7 +142,7 @@ fn origin(url: &str) -> String {
 fn challenge_args(c: &Cluster, id: &str) -> Value {
     for r in c.nodes.iter().flatten() {
         if let Some(Pending::Confirm { args, method, .. }) =
-            r.node.challenges.lock().unwrap().get(id).map(Held::pending)
+            r.node.challenges.lock().unwrap().get(id)
         {
             let mut v: Value = serde_json::from_slice(args).unwrap();
             v["__method"] = json!(method);

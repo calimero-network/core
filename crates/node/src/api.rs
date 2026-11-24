@@ -8,8 +8,9 @@
 //! - Internal (peers, cluster secret): `/internal/*`.
 //! - Ops (mdma, operator token): `/ops/*`.
 
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::ops::Bound;
 use std::sync::Arc;
@@ -289,21 +290,139 @@ pub const MAX_CHALLENGES_PER_ACCOUNT: usize = 64;
 /// (`None` on a plain request, which only a `--dev` node serves) and its place
 /// in the order ceremonies were begun, oldest first.
 #[derive(Debug)]
-pub struct Held {
+struct Held {
     pending: Pending,
     session: Option<SealedSession>,
     order: u64,
 }
 
-impl Held {
-    /// The ceremony held.
-    pub const fn pending(&self) -> &Pending {
-        &self.pending
-    }
+/// Where a session that holds anonymous ceremonies ranks for displacement:
+/// how many it holds, then its oldest ceremony's order, reversed, so the
+/// greatest is the biggest holder and, among equals, the one with the oldest.
+type Rank = (usize, Reverse<u64>, Option<SealedSession>);
+
+/// The ceremonies a node holds open ([`Pending`]), indexed so a begin, a take,
+/// an expiry and the displacement a full budget calls for each cost
+/// O(log n): a flood fills the pool, so nothing here scans it.
+#[derive(Debug, Default)]
+pub struct Ceremonies {
+    held: HashMap<String, Held>,
+    /// Every ceremony by expiry, then order: what [`Self::expire`] drops.
+    expiry: BTreeMap<(u64, u64), String>,
+    /// The anonymous ceremonies of each session, by order (oldest first).
+    sessions: HashMap<Option<SealedSession>, BTreeMap<u64, String>>,
+    /// Each session in `sessions`, ranked ([`Rank`]).
+    ranking: BTreeSet<Rank>,
+    anonymous: usize,
+    /// How many ceremonies each known account holds, and all of them.
+    accounts: HashMap<String, usize>,
+    account_total: usize,
+    next: u64,
 }
 
-/// The order ceremonies were begun in, node-wide.
-static BEGUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+impl Ceremonies {
+    /// The ceremony `id` names, if this node holds it.
+    pub fn get(&self, id: &str) -> Option<&Pending> {
+        self.held.get(id).map(|h| &h.pending)
+    }
+
+    fn insert(&mut self, id: String, pending: Pending, session: Option<SealedSession>) {
+        let order = self.next;
+        self.next += 1;
+        let _prev = self.expiry.insert((pending.expires(), order), id.clone());
+        match pending.account() {
+            None => {
+                self.unrank(session);
+                let _prev = self
+                    .sessions
+                    .entry(session)
+                    .or_default()
+                    .insert(order, id.clone());
+                self.anonymous += 1;
+                self.rank(session);
+            }
+            Some(account) => {
+                *self.accounts.entry(account.to_owned()).or_default() += 1;
+                self.account_total += 1;
+            }
+        }
+        let _prev = self.held.insert(
+            id,
+            Held {
+                pending,
+                session,
+                order,
+            },
+        );
+    }
+
+    /// Take the ceremony `id` names out of every index.
+    fn remove(&mut self, id: &str) -> Option<Pending> {
+        let h = self.held.remove(id)?;
+        let _expiry = self.expiry.remove(&(h.pending.expires(), h.order));
+        match h.pending.account() {
+            None => {
+                self.unrank(h.session);
+                if let Some(mine) = self.sessions.get_mut(&h.session) {
+                    let _id = mine.remove(&h.order);
+                    if mine.is_empty() {
+                        let _gone = self.sessions.remove(&h.session);
+                    }
+                }
+                self.anonymous = self.anonymous.saturating_sub(1);
+                self.rank(h.session);
+            }
+            Some(account) => {
+                if let Some(n) = self.accounts.get_mut(account) {
+                    *n = n.saturating_sub(1);
+                    if *n == 0 {
+                        let _gone = self.accounts.remove(account);
+                    }
+                }
+                self.account_total = self.account_total.saturating_sub(1);
+            }
+        }
+        Some(h.pending)
+    }
+
+    fn rank_of(&self, session: Option<SealedSession>) -> Option<Rank> {
+        let mine = self.sessions.get(&session)?;
+        let (&oldest, _) = mine.first_key_value()?;
+        Some((mine.len(), Reverse(oldest), session))
+    }
+
+    fn unrank(&mut self, session: Option<SealedSession>) {
+        if let Some(rank) = self.rank_of(session) {
+            let _was = self.ranking.remove(&rank);
+        }
+    }
+
+    fn rank(&mut self, session: Option<SealedSession>) {
+        if let Some(rank) = self.rank_of(session) {
+            let _new = self.ranking.insert(rank);
+        }
+    }
+
+    /// The oldest anonymous ceremony `session` holds.
+    fn oldest_of(&self, session: Option<SealedSession>) -> Option<String> {
+        self.sessions
+            .get(&session)
+            .and_then(BTreeMap::first_key_value)
+            .map(|(_, id)| id.clone())
+    }
+
+    /// Drop the ceremonies expired at `now`.
+    fn expire(&mut self, now: u64) {
+        while let Some(id) = self
+            .expiry
+            .first_key_value()
+            .filter(|((expires, _), _)| *expires <= now)
+            .map(|(_, id)| id.clone())
+        {
+            let _expired = self.remove(&id);
+        }
+    }
+}
 
 /// Hold `pending` and answer its id. `session` is the sealed session an
 /// anonymous ceremony was begun in, which its limit is keyed on; a known
@@ -319,12 +438,7 @@ fn put_pending(
         .lock()
         .map_err(|_| ApiError::internal("challenge store poisoned"))?;
     admit_pending(&mut c, &pending, session, now_secs())?;
-    let held = Held {
-        pending,
-        session,
-        order: BEGUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    };
-    let _prev = c.insert(id.clone(), held);
+    c.insert(id.clone(), pending, session);
     Ok(id)
 }
 
@@ -344,23 +458,32 @@ fn put_pending(
 /// A known account's ceremony is refused `429` when its share of the
 /// accounts' pool, or that pool, is full.
 fn admit_pending(
-    c: &mut HashMap<String, Held>,
+    c: &mut Ceremonies,
     pending: &Pending,
     session: Option<SealedSession>,
     now: u64,
 ) -> Result<(), ApiError> {
-    c.retain(|_, h| h.pending.expires() > now);
+    c.expire(now);
     let Some(account) = pending.account() else {
-        displace_for(c, session);
+        let mine = c.sessions.get(&session).map_or(0, BTreeMap::len);
+        // A plain request's (`None`, a `--dev` node only) count together and
+        // have no share of their own.
+        let victim = if session.is_some() && mine >= MAX_CEREMONIES_PER_SESSION {
+            c.oldest_of(session)
+        } else if c.anonymous >= MAX_PENDING_CHALLENGES {
+            c.ranking
+                .last()
+                .and_then(|&(_, _, biggest)| c.oldest_of(biggest))
+        } else {
+            None
+        };
+        if let Some(id) = victim {
+            let _displaced = c.remove(&id);
+        }
         return Ok(());
     };
-    let (mine, all) = c
-        .values()
-        .filter_map(|h| h.pending.account())
-        .fold((0, 0), |(mine, all), a| {
-            (mine + usize::from(a == account), all + 1)
-        });
-    if mine >= MAX_CHALLENGES_PER_ACCOUNT || all >= MAX_ACCOUNT_CHALLENGES {
+    let mine = c.accounts.get(account).copied().unwrap_or(0);
+    if mine >= MAX_CHALLENGES_PER_ACCOUNT || c.account_total >= MAX_ACCOUNT_CHALLENGES {
         return Err(ApiError::new(
             429,
             "RATE_LIMITED",
@@ -368,39 +491,6 @@ fn admit_pending(
         ));
     }
     Ok(())
-}
-
-/// Make room for one more anonymous ceremony begun in `session`: drop that
-/// session's oldest when it holds its share, or the oldest of the session
-/// holding the most when the pool is full. A plain request's (`None`, a
-/// `--dev` node only) count together and have no share of their own.
-fn displace_for(c: &mut HashMap<String, Held>, session: Option<SealedSession>) {
-    let mut held: HashMap<Option<SealedSession>, usize> = HashMap::new();
-    for h in c.values().filter(|h| h.pending.account().is_none()) {
-        *held.entry(h.session).or_default() += 1;
-    }
-    let mine = held.get(&session).copied().unwrap_or(0);
-    let most = if session.is_some() && mine >= MAX_CEREMONIES_PER_SESSION {
-        Some(session)
-    } else if held.values().sum::<usize>() >= MAX_PENDING_CHALLENGES {
-        None
-    } else {
-        return;
-    };
-    let victim = c
-        .iter()
-        .filter(|(_, h)| h.pending.account().is_none())
-        .filter(|(_, h)| most.is_none_or(|s| h.session == s))
-        .max_by_key(|(_, h)| {
-            (
-                held.get(&h.session).copied().unwrap_or(0),
-                std::cmp::Reverse(h.order),
-            )
-        })
-        .map(|(id, _)| id.clone());
-    if let Some(id) = victim {
-        let _displaced = c.remove(&id);
-    }
 }
 
 fn unknown_challenge() -> ApiError {
@@ -447,7 +537,6 @@ fn take_local(node: &Node, id: &str) -> Result<Pending, ApiError> {
         .lock()
         .ok()
         .and_then(|mut c| c.remove(id))
-        .map(|h| h.pending)
         .ok_or_else(unknown_challenge)
 }
 
@@ -2402,16 +2491,12 @@ fn typed_id<const N: usize>() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use calimero_sealed::SealedSession;
 
     use super::{
-        admit_pending, typed_id, Held, Pending, MAX_CEREMONIES_PER_SESSION,
+        admit_pending, typed_id, Ceremonies, Pending, MAX_CEREMONIES_PER_SESSION,
         MAX_CHALLENGES_PER_ACCOUNT, MAX_PENDING_CHALLENGES,
     };
-
-    type Ceremonies = HashMap<String, Held>;
 
     fn sign_up(expires: u64) -> Pending {
         Pending::Register {
@@ -2449,28 +2534,30 @@ mod tests {
         now: u64,
     ) -> Result<String, u16> {
         admit_pending(c, &p, from, now).map_err(|e| e.status)?;
-        let order = super::BEGUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let id = format!("1.{order}");
-        let _prev = c.insert(
-            id.clone(),
-            Held {
-                pending: p,
-                session: from,
-                order,
-            },
-        );
+        let id = format!("1.{}", c.next);
+        c.insert(id.clone(), p, from);
         Ok(id)
     }
 
     fn anonymous(c: &Ceremonies) -> usize {
-        c.values().filter(|h| h.pending.account().is_none()).count()
+        let held = c
+            .held
+            .values()
+            .filter(|h| h.pending.account().is_none())
+            .count();
+        assert_eq!(held, c.anonymous, "the anonymous count is the store's");
+        held
+    }
+
+    fn contains(c: &Ceremonies, id: &str) -> bool {
+        c.get(id).is_some()
     }
 
     /// Anonymous ceremonies have their own pool: filling it never blocks an
     /// account's step-up or passkey add, and expired ones free it.
     #[test]
     fn a_full_anonymous_pool_does_not_block_an_accounts_step_up() {
-        let mut c = HashMap::new();
+        let mut c = Ceremonies::default();
         for n in 0..MAX_PENDING_CHALLENGES as u64 {
             assert!(put(&mut c, sign_up(100), session(n), 0).is_ok());
         }
@@ -2484,17 +2571,17 @@ mod tests {
     /// another session's ceremony.
     #[test]
     fn one_session_only_displaces_its_own_ceremonies() {
-        let mut c = HashMap::new();
+        let mut c = Ceremonies::default();
         let alice = put(&mut c, sign_up(100), session(1), 0).unwrap();
         let flood: Vec<String> = (0..MAX_PENDING_CHALLENGES)
             .map(|_| put(&mut c, sign_up(100), session(2), 0).unwrap())
             .collect();
-        assert!(c.contains_key(&alice), "alice's sign-in is still open");
+        assert!(contains(&c, &alice), "alice's sign-in is still open");
         assert_eq!(anonymous(&c), 1 + MAX_CEREMONIES_PER_SESSION);
         // The flood keeps its newest.
         let kept = &flood[flood.len() - MAX_CEREMONIES_PER_SESSION..];
-        assert!(kept.iter().all(|id| c.contains_key(id)));
-        assert!(!c.contains_key(&flood[0]));
+        assert!(kept.iter().all(|id| contains(&c, id)));
+        assert!(!contains(&c, &flood[0]));
     }
 
     /// A flood spread over many sessions fills the pool, and then each new
@@ -2503,7 +2590,7 @@ mod tests {
     /// outlives the flood's next `MAX_PENDING_CHALLENGES - 1` begins.
     #[test]
     fn a_full_pool_displaces_the_biggest_holder_then_the_oldest() {
-        let mut c = HashMap::new();
+        let mut c = Ceremonies::default();
         // Two ceremonies per flooding session fill the pool.
         let per = 2;
         let sessions = (MAX_PENDING_CHALLENGES / per) as u64;
@@ -2516,23 +2603,23 @@ mod tests {
         // Alice holds one: a flooding session holding two loses its oldest.
         let alice = put(&mut c, sign_up(100), session(1), 0).unwrap();
         assert_eq!(anonymous(&c), MAX_PENDING_CHALLENGES);
-        assert!(c.contains_key(&alice));
+        assert!(contains(&c, &alice));
         // Then a fresh session per begin, as the handshake limit allows:
         // the oldest ceremonies go first, never alice's while older ones remain.
         for n in 0..MAX_PENDING_CHALLENGES as u64 - 1 {
             assert!(put(&mut c, sign_up(100), session(1_000_000 + n), 0).is_ok());
-            assert!(c.contains_key(&alice), "after {n} more begins");
+            assert!(contains(&c, &alice), "after {n} more begins");
         }
         assert_eq!(anonymous(&c), MAX_PENDING_CHALLENGES);
         // Now the oldest, hers goes next.
         assert!(put(&mut c, sign_up(100), session(2_000_000), 0).is_ok());
-        assert!(!c.contains_key(&alice));
+        assert!(!contains(&c, &alice));
     }
 
     /// One account's step-ups are capped, and the cap is its own.
     #[test]
     fn one_account_cannot_fill_the_accounts_pool() {
-        let mut c = HashMap::new();
+        let mut c = Ceremonies::default();
         for _ in 0..MAX_CHALLENGES_PER_ACCOUNT {
             assert!(put(&mut c, step_up("mallory", 100), None, 0).is_ok());
         }

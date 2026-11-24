@@ -117,7 +117,7 @@ pub const SEALED_CONTENT_TYPE: &str = "application/vnd.calimero.sealed";
 /// request it opens (last, so nothing upstream chooses it) and on no plain
 /// request. It names the client's session, not the client: anyone may open
 /// another, at the rate the handshake limit allows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SealedSession(pub [u8; 16]);
 
 const VERSION: u8 = 2;
