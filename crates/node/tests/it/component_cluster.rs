@@ -7371,7 +7371,17 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
 /// a timeout, which is not logged, D23) replays both answers instead of counting again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
-    let c = Cluster::start(3).await;
+    // The stalled run must end on the wall clock (`TIMEOUT`, not logged), and `slowBump`'s
+    // body is sized in wall time. Both draw host randomness, which costs fuel per byte
+    // (C7), so their fuel is lifted, as `timeouts_are_not_logged` lifts it: the wall clock
+    // ends them, never the fuel.
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
         .packages()
