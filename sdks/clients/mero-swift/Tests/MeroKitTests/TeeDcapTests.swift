@@ -120,7 +120,7 @@ final class TeeDcapTests: XCTestCase {
     }
 
     func testRefusesAQuoteThatCommitsToAnotherBinding() async throws {
-        let collateral = try TeeFixture.collateral
+        let collateral = try TeeFixture.current
         let args = try TeeFixture.args(suffix: String(repeating: "00", count: 32), collateral: collateral)
         assertTeeRefusal(await verifierRefusal(try real(), args), "does not commit to this nonce and binding")
     }
