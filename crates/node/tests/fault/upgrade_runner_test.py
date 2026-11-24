@@ -209,7 +209,6 @@ class ThisTree(unittest.TestCase):
         upgrade_path.World(None, None, {}, upgrade_path.say).this_tree()
 
 
->>>>>>> 6d614e529 (ci: the pipeline case waits for this tree's build before it seeds)
 class WaitForBuild(unittest.TestCase):
     def status(self, text=None):
         path = Path(tempfile.mkdtemp()) / "build.status"
