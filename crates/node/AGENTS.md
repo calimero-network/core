@@ -214,7 +214,8 @@ is its command line.
   nodes }`, only forward, naming every registered node; `reconcile` ->
   `raise_cluster_version`, at most every 10 s) once every node supports it,
   and admits no node below it to the system group (`joins_at_cluster_version`).
-  Apply never reads it, so a log replays unchanged. The gate judges on the
+  Apply reads only the logged version at the entry's own position
+  (`SystemState::cluster_brings`), so a log replays unchanged. The gate judges on the
   logged version; when every node supports a feature above it, the proposing
   node logs that version first (`cv::admit` -> `Admission::LogFirst`,
   `raise_cluster_version_once` through `Node::sys_propose`, the ungated write),
@@ -410,8 +411,20 @@ is its command line.
   `install_from_registry`, `install_upload` and `POST /bundles`; `403
   DEPLOY_NOT_GRANTED`); `apply` refuses again (`system::NOT_A_DEPLOYER`). So
   does `POST /apps` (and an upgrade run, the consent page) where it would
-  install a release from the registry first; an instance of a release the
-  caller already sees needs no grant. The operator's installs never need one.
+  install a release from the registry first. An instance from no deployment
+  is a live deployer's, or of the operator's catalog
+  (`SystemState::creates_outside_offers`): anyone else, a revoked deployer of
+  a release it installed and a customer who sees a release through an
+  instance included, creates only from an offer (`POST /apps` `403 DEPLOY_NOT_GRANTED`; `CreateApp
+  { offers_only }` at apply, `Feature::OffersOnly`, rc.36, or the logged
+  cluster version bringing it; earlier entries replay as they applied). Such an
+  instance moves into another package only as its upgrader could create one
+  there (`SystemState::upgrades_outside_offers`; `UpgradeApp` from that logged
+  version, the operator's excepted). Regressions:
+  `on_a_granted_cluster_a_customer_creates_only_from_an_offer`,
+  `on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers`,
+  `on_a_granted_cluster_an_instance_outside_every_deployment_keeps_out_of_a_deployers_package`.
+  The operator's installs never need one.
   Grants: `GrantDeployer`/`RevokeDeployer`, the operator's signature
   (`POST /ops/deployers`, `DELETE /ops/deployers/{key}` or `POST
   /ops/deployers/{key}/revoke`; `cluster /

@@ -743,8 +743,8 @@ cluster version**: the newest version every node supports.
   node below it to the system group: a rollback means a new cluster, not an
   older node in this one. As every gated entry follows the version that brings
   it, the logged version is the one in effect.
-- **Apply never reads it.** An entry applies as it did, so replaying a log is
-  unchanged; the gate only decides what is proposed.
+- **Apply reads only the logged version.** A rule that waits for a feature reads the version
+  logged before the entry, never what nodes advertise, so replaying a log is unchanged.
 
 A node that still meets an entry it cannot decode (it runs an older release
 than the log, or an app entry of a later [entry format](/protocol/storage/#format-versions))
