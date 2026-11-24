@@ -19,7 +19,7 @@ path.
 | --- | --- | --- | --- |
 | Unit tests | `#[cfg(test)]` in each crate | One module's logic: config merging, key sources, quotas, presence rules, outbound gates | Milliseconds |
 | Raft engine | `crates/log` | Replication, failover, restart from disk, learner catch-up, snapshot streaming, no plaintext in snapshot files, the store-format migrations, the `log.redb` migration | Seconds |
-| Cluster | `crates/node/tests/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades, blobs, governance, replica moves | Seconds to minutes |
+| Cluster | `crates/node/tests/it/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades, blobs, governance, replica moves | Seconds to minutes |
 | CLI | `crates/merod/tests/cli.rs`, `crates/meroctl/tests/cli.rs` | `merod init/config/run/inspect` through the binary; every `meroctl` command group against a local cluster | Seconds to minutes |
 | App logic | `TestApp` in `crates/sdk/src/testing` (`cargo test --manifest-path apps/<app>/Cargo.toml`) | An app's methods, events and errors on the real engine | Milliseconds to seconds |
 | Scenario files | `apps/*/scenarios/`, `workflows/**/scenarios/`, run by `crates/node/tests/scenarios.rs` | An app or a flow end to end on an in-process cluster, written as data: orgs, teams, invites, packages, upgrades, blobs, calls as several accounts | Seconds per file |
@@ -44,7 +44,7 @@ component.
 
 ```bash
 cargo test -p calimero-node                 # the cluster tests
-cargo test -p calimero-node --test cluster teams_work_like_v1_subgroups -- --nocapture
+cargo test -p calimero-node --test it component_cluster::teams_work_like_v1_subgroups -- --nocapture
 cargo test -p merod -p meroctl                    # the CLI tests
 cargo test -p calimero-log
 cargo test -p calimero-client -p calimero-identity -p calimero-sealed
@@ -53,6 +53,17 @@ cargo test -p calimero-kms-client --features mock-attestation
 cargo test -p calimero-tee-attestation --features mock-attestation
 cargo test --workspace                            # everything
 ```
+
+The node's integration tests are one test binary, `it` (`crates/node/tests/it/main.rs`,
+one module per former `tests/*.rs` file), so they link wasmtime, RocksDB and tantivy once
+instead of once per file. A test's name is `<module>::<test>`:
+`cargo test -p calimero-node --test it job_runs::` runs one module, and
+`cargo nextest run -p calimero-node -E 'binary(it) & test(/^job_runs::/)'` does under nextest.
+Three stay binaries of their own: `scenarios` (its own main), and `auto_updates` and
+`compute_runs`, which set a hook that is the whole process's (`testing::shift_update_clock`,
+`testing::shared_http_timeout`). Tests in `it` share one process under `cargo test`, so a
+test hook is keyed to the test's own nodes (a data directory or a public URL), never the
+process's; a test that needs a process-wide one gets a binary of its own.
 
 The real-process fault tests start `merod` processes on ports 7600-7699 and need release `merod` and `meroctl` (`cargo build --release -p merod -p meroctl`):
 
@@ -73,7 +84,7 @@ doctests it skips).
 
 ### Writing a cluster test
 
-`crates/node/tests/cluster.rs` builds clusters with the real `run`,
+`crates/node/tests/it/cluster.rs` builds clusters with the real `run`,
 mock attestation and a soft authenticator, and drives them only through
 `calimero-client`, as an SDK user would. Write a new test there when the
 behaviour crosses the API: start the cluster, sign up, do the thing, assert on
@@ -668,7 +679,7 @@ a case is never skipped.
 ### Replaying a release's data directory
 
 The rollout moves state between nodes; it does not show that this tree applies
-an old release's log the same way. `crates/node/tests/upgrade_replay.rs` does,
+an old release's log the same way. `crates/node/tests/it/upgrade_replay.rs` does,
 in process and in seconds (it runs with the other `calimero-node` tests): each
 `crates/node/tests/fixtures/upgrade/<release>/` holds the data directory of a
 one-node cluster as that release's `merod run --dev` left it (accounts with two
@@ -696,7 +707,7 @@ reads), 1.0.0-rc.34's and 1.0.0-rc.35's.
 scripts/fetch-release.sh 1.0.0-rc.35 target/upgrade-from
 python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from \
   --out crates/node/tests/fixtures/upgrade/1.0.0-rc.35
-cargo test -p calimero-node --test upgrade_replay
+cargo test -p calimero-node --test it upgrade_replay::
 ```
 
 ## In CI
@@ -956,7 +967,7 @@ the cluster throughput bench, whose JSON the comparison also diffs.
 ### Cluster throughput
 
 `crates/node/benches/cluster_throughput.rs` drives a 3-node cluster in
-one process (the harness of `tests/cluster.rs`, in `tests/harness/cluster.rs`,
+one process (the harness of `tests/it/cluster.rs`, in `tests/harness/cluster.rs`,
 with merod's Raft timing) through the sealed client, calling the kv
 fixture's `set` on the app's leader:
 

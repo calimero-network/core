@@ -18,7 +18,7 @@ The user-facing guide is the docs site's
 ```bash
 cargo test -p calimero-search
 # End to end (3-node cluster, the kv component):
-cargo test -p calimero-node --test component_cluster views_search_a_components_tables_as_they_change
+cargo test -p calimero-node --test it component_cluster::views_search_a_components_tables_as_they_change
 # Engine numbers (size, latency, memory, the search-gas fit): crates/search/bench
 cargo run --release -p calimero-search-bench -- --sizes 10000,100000
 ```
