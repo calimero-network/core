@@ -107,6 +107,21 @@ For a fixed list of nodes or a cluster you run yourself, construct the client
 directly: `new CalimeroClient({ baseUrl, nodes, policy })`. It fails over
 between `baseUrl` and `nodes` the same way, and never reads a directory.
 
+`environment: 'staging'` reads the staging Calimero Cloud's directory instead
+(`CLOUD_ENVIRONMENTS`).
+
+A frontend that one build ships to several places (served by staging, shared
+and dedicated clusters from its `.mpk`, and hosted on Vercel for previews) uses
+`CalimeroClient.connectHere({ policy, fallback })`. On a page a cluster serves,
+it reads the page's own `/.well-known/calimero.json` and connects to the nodes
+listed there (`client.cluster` names the cluster, `client.deployment` the
+deployment the page was opened for); anywhere else it connects to `fallback`
+(`{ cluster, environment? }` or `{ baseUrl, nodes? }`). The manifest only says
+where the nodes are: each is attested under `policy`, which is the app's own.
+`cloudEnvironment()` reads which Calimero Cloud the page is on from its
+hostname alone, so a page can choose its policy from it
+(`allowDebugProfile: cloudEnvironment() === 'staging'`).
+
 ## Confidential KV
 
 A service reaches a Confidential KV store from its environment
