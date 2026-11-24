@@ -88,4 +88,6 @@ extend-exclude = '''
   | build
   | dist
 )/
+# meroctl app codegen's output, committed unedited (scripts/generate.sh)
+| ^/calimero_client_py/products/kv/client\.py
 '''
