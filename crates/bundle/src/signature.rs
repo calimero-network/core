@@ -336,24 +336,21 @@ mod tests {
         assert!(!canonical_str.contains("_overwrite"));
     }
 
+    // serde_json prints these numbers differently (and keeps key order with `preserve_order`),
+    // so plain serialization cannot pass for canonicalization.
     #[test]
-    fn test_canonicalize_manifest_key_ordering() {
-        // RFC 8785 requires lexicographic key ordering
-        let manifest = serde_json::json!({
-            "z_field": "last",
-            "a_field": "first",
-            "m_field": "middle"
-        });
+    fn the_canonical_form_is_rfc_8785() {
+        let manifest: serde_json::Value = serde_json::from_str(
+            r#"{"z_field": 1.0, "a_field": [2.50, 1e3], "m_field": "middle"}"#,
+        )
+        .unwrap();
 
         let canonical = canonicalize_manifest(&manifest).unwrap();
-        let canonical_str = String::from_utf8(canonical).unwrap();
 
-        let a_pos = canonical_str.find("a_field").unwrap();
-        let m_pos = canonical_str.find("m_field").unwrap();
-        let z_pos = canonical_str.find("z_field").unwrap();
-
-        assert!(a_pos < m_pos);
-        assert!(m_pos < z_pos);
+        assert_eq!(
+            String::from_utf8(canonical).unwrap(),
+            r#"{"a_field":[2.5,1000],"m_field":"middle","z_field":1}"#
+        );
     }
 
     #[test]
