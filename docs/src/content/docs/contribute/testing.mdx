@@ -59,11 +59,13 @@ one module per former `tests/*.rs` file), so they link wasmtime, RocksDB and tan
 instead of once per file. A test's name is `<module>::<test>`:
 `cargo test -p calimero-node --test it job_runs::` runs one module, and
 `cargo nextest run -p calimero-node -E 'binary(it) & test(/^job_runs::/)'` does under nextest.
-Three stay binaries of their own: `scenarios` (its own main), and `auto_updates` and
-`compute_runs`, which set a hook that is the whole process's (`testing::shift_update_clock`,
-`testing::shared_http_timeout`). Tests in `it` share one process under `cargo test`, so a
-test hook is keyed to the test's own nodes (a data directory or a public URL), never the
-process's; a test that needs a process-wide one gets a binary of its own.
+Two stay binaries of their own: `scenarios` (its own main), and `auto_updates`, which
+sets hooks that are the whole process's (`testing::shift_update_clock`,
+`testing::fail_restore_points`). Tests in `it` share one process under `cargo test`, so a
+test hook is keyed to the test's own nodes (a data directory or a public URL, set in
+`Cluster::start_with`'s `configure` when the node reads it at start, as
+`testing::shared_http_timeout` is), never the process's; a test that needs a process-wide
+one gets a binary of its own.
 
 The real-process fault tests start `merod` processes on ports 7600-7699 and need release `merod` and `meroctl` (`cargo build --release -p merod -p meroctl`):
 

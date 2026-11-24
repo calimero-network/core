@@ -21,8 +21,9 @@ use common::{mpk_with, Cluster, PUBLISHER};
 const COMPILE: Duration = Duration::from_secs(2);
 /// How long the test watches the ticker while the install compiles.
 const WATCH: Duration = Duration::from_millis(300);
-/// The fewest 10 ms ticks a free worker makes in `WATCH`.
-const MIN_TICKS: u64 = 10;
+/// A free worker ticks at least this share of what a thread of its own ticks in
+/// `WATCH`: a loaded runner slows both, a blocked worker alone.
+const MIN_SHARE: f64 = 0.5;
 
 /// An install whose components compile slowly leaves the one async worker to
 /// the node's other work, and still installs once they compile.
@@ -46,6 +47,16 @@ async fn an_install_that_compiles_slowly_leaves_the_async_worker_free() {
             }
         })
     };
+    let control = Arc::new(AtomicU64::new(0));
+    let control_thread = {
+        let (ticking, control) = (Arc::clone(&ticking), Arc::clone(&control));
+        std::thread::spawn(move || {
+            while ticking.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(10));
+                let _n = control.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+    };
     // On the worker, as a request handler's install is (this test's body runs
     // on the thread that blocks on it, not on a worker).
     let install = {
@@ -58,21 +69,26 @@ async fn an_install_that_compiles_slowly_leaves_the_async_worker_free() {
     // This thread sleeps, not the runtime: a worker that blocks would stop the
     // runtime's timers too.
     std::thread::sleep(Duration::from_millis(50));
-    let before = ticks.load(Ordering::Relaxed);
+    let before = (
+        ticks.load(Ordering::Relaxed),
+        control.load(Ordering::Relaxed),
+    );
     std::thread::sleep(WATCH);
-    let during = ticks.load(Ordering::Relaxed) - before;
+    let during = ticks.load(Ordering::Relaxed) - before.0;
+    let free = control.load(Ordering::Relaxed) - before.1;
     let compiling = !install.is_finished();
-    eprintln!("the worker ticked {during} times in {WATCH:?} while the install compiled");
+    eprintln!("the worker ticked {during} times, a free thread {free}, in {WATCH:?} while the install compiled");
 
     let installed = install.await.unwrap();
     ticking.store(false, Ordering::Relaxed);
     ticker.await.unwrap();
+    control_thread.join().unwrap();
 
     assert!(compiling, "the install did not wait for its compile");
     assert!(
-        during >= MIN_TICKS,
-        "the async worker ticked {during} times in {WATCH:?} while an install compiled \
-         (at least {MIN_TICKS}): the compile blocked it"
+        free > 0 && during as f64 >= free as f64 * MIN_SHARE,
+        "the async worker ticked {during} times in {WATCH:?} while an install compiled, \
+         a free thread {free}: the install blocked it"
     );
     let installed = installed.expect("the release installs once it compiles");
     assert_eq!(installed["package"], "com.test.slow-compile");

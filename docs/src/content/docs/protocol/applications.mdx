@@ -246,8 +246,9 @@ uses `localhost`.
   verified against the publisher's signature before a byte is served.
 - `GET /` redirects to the newest release's entry; `/{version}/{path}` serves a
   file, falling back to the entry for client-side routes. `/.well-known/calimero.json`
-  names the package, its releases, the deployments offering it (`id`, `name`,
-  `app`, `version`) and the cluster's API URLs.
+  names the package, the cluster serving it (merod's `--cluster`), its releases,
+  the deployments offering it (`id`, `name`, `app`, `version`) and the cluster's
+  API URLs, so one frontend build finds its cluster wherever it is served.
 - `GET /app/{app}/{path}` redirects to `/{version}/{path}` of the release that
   instance runs (the one it was created at or last upgraded to, never simply
   the newest shipping its WASM: releases may share one and differ only in

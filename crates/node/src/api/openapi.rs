@@ -383,7 +383,7 @@ impl Op {
                 add(403, "FORBIDDEN");
             }
         }
-        // A session this node's release may not serve (`verify_token`).
+        // A session this node's release may not serve (`session_issuer_serves`).
         if !matches!(self.who, Who::Anyone | Who::Ops) {
             add(421, "WRONG_NODE");
         }

@@ -122,7 +122,15 @@ fn compile_refusal(e: ApiError, service: &str, compute: bool) -> ApiError {
 }
 
 /// Verify a `.mpk`: signature, digests, runtime version, and that it has WASM.
-pub fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError> {
+/// Unpacking and hashing a large package takes long enough to stop an async
+/// worker, so it runs on the blocking pool.
+pub async fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError> {
+    tokio::task::spawn_blocking(move || verify_sync(&mpk))
+        .await
+        .map_err(|e| ApiError::internal(&e.to_string()))?
+}
+
+fn verify_sync(mpk: &Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError> {
     if mpk.len() > MAX_MPK_BYTES {
         return Err(ApiError::new(
             413,
@@ -130,7 +138,7 @@ pub fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError
             &format!("a package is limited to {} MiB", MAX_MPK_BYTES >> 20),
         ));
     }
-    let bundle = VerifiedBundle::open(mpk, &runtime_version())
+    let bundle = VerifiedBundle::open(Arc::clone(mpk), &runtime_version())
         .map_err(|e| ApiError::bad_request("BAD_PACKAGE", &format!("{e:#}")))?;
     let contents = bundle
         .contents()
@@ -386,7 +394,7 @@ impl Node {
     ) -> Result<Verified, ApiError> {
         let mpk_hash = hex::encode(calimero_identity::sha256(&mpk));
         let mpk_size = mpk.len() as u64;
-        let (bundle, wasm) = verify(mpk)?;
+        let (bundle, wasm) = verify(mpk).await?;
         crate::consent_page::remember_release_facts(self, &mpk_hash, &bundle, &wasm);
         let manifest = bundle.manifest();
         let package = manifest.package.clone();
@@ -750,7 +758,7 @@ impl Node {
     /// checked against the hash the log recorded and verified again.
     pub async fn release_wasm(&self, hash: &str, r: &Release) -> Result<Vec<u8>, ApiError> {
         let mpk = self.release_mpk(&r.at.package, &r.version).await?;
-        let (_bundle, wasm) = verify(mpk)?;
+        let (_bundle, wasm) = verify(mpk).await?;
         let service = r.at.service.clone().unwrap_or_default();
         let bytes = wasm
             .into_iter()
