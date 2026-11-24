@@ -18,7 +18,7 @@ The user-facing guide is the docs site's
 ```bash
 cargo test -p calimero-search
 # End to end (3-node cluster, the kv component):
-cargo test -p calimero-node --test component_cluster views_search_a_components_tables_as_they_change
+cargo test -p calimero-node --test it component_cluster::views_search_a_components_tables_as_they_change
 # Engine numbers (size, latency, memory, the search-gas fit): crates/search/bench
 cargo run --release -p calimero-search-bench -- --sizes 10000,100000
 ```
@@ -51,5 +51,12 @@ cargo run --release -p calimero-search-bench -- --sizes 10000,100000
 - **The app comes from the caller, never the request.** The search host is
   bound to the view's app; `SearchRequest` has no app or context field. Keep it that way.
 - **An index is derived data**: nothing replicated or hashed may depend on it.
+- **A writer is opened by a write and kept until it is released or closed.** It
+  holds three threads (indexing, segment updater, merges) and up to `WRITER_MEMORY`
+  of arena while it indexes; `open` leaves none. `release_writer` lets it finish the
+  merges its commits started on a thread of its own (the next write, `close_writer`
+  or drop waits for that, as it holds the index's lock); `close_writer` waits in
+  place. Dropping a writer abandons its merges. The node keeps writers only for the
+  apps it refreshed last (`calimero-node`'s `MAX_OPEN_WRITERS`). Test: `tests/writer.rs`.
 
 Part of [crates/](../AGENTS.md).

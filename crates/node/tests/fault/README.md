@@ -47,7 +47,7 @@ for v in 1.0.0 1.1.0; do
   meroctl app pack --wasm target/app-components/kv.wasm \
     --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
 done
-cargo test --release -p calimero-node --test rooms    # the Rooms component, for rooms-fault only
+cargo test --release -p calimero-node --test it rooms::    # the Rooms component, for rooms-fault only
 
 python3 -I crates/node/tests/fault/suite.py --list
 python3 -I crates/node/tests/fault/suite.py                       # the PR set, 30 s soak

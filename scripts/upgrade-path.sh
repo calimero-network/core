@@ -5,6 +5,7 @@
 #
 #   scripts/upgrade-path.sh                 # build this tree, fetch the release, run
 #   FROM=1.0.0-rc.15 scripts/upgrade-path.sh
+#   GOVERNANCE=granted scripts/upgrade-path.sh   # the nightly run: owner governance, granted deployments
 #
 # Steps: read the pinned release (a `hard-cutover:` line reports the cutover and stops);
 # fetch its merod, meroctl (and mero-sign, for a release that shipped it) and kv fixture (scripts/fetch-release.sh) and build
@@ -102,7 +103,7 @@ scripts/build-upgrade-deep-fixtures.sh "$FROM_DIR"
 touch "$RELEASE_FIXTURES_DONE"
 
 status=0
-python3 -I crates/node/tests/fault/upgrade_path.py --from-dir "$FROM_DIR" \
+python3 -I crates/node/tests/fault/upgrade_path.py --governance "${GOVERNANCE:-open}" --from-dir "$FROM_DIR" \
   --to-merod "$TARGET/release/merod" --to-meroctl "$TARGET/release/meroctl" \
   --kv-next "$TARGET/upgrade-path-fixtures/kv-next.mpk" --pipelines-mpk "$TARGET/upgrade-path-fixtures/pipelines.mpk" \
   --build-status "$BUILD_STATUS" \
@@ -122,7 +123,7 @@ fi
 python3 -I - "$TARGET/upgrade-path.json" "$FROM" >>"$SUMMARY" <<'EOF' || true
 import json, sys
 r = json.load(open(sys.argv[1]))
-print(f"### Upgrade path: {sys.argv[2]} -> this tree\n")
+print(f"### Upgrade path ({r.get('governance', 'open')}): {sys.argv[2]} -> this tree\n")
 print("Phases: " + ", ".join(f"{k} {v:.0f} s" for k, v in r.get("phases", {}).items()) + "\n")
 print("Rollout: " + ", ".join(f"{k} {v:.0f} s" for k, v in r["rollout"].items()) + f"; whole run {r['seconds']:.0f} s\n")
 print("| Case | Step | Result | Seconds |\n| --- | --- | --- | ---: |")

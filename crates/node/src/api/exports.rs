@@ -84,6 +84,8 @@ async fn sealed_file(
     raw: &[u8; 32],
 ) -> Result<(u64, crate::component::blobs::FileSeal), ApiError> {
     match node.file_record_strong(app, raw).await {
+        // A run's log an earlier release kept may hold user data: it leaves the node no more.
+        Some(Some((_, seal))) if seal.log => Err(ApiError::not_found("no such file in this app")),
         Some(Some(record)) => Ok(record),
         Some(None) => Err(ApiError::not_found("no such file in this app")),
         None => Err(ApiError::unavailable("the app's leader did not answer")),

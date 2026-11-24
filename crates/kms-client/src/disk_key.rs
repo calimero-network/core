@@ -141,9 +141,7 @@ pub async fn fetch_disk_key_and_counters(
     )
     .await
     .wrap_err("could not fetch the data-disk key from the KMS")?;
-    let evidence = released
-        .evidence
-        .ok_or_else(|| eyre::eyre!("the release policy verified the KMS but left no record"))?;
+    let evidence = released.evidence;
     let counters = released.counters;
     let key = zeroize::Zeroizing::new(released.key);
     Ok((key, evidence, counters))

@@ -21,6 +21,11 @@
 //! and openraft's own election timeouts are not under its control, so a replay
 //! runs the same faults, and may need a few runs to hit the same interleaving.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, RwLock};

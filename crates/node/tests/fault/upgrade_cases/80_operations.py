@@ -9,8 +9,8 @@ import random
 import time
 from pathlib import Path
 
-from upgrade_deep import (DeepCase, anyone, check, decision, eq, kv_wasm, new_org, operator, ops, ops_text,
-                          person, refused, same_decisions, same_read, scrub, snap, subset, until)
+from upgrade_deep import (DeepCase, anyone, check, decision, eq, kv_wasm, new_org, ops, ops_text,
+                          person, refused, same_decisions, same_read, scrub, signed_ops, snap, subset, until)
 from rv2 import HttpError
 from upgrade_path import case
 
@@ -266,7 +266,7 @@ def _invite(w, tag):
     """A cluster sign-up invite the operator issues: `(token, its key)`."""
     token = f"deep-signup-{tag}-{'x' * 16}"
     expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + INVITE_DAYS * 86400))
-    made = operator(w, "POST", "ops/sign-up/invites", {"token": token, "uses": 1, "expiresAt": expires})
+    made = signed_ops(w, "POST", "ops/sign-up/invites", {"token": token, "uses": 1, "expiresAt": expires})
     return token, made["inviteKey"]
 
 
@@ -301,7 +301,7 @@ class SignUpInvites(DeepCase):
             token, key = _invite(w, tag)
             s[kind].append(token)
             s["keys"][token] = key
-        operator(w, "POST", f"ops/sign-up/invites/{s['keys'][s['revoked'][0]]}/revoke", {})
+        signed_ops(w, "POST", f"ops/sign-up/invites/{s['keys'][s['revoked'][0]]}/revoke", {})
         self._record(w, s)
         keys = json.dumps(s["invites"])
         check(s["keys"][s["live"][0]] in keys and s["keys"][s["revoked"][0]] not in keys, f"the invite list: {s['invites']}")
@@ -322,7 +322,7 @@ class SignUpInvites(DeepCase):
         s["keys"][new_live] = key
         new_revoked, key = _invite(w, "new-revoked")
         s["keys"][new_revoked] = key
-        operator(w, "POST", f"ops/sign-up/invites/{key}/revoke", {})
+        signed_ops(w, "POST", f"ops/sign-up/invites/{key}/revoke", {})
         s["revoked"].append(new_revoked)
         self._record(w, s)
         listed = json.dumps(s["invites"])

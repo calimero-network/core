@@ -65,16 +65,21 @@ class Fleet(Cluster):
     """A `Cluster` whose node set changes: founders `1..n` on one build, nodes
     joined later (any id) on another, job nodes (`--job-node`).
 
-    Every node starts with `--operator-key`, `--release-approvals operator` and a
-    `--tee-release` of its own (`release[i]`); `meroctl` is the command line
-    `cli` runs (switch it with the cluster: a user's client is the one of their
-    time)."""
+    Every node starts with `--operator-key`, the cluster's governance
+    (`--release-approvals`, `--deployers`; operator by default, as Calimero Cloud
+    deploys) and a `--tee-release` of its own (`release[i]`); `meroctl` is the
+    command line `cli` runs (switch it with the cluster: a user's client is the
+    one of their time)."""
 
     def __init__(self, workdir: Path, *, base_port: int, cluster: str, binary: str, meroctl: str,
-                 release: str, registry: PackageRegistry | None = None, n: int = 3):
+                 release: str, registry: PackageRegistry | None = None, n: int = 3,
+                 release_approvals: str = "operator", deployers: str = "operator"):
         super().__init__(workdir, base_port=base_port, n=n, cluster=cluster, binary=binary,
                          registry=registry)
         self.meroctl = meroctl
+        # `--deployers` only when not the default: a release before deployers has no such flag.
+        self.governance = ["--release-approvals", release_approvals,
+                           *(["--deployers", deployers] if deployers != "operator" else [])]
         self.release = {i: release for i in self.ids}
         self.joined: list[int] = []  # replica nodes started after the founders, in order
         self.jobs: set[int] = set()
@@ -105,7 +110,7 @@ class Fleet(Cluster):
             a[a.index("--peers") + 1] = peers
         # `--apps-domain localhost`: a package's frontend origin is `{label}.localhost`, where a
         # passkey ceremony opens a session bound to the package (the deep case `app-channels`).
-        return a + ["--operator-key", OPERATOR_PUBLIC, "--release-approvals", "operator",
+        return a + ["--operator-key", OPERATOR_PUBLIC, *self.governance,
                     "--tee-release", self.release[i], "--apps-domain", "localhost"]
 
     def running(self):
@@ -233,10 +238,12 @@ def wait(what, pred, timeout=STEP_TIMEOUT_S, every=0.5):
 
 
 def roll_forward(fleet: Fleet, binary: str, release: str, new_ids: list[int], *, log=print,
-                 on_mixed=None) -> dict:
+                 on_mixed=None, approve=None) -> dict:
     """Move `fleet` onto `binary` (naming `release`) as mdma does; `new_ids` are the
     new nodes' ids, at least as many as the old ones and at least 3.
 
+    `approve(release)` approves the new release where the operator does not hold
+    release approvals (default: the operator's `POST /ops/releases`).
     `on_mixed()` runs once, after the first app has moved: new nodes hold some
     apps, old nodes the rest. Returns what each step took (seconds)."""
     old = list(fleet.members)
@@ -246,8 +253,8 @@ def roll_forward(fleet: Fleet, binary: str, release: str, new_ids: list[int], *,
     took = {}
 
     t = time.time()
-    log(f"rollout: approve release {release} for every app (POST /ops/releases)")
-    fleet.operate("release", release)
+    log(f"rollout: approve release {release} for every app")
+    (approve or (lambda r: fleet.operate("release", r)))(release)
     took["approve"] = time.time() - t
 
     t = time.time()

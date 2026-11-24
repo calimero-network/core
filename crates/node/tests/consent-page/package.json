@@ -1,0 +1,16 @@
+{
+  "name": "consent-page-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser tests of the node's consent page: real merod processes, Chromium, a virtual WebAuthn authenticator.",
+  "scripts": {
+    "test": "playwright test",
+    "format": "prettier --write .",
+    "check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "esbuild": "0.28.2",
+    "prettier": "3.6.2"
+  }
+}

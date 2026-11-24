@@ -23,6 +23,12 @@ loaded in file-name order), each a `Case` with four steps the runner calls:
 | `verify(w)` | after the rollout, and again after a new node restarts from disk | new nodes only | this tree's |
 | `extend(w)` | between the two `verify`s | new nodes only | this tree's |
 
+A case runs in the runs its `governance` names: `open` (the required CI job, a
+cluster deployed as Calimero Cloud deploys one) and `granted` (`--governance
+granted`, nightly: owners hold release approvals and grant deployers, and
+deployments are switched to granted before anything else is seeded). The
+granted-only cases live in `upgrade_cases/granted/`.
+
 `mixed` defaults to `verify`, so `verify` reads only (it runs up to three
 times); what `extend` writes, `verify` checks from then on (keep the
 expectation on the case). A case reaches the cluster through `w` (`World`):
@@ -114,6 +120,7 @@ class Case:
     group = ""
     # Runs alone, after the other cases of each phase: it changes cluster-wide state the rest see.
     exclusive = False
+    governance = ("open", "granted")
 
     def seed(self, w: World):
         """Write it on the old cluster (old merod, old meroctl)."""
@@ -133,9 +140,10 @@ class Case:
 
 
 def load_cases(directory: Path):
-    """Import every `NN_*.py` of `directory` in name order; their `@case`s register."""
-    for path in sorted(directory.glob("[0-9]*.py")):
-        spec = importlib.util.spec_from_file_location(f"upgrade_cases.{path.stem}", path)
+    """Import every `NN_*.py` of `directory/granted` and then of `directory`, each in name
+    order; their `@case`s register (the granted run's governance case seeds first)."""
+    for path in [*sorted((directory / "granted").glob("[0-9]*.py")), *sorted(directory.glob("[0-9]*.py"))]:
+        spec = importlib.util.spec_from_file_location(f"upgrade_cases.{path.parent.name}.{path.stem}", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     return CASES
@@ -289,6 +297,10 @@ class World:
         self.jobs = jobs
         self.shared: dict = {}
         self.phase = "seed"
+        # Set by the granted run's governance case: who approves a release in the
+        # rollout, and what a new account gets (a deployer grant).
+        self.approve_release = None
+        self.on_sign_up = None
         self._accounts: dict[str, Account] = {}
         self._claims: dict[str, str] = {}
         self._lock = threading.Lock()
@@ -324,7 +336,10 @@ class World:
                 return account
             account = self._accounts[name] = Account(self.fleet, name, len(self._accounts))
         try:
-            return account.sign_up()
+            account.sign_up()
+            if self.on_sign_up:
+                self.on_sign_up(account)
+            return account
         except BaseException:
             with self._lock:
                 self._accounts.pop(name, None)
@@ -491,6 +506,9 @@ def main(argv=None):
                     help="case groups that run at once within a phase; 1 runs them one by one, with live output")
     ap.add_argument("--cases", default=str(HERE / "upgrade_cases"))
     ap.add_argument("--only", help="comma-separated case names")
+    ap.add_argument("--governance", choices=("open", "granted"), default="open",
+                    help="open: as Calimero Cloud deploys; granted: owners approve releases and grant deployers, "
+                         "and deployments are switched to granted first")
     ap.add_argument("--workdir", default=str(TARGET / "upgrade-path"))
     ap.add_argument("--json", help="write the results here")
     ap.add_argument("--keep", action="store_true", help="keep the work directory of a passing run")
@@ -514,8 +532,8 @@ def main(argv=None):
 
     load_cases(Path(args.cases))
     only = {n.strip() for n in (args.only or "").split(",") if n.strip()}
-    cases = [c() for c in CASES if not only or c.name in only]
-    say(f"upgrade path: merod {fixtures['from_version']} ({old_merod}) -> {new_merod}")
+    cases = [c() for c in CASES if args.governance in c.governance and (not only or c.name in only)]
+    say(f"upgrade path ({args.governance}): merod {fixtures['from_version']} ({old_merod}) -> {new_merod}")
     say(f"cases: {[c.name for c in cases]}")
 
     offset = int(os.environ.get("WORKFLOW_PORT_OFFSET", "0"))
@@ -524,7 +542,8 @@ def main(argv=None):
     wd.mkdir(parents=True)
     registry = PackageRegistry(wd / "registry")
     fleet = Fleet(wd, base_port=BASE_PORT + offset, cluster="upgrade-path", binary=old_merod,
-                  meroctl=old_meroctl, release=FROM_RELEASE, registry=registry)
+                  meroctl=old_meroctl, release=FROM_RELEASE, registry=registry,
+                  **({"release_approvals": "owner", "deployers": "owner"} if args.governance == "granted" else {}))
     def built():
         if args.build_status:
             wait_for_build(args.build_status)
@@ -548,7 +567,8 @@ def main(argv=None):
         w.this_tree()
         PHASES["build wait"] = round(time.time() - t, 1)
         w.phase = "rollout"
-        timings = rollout.roll_forward(fleet, new_merod, TO_RELEASE, NEW_IDS, log=say, on_mixed=mixed)
+        timings = rollout.roll_forward(fleet, new_merod, TO_RELEASE, NEW_IDS, log=say, on_mixed=mixed,
+                                       approve=w.approve_release)
         # Clients move to this tree's meroctl; the job node is replaced as the replicas were.
         fleet.meroctl = new_meroctl
         # The pair a cloud roll has between its steps: new replicas, the old job node still registered.
@@ -580,7 +600,7 @@ def main(argv=None):
     if args.json:
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json).write_text(json.dumps({
-            "from": fixtures["from_version"], "to": new_merod, "seconds": total, "rollout": timings,
+            "from": fixtures["from_version"], "to": new_merod, "governance": args.governance, "seconds": total, "rollout": timings,
             "phases": PHASES, "results": results, "workdir": str(wd)}, indent=2) + "\n")
     if not failed and not args.keep:
         shutil.rmtree(wd, ignore_errors=True)
