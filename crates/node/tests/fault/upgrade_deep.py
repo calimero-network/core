@@ -56,6 +56,11 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
+    ("Governance", "The egress switch (`POST /orgs/{org}/egress`, `POST /apps/{app}/egress`; `Org::egress_off`, "
+     "`AppRecord::egress_off`, `SetEgress`)",
+     "it ships as a hard cutover: `SetEgress` is ungated and a node of an earlier release cannot decode it, so a "
+     "cluster is recreated rather than rolled, and no release before it has the switch to seed. "
+     "`tests/it/egress.rs` covers the switch, its refusals and the consent page on one build"),
     ("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
      "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
      "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
@@ -90,6 +95,78 @@ NOT_COVERED = [
      "(`reading_megabytes_of_state_costs_fuel`, `a_view_makes_at_most_max_searches_per_run`, "
      "`a_guest_cannot_spend_fuel_its_host_calls_already_owe`, `refused_xcall_arguments_cost_fuel`, "
      "`stdout_costs_fuel_after_the_log_is_full`) covers it on one build"),
+    ("Accounts", "Account recovery started and finished with a new passkey",
+     "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
+     "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
+     "recovery code (`account-recovery-code`) is covered"),
+    ("Accounts", "Sign-up through a cluster sign-up invite, and issuing one",
+     "meroctl's login takes no invite and has no command to issue one (an operator-signed request); "
+     "the policy and the invite list are read back (`ops-state`)"),
+    ("Accounts", ("Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the "
+                  "organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, "
+                  "`setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, "
+                  "`deleteOrg`, `setCapabilities`, `setAllApps`, `setEgress`) and the page's verifier link"),
+     "a consent request is approved in a browser on the node's consent page; the cluster test "
+     "`consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as "
+     "the API's route, which the organization and team cases cover; a `createOrg` asked from an app's "
+     "frontend also makes that app's team in the same `CreateOrg`, the organization and team `ScopeApps` "
+     "makes, which `app-teams` covers. The verifier link is a startup setting "
+     "(`--attestation-verifier-url`) that stores nothing"),
+    ("Apps", "Timers (`#[app::every]`) firing across the roll",
+     "the fixture's timer is hourly on the nodes' real clock, which a process cluster cannot move; "
+     "the cluster tests move the app clock"),
+    ("Packages", "Served frontends and served origins (custom domains)",
+     "the suite's packages carry no frontend, and the node routes a frontend by Host under the apps "
+     "domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test "
+     "`app_frontends_are_served_and_their_sessions_are_bound` covers serving"),
+    ("Governance", "A release deadline that passes while a cluster rolls (`SystemState::retired`: the old nodes are "
+     "placed no new app mid-roll)",
+     "a deadline is judged at the command's own time, so the granted run sets a passed one on the old nodes' own "
+     "release, which retires no node; one on the new release would stop placement on the old nodes before the roll "
+     "and needs a deadline timed to the rollout. `a_release_deadline_stops_new_work_but_not_running_apps` "
+     "(`cluster.rs`) covers retired nodes on one build"),
+    ("Packages", "Multi-service packages (`services`) and instances of a named service (`--service`)",
+     "not seeded yet: the suite installs the release's single-service kv bundle; `meroctl app pack --service` "
+     "writes one from components now, and the node's install of a named service is covered on one build "
+     "(`component_packages.rs`)"),
+    ("Packages", "Registered web origins of a package (`/package-origins`)",
+     "not seeded yet: an origin is added with its manager's passkey approval and is read only by the "
+     "served-frontend path above"),
+    ("Blobs and files", "Revoking a published blob's grants (`/blobs/{id}/revoke`)",
+     "not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow"),
+    ("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
+     "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
+     "is covered, the stream itself by the cluster tests"),
+    ("Ops", "Restoring a backup onto the new release",
+     "`POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, "
+     "not a rollout"),
+    ("Ops", "A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`)",
+     "a read that stores nothing, so there is no data to carry across a roll; it needs a registered job "
+     "node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable"),
+    ("Ops", "Replicas' state digests compared by each app's leader (`calimero_group_diverged`)",
+     "nothing a rollout carries: each replica takes its digest from its own rows (kept with the applied "
+     "index, taken again from the rows when it is missing), and a peer on a release before answers "
+     "`/internal/digests` with `404` and is not compared; "
+     "`a_replica_whose_state_differs_from_its_leaders_is_reported` (`cluster.rs`) covers it on one build"),
+    ("Apps", "The consent page's install sheet (`install`), update sheets with their class, policy and "
+     "approval step (\"Approve (1 of 2)\", \"Approve and update (2 of 2)\"), an update policy changed on the page "
+     "(`updatePolicy`), the node's updates page (`updates`, `/updates/{id}`, `POST /consent/{id}/open`) and "
+     "`GET /apps/{app}/update`'s `summary`",
+     "pages and reads that store nothing of their own: a consent request lives in one node's memory for minutes, "
+     "and what the pages approve is logged by the routes they run (`POST /apps`, `SetUpgradePolicy`, "
+     "`ApproveUpgrade`, `UpgradeApp`), whose stored shapes are the `upgrade-policies` and "
+     "`update-classes-approvals` cases'. "
+     "`an_install_sheet_shows_what_gets_created_and_where_data_can_go` and "
+     "`an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build"),
+    ("Deployments", "A customer's instance outside every deployment on a granted cluster, refused at create and "
+     "on an upgrade into a deployer's package (`403 DEPLOY_NOT_GRANTED`; `CreateApp { offers_only }` and "
+     "`UpgradeApp` at apply, `Feature::OffersOnly`)",
+     "a refusal that stores nothing, on a granted cluster, which the open upgrade-path cluster is not and cannot "
+     "become without turning every case that installs after the switch red; an entry without `offers_only` "
+     "replays as it applied below cluster version 1.0.0-rc.36. "
+     "`on_a_granted_cluster_a_customer_creates_only_from_an_offer` (`deployments.rs`) and "
+     "`system::tests::on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers` and "
+     "`..._keeps_out_of_a_deployers_package` (the replay) cover it on one build"),
 ]
 
 

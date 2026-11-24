@@ -46,8 +46,17 @@ export interface NodeReleasePolicy {
    * name an old release with a flaw since fixed.
    */
   minReleaseVersion: string;
-  /** The image profile trusted; defaults to `locked-read-only`. */
+  /** The image profile trusted; defaults to `locked-read-only`. Not with `profiles`. */
   profile?: string;
+  /**
+   * Trust any of these image profiles, as core's `Measurements::Release`
+   * `allowed_profiles` does: the one the node names is used when it is listed,
+   * and the quote must still be that profile's signed image, so naming another
+   * profile only gets a node refused. For a cluster whose profile the client
+   * does not know, e.g. staging's `['debug', 'debug-read-only']`. A debug
+   * profile listed here still needs `allowDebugProfile`. Not with `profile`.
+   */
+  profiles?: string[];
   /** Trust a debug profile. Its image is readable by the operator: testing only. */
   allowDebugProfile?: boolean;
   /**
@@ -179,6 +188,29 @@ export function claimedRelease(doc: Pick<AttestationDoc, 'release'>, minReleaseV
   return version;
 }
 
+/**
+ * The profile a real quote is judged against: `policy.profile`, or, with
+ * `policy.profiles`, the one the node names when it is listed. Every listed
+ * debug profile needs `allowDebugProfile`, so the list never trusts one silently.
+ */
+function trustedProfile(doc: Pick<AttestationDoc, 'release'>, policy: Pick<NodeReleasePolicy, 'profile' | 'profiles' | 'allowDebugProfile'>): string {
+  if (policy.profiles === undefined) return policy.profile ?? PRODUCTION_PROFILE;
+  if (policy.profile !== undefined) throw new Error('give policy.release.profile or profiles, not both');
+  if (policy.profiles.length === 0) throw new Error('policy.release.profiles is empty, so no image would be trusted');
+  const debug = policy.profiles.filter((p) => p !== PRODUCTION_PROFILE);
+  if (debug.length > 0 && !policy.allowDebugProfile) {
+    throw new Error(
+      `policy.release.profiles lists ${debug.map((p) => JSON.stringify(p)).join(', ')}, which an operator can read: ` +
+        'pass allowDebugProfile to trust them',
+    );
+  }
+  const named = String(doc.release?.profile ?? '');
+  if (!policy.profiles.includes(named)) {
+    throw new Error(`The node runs profile ${JSON.stringify(named)}, which is not one of ${policy.profiles.join(', ')}`);
+  }
+  return named;
+}
+
 /** `host` gave no answer: its fetch rejected (`cause`) or it answered a 5xx `status`. Says nothing about the quote. */
 export class Unanswered extends Error {
   constructor(
@@ -276,7 +308,7 @@ async function verifyRelease(
 ): Promise<Pick<NodeVerification, 'release' | 'profile'> | undefined> {
   // Refuse what no release could admit before reaching for the network.
   const version = claimedRelease(doc, policy.minReleaseVersion);
-  const profile = policy.profile ?? PRODUCTION_PROFILE;
+  const profile = trustedProfile(doc, policy);
   const release = await releaseFor(version, policy, fetchImpl);
   if (release.version !== version) {
     throw new Error(`The node names mero-tee release ${version}, but the release served is ${release.version}`);

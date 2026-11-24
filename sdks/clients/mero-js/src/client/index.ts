@@ -28,7 +28,7 @@ export { jobKeyBinding, receiptMessage, reportMessage, verifyAppCluster, verifyJ
 export type { AttestedCluster, CachedRun, FileRef, JobAttestationDoc, JobEvidence, JobOutput, PipelineReceipt, ReportFields, StepReceipt, StepRunProof, ReceiptAnswer, ReceiptKeyDoc } from './receipts.js';
 export type { ExportErrorCode, ExportedFile, FileSink } from './files.js';
 export { CLOUD_ENVIRONMENTS, DEFAULT_DIRECTORY, DirectoryError, cloudEnvironment } from '../runtime/directory.js';
-export type { CloudEnvironment, DirectoryFailure } from '../runtime/directory.js';
+export type { CloudEnvironment, CloudEnvironmentInfo, DirectoryFailure } from '../runtime/directory.js';
 export {
   AppError,
   ArgsTooLarge,

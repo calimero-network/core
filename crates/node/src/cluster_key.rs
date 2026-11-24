@@ -456,8 +456,13 @@ async fn ask(
     let resp = peer.execute(req).await?;
     let status = resp.status();
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        bail!("{url} answered {status}: {body}");
+        // The peer's error code, not its message: this error is logged, and the
+        // operator's log carries no peer's words (`crate::log_safe`).
+        let code = resp
+            .json::<crate::error::ApiError>()
+            .await
+            .map_or_else(|_| "an unreadable body".to_owned(), |e| e.code);
+        bail!("{url} answered {status}: {code}");
     }
     Ok(())
 }

@@ -265,7 +265,7 @@ impl Node {
             match me.seed_restore(&app_id, group, &found).await {
                 Ok(_) => info!(app = %app_id, group, "undid an upgrade from its restore point"),
                 Err(e) => {
-                    warn!(app = %app_id, group, error = %e.message, "the undo's restore did not finish; send the undo again")
+                    warn!(app = %app_id, group, status = e.status, code = %e.code, "the undo's restore did not finish; send the undo again")
                 }
             }
         }));

@@ -142,6 +142,7 @@ async fn account_recovery_begin(
             recovery_key: key,
             expires: now_secs() + CHALLENGE_TTL,
         },
+        None,
     )?;
     let (name, exclude): (String, Vec<Value>) = node.sys(|s| {
         s.accounts.get(&account).map_or_else(Default::default, |a| {
@@ -297,6 +298,7 @@ pub(super) struct RecoveryFinish {
 /// answer is the session.
 async fn account_recovery_finish(
     State(node): State<Arc<Node>>,
+    sealed: Option<Extension<SealedSession>>,
     Json(body): Json<RecoveryFinish>,
 ) -> ApiResult {
     let Some(confirm) = body.confirm else {
@@ -326,6 +328,7 @@ async fn account_recovery_finish(
                 session,
                 account: body.account_id,
             },
+            sealed.map(|Extension(s)| s),
         )?;
         return Err(confirm_required(
             "sign in with the passkey the recovery adds",

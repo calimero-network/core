@@ -1291,6 +1291,10 @@ impl<'a> StateTx<'a> {
     /// A machine calls it for a row it read but cannot decode, as a read does
     /// for a storage fault: a replica that cannot read what the others read
     /// stops instead of applying differently.
+    ///
+    /// `why` is logged at ERROR and becomes the group's stop reason, both of which
+    /// the operator reads: it names the fault in the node's words (a row family, an
+    /// index, a JSON error's category), never the row's or entry's contents.
     pub fn fail(&self, why: impl std::fmt::Display) {
         let mut error = self.error.lock().unwrap_or_else(PoisonError::into_inner);
         if error.is_none() {

@@ -157,16 +157,16 @@ register ([below](#serve-it-on-your-own-domain)).
 
 ```ts
 import {
-  CalimeroClient, browserPasskey, cloudEnvironment, PasskeyUnknownHere,
+  CLOUD_ENVIRONMENTS, CalimeroClient, browserPasskey, cloudEnvironment, PasskeyUnknownHere,
 } from '@calimero-network/mero-js';
 
 // Connects to the cluster that served this page (its /.well-known/calimero.json),
-// so one build works on staging, shared and dedicated clusters alike.
+// so one build works on staging, shared and dedicated clusters alike. Staging's
+// debug images are trusted from the page's hostname, never from the manifest.
+const cloud = CLOUD_ENVIRONMENTS[cloudEnvironment() ?? 'production'];
 const client = await CalimeroClient.connectHere({
-  policy: {
-    release: { minReleaseVersion: '2.3.109' },             // { allowMock: true } on merod local
-    allowDebugProfile: cloudEnvironment() === 'staging',   // from the page's hostname, never the manifest
-  },
+  // { allowMock: true } on merod local
+  policy: { release: { minReleaseVersion: '2.3.109', ...cloud.trust } },
   // Only where no cluster serves the page (Vercel, localhost): fixed at build time.
   fallback: { cluster: 'eu-shared-1' },
 });

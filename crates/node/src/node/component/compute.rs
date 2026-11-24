@@ -949,7 +949,8 @@ impl Drive<'_> {
             }) => Acquired::Refused,
             Ok(_) => Acquired::Waiting,
             Err(e) => {
-                warn!(app = %app_id, run, error = %e, "unreadable answer to AcquireRun");
+                let named = crate::log_safe::serde(&e);
+                warn!(app = %app_id, run, error_kind = %named, "unreadable answer to AcquireRun");
                 Acquired::Waiting
             }
         }

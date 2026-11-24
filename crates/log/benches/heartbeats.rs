@@ -3,11 +3,12 @@
 //! each led by node 1, idle, on the production timing (`Config::default()`).
 //! For 1, 100 and 1,000 groups (`HEARTBEAT_GROUPS=1,100,1000`) it prints the
 //! network messages node 1 sends one follower per second and per heartbeat
-//! interval, and the process CPU time per Raft message handled.
+//! interval, the heartbeats each carries, and the process CPU time per Raft
+//! message handled.
 //!
-//! Every app group runs its own openraft core, whose leader sends each follower
-//! its own heartbeat (an empty append), so the messages per peer grow with the
-//! groups that peer shares. The CPU per message shows whether routing one costs
+//! Heartbeats travel batched per peer (`network::Batcher`), so a peer gets
+//! about one message per tick whatever the groups it shares; before they were
+//! batched, it got one per shared group (#5340's rows). The CPU per message shows whether routing one costs
 //! more with more groups: a scan of every group per message would grow it with
 //! them; a lookup keeps it flat.
 
@@ -45,9 +46,9 @@ impl Machine for Idle {
 struct Counts {
     /// Every message node 1 sent node 2.
     to_follower: AtomicU64,
-    /// Of them, empty appends (heartbeats).
+    /// The heartbeats (empty appends) they carried.
     heartbeats: AtomicU64,
-    /// Every message any node handled.
+    /// Every Raft message any node handled (a batch counts its items).
     handled: AtomicU64,
 }
 
@@ -89,6 +90,38 @@ impl Transport for Wire {
             }
         })
     }
+
+    /// One message, however many heartbeats it carries.
+    fn send_batch(
+        &self,
+        target: NodeId,
+        _addr: String,
+        items: Vec<(GroupId, RpcRequest)>,
+    ) -> BoxFuture<Result<Vec<Result<RpcResponse, String>>, String>> {
+        let (net, me) = (Arc::clone(&self.0), self.1);
+        Box::pin(async move {
+            let c = &net.counts;
+            let n = items.len() as u64;
+            if me == 1 && target == 2 {
+                let _n = c.to_follower.fetch_add(1, Ordering::Relaxed);
+                let _n = c.heartbeats.fetch_add(n, Ordering::Relaxed);
+            }
+            let _n = c.handled.fetch_add(n, Ordering::Relaxed);
+            let engine = net
+                .engines
+                .read()
+                .map_err(|e| e.to_string())?
+                .get(&target)
+                .cloned()
+                .ok_or("no such node")?;
+            Ok(engine
+                .handle_rpc_batch(items)
+                .await
+                .into_iter()
+                .map(Ok)
+                .collect())
+        })
+    }
 }
 
 /// This process's user and system CPU time (Linux `/proc/self/stat`); zero
@@ -111,7 +144,7 @@ struct Row {
     groups: u64,
     per_sec: f64,
     per_interval: f64,
-    heartbeat_share: f64,
+    heartbeats_per_message: f64,
     cpu_per_message: Duration,
 }
 
@@ -186,7 +219,7 @@ async fn measure(groups: u64, window: Duration) -> Row {
         groups,
         per_sec,
         per_interval: per_sec * config.heartbeat_ms as f64 / 1000.0,
-        heartbeat_share: heartbeats as f64 / sent.max(1) as f64,
+        heartbeats_per_message: heartbeats as f64 / sent.max(1) as f64,
         cpu_per_message: cpu / u32::try_from(handled.max(1)).unwrap_or(u32::MAX),
     }
 }
@@ -219,17 +252,13 @@ fn main() {
         .build()
         .expect("a runtime");
     println!(
-        "groups | msgs node1->node2 /s | per heartbeat interval | heartbeats | CPU per message"
+        "groups | msgs node1->node2 /s | per heartbeat interval | heartbeats per msg | CPU per Raft message"
     );
     for groups in sizes {
         let r = rt.block_on(measure(groups, window));
         println!(
-            "{:>6} | {:>20.1} | {:>22.1} | {:>9.0}% | {:?}",
-            r.groups,
-            r.per_sec,
-            r.per_interval,
-            r.heartbeat_share * 100.0,
-            r.cpu_per_message
+            "{:>6} | {:>20.1} | {:>22.1} | {:>18.1} | {:?}",
+            r.groups, r.per_sec, r.per_interval, r.heartbeats_per_message, r.cpu_per_message
         );
     }
 }
