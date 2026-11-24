@@ -11,9 +11,12 @@ import XCTest
 final class TeeDcapTests: XCTestCase {
     private var nowSecs: Int64 { TeeFixture.at / 1000 }
 
+    /// A verifier of the real quote, its signatures checked by
+    /// ``TeeFixture/genuine`` (so ``TeeFixture/current`` passes the floor).
     private func real(_ options: QuoteVerifierOptions? = nil) throws -> QuoteVerifier {
-        try createQuoteVerifier(
-            options ?? QuoteVerifierOptions(allowedMeasurements: [TeeFixture.image], now: { TeeFixture.at }))
+        var options = options ?? QuoteVerifierOptions(allowedMeasurements: [TeeFixture.image], now: { TeeFixture.at })
+        options.dcapVerify = TeeFixture.genuine
+        return try createQuoteVerifier(options)
     }
 
     private func verifierRefusal(_ verifier: QuoteVerifier, _ args: TransportQuoteArgs) async -> String? {
@@ -112,7 +115,7 @@ final class TeeDcapTests: XCTestCase {
     func testAcceptsAGenuineQuoteFromATrustedImageThatCommitsToTheBinding() async throws {
         let verifier = try real()
         XCTAssertTrue(verifier.includeCollateral)
-        let accepted = try await verifier.verify(try TeeFixture.args(collateral: try TeeFixture.collateral))
+        let accepted = try await verifier.verify(try TeeFixture.args(collateral: try TeeFixture.current))
         XCTAssertTrue(accepted)
     }
 
@@ -123,7 +126,7 @@ final class TeeDcapTests: XCTestCase {
     }
 
     func testRefusesAnImageItDoesNotTrustAndNeverCombinesImages() async throws {
-        let args = try TeeFixture.args(collateral: try TeeFixture.collateral)
+        let args = try TeeFixture.args(collateral: try TeeFixture.current)
         let other = String(repeating: "ab", count: 48)
         var untrusted = TeeFixture.image
         untrusted.rtmr3 = other
@@ -146,7 +149,7 @@ final class TeeDcapTests: XCTestCase {
     }
 
     func testAcceptsMRTDAllowlistsOnlyTogetherWithTheImageRegisters() async throws {
-        let args = try TeeFixture.args(collateral: try TeeFixture.collateral)
+        let args = try TeeFixture.args(collateral: try TeeFixture.current)
         let lists = QuoteVerifierOptions(
             allowedMrtd: [TeeFixture.mrtd], allowedRtmr1: [TeeFixture.rtmr1], allowedRtmr2: [TeeFixture.rtmr2],
             allowedRtmr3: [TeeFixture.rtmr3], now: { TeeFixture.at })
@@ -158,7 +161,7 @@ final class TeeDcapTests: XCTestCase {
     }
 
     func testChecksAnRTMROnlyWhenAskedTo() async throws {
-        let args = try TeeFixture.args(collateral: try TeeFixture.collateral)
+        let args = try TeeFixture.args(collateral: try TeeFixture.current)
         let checked = try real(
             QuoteVerifierOptions(
                 allowedMeasurements: [TeeFixture.image], allowedRtmr0: [TeeFixture.rtmr0], now: { TeeFixture.at }))
@@ -174,18 +177,18 @@ final class TeeDcapTests: XCTestCase {
     func testRefusesATamperedQuoteAndCollateralOutsideItsWindow() async throws {
         var tampered = [UInt8](try TeeFixture.quote)
         tampered[200] ^= 0x01
-        var args = try TeeFixture.args(collateral: try TeeFixture.collateral)
+        var args = try TeeFixture.args(collateral: try TeeFixture.current)
         args.quoteB64 = Data(tampered).base64EncodedString()
         assertTeeRefusal(await verifierRefusal(try real(), args), "did not verify")
 
         let in2040 = IsoTime.utcMillis(year: 2040, month: 1, day: 1, hour: 0, minute: 0, second: 0)
         let late = try real(QuoteVerifierOptions(allowedMeasurements: [TeeFixture.image], now: { in2040 }))
-        let fresh = try TeeFixture.args(collateral: try TeeFixture.collateral)
+        let fresh = try TeeFixture.args(collateral: try TeeFixture.current)
         assertTeeRefusal(await verifierRefusal(late, fresh), "did not verify")
     }
 
     func testGetsCollateralItselfWhenTheNodeSendsNoneAndRefusesWithoutAWayTo() async throws {
-        let collateral = try TeeFixture.collateral
+        let collateral = try TeeFixture.current
         let quote = try TeeFixture.quote
         let asked = Counter()
         let fetching = try real(
@@ -216,7 +219,7 @@ final class TeeDcapTests: XCTestCase {
 
     func testAcceptsOnlyUpToDatePlatformsByDefaultAndNeverARevokedOne() async throws {
         let td = try sample()
-        let args = try TeeFixture.args(collateral: try TeeFixture.collateral)
+        let args = try TeeFixture.args(collateral: try TeeFixture.current)
         let outOfDate = try createQuoteVerifier(
             QuoteVerifierOptions(dcapVerify: fixed("OutOfDate", .td10(td)), allowedMeasurements: [TeeFixture.image]))
         assertTeeRefusal(await verifierRefusal(outOfDate, args), "TCB status is OutOfDate")
@@ -236,7 +239,7 @@ final class TeeDcapTests: XCTestCase {
     // Whatever dcapVerify was given: a debug TD's memory and registers are
     // open to the host, so its measurements prove nothing about what runs in it.
     func testRefusesADebugTDOrOneWhoseAttributesItCannotReadWhateverDcapVerifyAllows() async throws {
-        let args = try TeeFixture.args(collateral: try TeeFixture.collateral)
+        let args = try TeeFixture.args(collateral: try TeeFixture.current)
         let td = try sample()
         func verifier(_ attributes: Data, td15: Bool = false) throws -> QuoteVerifier {
             var report = td
@@ -259,7 +262,7 @@ final class TeeDcapTests: XCTestCase {
     }
 
     func testRefusesAQuoteThatIsNotTDXAndPassesTheTimeInSeconds() async throws {
-        let args = try TeeFixture.args(collateral: try TeeFixture.collateral)
+        let args = try TeeFixture.args(collateral: try TeeFixture.current)
         let enclave = SgxEnclaveReport(
             cpuSvn: Data(count: 16), miscSelect: 0, attributes: Data(count: 16), mrEnclave: Data(count: 32),
             mrSigner: Data(count: 32), isvProdId: 0, isvSvn: 0, reportData: Data(count: 64))
@@ -275,7 +278,7 @@ final class TeeDcapTests: XCTestCase {
                 dcapVerify: { quote, collateral, now in
                     seen.record(now)
                     XCTAssertEqual(quote, try TeeFixture.quote)
-                    XCTAssertEqual(collateral, try TeeFixture.collateral)
+                    XCTAssertEqual(collateral, try TeeFixture.current)
                     return DcapVerifiedReport(status: "UpToDate", report: .td10(td))
                 }, allowedMeasurements: [TeeFixture.image], now: { 1_234_567_890 }))
         _ = try await timed.verify(args)
@@ -313,6 +316,69 @@ final class TeeDcapTests: XCTestCase {
             }, "does not name an image")
     }
 
+    // MARK: - The TCB evaluation data floor (core DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER)
+
+    /// dcap-qvl's verdict on the sample quote, whatever the collateral says,
+    /// so the floor is the one thing that differs between the cases below.
+    private func floorVerifier(minimum: Int? = nil) throws -> QuoteVerifier {
+        let report = DcapVerifiedReport(status: "UpToDate", report: .td10(try sample()))
+        return try createQuoteVerifier(
+            QuoteVerifierOptions(
+                dcapVerify: { _, _, _ in report }, allowedMeasurements: [TeeFixture.image],
+                minTcbEvaluationDataNumber: minimum))
+    }
+
+    private func floorArgs(_ number: Int) throws -> TransportQuoteArgs {
+        try TeeFixture.args(collateral: try TeeFixture.evaluationDataCollateral(number))
+    }
+
+    func testTheFloorIsCoresNumber() {
+        XCTAssertEqual(TeeTrust.defaultMinTcbEvaluationDataNumber, 20)
+    }
+
+    /// A collateral source serving an older, still Intel-signed baseline makes
+    /// an out-of-date platform read UpToDate: core's nodes refuse such a verdict.
+    func testRefusesAVerdictFromThe2025SampleCollateralIntelSignedEvaluationData17() async throws {
+        let collateral = try TeeFixture.collateral
+        XCTAssertEqual(tcbEvaluationDataNumber(collateral.tcbInfo), 17)
+        let verifier = try createQuoteVerifier(
+            QuoteVerifierOptions(allowedMeasurements: [TeeFixture.image], now: { TeeFixture.at }))
+        assertTeeRefusal(
+            await verifierRefusal(verifier, try TeeFixture.args(collateral: collateral)),
+            "Intel TCB evaluation data 17, older than the minimum 20")
+    }
+
+    func testAcceptsEvaluationDataAtOrAboveTheFloor() async throws {
+        let atFloor = try await floorVerifier().verify(try floorArgs(20))
+        XCTAssertTrue(atFloor)
+        let above = try await floorVerifier().verify(try floorArgs(22))
+        XCTAssertTrue(above)
+        assertTeeRefusal(
+            await verifierRefusal(try floorVerifier(), try floorArgs(19)),
+            "evaluation data 19, older than the minimum 20")
+    }
+
+    func testRefusesCollateralWhoseEvaluationDataIsUnknown() async throws {
+        for tcbInfo in ["{}", #"{"tcbEvaluationDataNumber":"20"}"#, #"{"tcbEvaluationDataNumber":-1}"#, "not json"] {
+            var collateral = try TeeFixture.collateral
+            collateral.tcbInfo = tcbInfo
+            assertTeeRefusal(
+                await verifierRefusal(try floorVerifier(), try TeeFixture.args(collateral: collateral)),
+                "computed against is unknown (minimum 20)")
+        }
+    }
+
+    func testAPolicyRaisesTheFloorButNeverLowersIt() async throws {
+        assertTeeRefusal(
+            await verifierRefusal(try floorVerifier(minimum: 22), try floorArgs(21)),
+            "evaluation data 21, older than the minimum 22")
+        let raised = try await floorVerifier(minimum: 22).verify(try floorArgs(22))
+        XCTAssertTrue(raised)
+        assertTeeRefusal(
+            await verifierRefusal(try floorVerifier(minimum: 0), try floorArgs(17)),
+            "evaluation data 17, older than the minimum 20")
+    }
+
     // MARK: - trustedMeasurementsFromReleases
 
     private func release(
@@ -342,15 +408,17 @@ final class TeeDcapTests: XCTestCase {
     }
 
     func testBuildsAVerifierThatAcceptsTheReleaseImageAndNotAnotherProfileOfIt() async throws {
-        let args = try TeeFixture.args(collateral: try TeeFixture.collateral)
+        let args = try TeeFixture.args(collateral: try TeeFixture.current)
         let locked = try trustedMeasurementsFromReleases(
             [release("2.3.78", TeeFixture.rtmr3)], profile: "locked-read-only")
-        let trusting = try createQuoteVerifier(QuoteVerifierOptions(trusting: locked, now: { TeeFixture.at }))
+        let trusting = try createQuoteVerifier(
+            QuoteVerifierOptions(trusting: locked, dcapVerify: TeeFixture.genuine, now: { TeeFixture.at }))
         let accepted = try await trusting.verify(args)
         XCTAssertTrue(accepted)
         let debug = try trustedMeasurementsFromReleases(
             [release("2.3.78", TeeFixture.rtmr3)], profile: "debug", allowDebugProfile: true)
-        let refusing = try createQuoteVerifier(QuoteVerifierOptions(trusting: debug, now: { TeeFixture.at }))
+        let refusing = try createQuoteVerifier(
+            QuoteVerifierOptions(trusting: debug, dcapVerify: TeeFixture.genuine, now: { TeeFixture.at }))
         assertTeeRefusal(await verifierRefusal(refusing, args), "are not an image this verifier trusts")
     }
 
