@@ -124,6 +124,7 @@ fn run(
 
     clear_outputs(out)?;
     let first = setup.run(out, true)?;
+    print_logs(&first);
     if let Err(reason) = settle(&first) {
         for o in &first.outputs {
             let _ = std::fs::remove_file(&o.path);
@@ -161,24 +162,36 @@ impl Setup {
                 let _ = std::io::stdout().flush();
             }
         });
-        let (outcome, measured) = self.engine.run_compute(
-            &self.prepared,
-            ComputeRun {
-                app: IDENTITY.to_owned(),
-                run: IDENTITY.to_owned(),
-                owner: IDENTITY.to_owned(),
-                method: self.method.clone(),
-                args: self.args.clone(),
-                caller: Caller::System,
-                start_ts_ms: START_TS_MS,
-                seed: self.seed,
-                inputs: self.inputs.iter().map(|i| i.id.clone()).collect(),
-                caps: self.caps.clone(),
-            },
-            files,
-            progress,
-            Arc::new(AtomicBool::new(false)),
-        )?;
+        let run = ComputeRun {
+            app: IDENTITY.to_owned(),
+            run: IDENTITY.to_owned(),
+            owner: IDENTITY.to_owned(),
+            method: self.method.clone(),
+            args: self.args.clone(),
+            caller: Caller::System,
+            start_ts_ms: START_TS_MS,
+            seed: self.seed,
+            inputs: self.inputs.iter().map(|i| i.id.clone()).collect(),
+            caps: self.caps.clone(),
+            keep_logs: true,
+        };
+        // On a thread of its own, as a job node runs it: `meroctl` runs inside a tokio
+        // runtime, and wasmtime-wasi blocks on the current runtime when the module writes to
+        // stdout or stderr, which panics on a runtime's own thread.
+        let (outcome, measured) = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    self.engine.run_compute(
+                        &self.prepared,
+                        run,
+                        files,
+                        progress,
+                        Arc::new(AtomicBool::new(false)),
+                    )
+                })
+                .join()
+                .map_err(|_| eyre!("the run's thread panicked"))
+        })??;
         let outputs = std::mem::take(&mut *produced.lock().unwrap_or_else(PoisonError::into_inner));
         Ok(Ran {
             outcome,
@@ -285,6 +298,14 @@ fn differences(a: (&[u8], &[Produced]), b: (&[u8], &[Produced])) -> Vec<String> 
         }
     }
     out
+}
+
+/// The module's log lines (stdout, stderr, `log`) on stderr, a failed run's included. A
+/// cluster keeps none, so this is where a developer reads them.
+fn print_logs(ran: &Ran) {
+    for line in &ran.outcome.logs {
+        eprintln!("log: {line}");
+    }
 }
 
 fn report(ran: &Ran) {

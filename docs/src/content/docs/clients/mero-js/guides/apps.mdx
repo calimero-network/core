@@ -118,6 +118,10 @@ await visitorClient.useVisitor({ link: token, seed: newVisitorSeed() });
 await visitorClient.apps.call({ app, method: 'submit', args: { text: 'Hi' } });
 ```
 
+`signOut()` drops the visitor: a visitor has no session to end, so the node refuses the revoke with
+`403 VISITOR_ONLY`, which `signOut()` throws after the credential is gone, and no request after it
+carries one.
+
 ## Calls and views
 
 ```ts

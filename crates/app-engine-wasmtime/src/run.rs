@@ -29,6 +29,9 @@ pub struct ComputeRun {
     /// Input file ids, in the order the guest sees them.
     pub inputs: Vec<String>,
     pub caps: ComputeCaps,
+    /// Keep the module's log lines on the outcome (`HostCore::with_logs`): a local run
+    /// (`meroctl local compute run`) does; a job node never does, as they may hold user data.
+    pub keep_logs: bool,
 }
 
 /// Why a run failed, by what happened and never by its text.
@@ -152,7 +155,8 @@ impl WasmtimeEngine {
         )
         .map_err(|e| eyre::eyre!("{e}"))?
         .with_files(files)
-        .with_progress(progress);
+        .with_progress(progress)
+        .with_logs(run.keep_logs);
         let budget = Budget::compute(&run.caps);
         Ok(measure(|| {
             self.invoke_cancellable(prepared, host, budget, cancel)

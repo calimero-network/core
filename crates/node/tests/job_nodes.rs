@@ -1,6 +1,11 @@
 //! Job nodes next to a cluster: in the directory, never members, replicas or
 //! blob targets, and attested by the leader's side before any work reaches them.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod common;
 use common::UploadBytes as _;
 

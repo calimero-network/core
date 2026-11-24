@@ -7,6 +7,11 @@
 //! fresh instance, spin) invoke the node's own engine on the leader's applied state with
 //! the node's own directory, because the API does not return an outcome's usage.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod common;
 
 use std::sync::atomic::{AtomicU64, Ordering};
