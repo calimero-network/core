@@ -15,6 +15,11 @@ from .generator import ClientGenerator
 
 console = Console()
 
+DEPRECATION = (
+    "calimero-abi-codegen is deprecated and its output no longer runs against the "
+    "current client. Use `meroctl app codegen --lang python` instead."
+)
+
 
 @click.command()
 @click.option(
@@ -39,7 +44,9 @@ console = Console()
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
 def main(input: Path, output: Path, class_name: str, verbose: bool):
-    """Generate Python client code from WASM ABI schema."""
+    """Generate Python client code from WASM ABI schema (deprecated)."""
+
+    click.echo(f"DeprecationWarning: {DEPRECATION}", err=True)
 
     try:
         with Progress(
