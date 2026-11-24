@@ -591,7 +591,7 @@ pub struct Node {
     cluster_key: [u8; 32],
     /// Bounds the cluster-key releases this node answers at once.
     pub(crate) key_releases: tokio::sync::Semaphore,
-    pub challenges: Mutex<HashMap<String, crate::api::Pending>>,
+    pub challenges: Mutex<crate::api::Ceremonies>,
     /// The release each peer's verified attestation named, by address.
     peer_releases: Mutex<HashMap<String, Arc<Mutex<Option<String>>>>>,
     /// The runtime each peer named, by node, and when (`Self::runtime_of_node`).
@@ -1139,7 +1139,7 @@ impl Node {
             compiler,
             peers: Mutex::new(HashMap::new()),
             http,
-            challenges: Mutex::new(HashMap::new()),
+            challenges: Mutex::new(crate::api::Ceremonies::default()),
             event_streams: std::sync::Arc::default(),
             pipeline_subscribers: Mutex::new(HashMap::new()),
             presence: crate::presence::Presence::default(),
