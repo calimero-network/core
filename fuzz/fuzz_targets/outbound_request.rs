@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use calimero_outbound::fuzz_api::service;
 use calimero_outbound::{
-    AppIdentity, Approval, OutboundHost, OwnSecrets, Prepared, Secret, SecretProvider, Transport,
+    AppIdentity, Approval, OwnSecrets, Prepared, Secret, SecretProvider, Transport,
 };
 use calimero_primitives::outbound::OutboundResponse;
 use libfuzzer_sys::fuzz_target;

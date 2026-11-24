@@ -88,6 +88,6 @@ fn open(stream: &[u8], step: usize, size: u64, sha256: &[u8; 32]) -> (Vec<u8>, O
     };
     let mut whole = out.clone();
     whole.extend_from_slice(&last);
-    assert_eq!(Sha256::digest(&whole).as_slice(), sha256.as_slice());
+    assert_eq!(&Sha256::digest(&whole)[..], &sha256[..]);
     (out, Some(whole))
 }
