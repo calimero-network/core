@@ -6661,6 +6661,78 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
     assert_eq!(a["lastUpgrade"]["to"]["version"], json!("1.1.0"), "{a}");
 }
 
+/// `GET /apps` names the release an instance's record names, not the first
+/// package or version recorded as shipping its WASM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_instance_list_names_the_release_each_instance_runs() {
+    let c = Cluster::start(3).await;
+    let (alice, _apk) = signed_up(&c, 0, "alice").await;
+    let wasm = variant(&kv_wasm(), "list-release");
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    for (package, version) in [
+        ("com.test.a", "1.0.0"),
+        ("com.test.b", "1.0.0"),
+        ("com.test.p", "1.0.0"),
+        ("com.test.p", "2.0.0"),
+    ] {
+        let _ = alice
+            .packages()
+            .upload(
+                mpk_full(package, version, &wasm, &publisher, &[], &[], None),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let mut ids = Vec::new();
+    for (package, version) in [("com.test.b", "1.0.0"), ("com.test.p", "1.0.0")] {
+        ids.push(
+            alice
+                .apps()
+                .create(typed(
+                    json!({ "name": package, "package": package, "version": version }),
+                ))
+                .await
+                .map(wire)
+                .unwrap()["appId"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let (from_b, on_p1) = (ids[0].clone(), ids[1].clone());
+    let _ = alice
+        .packages()
+        .version_uninstall("com.test.p", "1.0.0")
+        .await
+        .unwrap();
+
+    let listed = alice.apps().list(None, None).await.map(wire).unwrap();
+    let row = |id: &str| {
+        listed["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["appId"] == json!(id))
+            .unwrap_or_else(|| panic!("{id} not listed: {listed}"))
+            .clone()
+    };
+    assert_eq!(row(&from_b)["package"], json!("com.test.b"), "{listed}");
+    assert_eq!(row(&on_p1)["package"], json!("com.test.p"), "{listed}");
+    assert_eq!(row(&on_p1)["version"], json!("1.0.0"), "{listed}");
+    let by_package = alice
+        .apps()
+        .list(Some("com.test.b"), None)
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        by_package["apps"].as_array().unwrap().len(),
+        1,
+        "{by_package}"
+    );
+}
+
 // ---------------------------------------------------------------- proofs at apply
 
 /// Credentials, memberships and invites are a person's decisions: each
@@ -7669,8 +7741,8 @@ async fn reaching_an_instance_reads_its_release_but_does_not_use_it() {
         .unwrap();
 }
 
-/// An app created by its WASM's hash names no release: one who only reaches it is told the
-/// public release that ships that WASM, never the private sibling it was recorded from.
+/// An app created by its WASM's hash names no release: when two releases ship that WASM,
+/// one who only reaches it is told neither, never the private sibling it was recorded from.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn reaching_an_app_by_its_bundle_never_names_a_private_sibling() {
     let registry = FakeRegistry::default();
@@ -7711,11 +7783,7 @@ async fn reaching_an_app_by_its_bundle_never_names_a_private_sibling() {
     let read = bob.apps().get(&app).await.map(wire).unwrap();
     assert!(!read.to_string().contains("com.acme.secret"), "{read}");
     let update = bob.apps().update(&app).await.map(wire).unwrap();
-    assert_eq!(
-        update["running"],
-        json!({ "package": "com.test.open", "version": "1.0.0" }),
-        "{update}"
-    );
+    assert_eq!(update["running"], Value::Null, "{update}");
     assert!(!update.to_string().contains("com.acme.secret"), "{update}");
 }
 

@@ -2279,6 +2279,41 @@ impl SystemState {
                 .is_some_and(|h| h == bundle)
     }
 
+    /// The one release whose service is `bundle`; none when no release ships it
+    /// or several do, as releases may share a WASM.
+    #[must_use]
+    pub fn sole_release_of(&self, bundle: &str) -> Option<PackageRef> {
+        let mut found = None;
+        for (name, p) in &self.packages {
+            for v in p.versions.values() {
+                for (service, hash) in v.app_parts() {
+                    if hash != bundle {
+                        continue;
+                    }
+                    if found.is_some() {
+                        return None;
+                    }
+                    found = Some(PackageRef {
+                        package: name.clone(),
+                        version: v.version.clone(),
+                        service: (!service.is_empty()).then(|| service.clone()),
+                        compute: false,
+                    });
+                }
+            }
+        }
+        found
+    }
+
+    /// The release `app` runs: the one its record names, else, for a record
+    /// without it, the only release shipping its bundle ([`Self::sole_release_of`]).
+    #[must_use]
+    pub fn running_release(&self, app: &AppRecord) -> Option<PackageRef> {
+        app.release
+            .clone()
+            .or_else(|| self.sole_release_of(&app.bundle))
+    }
+
     /// Whether a release ships `compute` (a compute bundle hash, or none) for the service
     /// whose app component is `bundle`. Releases may share an app component and differ in
     /// compute, so the caller names the compute hash and this checks the pair.

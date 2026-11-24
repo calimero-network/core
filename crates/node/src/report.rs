@@ -84,14 +84,36 @@ pub struct ReleaseName {
 
 /// The release `app` runs, if `reader` may read it: the one its record names
 /// (`AppRecord::release`, set at create and at every upgrade), else, for a
-/// record from before or a raw upload, the one its bundle ships in
+/// record from before or a raw upload, the only one its bundle ships in
 /// ([`release_of_bundle`]).
 #[must_use]
 pub fn release_of_app(s: &SystemState, app: &AppRecord, reader: Reader<'_>) -> Option<ReleaseName> {
     match &app.release {
-        Some(r) => named_release(s, r, reader),
+        Some(r) => named_release(s, r, reader).or_else(|| uninstalled_release(s, app, r, reader)),
         None => release_of_bundle(s, &app.bundle, reader),
     }
+}
+
+/// The release `app`'s record names once it is no longer installed: no record is left to
+/// judge, so an account that reaches the app reads its name, as it would have before.
+fn uninstalled_release(
+    s: &SystemState,
+    app: &AppRecord,
+    r: &PackageRef,
+    reader: Reader<'_>,
+) -> Option<ReleaseName> {
+    let Reader::Account(who) = reader else {
+        return None;
+    };
+    let installed = s
+        .packages
+        .get(&r.package)
+        .is_some_and(|p| p.versions.contains_key(&r.version));
+    (!installed && s.may_reach(app, Some(who))).then(|| ReleaseName {
+        package: r.package.clone(),
+        version: r.version.clone(),
+        service: r.service.clone(),
+    })
 }
 
 /// Release `r`, if installed and `reader` may read it ([`SystemState::reads_release`]).
@@ -105,44 +127,12 @@ fn named_release(s: &SystemState, r: &PackageRef, reader: Reader<'_>) -> Option<
         })
 }
 
-/// The package release that ships bundle `hash`, if `reader` may read one: the
-/// release the bundle was recorded from when readable, else the highest readable
-/// release that ships it. Releases may share a WASM, so this is only a guess
-/// at which one an app runs, for a record that does not name it.
+/// The package release that ships bundle `hash`, if `reader` may see it and no
+/// other release ships the same WASM: releases may share one, so a record that
+/// does not name its release is not guessed at.
 #[must_use]
 pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Option<ReleaseName> {
-    let who = reader.who();
-    let recorded = s.bundles.get(hash).and_then(|b| b.package.as_ref());
-    if let Some(r) = recorded {
-        let visible = s
-            .packages
-            .get(&r.package)
-            .and_then(|p| p.versions.get(&r.version))
-            .is_some_and(|v| {
-                v.app_parts().values().any(|h| h == hash) && s.reads_release(&r.package, v, who)
-            });
-        if visible {
-            return Some(ReleaseName {
-                package: r.package.clone(),
-                version: r.version.clone(),
-                service: r.service.clone(),
-            });
-        }
-    }
-    s.packages
-        .values()
-        .flat_map(|p| p.versions.values().map(move |v| (p, v)))
-        .filter(|(p, v)| s.reads_release(&p.name, v, who))
-        .filter_map(|(p, v)| {
-            let service = v.app_parts().iter().find(|(_, h)| *h == hash)?.0;
-            Some((p, v, service))
-        })
-        .max_by(|a, b| compare_versions(&a.1.version, &b.1.version))
-        .map(|(p, v, service)| ReleaseName {
-            package: p.name.clone(),
-            version: v.version.clone(),
-            service: (!service.is_empty()).then(|| service.clone()),
-        })
+    named_release(s, &s.sole_release_of(hash)?, reader)
 }
 
 /// Every release of `current`'s package newer than it, shipping its service,
@@ -555,11 +545,17 @@ mod tests {
         let old = app("alice", None);
         assert_eq!(old.release, None);
         assert!(serde_json::to_value(&old).unwrap().get("release").is_none());
-        let r = release_of_app(&s, &old, reader).unwrap();
-        assert_eq!(r.version, "1.0.0");
+        // Two releases ship the WASM: which one runs is not guessed.
+        assert_eq!(release_of_app(&s, &old, reader), None);
         let v = app_json(&s, &old, &BTreeMap::new(), &BTreeMap::new(), reader);
+        assert!(v["package"].is_null(), "{v}");
+        // One release ships it: that is the one.
+        let mut sole = s.clone();
+        let _gone = sole.packages.get_mut("p").unwrap().versions.remove("1.1.0");
+        let r = release_of_app(&sole, &old, reader).unwrap();
+        assert_eq!(r.version, "1.0.0");
+        let v = app_json(&sole, &old, &BTreeMap::new(), &BTreeMap::new(), reader);
         assert_eq!(v["package"]["version"], json!("1.0.0"), "{v}");
-        assert_eq!(v["availableVersions"], json!(["1.1.0"]), "{v}");
 
         let mut named = old;
         named.release = Some(PackageRef {
@@ -632,23 +628,33 @@ mod tests {
         let _prev = s.apps.insert("a".into(), a.clone());
 
         let bob = Reader::Account("bob");
-        assert_eq!(release_of_app(&s, &a, bob).unwrap().version, "1.0.0");
+        let alice = Reader::Account("alice");
         assert_eq!(
-            release_of_app(&s, &a, Reader::Account("alice"))
-                .unwrap()
-                .version,
-            "1.1.0",
-            "a member of the organization it is for"
+            release_of_app(&s, &a, bob),
+            None,
+            "two releases ship it: no guess"
+        );
+        assert_eq!(
+            release_of_app(&s, &a, alice),
+            None,
+            "two releases ship it: no guess"
         );
         let _gone = s.packages.get_mut("p").unwrap().versions.remove("1.0.0");
         assert_eq!(release_of_app(&s, &a, bob), None);
+        assert_eq!(
+            release_of_app(&s, &a, alice).unwrap().version,
+            "1.1.0",
+            "a member of the organization it is for"
+        );
     }
 
     /// An upgrade record from before names no releases: its ends are
     /// inferred from their bundles. One that names them is reported as named.
     #[test]
     fn an_upgrade_record_names_the_releases_it_moved_between() {
-        let s = shared_wasm();
+        let both = shared_wasm();
+        let mut s = both.clone();
+        let _gone = s.packages.get_mut("p").unwrap().versions.remove("1.1.0");
         let reader = Reader::Account("alice");
         let a = app("alice", None);
         let old: UpgradeRecord = serde_json::from_value(json!({
@@ -669,7 +675,7 @@ mod tests {
             to_release: Some(at("1.1.0")),
             ..old
         };
-        let v = last_upgrade_json(&s, &a, &named, reader);
+        let v = last_upgrade_json(&both, &a, &named, reader);
         assert_eq!(v["from"]["version"], json!("1.0.0"), "{v}");
         assert_eq!(v["to"]["version"], json!("1.1.0"), "{v}");
     }
@@ -699,6 +705,12 @@ mod tests {
             let _prev = versions.insert(v.clone(), release(&v, Some("9.0.0")));
         }
         let mut a = app("alice", None);
+        a.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.0.0".into(),
+            service: None,
+            compute: false,
+        });
         a.replicas = vec![1, 2];
         let runtimes = BTreeMap::from([
             (1, NodeRuntime::named("9.1.0")),

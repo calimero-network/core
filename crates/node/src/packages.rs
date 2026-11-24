@@ -714,24 +714,19 @@ impl Node {
         }))
     }
 
-    /// The release `app` runs: the one its record names
-    /// (`AppRecord::release`), else, for a record from before, the release
-    /// its bundle came out of ([`Self::release_of`]).
+    /// The release `app` runs ([`SystemState::running_release`]): the one its
+    /// record names, else the only release its bundle ships in; none when
+    /// several share it.
     pub fn release_of_app(&self, app: &crate::types::AppRecord) -> Option<Release> {
-        let Some(at) = &app.release else {
-            return self.release_of(&app.bundle);
-        };
         self.sys(|s| {
+            let at = s.running_release(app)?;
             let version = s
                 .packages
                 .get(&at.package)?
                 .versions
                 .get(&at.version)?
                 .clone();
-            Some(Release {
-                at: at.clone(),
-                version,
-            })
+            Some(Release { at, version })
         })
     }
 

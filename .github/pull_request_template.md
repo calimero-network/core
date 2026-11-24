@@ -33,21 +33,13 @@ Every cluster rolls forward from the release in `.github/upgrade-from` (ci-check
 
 ## Wire contract (clients)
 
-mero-js and calimero-client-py mirror the node's HTTP API, the sealed wire
+The clients in `sdks/clients/` mirror the node's HTTP API, the sealed wire
 format (`crates/sealed`) and the attestation check
 (`crates/client/src/attest.rs`) by hand. `e2e.yml`'s `clients` job runs
-both against this PR's `merod`:
+them against this PR's `merod`:
 
-- [ ] Changed a route, request or answer: updated both clients, or linked their PRs
-- [ ] Changed the sealed format or the attestation check: changed mero-js in the same way
-
-To test against a client branch other than a same-named one, add lines to this
-body (both default to `master`):
-
-```
-sdk-ref: <your-mero-js-branch>
-py-ref: <your-calimero-client-py-branch>
-```
+- [ ] Changed a route, request or answer: updated the clients in this PR
+- [ ] Changed the sealed format or the attestation check: changed `sdks/clients/mero-js` in the same way
 
 ## Compatibility
 
@@ -78,7 +70,7 @@ The rules: [CODING_STANDARDS.md](https://github.com/calimero-network/core/blob/m
 - Takes an identity from a message field instead of a signature or the authenticated channel: [ ] yes [ ] no
 - A gated operation is untested for kicked, left, deny-listed, revoked, descoped, inherited or other-namespace actors: [ ] yes [ ] no
 - Changes a signed format, wire format or schema version: [ ] yes [ ] no
-- Changes a signed or wire format without naming the paired SDK PR in `sdk-ref:`: [ ] yes [ ] no
+- Changes a signed or wire format without changing the clients in `sdks/clients/` in the same PR: [ ] yes [ ] no
 - Changes a workflow's triggers, permissions, checkout or artifact handling: [ ] yes [ ] no
 
 ## Documentation update
