@@ -3,12 +3,15 @@ operator's state (quotas, per-organization overrides, pools, sign-up invites, co
 
 from __future__ import annotations
 
+import hashlib
 import json
+import random
 import time
 from pathlib import Path
 
-from upgrade_deep import (DeepCase, anyone, check, decision, eq, kv_wasm, new_org, operator, ops,
-                          ops_text, person, same_decisions, same_read, scrub, snap, subset, until)
+from upgrade_deep import (DeepCase, anyone, check, decision, eq, kv_wasm, new_org, operator, ops, ops_text,
+                          person, refused, same_decisions, same_read, scrub, snap, subset, until)
+from rv2 import HttpError
 from upgrade_path import case
 
 
@@ -83,6 +86,22 @@ class UpgradePolicies(DeepCase):
         eq(s["policy"]["source"], "default", "the update policy dropped")
 
 
+def _backup(w, node):
+    """How many files `POST /ops/backup` wrote on `node`. The harness's nodes share one backup directory, so
+    a write racing another's fails with a 500 `No such file or directory`: only that is tried again."""
+    deadline = time.time() + 20
+    while True:
+        try:
+            out = ops(w, "POST", "ops/backup", {}, node=node)
+            break
+        except HttpError as e:
+            if e.status != 500 or "No such file or directory" not in str(e.body) or time.time() > deadline:
+                raise
+            time.sleep(0.5)
+    check(out is not None and isinstance(out.get("written"), int), f"a backup on node {node}: {out}")
+    return out["written"]
+
+
 @case
 class OpsState(DeepCase):
     name = "ops-state"
@@ -121,10 +140,10 @@ class OpsState(DeepCase):
         w.fleet.operate("set-quotas", json.dumps({"maxApiKeysPerAccount": 48}))
         self._record(w, s)
         eq(s["quotas"].get("maxApiKeysPerAccount"), 48, "a quota changed on the new release")
+        written = 0
         for n in w.members():
-            # The harness's nodes share one backup directory, so two writing at once can race.
-            out = until("a backup is written", lambda: ops(w, "POST", "ops/backup", {}, node=n), 20)
-            check(out is not None and "written" in out, f"a backup on node {n}: {out}")
+            written += _backup(w, n)
+        check(written > 0, "no node wrote a backup")
 
 
 @case
@@ -243,54 +262,63 @@ def _invite(w, tag):
     return token, made["inviteKey"]
 
 
+SIGN_UP_WANT = {"live": "ok", "revoked": "SIGN_UP_REFUSED", "unknown": "SIGN_UP_REFUSED"}  # what each kind of token gets
+UNKNOWN_INVITE = "deep-signup-unknown-" + "y" * 16
+
+
 @case
 class SignUpInvites(DeepCase):
     name = "sign-up-invites"
     area = "Accounts"
     since = "1.0.0-rc.18"
     seeds = "two cluster sign-up invites issued by the operator (a token each), one of them revoked"
-    verifies = ("the invite list as the operator reads it; on every node a sign-up beginning with the live token "
-                "is taken and one with the revoked or an unknown token is refused `SIGN_UP_REFUSED`; on the new "
-                "release a third invite is issued and the live one revoked")
+    verifies = ("the invite list as the operator reads it; on every node, new ones included, a sign-up beginning "
+                "with a live token is taken and one with a revoked or an unknown token is refused `SIGN_UP_REFUSED`, "
+                "for the tokens the old release issued and revoked as for the new release's; on the new release "
+                "one more invite is issued and another issued and revoked, the old live one left live")
 
     def _begin(self, w, token, node):
         return decision(lambda: anyone(w, "POST", "auth/passkey/register/begin", {"name": "deep", "invite": token},
                                        node=node))
 
-    def _decisions(self, w, s):
-        tokens = {"live": s["live"], "revoked": s["revoked"], "unknown": "deep-signup-unknown-" + "y" * 16}
-        return {n: {k: self._begin(w, t, n) for k, t in tokens.items()} for n in w.members()}
+    def _judge(self, w, s):
+        for node in w.members():
+            for kind, tokens in (("live", s["live"]), ("revoked", s["revoked"]), ("unknown", [UNKNOWN_INVITE])):
+                for token in tokens:
+                    eq(self._begin(w, token, node), SIGN_UP_WANT[kind], f"a {kind} token's sign-up on node {node}")
 
     def populate(self, w):
-        s = {}
-        s["live"], s["live_key"] = _invite(w, "live")
-        s["revoked"], s["revoked_key"] = _invite(w, "revoked")
-        operator(w, "POST", f"ops/sign-up/invites/{s['revoked_key']}/revoke", {})
+        s = {"live": [], "revoked": [], "keys": {}}
+        for tag, kind in (("live", "live"), ("revoked", "revoked")):
+            token, key = _invite(w, tag)
+            s[kind].append(token)
+            s["keys"][token] = key
+        operator(w, "POST", f"ops/sign-up/invites/{s['keys'][s['revoked'][0]]}/revoke", {})
         self._record(w, s)
         keys = json.dumps(s["invites"])
-        check(s["live_key"] in keys and s["revoked_key"] not in keys, f"the invite list: {s['invites']}")
+        check(s["keys"][s["live"][0]] in keys and s["keys"][s["revoked"][0]] not in keys, f"the invite list: {s['invites']}")
         return s
 
     def _record(self, w, s):
         s["invites"] = ops(w, "GET", "ops/sign-up/invites")
-        s["decisions"] = self._decisions(w, s)
-        for node, d in s["decisions"].items():
-            eq(d, {"live": "ok", "revoked": "SIGN_UP_REFUSED", "unknown": "SIGN_UP_REFUSED"},
-               f"a sign-up beginning on node {node}")
+        self._judge(w, s)
 
     def check(self, w, s):
         subset(ops(w, "GET", "ops/sign-up/invites"), s["invites"], "the cluster sign-up invites")
-        for node, want in s["decisions"].items():
-            if node in w.members():
-                same_decisions(self._decisions(w, s)[node], want, f"a sign-up beginning on node {node}")
+        self._judge(w, s)
 
     def exercise(self, w, s):
-        s["third"], s["third_key"] = _invite(w, "third")
-        operator(w, "POST", f"ops/sign-up/invites/{s['live_key']}/revoke", {})
-        s["revoked"], s["revoked_key"] = s["live"], s["live_key"]
-        s["live"], s["live_key"] = s["third"], s["third_key"]
+        # The old release's live and revoked tokens stay in the table, so a restart still judges them.
+        new_live, key = _invite(w, "new-live")
+        s["live"].append(new_live)
+        s["keys"][new_live] = key
+        new_revoked, key = _invite(w, "new-revoked")
+        s["keys"][new_revoked] = key
+        operator(w, "POST", f"ops/sign-up/invites/{key}/revoke", {})
+        s["revoked"].append(new_revoked)
         self._record(w, s)
-        check(s["third_key"] in json.dumps(s["invites"]) and s["revoked_key"] not in json.dumps(s["invites"]),
+        listed = json.dumps(s["invites"])
+        check(s["keys"][new_live] in listed and key not in listed and s["keys"][s["live"][0]] in listed,
               f"the invite list after the roll: {s['invites']}")
 
 
@@ -299,11 +327,12 @@ class RestoreBackup(DeepCase):
     name = "restore-backup"
     area = "Ops"
     since = "1.0.0-rc.18"
-    seeds = ("an app written to, backed up on every node (`POST /ops/backup`), then written to again: "
-             "the second write is not in the backup")
-    verifies = ("the app answers with both writes as before; on the new release the operator restores the old "
-                "release's backup by name (`ops restore --backup`), not a newer one: the app holds the first write "
-                "and not the second, and takes new writes")
+    seeds = ("an app with a key and a sealed file, backed up on every node (`POST /ops/backup`), then given another "
+             "key and another file: the second ones are not in the backup")
+    verifies = ("the app answers with both keys as before; on the new release the operator restores the old "
+                "release's backup by name (`ops restore --backup`), not a newer one, and the restore names that "
+                "backup: the app holds the first key and the first file (size and SHA-256) and neither of the "
+                "second, and takes new writes")
 
     def _keys(self, w, s):
         rowan = person(w, "rowan")
@@ -320,21 +349,32 @@ class RestoreBackup(DeepCase):
         rowan = person(w, "rowan")
         app = rowan.deploy(kv_wasm(w), "restore-me")
         rowan.call(app, "set", {"key": "kept", "value": "before the backup"})
-        for node in w.members():
-            out = ops(w, "POST", "ops/backup", {}, node=node)
-            check(out is not None and "written" in out, f"a backup on node {node}: {out}")
+        kept = random.Random(21).randbytes(70_000)
+        kept_id = rowan.a.upload_file(app, kept)["id"]
+        written = sum(_backup(w, node) for node in w.members())
+        check(written > 0, "no node wrote a backup")
         rowan.call(app, "set", {"key": "lost", "value": "after the backup"})
-        s = {"app": app, "want": {"kept": "before the backup", "lost": "after the backup"}}
+        lost_id = rowan.a.upload_file(app, random.Random(22).randbytes(70_000))["id"]
+        s = {"app": app, "want": {"kept": "before the backup", "lost": "after the backup"},
+             "kept": {"id": kept_id, "size": len(kept), "sha256": hashlib.sha256(kept).hexdigest()}, "lost": lost_id}
         s["backup"] = self._newest_backup(w, app)
         eq(self._keys(w, s), s["want"], "the app's keys before a restore")
         return s
 
+    def _file(self, w, s):
+        info = person(w, "rowan").http("GET", f"apps/{s['app']}/files/{s['kept']['id']}")
+        eq((int(info["size"]), info["sha256"]), (s["kept"]["size"], s["kept"]["sha256"]), "the first file")
+
     def check(self, w, s):
         eq(self._keys(w, s), s["want"], "the app's keys")
+        until("the first file reads back", lambda: self._file(w, s), 30)
+        if not s["want"]["lost"]:
+            refused("NOT_FOUND", lambda: person(w, "rowan").http("GET", f"apps/{s['app']}/files/{s['lost']}"),
+                    "the file written after the backup")
 
     def exercise(self, w, s):
         out = w.fleet.operate("restore", s["app"], "--backup", s["backup"])
-        check((out.get("backup") or {}).get("name"), f"the restored backup: {out}")
+        eq((out.get("backup") or {}).get("name"), s["backup"], "the backup the restore names")
         s["want"] = {"kept": "before the backup", "lost": None}
         got = until("the restored app answers", lambda: self._keys(w, s), 60)
         eq(got, s["want"], "the restored app's keys: the write after the backup is gone")
