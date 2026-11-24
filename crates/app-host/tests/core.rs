@@ -19,7 +19,8 @@ use calimero_app_host::{
     MAX_RANGE_BATCH_BYTES, MAX_RUN_BYTES, MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
 use calimero_app_host::{
-    subcall_key, ActionHost, HttpHost, HttpRequest, HttpResponse, ACTION_WALL_CLOCK,
+    subcall_key, ActionHost, HttpHost, HttpRequest, HttpResponse, TrapKind, ACTION_WALL_CLOCK,
+    WALL_CLOCK_EXCEEDED,
 };
 use calimero_app_host::{BlobHost, BlobInfo, BLOB_REF_TAG, MAX_GRANT_TTL_SECS};
 use calimero_app_host::{SearchHost, SearchMode, SearchPage, SearchQuery, MAX_SEARCH_LIMIT};
@@ -1554,6 +1555,71 @@ fn actions_send_http_and_calls_record_what_they_send() {
     let mut view = core_for(&state, &inv(InvocationKind::View)).with_http(Arc::new(Echo));
     assert!(view.start_action("enrich", b"{}").is_err());
     assert_eq!(ACTION_WALL_CLOCK, Duration::from_secs(10));
+}
+
+/// An outbound host that answers after `delay`, counting what it was sent.
+struct Slow {
+    delay: Duration,
+    sent: std::sync::Mutex<u32>,
+}
+
+impl HttpHost for Slow {
+    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+        *self.sent.lock().unwrap() += 1;
+        std::thread::sleep(self.delay);
+        Echo.send(request)
+    }
+}
+
+/// C2: the run's deadline holds in host calls too. A call that comes back past it ends the
+/// run `Timeout` (`WALL_CLOCK_EXCEEDED`, as the engine's own deadline does), whatever the
+/// guest would do next, and one made past it is not sent; within it, nothing changes.
+#[test]
+fn a_host_call_past_the_runs_deadline_ends_it_timed_out() {
+    let state = base(&[]);
+    let slow = Arc::new(Slow {
+        delay: Duration::from_millis(50),
+        sent: std::sync::Mutex::new(0),
+    });
+    let mut run = core_for(&state, &inv(InvocationKind::Call))
+        .with_http(Arc::clone(&slow) as Arc<dyn HttpHost>)
+        .with_deadline(Instant::now() + Duration::from_millis(20));
+    let e = run.http_send(&get("https://enrich.test/v1")).unwrap_err();
+    assert_eq!(e.0, WALL_CLOCK_EXCEEDED);
+    assert!(run.http_send(&get("https://enrich.test/v2")).is_err());
+    assert_eq!(
+        *slow.sent.lock().unwrap(),
+        1,
+        "nothing is sent past the deadline"
+    );
+    // Whatever status the engine reports for the trap, the run timed out.
+    let out = run.finish(
+        Status::Trap {
+            kind: TrapKind::HostDenied,
+            detail: WALL_CLOCK_EXCEEDED.to_owned(),
+        },
+        Vec::new(),
+        Usage::default(),
+    );
+    assert_eq!(
+        out.status,
+        Status::Trap {
+            kind: TrapKind::Timeout,
+            detail: WALL_CLOCK_EXCEEDED.to_owned(),
+        }
+    );
+    assert!(out.http.is_empty(), "a timed-out exchange is not recorded");
+
+    let mut within = core_for(&state, &inv(InvocationKind::Call))
+        .with_http(slow as Arc<dyn HttpHost>)
+        .with_deadline(Instant::now() + Duration::from_secs(60));
+    assert!(within
+        .http_send(&get("https://enrich.test/v1"))
+        .unwrap()
+        .is_ok());
+    let out = within.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(out.status, Status::Ok);
+    assert_eq!(out.http.len(), 1);
 }
 
 #[test]

@@ -68,6 +68,7 @@ pub use types::{
     Audience, BlobInfo, Budget, Caller, ComputeCtx, Directory, Event, HostDenied,
     InvalidInvocation, Invocation, InvocationKind, OrgRole, Outcome, Status, TimerCtx, TrapKind,
     Usage, Write, Xcall, ACTION_WALL_CLOCK, CALL_WALL_CLOCK, DEFAULT_FUEL, DEFAULT_MEMORY_PAGES,
+    WALL_CLOCK_EXCEEDED,
 };
 pub use xcall::{
     sync_xcall_key, SyncXcall, XcallHost, XcallKind, XcallRequest, MAX_SYNC_XCALLS,
