@@ -13,7 +13,7 @@
 //!
 //! An `ApiError` is logged as its status and code, never its message. A
 //! `StateTx::fail` reason ends up in the group's stop reason and its log lines,
-//! so a decode failure passes [`serde`], never the error itself.
+//! so a decode failure passes [`serde()`], never the error itself.
 
 use std::error::Error;
 
