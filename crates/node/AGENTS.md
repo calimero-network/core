@@ -2326,6 +2326,14 @@ API and system group:
   `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`
   (`testing`: `Node::hold_system_log` makes a node refuse the system group's Raft
   messages while its app groups go on), `removed_member_stops_receiving_org_events`.
+  Every stream `gate` lets open (events, presence, a pipeline run's events, an event
+  stream proxied from another replica) also judges the principal that opened it before
+  each batch it sends, on the same fresh state (`api::still_admitted`,
+  `Principal::admitted_on`): an account no longer reaching the app, a revoked API key or
+  an ended session ends it; a session token's own expiry does not (a refresh). Regressions:
+  `a_removed_member_stops_receiving_presence`,
+  `a_revoked_key_or_session_stops_its_event_and_presence_streams`,
+  `a_removed_member_stops_receiving_a_runs_events`.
 - **Usage** (Q20, `component::RunUsage`, `DayUsage`): each `componentInit`,
   `componentCall` and `componentTick` outcome carries `usage { fuel, wallMs, writes,
   bytesWritten, events }`, measured by the leader (`Outcome::from_host`; a `HostDenied`
