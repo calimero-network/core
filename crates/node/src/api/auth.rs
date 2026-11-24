@@ -1128,13 +1128,7 @@ async fn follow_ups(
             "a key takes at most {MAX_KEY_FOLLOW_UPS} follow-ups"
         )));
     }
-    if serde_json::to_vec(&body.then).map_or(usize::MAX, |b| b.len()) > MAX_KEY_FOLLOW_UP_BYTES {
-        return Err(ApiError::new(
-            413,
-            "ARGS_TOO_LARGE",
-            &format!("follow-ups are limited to {MAX_KEY_FOLLOW_UP_BYTES} bytes"),
-        ));
-    }
+    follow_ups_fit(&body.then)?;
     if body.upgrades.is_some() {
         return Err(bad_follow_up("an upgrade key takes no follow-ups"));
     }
@@ -1164,7 +1158,7 @@ async fn follow_ups(
             .abi
             .methods
             .get(&f.method)
-            .is_some_and(|m| m.confirm && m.kind != calimero_app_host::MethodKind::View);
+            .is_some_and(takes_follow_up);
         if !confirm {
             return Err(bad_follow_up(&format!(
                 "{} is not a confirm method of {}",
@@ -1177,6 +1171,37 @@ async fn follow_ups(
         });
     }
     Ok(out)
+}
+
+/// `413 ARGS_TOO_LARGE` for follow-ups past [`MAX_KEY_FOLLOW_UP_BYTES`] as JSON.
+fn follow_ups_fit(then: &[crate::types::KeyFollowUp]) -> Result<(), ApiError> {
+    if serde_json::to_vec(then).map_or(usize::MAX, |b| b.len()) > MAX_KEY_FOLLOW_UP_BYTES {
+        return Err(ApiError::new(
+            413,
+            "ARGS_TOO_LARGE",
+            &format!("follow-ups are limited to {MAX_KEY_FOLLOW_UP_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a follow-up may name `m`: a confirm method a client calls and that
+/// applies in its own entry (an action answers before it runs).
+fn takes_follow_up(m: &calimero_app_host::MethodAbi) -> bool {
+    m.confirm
+        && m.kind == calimero_app_host::MethodKind::Call
+        && !m.compute_result
+        && !m.action_only
+}
+
+/// What a follow-up's app entry logs as its consent: which approval it ran under
+/// and its place in it, never the approval itself.
+fn follow_up_consent(approval: &Value, index: usize) -> Result<Value, ApiError> {
+    let used = serde_json::from_value::<crate::proof::Consent>(approval.clone())
+        .ok()
+        .and_then(|c| c.used().ok())
+        .ok_or_else(|| ApiError::internal("the approval is not a consent"))?;
+    Ok(json!({ "followUpOf": used, "index": index }))
 }
 
 /// `follow_ups` as signed for the key `key_id`: every string value that is
@@ -1204,7 +1229,8 @@ fn for_key(
         .collect()
 }
 
-/// `422 FOLLOW_UP_FAILED`: follow-up `index` answered `e`, so no key was made.
+/// `422 FOLLOW_UP_FAILED`: follow-up `index` answered `e`, so no key was made;
+/// the ones before it applied.
 pub(super) fn follow_up_failed(
     index: usize,
     f: &crate::types::KeyFollowUp,
@@ -1218,7 +1244,24 @@ pub(super) fn follow_up_failed(
             f.method, f.app, e.message
         ),
     )
-    .with_details(json!({ "index": index, "app": f.app, "method": f.method, "error": e }))
+    .with_details(json!({
+        "index": index,
+        "app": f.app,
+        "method": f.method,
+        "error": e,
+        "applied": (0..index).collect::<Vec<_>>(),
+    }))
+}
+
+/// The idempotency key follow-up `index` of `key_id` runs under: its call's
+/// hash in it, so a key another session took cannot stand for this call.
+fn follow_up_key(key_id: &str, index: usize, f: &crate::types::KeyFollowUp) -> String {
+    let call = format!("{}\0{}\0{}", f.app, f.method, f.args);
+    format!(
+        "{}{key_id}:{index}:{}",
+        crate::idempotency::FOLLOW_UP_KEY_PREFIX,
+        b64url(&sha256(call.as_bytes()))
+    )
 }
 
 /// Run the approved follow-ups in order as `p`, each once under an idempotency
@@ -1228,17 +1271,24 @@ async fn run_follow_ups(
     p: &Principal,
     then: &[crate::types::KeyFollowUp],
     key_id: &str,
-    consent: &Value,
+    approval: &Value,
 ) -> Result<Vec<Value>, ApiError> {
     let mut results = Vec::with_capacity(then.len());
     for (index, f) in then.iter().enumerate() {
-        let key = format!("apikey:{key_id}:then:{index}");
-        let result = super::calls::call_consented(node, p, f, key, consent.clone())
+        let consent = follow_up_consent(approval, index)?;
+        let key = follow_up_key(key_id, index, f);
+        let result = super::calls::call_consented(node, p, f, key, consent)
             .await
             .map_err(|e| follow_up_failed(index, f, &e))?;
         results.push(json!({ "index": index, "result": result }));
     }
     Ok(results)
+}
+
+/// `account`'s room for another key, judged as `CreateApiKey` judges it.
+fn key_room(node: &Node, account: &str) -> Result<(), ApiError> {
+    node.sys(|s| s.api_key_room(account))
+        .map_err(crate::node::rejected)
 }
 
 /// Create an API key: the account's, approved with a passkey over the key's
@@ -1289,6 +1339,10 @@ async fn apikey_create(
             .map_err(|e| ApiError::bad_request("BAD_UPGRADE_KEY", e))?;
     }
     let then = for_key(&follow_ups, &record.key_id);
+    follow_ups_fit(&then)?;
+    // Judged on both requests, so the retry runs no follow-up for a key
+    // the log would refuse.
+    key_room(&node, &account)?;
     let args = crate::system::api_key_args(&hash, &record, &then);
     let c = consent_minted(
         &node,
@@ -1334,6 +1388,7 @@ async fn apikey_create(
     // The calls first: one that fails leaves no key, and those before it name
     // a key id that never exists.
     let results = run_follow_ups(&node, &p, &then, &key_id, &c.consent).await?;
+    let applied: Vec<usize> = (0..then.len()).collect();
     let _ok = node
         .sys_write(&SystemCmd::CreateApiKey {
             hash,
@@ -1344,7 +1399,14 @@ async fn apikey_create(
             owner_approves,
             then,
         })
-        .await?;
+        .await
+        .map_err(|e| {
+            if applied.is_empty() {
+                e
+            } else {
+                super::orgs::with_detail(e, "applied", json!(applied))
+            }
+        })?;
     Ok(Json(
         json!({ "keyId": key_id, "key": key, "then": results }),
     ))
@@ -1583,4 +1645,67 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         )
         .route("/auth/apikeys", post(apikey_create).get(apikey_list))
         .route("/auth/apikeys/{key}", delete(apikey_revoke))
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_app_host::{MethodAbi, MethodKind};
+
+    use super::*;
+
+    fn method(kind: MethodKind, confirm: bool) -> MethodAbi {
+        MethodAbi {
+            kind,
+            confirm,
+            public: false,
+            every: None,
+            allow_system: false,
+            allow_apps: Vec::new(),
+            action_only: false,
+            compute_result: false,
+        }
+    }
+
+    /// Only a confirm call that applies in its own entry: an action answers
+    /// before it runs, so a later failure could not undo the key.
+    #[test]
+    fn a_follow_up_is_a_confirm_call_a_client_makes() {
+        assert!(takes_follow_up(&method(MethodKind::Call, true)));
+        assert!(!takes_follow_up(&method(MethodKind::Call, false)));
+        assert!(!takes_follow_up(&method(MethodKind::Action, true)));
+        assert!(!takes_follow_up(&method(MethodKind::View, true)));
+        let action_only = MethodAbi {
+            action_only: true,
+            ..method(MethodKind::Call, true)
+        };
+        assert!(!takes_follow_up(&action_only));
+        let compute_result = MethodAbi {
+            compute_result: true,
+            ..method(MethodKind::Call, true)
+        };
+        assert!(!takes_follow_up(&compute_result));
+    }
+
+    /// An app's log names the approval a follow-up ran under, never the
+    /// assertion, the key's hash or the other calls.
+    #[test]
+    fn a_follow_ups_app_entry_logs_only_which_approval_it_ran_under() {
+        let mut pk =
+            calimero_identity::testing::SoftAuthenticator::new("localhost", "https://localhost");
+        let statement = crate::proof::Statement::new(
+            "account:a",
+            "__create_api_key",
+            &json!({ "hash": "h", "then": [{ "app": "x", "method": "m", "args": { "s": 1 } }] }),
+        );
+        let consent = crate::proof::Consent {
+            assertion: pk.assert(&statement.challenge().unwrap()),
+            statement,
+            at: 1,
+        };
+        let logged = follow_up_consent(&serde_json::to_value(&consent).unwrap(), 2).unwrap();
+        assert_eq!(
+            logged,
+            json!({ "followUpOf": consent.used().unwrap(), "index": 2 })
+        );
+    }
 }

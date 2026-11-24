@@ -222,13 +222,14 @@ pub struct FollowUpFailedError {
     pub details: Option<Value>,
 }
 
-/// `details` of a `422 FOLLOW_UP_FAILED`: the API key's follow-up that failed (`index` in `then`, its app and method) and the error it answered; no key was made.
+/// `details` of a `422 FOLLOW_UP_FAILED`: the API key's follow-up that failed (`index` in `then`, its app and method) and the error it answered, and the follow-ups before it, which applied (`applied`, their indexes); no key was made.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FollowUpFailed {
     pub index: u64,
     pub app: String,
     pub method: String,
     pub error: FollowUpFailedError,
+    pub applied: Vec<u64>,
 }
 
 /// `details` of a `409 FEATURE_NOT_ACTIVE`: the feature the request needs, the cluster version it ships in (`needs`) and the version active now (`null`: none logged, and the nodes could not say).

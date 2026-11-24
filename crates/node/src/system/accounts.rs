@@ -413,9 +413,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             owner_approves,
             ..
         } => {
-            if !s.accounts.contains_key(&record.account) {
-                return Err("unknown account");
-            }
+            s.api_key_room(&record.account)?;
             if let Some(scope) = &record.upgrades {
                 s.upgrade_key_fits_as_logged(
                     &record,
@@ -423,14 +421,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     OwnerRule::logged(owner_in_org, owner_in_team),
                     s.owner_approves(owner_approves),
                 )?;
-            }
-            let keys = s
-                .api_keys
-                .values()
-                .filter(|k| k.account == record.account)
-                .count();
-            if keys >= s.quotas.max_api_keys_per_account as usize {
-                return Err("quota exceeded: API keys");
             }
             let id = record.key_id.clone();
             let _prev = s.api_keys.insert(hash, record);

@@ -204,6 +204,16 @@ async fn intents(
     Json(body): Json<IntentBody>,
 ) -> Result<Response, ApiError> {
     not_reserved(&body.method)?;
+    if body
+        .idempotency_key
+        .as_deref()
+        .is_some_and(|k| k.starts_with(crate::idempotency::FOLLOW_UP_KEY_PREFIX))
+    {
+        return Err(ApiError::bad_request(
+            "RESERVED_IDEMPOTENCY_KEY",
+            "this idempotency key is the node's own",
+        ));
+    }
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, &body.method, true).await?;

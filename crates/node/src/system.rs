@@ -4723,6 +4723,26 @@ impl SystemState {
             .collect()
     }
 
+    /// Whether `account` may make another API key: it exists and is below
+    /// `maxApiKeysPerAccount`.
+    ///
+    /// # Errors
+    /// Why not, as `CreateApiKey` refuses it.
+    pub fn api_key_room(&self, account: &str) -> Result<(), &'static str> {
+        if !self.accounts.contains_key(account) {
+            return Err("unknown account");
+        }
+        let keys = self
+            .api_keys
+            .values()
+            .filter(|k| k.account == account)
+            .count();
+        if keys >= self.quotas.max_api_keys_per_account as usize {
+            return Err("quota exceeded: API keys");
+        }
+        Ok(())
+    }
+
     /// Records `entry` in `account`'s activity ([`Self::activity`]); none
     /// for an account the state does not hold.
     pub fn record_activity(&mut self, account: &str, entry: crate::types::ActivityEntry) {
@@ -6914,12 +6934,13 @@ fn metadata_fits(metadata: &Value) -> Result<(), &'static str> {
 /// it, the method and subject it states, at the time it carries. None for an
 /// operator's or an API key's proof, and for a consent with no time (a
 /// sign-in's, whose entry comes from its session, or one an earlier release
-/// logged), so replaying an earlier release's log adds nothing.
+/// logged), so replaying an earlier release's log adds nothing. A key's
+/// follow-ups add one entry each, the call it approved.
 fn approval_of(
     s: &SystemState,
     cmd: &SystemCmd,
     used: &str,
-) -> Option<(AccountId, crate::types::ActivityEntry)> {
+) -> Option<(AccountId, Vec<crate::types::ActivityEntry>)> {
     let Ok(Value::Object(fields)) = serde_json::to_value(cmd) else {
         return None;
     };
@@ -6930,18 +6951,23 @@ fn approval_of(
     })?;
     let passkey = consent.assertion.credential_id;
     let account = s.credentials.get(&passkey)?.clone();
-    let text = |t: String| t.chars().take(crate::types::ACTIVITY_TEXT_CHARS).collect();
-    Some((
-        account,
-        crate::types::ActivityEntry {
-            at: consent.at,
-            passkey,
-            what: crate::types::Activity::Approval {
-                method: text(consent.statement.method),
-                subject: text(consent.statement.subject),
-            },
+    let text = |t: &str| t.chars().take(crate::types::ACTIVITY_TEXT_CHARS).collect();
+    let entry = |method: &str, subject: &str| crate::types::ActivityEntry {
+        at: consent.at,
+        passkey: passkey.clone(),
+        what: crate::types::Activity::Approval {
+            method: text(method),
+            subject: text(subject),
         },
-    ))
+    };
+    let follow_ups = match cmd {
+        SystemCmd::CreateApiKey { then, .. } => then.as_slice(),
+        _ => &[],
+    };
+    let entries = std::iter::once(entry(&consent.statement.method, &consent.statement.subject))
+        .chain(follow_ups.iter().map(|f| entry(&f.method, &f.app)))
+        .collect();
+    Some((account, entries))
 }
 
 /// The activity entry of a sign-in that opened `record`'s session, at its
@@ -7086,8 +7112,10 @@ impl SystemMachine {
             }
             let _new = self.state.used_proofs.insert(used);
         }
-        if let Some((account, entry)) = approval {
-            self.state.record_activity(&account, entry);
+        if let Some((account, entries)) = approval {
+            for entry in entries {
+                self.state.record_activity(&account, entry);
+            }
         }
         Ok(out)
     }

@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::harness;
 
-use harness::{fixture, signed_up, Cluster};
+use harness::{fixture, operator_sign, signed_up, typed, wire, Cluster};
 
 /// A notes instance of `owner`'s.
 async fn notes(owner: &Client, name: &str) -> String {
@@ -129,6 +129,21 @@ async fn a_key_and_its_grant_take_one_passkey() {
     assert_eq!(again.code(), Some("UNKNOWN_CHALLENGE"), "{again}");
     assert_eq!(key_ids(&alice).await, [json!(key_id)]);
 
+    // The account's history shows the call the one prompt approved.
+    let activity = alice
+        .transport()
+        .json(Request::new(Method::GET, "auth/activity"))
+        .await
+        .unwrap();
+    assert!(
+        activity["activity"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["method"] == "set" && e["subject"] == json!(app)),
+        "{activity}"
+    );
+
     let agent = c.client(1);
     agent.use_api_key(made["key"].as_str().unwrap()).await;
     assert_eq!(
@@ -183,6 +198,11 @@ async fn follow_ups_are_refused_before_the_passkey() {
         json!({}),
     )
     .await;
+    // Within the size as sent, past it once the key's id is written in.
+    let pad = vec!["key:$key"; 5000];
+    let grows = json!([{ "app": app, "method": "set",
+        "args": { "id": "n", "title": "t", "text": "x", "pad": pad } }]);
+    refused("ARGS_TOO_LARGE", grows, json!({})).await;
     // An upgrade key, and a key not scoped to apps.
     let one = json!([set(&app, "n", "t", "x")]);
     refused(
@@ -215,6 +235,25 @@ async fn follow_ups_are_refused_before_the_passkey() {
 
     assert_eq!(key_ids(&alice).await, [made["keyId"].clone()]);
     assert_eq!(note(&alice, &app, "n").await, Value::Null);
+
+    // A client cannot take the idempotency keys follow-ups run under.
+    for (path, body) in [
+        (
+            format!("apps/{app}/intents"),
+            json!({ "method": "set", "idempotencyKey": "node:apikey:k:0:x", "args": {} }),
+        ),
+        (
+            format!("apps/{app}/methods/set"),
+            json!({ "idempotencyKey": "node:apikey:k:0:x", "args": {} }),
+        ),
+    ] {
+        let e = alice
+            .transport()
+            .json(Request::new(Method::POST, path.as_str()).json(body))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("RESERVED_IDEMPOTENCY_KEY"), "{path}: {e}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -251,10 +290,46 @@ async fn a_changed_or_failing_follow_up_makes_no_key() {
         "{d}"
     );
     assert_eq!(d["error"]["error"], json!("APP_ERROR"), "{d}");
+    assert_eq!(d["applied"], json!([0]), "{d}");
     assert!(key_ids(&alice).await.is_empty());
     // The call before it applied, naming a key that never exists.
     assert_eq!(
         note(&alice, &app, "n2").await,
         json!(format!("{}\na", principal.as_str().unwrap()))
     );
+}
+
+/// The key quota is judged before any call runs: a quota filled between the
+/// prompt and the retry leaves the calls unrun.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_full_key_quota_runs_no_follow_up() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let app = notes(&alice, "notes").await;
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    let mut quotas = ops.ops().quotas_get().await.map(wire).unwrap();
+    quotas["maxApiKeysPerAccount"] = json!(1);
+    let _ok = ops
+        .ops()
+        .quotas_set(typed(quotas), Some(&operator_sign))
+        .await
+        .unwrap();
+
+    let body = json!({ "apps": [app], "then": [set(&app, "n1", "key:$key", "a")] });
+    let asked = create(&alice, &body).await.unwrap_err();
+    let plain = json!({ "label": "first" });
+    let first = create(&alice, &plain).await.unwrap_err();
+    let _made = create(&alice, &approved(&plain, &first, &mut pk))
+        .await
+        .unwrap();
+    let e = create(&alice, &approved(&body, &asked, &mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("QUOTA_EXCEEDED"), "{e}");
+    assert_eq!(note(&alice, &app, "n1").await, Value::Null);
+
+    // Full before the prompt: refused before it.
+    let e = create(&alice, &body).await.unwrap_err();
+    assert_eq!(e.code(), Some("QUOTA_EXCEEDED"), "{e}");
 }
