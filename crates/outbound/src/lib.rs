@@ -25,7 +25,8 @@
 //! belongs to**, identified by the node (package and signer of the installed
 //! application), never by the guest. A secret is substituted only into a
 //! request to one of the hosts it is bound to; any copy of it in the response
-//! is replaced with `[redacted]` before the guest sees it. The guest never
+//! or a failure's reason, as sent or in a common encoding (the `redact`
+//! module), is replaced with `[redacted]` before the guest or the log sees it. The guest never
 //! reads a secret, so it cannot write one into state, where it would
 //! replicate to every member.
 //!
@@ -53,8 +54,14 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
+mod redact;
 mod settings;
 
+use redact::Redactor;
+pub use redact::{
+    MAX_ENCODED_SECRET_BYTES, MAX_REDACTION_PATTERNS, MAX_SECRETS_PER_REQUEST,
+    MIN_ENCODED_SECRET_BYTES, PATTERNS_PER_SECRET,
+};
 pub use settings::*;
 
 /// Sends a run's outbound request: borsh `OutboundRequest` in, borsh
@@ -70,9 +77,6 @@ pub trait OutboundHost: Send + Sync + fmt::Debug {
 
 /// The most prefixes one approval holds.
 pub const MAX_OUTBOUND_APPROVALS: usize = 64;
-
-/// What replaces a secret echoed in a response.
-const REDACTED: &[u8] = b"[redacted]";
 
 /// Headers a request may not set: the node sets what it must itself, and
 /// these would let a request reroute itself or carry a credential the operator
@@ -350,8 +354,10 @@ pub struct Prepared {
     pub host: String,
     pub headers: Vec<(String, Zeroizing<String>)>,
     pub body: Zeroizing<Vec<u8>>,
-    /// The secrets substituted, to redact from the response.
+    /// The secrets substituted, once per substitution.
     secrets: Vec<Zeroizing<String>>,
+    /// Their redaction from the response and a failure's reason.
+    redactor: Redactor,
 }
 
 /// Header names and sizes only: the values and the body carry secrets.
@@ -595,6 +601,7 @@ impl OutboundService {
             headers.push((name, Zeroizing::new(value)));
         }
         let body = self.substitute(app, &host, request.body, &mut used)?;
+        let redactor = Redactor::new(&used)?;
         Ok(Prepared {
             method: request.method,
             url,
@@ -602,6 +609,7 @@ impl OutboundService {
             headers,
             body,
             secrets: used,
+            redactor,
         })
     }
 
@@ -695,9 +703,11 @@ impl OutboundHost for RunOutbound {
         };
         let _before = self.sent.fetch_add(1, Ordering::Relaxed);
         let result = self.service.transport.send(&prepared);
-        let (status, mut body) = match result {
+        let (status, body) = match result {
             Ok(answer) => answer,
             Err(reason) => {
+                // An upstream's error may quote what it was sent.
+                let reason = prepared.redactor.redact_str(reason.to_string());
                 warn!(
                     context = %self.context,
                     package = %self.app.package,
@@ -709,9 +719,7 @@ impl OutboundHost for RunOutbound {
                 return Err(format!("the request to {} failed: {reason}", prepared.host));
             }
         };
-        for secret in &prepared.secrets {
-            body = redact(&body, secret.as_bytes());
-        }
+        let body = prepared.redactor.redact(body);
         info!(
             context = %self.context,
             package = %self.app.package,
@@ -936,21 +944,6 @@ fn covers(prefix: &reqwest::Url, url: &reqwest::Url) -> bool {
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-fn redact(body: &[u8], secret: &[u8]) -> Vec<u8> {
-    if secret.is_empty() {
-        return body.to_vec();
-    }
-    let mut out = Vec::with_capacity(body.len());
-    let mut rest = body;
-    while let Some(at) = find(rest, secret) {
-        out.extend_from_slice(&rest[..at]);
-        out.extend_from_slice(REDACTED);
-        rest = &rest[at + secret.len()..];
-    }
-    out.extend_from_slice(rest);
-    out
 }
 
 fn is_secret_name(name: &str) -> bool {

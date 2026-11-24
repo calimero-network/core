@@ -30,6 +30,23 @@ deployment managers'; `calimero_node::component::run_secrets`) wins over the
 operator's for that name, still only to its declared hosts. The echo answers each
 filled-in value's length (`secretBytes`), never a value.
 
+Redaction (`src/redact.rs`) replaces each secret a request carried, in the response
+body and in a failed request's reason (which goes to the guest and to the
+`outbound request failed` log line), as sent and in the encodings an API commonly
+echoes: hex (lower, upper), base64 (standard and URL-safe, padded or not, and the
+part the secret alone decides inside a longer base64 value such as Basic
+credentials), percent-encoding (RFC 3986 either case, `encodeURIComponent`, form)
+and JSON string escapes (`serde_json`, Python's ASCII-only, PHP's `\/`). The
+patterns are built once per request into one leftmost-longest Aho-Corasick scan;
+responses are read whole, so a match never spans chunks. Bounds:
+`MAX_SECRETS_PER_REQUEST` (32 distinct values, more is refused),
+`PATTERNS_PER_SECRET` (20), encodings only for a secret of
+`MIN_ENCODED_SECRET_BYTES` (8) to `MAX_ENCODED_SECRET_BYTES` (4096) bytes.
+**Not covered**, so this is defence in depth, not a guarantee: any other
+transformation (another or a nested encoding, mixed-case hex, compression,
+encryption), a hash or MAC of a secret, and a partial echo (a prefix, a suffix, a
+slice). A secret should go only to a host that does not echo it.
+
 - `OutboundService::from_settings` → `for_run(app, declared, approval, context)`;
   `for_run_counted(.., sent)` also counts each request handed to the transport
   (the node's `calimero_app_outbound_requests_total`).
