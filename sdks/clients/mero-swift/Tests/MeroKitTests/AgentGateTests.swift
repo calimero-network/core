@@ -197,8 +197,19 @@ final class AgentGateTests: XCTestCase {
     }
 
     private func verifier(_ policy: AgentPolicy) throws -> QuoteVerifier {
+        let collateral = try TeeFixture.current
+        return try agentQuoteVerifier(
+            policy, fetchCollateral: { _ in collateral }, dcapVerify: TeeFixture.genuine, now: { TeeFixture.at })
+    }
+
+    /// The gate's quote is held to the same TCB evaluation data floor as a node's.
+    func testRefusesAQuoteWhoseCollateralIsBelowTheTCBEvaluationDataFloor() async throws {
         let collateral = try TeeFixture.collateral
-        return try agentQuoteVerifier(policy, fetchCollateral: { _ in collateral }, now: { TeeFixture.at })
+        let old = try agentQuoteVerifier(
+            try policy(), fetchCollateral: { _ in collateral }, now: { TeeFixture.at })
+        assertTeeRefusal(
+            await teeAsyncThrownMessage { _ = try await old.verify(try TeeFixture.args()) },
+            "Intel TCB evaluation data 17, older than the minimum 20")
     }
 
     func testAcceptsAGenuineQuoteOfAnImageThePolicyListsFetchingItsCollateral() async throws {

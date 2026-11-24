@@ -374,6 +374,7 @@ fn manage_application_lets_a_member_upgrade_and_approve_outbound() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     for (app, actor, may) in [
@@ -486,6 +487,7 @@ fn check(g: &Governance) {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     let by_operator = m.run_authorized(upgrade(true, "")).is_ok();
@@ -758,6 +760,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
@@ -1042,6 +1045,7 @@ fn an_upgrade_names_its_consent_or_its_run() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, None)).is_err());
@@ -1167,6 +1171,7 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
 
@@ -6657,6 +6662,7 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     let install = |by: &str, version: &str, at: u64| SystemCmd::InstallPackage {
@@ -7121,6 +7127,7 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
             owner_approves: false,
             class: None,
             auto: false,
+            members_stay: false,
             restore_point: None,
         }
     };
@@ -7226,6 +7233,7 @@ fn a_package_says_whether_its_publisher_or_each_owner_upgrades_it() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     assert!(
@@ -7302,6 +7310,7 @@ fn upgrade_to(app: &str, actor: &str, bundle: &str, release: Option<(&str, &str)
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     }
 }
@@ -13439,4 +13448,119 @@ fn an_automatic_failure_is_judged_on_the_derived_release_of_an_app_without_one()
         .last_upgrade
         .as_ref()
         .is_some_and(|u| !u.ok));
+}
+
+/// `inst` with a member `kv` of package `q` on 0.1.0, under the automatic policy:
+/// `p` 1.0.1's lock pins `kv` at 0.1.1 (it would move the member), 1.0.2's at 0.1.0.
+fn auto_unit_fixture() -> SystemMachine {
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    let mut q = m.state.packages["p"].clone();
+    q.name = "q".into();
+    q.versions.clear();
+    for version in ["0.1.0", "0.1.1"] {
+        let _prev = q.versions.insert(
+            version.into(),
+            serde_json::from_value(json!({
+                "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+                "services": { "": "bq" }, "installedBy": "pam", "installedAt": 0
+            }))
+            .unwrap(),
+        );
+    }
+    let _prev = m.state.packages.insert("q".into(), q);
+    instance_of(
+        &mut m,
+        "kv",
+        "bq",
+        json!({ "package": "q", "version": "0.1.0" }),
+    );
+    let _prev = m
+        .state
+        .apps
+        .get_mut("inst")
+        .unwrap()
+        .links
+        .insert("kv".into(), "kv".into());
+    let p = m.state.packages.get_mut("p").unwrap();
+    for (version, kv) in [("1.0.1", "0.1.1"), ("1.0.2", "0.1.0")] {
+        let _prev = p.versions.get_mut(version).unwrap().uses.insert(
+            "kv".into(),
+            super::ReleaseUse {
+                package: "q".into(),
+                range: "^0.1".into(),
+                version: Some(kv.into()),
+            },
+        );
+    }
+    m
+}
+
+/// An update on its own moves the instance alone, so it is refused where its release
+/// would move the unit's members: by an entry that says so (`members_stay`), or once the
+/// logged cluster version brings the rule. An entry logged before either applies as it did.
+#[test]
+fn an_update_on_its_own_that_would_move_the_units_members_is_refused() {
+    use super::cluster_version::Feature;
+    use super::AUTO_UPDATE_REFUSED;
+    let hold_over = 1000 + 24 * 3600;
+    let moving = |members_stay: bool| {
+        let mut cmd = auto_upgrade(
+            "1.0.1",
+            "b3",
+            Some(green()),
+            hold_over,
+            Some(taken_on(1, 7)),
+        );
+        if let SystemCmd::UpgradeApp {
+            members_stay: m, ..
+        } = &mut cmd
+        {
+            *m = members_stay;
+        }
+        cmd
+    };
+    assert!(moving(true)
+        .features()
+        .contains(&Feature::AutoUpdateMembersStay));
+
+    let mut m = auto_unit_fixture();
+    assert_eq!(m.run(moving(true)), Err(AUTO_UPDATE_REFUSED.to_owned()));
+    // Logged before the rule: applies as it did, and the member stays behind.
+    let mut before = auto_unit_fixture();
+    let _ok = before.run(moving(false)).unwrap();
+    assert_eq!(before.state.apps["inst"].bundle, "b3");
+    assert_eq!(
+        before.state.apps["kv"].release.as_ref().unwrap().version,
+        "0.1.0"
+    );
+
+    // The rule in force: the leader leaves 1.0.1 out, and an unmarked entry is refused too.
+    let versions = |m: &SystemMachine| -> Vec<String> {
+        m.state.auto_update_candidates(hold_over)[0]
+            .1
+            .iter()
+            .map(|r| r.version.clone())
+            .collect()
+    };
+    assert_eq!(versions(&m), ["1.0.2", "1.0.1"]);
+    m.state.cluster_version = Some(Feature::AutoUpdateMembersStay.since().into());
+    assert_eq!(versions(&m), ["1.0.2"]);
+    assert_eq!(m.run(moving(false)), Err(AUTO_UPDATE_REFUSED.to_owned()));
+    // A release whose lock keeps the member where it is still applies on its own.
+    let mut keeping = auto_upgrade(
+        "1.0.2",
+        "b3",
+        Some(green()),
+        hold_over,
+        Some(taken_on(1, 7)),
+    );
+    if let SystemCmd::UpgradeApp { members_stay, .. } = &mut keeping {
+        *members_stay = true;
+    }
+    let _ok = m.run(keeping).unwrap();
+    assert_eq!(
+        m.state.apps["inst"].release.as_ref().unwrap().version,
+        "1.0.2"
+    );
 }

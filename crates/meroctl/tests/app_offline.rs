@@ -442,7 +442,7 @@ async fn publish_pushes_the_bundle_to_the_registry() {
     assert_eq!(body["package"], "p");
     assert_eq!(body["signature"]["algorithm"], "ed25519");
     assert_eq!(body["_visibility"], "public");
-    assert_eq!(body["migrations"], serde_json::json!([]));
+    assert!(body.get("migrations").is_none());
     assert_eq!(
         hex::decode(body["_binary"].as_str().unwrap()).unwrap(),
         std::fs::read(d.join("out.mpk")).unwrap()
