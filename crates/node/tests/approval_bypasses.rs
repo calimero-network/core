@@ -1007,10 +1007,24 @@ async fn operator_decisions_need_the_operator_signature() {
         .await
         .unwrap_err();
     assert!(e.to_string().contains("used already"), "{e}");
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    for r in c.nodes.iter().flatten() {
-        assert!(r.node.sys(|s| s.operator_releases.contains("2.0.0")));
-    }
+    harness::poll::eventually(
+        harness::poll::EVENTUALLY,
+        "every node applied the operator's release",
+        || async {
+            let applied: Vec<bool> = c
+                .nodes
+                .iter()
+                .flatten()
+                .map(|r| r.node.sys(|s| s.operator_releases.contains("2.0.0")))
+                .collect();
+            if applied.iter().all(|a| *a) {
+                Ok(())
+            } else {
+                Err(applied)
+            }
+        },
+    )
+    .await;
 }
 
 // ---------------------------------------------------------------- F1
