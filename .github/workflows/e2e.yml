@@ -251,7 +251,7 @@ jobs:
           done
           if [ "$NIGHTLY" = true ]; then
             # Builds the Rooms component into target/app-components (tests/common/mod.rs).
-            cargo test --release -p calimero-node --test rooms
+            cargo test --release -p calimero-node --test it rooms::
           fi
 
       - name: Upload them

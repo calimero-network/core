@@ -1,5 +1,5 @@
 """Writes the replay fixture of a release: one node's data directory as that release's merod
-left it, and the answers it gave, for `crates/node/tests/upgrade_replay.rs`.
+left it, and the answers it gave, for `crates/node/tests/it/upgrade_replay.rs`.
 
     scripts/fetch-release.sh 1.0.0-rc.15 target/upgrade-from
     python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from \\

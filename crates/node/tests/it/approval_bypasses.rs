@@ -1,0 +1,1119 @@
+//! Phase 0 of gating the system group (`docs/specs/gate-system-group.md`):
+//! what a node on a release an owner has not approved could do before, tried
+//! the way such a node would: with the cluster secret, over its own sealed
+//! channel, by proposing system commands, by minting sessions.
+//!
+//! - F2: the internal routes judge which node calls and its release.
+//! - F3: a decision carries its maker's proof, checked where it applies.
+//! - F4: a Raft message's sender is the node that sent it, a group member.
+//! - F1: sessions are signed by the node that issued them, not by a key
+//!   every node holds.
+//!
+//! Builds the component kv fixture `apps/fixture-kv` from this checkout
+//! (see `harness/cluster.rs`).
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use calimero_client::attest::HttpAttestor;
+use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::{Client, Policy, Request};
+use calimero_identity::testing::SoftAuthenticator;
+use calimero_node::node::{ViewRequest, SYSTEM_GROUP};
+use calimero_node::types::Caller;
+use calimero_node::Running;
+use calimero_sealed::client::SealedTransport as SealedClient;
+use serde_json::{json, Value};
+
+use crate::harness;
+
+use harness::{kv_wasm, signed_up, typed, wire, Cluster};
+use reqwest::Method;
+
+fn running(c: &Cluster, i: usize) -> &Running {
+    c.nodes[i].as_ref().unwrap()
+}
+
+fn mock_policy() -> Policy {
+    Policy {
+        allow_mock: true,
+        ..Policy::default()
+    }
+}
+
+/// A sealed channel to node `to` opened as node `from` would open it: Noise IK
+/// with `from`'s own transport key. What a node's image can do whatever its
+/// code: it holds its key and the cluster secret.
+fn as_node(c: &Cluster, from: usize, to: usize) -> SealedClient {
+    SealedClient::identified_as(
+        c.urls[to].parse().unwrap(),
+        reqwest::Client::new(),
+        Arc::new(HttpAttestor {
+            policy: mock_policy(),
+            seen_release: Arc::default(),
+        }),
+        running(c, from).node.transport.static_key(),
+    )
+}
+
+/// An anonymous sealed channel to node `to` (Noise NK): what nodes from
+/// before identified sessions open.
+fn anonymous(c: &Cluster, to: usize) -> SealedClient {
+    SealedClient::attested(
+        c.urls[to].parse().unwrap(),
+        reqwest::Client::new(),
+        Arc::new(HttpAttestor {
+            policy: mock_policy(),
+            seen_release: Arc::default(),
+        }),
+    )
+}
+
+/// Send a peer request with the cluster secret, naming node `claimed`.
+async fn peer_send(
+    c: &Cluster,
+    channel: &SealedClient,
+    to: usize,
+    get: bool,
+    path: &str,
+    body: &Value,
+    claimed: u64,
+) -> (u16, Value) {
+    let url = format!("{}{path}", c.urls[to]);
+    let http = reqwest::Client::new();
+    let builder = if get {
+        http.get(url)
+    } else {
+        http.post(url).json(body)
+    };
+    let req = builder
+        .header("x-cluster-auth", running(c, 0).node.cluster_secret())
+        .header("x-calimero-node", claimed.to_string())
+        .build()
+        .unwrap();
+    let resp = channel.execute(req).await.unwrap();
+    let status = resp.status().as_u16();
+    let v = if get {
+        Value::Null
+    } else {
+        resp.json().await.unwrap_or(Value::Null)
+    };
+    (status, v)
+}
+
+/// Node 3 runs a release (2.0.0) nobody approved; nodes 1 and 2 run 1.0.0,
+/// which accounts that sign up on them approve.
+async fn split_cluster() -> Cluster {
+    Cluster::start_with(3, |cfg| {
+        cfg.tee_release = Some(if cfg.node_id == 3 { "2.0.0" } else { "1.0.0" }.into());
+    })
+    .await
+}
+
+/// Alice's kv app on nodes 1 and 2, holding `k = v1`.
+async fn alices_app(c: &Cluster) -> (Client, SoftAuthenticator, String, String, String) {
+    let (alice, key) = signed_up(c, 0, "alice").await;
+    let account = alice.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .await
+        .map(wire)
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let mut replicas: Vec<u64> = serde_json::from_value(created["replicas"].clone()).unwrap();
+    replicas.sort_unstable();
+    assert_eq!(
+        replicas,
+        vec![1, 2],
+        "the unapproved node is placed nothing"
+    );
+    let _ = alice
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v1" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    (alice, key, account, app, bundle)
+}
+
+// ---------------------------------------------------------------- F2, F4
+
+/// A node on an unapproved release holds the cluster secret and opens sealed
+/// channels like any node. Before, `/internal/view`, `call`, `events`,
+/// `storage`, `blob/held`, `app-ready`, `blob/get` and `raft` answered it
+/// for any app (they checked only the secret). Now each judges the caller:
+/// its key, the node whose address attests that key, and that node's release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes() {
+    let c = split_cluster().await;
+    let (alice, _key, account, app, _bundle) = alices_app(&c).await;
+    let caller = Caller::Account {
+        account: account.clone(),
+    };
+    let view = serde_json::to_value(ViewRequest {
+        app_id: app.clone(),
+        method: "get".into(),
+        args: json!({ "key": "k" }),
+        caller: caller.clone(),
+        strong: false,
+        min_index: 0,
+        via: None,
+    })
+    .unwrap();
+    let call = json!({
+        "appId": app, "method": "set", "args": { "key": "k", "value": "x" },
+        "caller": serde_json::to_value(&caller).unwrap(),
+    });
+    let group = running(&c, 0).node.sys(|s| s.apps[&app].group);
+
+    // Node 2 runs an approved release: it is answered.
+    let approved = as_node(&c, 1, 0);
+    let (status, v) = peer_send(&c, &approved, 0, false, "internal/view", &view, 2).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["result"], json!("v1"));
+
+    // Node 3 is refused on every route that reaches the app's data.
+    let node3 = as_node(&c, 2, 0);
+    let routes: Vec<(String, bool, Value)> = vec![
+        ("internal/view".into(), false, view.clone()),
+        ("internal/call".into(), false, call.clone()),
+        ("internal/storage".into(), false, json!({ "app": app })),
+        ("internal/last-write".into(), false, json!({ "app": app })),
+        ("internal/xcalls".into(), false, json!({ "app": app })),
+        (
+            "internal/blob/held".into(),
+            false,
+            json!({ "app": app, "id": hex::encode([7; 32]) }),
+        ),
+        ("internal/app-ready".into(), false, json!({ "appId": app })),
+        (
+            "internal/blob/get".into(),
+            false,
+            json!({ "hash": hex::encode([7; 32]) }),
+        ),
+        (
+            format!("internal/events?app={app}&from=0"),
+            true,
+            Value::Null,
+        ),
+    ];
+    for (path, get, body) in &routes {
+        let (status, v) = peer_send(&c, &node3, 0, *get, path, body, 3).await;
+        assert_eq!(status, 403, "{path}: {v}");
+    }
+    // Claiming to be node 2 does not help: node 2's address attests another key.
+    let (status, v) = peer_send(&c, &node3, 0, false, "internal/view", &view, 2).await;
+    assert_eq!(status, 403, "{v}");
+
+    // F4: a Raft append for the app's group, from node 3, is refused, whether
+    // it names node 3 or node 1 (the app's leader) as its sender.
+    for sender in [3, 1] {
+        let rpc = json!({
+            "group": group,
+            "rpc": { "Vote": {
+                "vote": { "leader_id": { "term": 1_000, "node_id": sender }, "committed": false },
+                "last_log_id": null,
+            } },
+        });
+        let (status, v) = peer_send(&c, &node3, 0, false, "internal/raft", &rpc, 3).await;
+        assert_eq!(status, 403, "sender {sender}: {v}");
+    }
+    // The system group still takes node 3's messages: it is a registered node
+    // (decision 7: any release may be a system voter).
+    let rpc = json!({
+        "group": SYSTEM_GROUP,
+        "rpc": { "Vote": {
+            "vote": { "leader_id": { "term": 0, "node_id": 3 }, "committed": false },
+            "last_log_id": null,
+        } },
+    });
+    let (status, v) = peer_send(&c, &node3, 0, false, "internal/raft", &rpc, 3).await;
+    assert_eq!(status, 200, "{v}");
+
+    // An anonymous channel with the cluster secret: refused.
+    let anon = anonymous(&c, 0);
+    let (status, v) = peer_send(&c, &anon, 0, false, "internal/view", &view, 3).await;
+    assert_eq!(status, 403, "{v}");
+
+    // Nor through its own API: its forward to the app's leader is refused.
+    let on3 = c.client(2);
+    on3.use_session(alice.session().await.unwrap()).await;
+    let read = on3
+        .apps()
+        .view(
+            &app,
+            "get",
+            Some(json!({ "key": "k" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
+        .await;
+    assert!(read.is_err(), "{read:?}");
+}
+
+/// The usage routes judge the caller as every other internal route does: an
+/// identified sealed session from the node whose address attests its key, not
+/// only the cluster secret.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_usage_routes_answer_identified_peers_only() {
+    let c = split_cluster().await;
+    let (_alice, _key, _account, app, _bundle) = alices_app(&c).await;
+    let routes = [
+        ("internal/usage", json!({ "app": app })),
+        ("internal/usage/today", json!({ "day": 0 })),
+    ];
+    let peer = as_node(&c, 1, 0);
+    let anon = anonymous(&c, 0);
+    for (path, body) in &routes {
+        let (status, v) = peer_send(&c, &peer, 0, false, path, body, 2).await;
+        assert_eq!(status, 200, "{path}: {v}");
+        let (status, v) = peer_send(&c, &anon, 0, false, path, body, 2).await;
+        assert_eq!(status, 403, "{path} over an anonymous channel: {v}");
+        // Claiming another node's id: its address attests another key.
+        let (status, v) = peer_send(&c, &peer, 0, false, path, body, 3).await;
+        assert_eq!(status, 403, "{path} claiming node 3: {v}");
+    }
+}
+
+// ---------------------------------------------------------------- F3
+
+/// The system leader, by index.
+async fn system_leader(c: &Cluster) -> usize {
+    for _ in 0..100 {
+        if let Some(i) = (0..c.nodes.len()).find(|i| {
+            c.nodes[*i]
+                .as_ref()
+                .is_some_and(|r| r.node.system.status().is_leader)
+        }) {
+            return i;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("no system leader");
+}
+
+/// Append `cmd` to the system log directly, as a system leader's own code
+/// would (decision 7: an unapproved node may lead the system group), and read
+/// what `apply` answered.
+async fn append(c: &Cluster, cmd: &Value) -> Result<Value, String> {
+    let leader = system_leader(c).await;
+    let (_index, out) = running(c, leader)
+        .node
+        .system
+        .write(serde_json::to_vec(cmd).unwrap())
+        .await
+        .unwrap();
+    calimero_node::system::output(&out)
+}
+
+/// A consent as the API logs it: `pk`'s assertion over the statement.
+fn consent(pk: &mut SoftAuthenticator, subject: &str, method: &str, args: &Value) -> Value {
+    let statement = calimero_node::proof::Statement::new(subject, method, args);
+    let challenge = statement.challenge().unwrap();
+    serde_json::to_value(calimero_node::proof::Consent {
+        statement,
+        assertion: pk.assert(&challenge),
+        at: 0,
+    })
+    .unwrap()
+}
+
+/// Every node's view of alice's approvals (her app's organization's, made with it) and
+/// her app's owner.
+async fn settled(c: &Cluster, app: &str) -> Vec<(Value, String)> {
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    c.nodes
+        .iter()
+        .flatten()
+        .map(|r| {
+            r.node.sys(|s| {
+                let mine = &s.apps[app].org;
+                (
+                    json!(s.orgs[mine].approved_releases),
+                    s.apps[app].owner.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
+/// Before, `apply` discarded the consent (`consent: _`) and trusted `actor`:
+/// any node could log `SetReleaseApproval { actor: <the owner>, approved }`
+/// for its own release. Now the decision applies only with the actor's own
+/// passkey assertion over exactly that decision, once, on every node,
+/// whoever proposed it: the leader's own log or a peer's `internal/system`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn forged_decisions_are_refused_where_they_apply_on_every_node() {
+    let c = split_cluster().await;
+    let (_alice, mut alice_pk, alice, app, bundle) = alices_app(&c).await;
+    let (bob_client, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let bob = bob_client.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let before = settled(&c, &app).await;
+    assert_eq!(before[0], (json!(["1.0.0"]), alice.clone()));
+
+    let mine = c.nodes[0]
+        .as_ref()
+        .unwrap()
+        .node
+        .sys(|s| s.apps[&app].org.clone());
+    let approve = |consent: Value| {
+        json!({
+            "op": "setReleaseApproval", "scope": { "kind": "org", "org": mine },
+            "version": "2.0.0", "approved": true, "actor": alice, "consent": consent,
+        })
+    };
+    let subject = format!("org:{mine}");
+    let args = json!({ "version": "2.0.0" });
+    let refused = [
+        ("no consent", approve(Value::Null)),
+        (
+            "bob's passkey",
+            approve(consent(&mut bob_pk, &subject, "__approve_release", &args)),
+        ),
+        (
+            "another release",
+            approve(consent(
+                &mut alice_pk,
+                &subject,
+                "__approve_release",
+                &json!({ "version": "3.0.0" }),
+            )),
+        ),
+        (
+            "a withdrawal",
+            approve(consent(
+                &mut alice_pk,
+                &subject,
+                "__withdraw_release",
+                &args,
+            )),
+        ),
+        (
+            "an upgrade without consent",
+            json!({
+                "op": "upgradeApp", "app_id": app, "bundle": bundle, "by_operator": false,
+                "actor": alice, "consent": null,
+            }),
+        ),
+        (
+            "a transfer without consent",
+            json!({ "op": "transferApp", "app_id": app, "to": bob, "actor": alice, "consent": null }),
+        ),
+        (
+            "a transfer with bob's passkey",
+            json!({
+                "op": "transferApp", "app_id": app, "to": bob, "actor": alice,
+                "consent": consent(&mut bob_pk, &app, "__transfer", &json!({ "to": bob })),
+            }),
+        ),
+    ];
+    for (what, cmd) in &refused {
+        let e = append(&c, cmd).await.unwrap_err();
+        assert!(!e.is_empty(), "{what}");
+    }
+    // Proposed by node 3 through a peer's route: refused where it applies.
+    let node3 = as_node(&c, 2, system_leader(&c).await);
+    let (status, v) = peer_send(
+        &c,
+        &node3,
+        system_leader(&c).await,
+        false,
+        "internal/system",
+        &approve(Value::Null),
+        3,
+    )
+    .await;
+    assert_eq!(status, 400, "{v}");
+    assert_eq!(settled(&c, &app).await, before, "nothing applied anywhere");
+
+    // Alice's own consent over exactly this decision applies, once.
+    let real = approve(consent(&mut alice_pk, &subject, "__approve_release", &args));
+    let _ok = append(&c, &real).await.unwrap();
+    let e = append(&c, &real).await.unwrap_err();
+    assert!(e.contains("used already"), "{e}");
+    let after = settled(&c, &app).await;
+    assert!(
+        after.iter().all(|(r, _)| *r == json!(["1.0.0", "2.0.0"])),
+        "{after:?}"
+    );
+}
+
+/// Every node's view of `account`'s passkeys and `org`'s members.
+async fn credentials_and_members(c: &Cluster, account: &str, org: &str) -> Vec<(usize, Value)> {
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    c.nodes
+        .iter()
+        .flatten()
+        .map(|r| {
+            r.node.sys(|s| {
+                (
+                    s.accounts[account].passkeys.len(),
+                    json!(s.orgs[org].members),
+                )
+            })
+        })
+        .collect()
+}
+
+/// Before, a system leader (decision 7: possibly a node on an unapproved
+/// release) could log `AddPasskey` for any account with a credential of its
+/// own, make itself an organization's owner with `SetOrgRole`, or redeem any
+/// invite for its own account by naming the hash the log kept. Now a passkey
+/// is added only with a passkey the account already has, a role only with
+/// the actor's passkey consent, and an invite is redeemed only with a
+/// signature by the token's own key, which the log never holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn forged_credentials_memberships_and_redemptions_are_refused() {
+    use calimero_node::system::SystemCmd;
+    let c = split_cluster().await;
+    let (alice_client, mut alice_pk, alice, _app, _bundle) = alices_app(&c).await;
+    let (bob_client, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let bob = bob_client.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let org = alice_client
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice_client
+        .orgs()
+        .invite_create(
+            &org,
+            typed(json!({ "role": "member" })),
+            Some(&mut alice_pk),
+        )
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let invite_key = calimero_node::proof::invite_key(&token);
+    assert!(
+        running(&c, 0)
+            .node
+            .sys(|s| s.invites.contains_key(&invite_key)),
+        "the log keeps the token's public key"
+    );
+    let before = credentials_and_members(&c, &alice, &org).await;
+    assert_eq!(before[0].0, 1);
+
+    // The leader's own passkey for alice's account.
+    let mut theirs = SoftAuthenticator::new("localhost", harness::ORIGIN);
+    let rp = calimero_identity::RelyingParty {
+        id: "localhost".into(),
+        origins: vec![harness::ORIGIN.into()],
+        require_uv: false,
+    };
+    let challenge = calimero_identity::random::<32>();
+    let credential =
+        calimero_identity::verify_registration(&rp, &challenge, &theirs.register(&challenge))
+            .unwrap();
+    let args = json!({ "credentialId": credential.id, "publicKey": credential.public_key });
+    let subject = format!("account:{alice}");
+    let add = |consent: Value| SystemCmd::AddPasskey {
+        at: 0,
+        account: alice.clone(),
+        credential: credential.clone(),
+        consent,
+    };
+    let make_owner = |consent: Value| SystemCmd::SetOrgRole {
+        org: org.clone(),
+        account: bob.clone(),
+        role: calimero_node::types::OrgRole::Owner,
+        actor: alice.clone(),
+        consent,
+    };
+    let owner_args = json!({ "account": bob, "role": "owner" });
+    let now = calimero_node::types::now_secs();
+    let redeem = |signature: String| SystemCmd::RedeemInvite {
+        invite_key: invite_key.clone(),
+        account: bob.clone(),
+        now,
+        signature,
+        free_when_unchanged: true,
+        clamp_grants: true,
+    };
+    let refused = [
+        ("a passkey without consent", add(Value::Null)),
+        (
+            "a passkey approved by itself",
+            add(consent(&mut theirs, &subject, "__add_passkey", &args)),
+        ),
+        (
+            "a passkey approved by bob",
+            add(consent(&mut bob_pk, &subject, "__add_passkey", &args)),
+        ),
+        ("an owner without consent", make_owner(Value::Null)),
+        (
+            "an owner by bob's own consent",
+            make_owner(consent(
+                &mut bob_pk,
+                &format!("org:{org}"),
+                "__set_org_role",
+                &owner_args,
+            )),
+        ),
+        (
+            "an owner by a consent to another role",
+            make_owner(consent(
+                &mut alice_pk,
+                &format!("org:{org}"),
+                "__set_org_role",
+                &json!({ "account": bob, "role": "member" }),
+            )),
+        ),
+        ("a redemption without a signature", redeem(String::new())),
+        (
+            "a redemption signed with another key",
+            redeem(calimero_node::proof::sign_invite_redeem(
+                "inv_guess",
+                &bob,
+                now,
+            )),
+        ),
+    ];
+    for (what, cmd) in &refused {
+        let e = append(&c, &serde_json::to_value(cmd).unwrap())
+            .await
+            .unwrap_err();
+        assert!(!e.starts_with("malformed"), "{what}: {e}");
+    }
+    assert_eq!(
+        credentials_and_members(&c, &alice, &org).await,
+        before,
+        "nothing applied anywhere"
+    );
+
+    // The invite still works through a node the token was given to.
+    let joined = bob_client
+        .orgs()
+        .invite_redeem(&token)
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(joined["org"], json!(org), "{joined}");
+}
+
+/// What every node holds of alice's sign-ins and keys: her passkey's
+/// counter, whether a refresh token is kept under `hash`, whether her API key
+/// `key_id` is live, and whether `account` exists.
+async fn sign_ins(
+    c: &Cluster,
+    alice: &str,
+    hashes: &[String],
+    key_id: &str,
+    account: &str,
+) -> Vec<Value> {
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    c.nodes
+        .iter()
+        .flatten()
+        .map(|r| {
+            r.node.sys(|s| {
+                json!({
+                    "counter": s.accounts[alice].passkeys[0].sign_count,
+                    "refresh": hashes.iter().map(|h| s.refresh.get(h).map(|r| r.account.clone())).collect::<Vec<_>>(),
+                    "key": s.api_keys.values().any(|k| k.key_id == key_id),
+                    "account": s.accounts.contains_key(account),
+                })
+            })
+        })
+        .collect()
+}
+
+/// The hash the log keeps a refresh token under.
+fn refresh_hash(token: &str) -> String {
+    calimero_identity::b64url(&calimero_identity::sha256(token.as_bytes()))
+}
+
+/// Before, a system leader (decision 7: possibly a node on an unapproved
+/// release) could log, without any proof: a refresh token of its own for any
+/// account (`CreateRefresh`), then exchange it for a session on an honest
+/// node; the exchange of a victim's refresh token for one of its own
+/// (`UseRefresh`), taking the session over; a passkey's counter at its
+/// maximum (`SetSignCount`), locking the passkey out; the revocation of
+/// anyone's API key (`RevokeApiKey`); and an account holding a victim's new
+/// credential under an id and a release it picks (`CreateAccount`), so the
+/// victim's sign-up is refused and their passkey opens the leader's account.
+/// Now each carries the proof its maker can give, and every node refuses it
+/// without.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn forged_sessions_counters_key_revocations_and_accounts_are_refused() {
+    let c = split_cluster().await;
+    let (alice_client, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice = alice_client.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (key_id, _key) = alice_client
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), Some(&mut alice_pk))
+        .await
+        .map(|k| (k.key_id, k.key))
+        .unwrap();
+    let alices_refresh = alice_client.session().await.unwrap().refresh_token;
+    let session = running(&c, 0)
+        .node
+        .sys(|s| s.refresh[&refresh_hash(&alices_refresh)].session.clone());
+    let theirs = "rt_the_leaders_own";
+    let also_theirs = "rt_the_leaders_next";
+    let mut victim = SoftAuthenticator::new("localhost", harness::ORIGIN);
+    let rp = calimero_identity::RelyingParty {
+        id: "localhost".into(),
+        origins: vec![harness::ORIGIN.into()],
+        require_uv: false,
+    };
+    let challenge = calimero_identity::random::<32>();
+    let victims =
+        calimero_identity::verify_registration(&rp, &challenge, &victim.register(&challenge))
+            .unwrap();
+    let hashes = [
+        refresh_hash(theirs),
+        refresh_hash(also_theirs),
+        refresh_hash(&alices_refresh),
+    ];
+    let before = sign_ins(&c, &alice, &hashes, &key_id, "made-by-the-leader").await;
+    assert_eq!(before[0]["key"], json!(true));
+    assert_eq!(before[0]["refresh"][2], json!(alice));
+
+    let expires = calimero_node::types::now_secs() + 3600;
+    let record = json!({
+        "account": alice, "session": session, "expiresAt": expires,
+        "passkey": alice_pk.credential_id(),
+    });
+    let forged = [
+        (
+            "a refresh token of the leader's own for alice",
+            json!({ "op": "createRefresh", "hash": refresh_hash(theirs), "record": record }),
+        ),
+        (
+            "alice's refresh token exchanged for the leader's",
+            json!({
+                "op": "useRefresh", "old_hash": refresh_hash(&alices_refresh),
+                "new_hash": refresh_hash(also_theirs), "record": record,
+                "now": calimero_node::types::now_secs(),
+            }),
+        ),
+        (
+            "alice's passkey counter at its maximum",
+            json!({ "op": "setSignCount", "credential_id": alice_pk.credential_id(), "count": u32::MAX }),
+        ),
+        (
+            "alice's API key revoked",
+            json!({ "op": "revokeApiKey", "key_id": key_id, "actor": alice }),
+        ),
+        (
+            "an account for the victim's new passkey, on the leader's release",
+            json!({ "op": "createAccount", "account": {
+                "accountId": "made-by-the-leader", "name": "victim", "createdAt": 0,
+                "passkeys": [victims], "approvedReleases": ["2.0.0"],
+            } }),
+        ),
+    ];
+    for (what, cmd) in &forged {
+        let e = append(&c, cmd).await.unwrap_err();
+        assert!(!e.starts_with("malformed"), "{what}: {e}");
+    }
+    assert_eq!(
+        sign_ins(&c, &alice, &hashes, &key_id, "made-by-the-leader").await,
+        before,
+        "nothing applied anywhere"
+    );
+
+    // The leader's tokens open nothing; alice's own still refreshes, her
+    // passkey still signs in, and the victim's sign-up goes through.
+    for token in [theirs, also_theirs] {
+        let e = c.client(0).auth().refresh(token).await.unwrap_err();
+        assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{e}");
+    }
+    let _s = alice_client.refresh().await.unwrap();
+    let _s = c.client(1).sign_in(&mut alice_pk).await.unwrap();
+    let _s = c.client(1).sign_up(&mut victim, "victim").await.unwrap();
+}
+
+/// The decisions master added since (#4771) carry their proofs too, checked
+/// where they apply: binding a package's key to an organization needs a
+/// passkey consent of an `APPROVE_RELEASES` holder over that key's binding
+/// generation; a release deadline needs the operator's signature; a
+/// publisher's upgrade run needs its consent over that package and version.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn forged_bindings_deadlines_and_publisher_runs_are_refused() {
+    use calimero_node::system::{publisher_binding_message, PublisherProof, SystemCmd};
+    use ed25519_dalek::Signer;
+    let c = Cluster::start(3).await;
+    let (alice_client, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let alice = alice_client.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (_bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let org = alice_client
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // A publisher key's own signature over the binding: valid, so only the
+    // consent decides.
+    let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(&key.verifying_key().to_bytes());
+    let message = publisher_binding_message(&c.name, &org, &signer, 0);
+    let bind = |consent: Value| {
+        serde_json::to_value(SystemCmd::BindPublisher {
+            signer_id: signer.clone(),
+            org: org.clone(),
+            cluster: c.name.clone(),
+            proof: PublisherProof {
+                public_key: calimero_identity::b64url(&key.verifying_key().to_bytes()),
+                signature: calimero_identity::b64url(&key.sign(&message).to_bytes()),
+            },
+            actor: alice.clone(),
+            consent,
+        })
+        .unwrap()
+    };
+    let subject = format!("org:{org}");
+    let args = json!({ "signerId": signer, "generation": 0 });
+    for (what, cmd) in [
+        ("no consent", bind(Value::Null)),
+        (
+            "bob's passkey",
+            bind(consent(&mut bob_pk, &subject, "__bind_publisher", &args)),
+        ),
+        (
+            "another generation",
+            bind(consent(
+                &mut alice_pk,
+                &subject,
+                "__bind_publisher",
+                &json!({ "signerId": signer, "generation": 1 }),
+            )),
+        ),
+        (
+            "another organization",
+            bind(consent(
+                &mut alice_pk,
+                "org:other",
+                "__bind_publisher",
+                &args,
+            )),
+        ),
+    ] {
+        let e = append(&c, &cmd).await.unwrap_err();
+        assert!(!e.is_empty(), "{what}");
+    }
+    assert!(
+        running(&c, 0).node.sys(|s| s.publishers.is_empty()),
+        "nothing bound"
+    );
+    let real = bind(consent(&mut alice_pk, &subject, "__bind_publisher", &args));
+    let _ok = append(&c, &real).await.unwrap();
+    let e = append(&c, &real).await.unwrap_err();
+    assert!(e.contains("used already"), "{e}");
+
+    // A deadline without the operator's signature, or with one over another
+    // deadline: refused where it applies.
+    let deadline = |after: Option<u64>, proof: Value| {
+        serde_json::to_value(SystemCmd::SetReleaseDeadline {
+            version: "2.0.0".into(),
+            after,
+            proof,
+        })
+        .unwrap()
+    };
+    assert!(append(&c, &deadline(Some(1), Value::Null)).await.is_err());
+    let operator = ed25519_dalek::SigningKey::from_bytes(&harness::OPERATOR_SEED);
+    let signed = |after: Option<u64>| {
+        let statement = calimero_node::proof::Statement::new(
+            "cluster",
+            "__release_deadline",
+            &json!({ "version": "2.0.0", "after": after }),
+        );
+        let signature = operator.sign(&statement.operator_message(&c.name));
+        json!({
+            "subject": statement.subject, "method": statement.method,
+            "args": statement.args, "nonce": statement.nonce,
+            "signature": hex::encode(signature.to_bytes()),
+        })
+    };
+    assert!(append(&c, &deadline(Some(1), signed(Some(2))))
+        .await
+        .is_err());
+    assert!(running(&c, 0).node.sys(|s| s.release_deadlines.is_empty()));
+    // Through the Ops API: the token alone gets the bytes to sign.
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let e = ops
+        .ops()
+        .release_deadline("2.0.0", Some("2999-01-01T00:00:00Z"), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
+    let _ok = harness::ops_signed(
+        &ops,
+        "ops/releases/2.0.0/deadline",
+        json!({ "after": "2999-01-01T00:00:00Z" }),
+    )
+    .await
+    .unwrap();
+
+    // A publisher's run over every instance of a package, started without
+    // the publisher's consent or with one over another version: refused.
+    let run = |version: &str, consent: Value| {
+        json!({
+            "op": "startUpgradeRun", "org": org, "consent": consent,
+            "run": {
+                "runId": format!("r-{version}"), "package": "com.test.p", "version": version,
+                "team": null, "cascade": false, "by": alice, "startedAt": 1,
+                "apps": [], "done": [], "failed": {}, "finished": false,
+            },
+        })
+    };
+    let published =
+        |version: &str| json!({ "package": "com.test.p", "version": version, "migrate": null });
+    assert!(append(&c, &run("1.1.0", Value::Null)).await.is_err());
+    let other = consent(
+        &mut alice_pk,
+        &subject,
+        "__upgrade_published",
+        &published("1.2.0"),
+    );
+    assert!(append(&c, &run("1.1.0", other)).await.is_err());
+    let real = consent(
+        &mut alice_pk,
+        &subject,
+        "__upgrade_published",
+        &published("1.1.0"),
+    );
+    let _ok = append(&c, &run("1.1.0", real)).await.unwrap();
+}
+
+// ---------------------------------------------------------------- operator
+
+/// Where the operator holds release approvals, its decisions carry its
+/// signature (Ed25519, the key recorded at genesis). Before, any node could
+/// log `SetOperatorRelease` for its own release with no proof at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn operator_decisions_need_the_operator_signature() {
+    use ed25519_dalek::Signer;
+    let operator = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let public = hex::encode(operator.verifying_key().to_bytes());
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.governance.releases = calimero_node::system::Authority::Operator;
+        cfg.operator_key = Some(public.clone());
+    })
+    .await;
+    let recorded = running(&c, 0).node.sys(|s| s.operator_key.clone()).unwrap();
+    assert_eq!(recorded.key, public);
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+
+    // The ops token alone is not enough: the node names what to sign.
+    let e = ops.ops().release("2.0.0", None, None).await.unwrap_err();
+    assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
+    let d = e.details().unwrap().clone();
+    let message = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        d["message"].as_str().unwrap(),
+    )
+    .unwrap();
+    let statement = calimero_node::proof::Statement {
+        subject: "cluster".into(),
+        method: "__approve_release".into(),
+        args: d["args"].as_str().unwrap().into(),
+        nonce: d["nonce"].as_str().unwrap().into(),
+    };
+    assert_eq!(
+        statement.operator_message(&c.name),
+        message,
+        "the documented format"
+    );
+
+    // A signature by another key: refused.
+    let other = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+    let e = ops
+        .transport()
+        .json(Request::new(Method::POST, "ops/releases").json(
+            json!({ "version": "2.0.0", "operatorProof": {
+                "nonce": d["nonce"], "signature": hex::encode(other.sign(&message).to_bytes()),
+            } }),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_OPERATOR_SIGNATURE"), "{e}");
+
+    // Logged directly, without or with a wrong proof: refused at apply.
+    let forged = |proof: Value| json!({ "op": "setOperatorRelease", "version": "2.0.0", "approved": true, "proof": proof });
+    assert!(append(&c, &forged(Value::Null)).await.is_err());
+    let wrong = json!({
+        "subject": "cluster", "method": "__approve_release", "args": d["args"],
+        "nonce": d["nonce"], "signature": hex::encode(other.sign(&message).to_bytes()),
+    });
+    assert!(append(&c, &forged(wrong)).await.is_err());
+    assert!(running(&c, 0)
+        .node
+        .sys(|s| !s.operator_releases.contains("2.0.0")));
+
+    // Signed by the operator: applied, once.
+    let proof = json!({ "nonce": d["nonce"], "signature": hex::encode(operator.sign(&message).to_bytes()) });
+    let _ok = ops
+        .transport()
+        .json(
+            Request::new(Method::POST, "ops/releases")
+                .json(json!({ "version": "2.0.0", "operatorProof": proof })),
+        )
+        .await
+        .unwrap();
+    let e = ops
+        .transport()
+        .json(
+            Request::new(Method::POST, "ops/releases")
+                .json(json!({ "version": "2.0.0", "operatorProof": proof })),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("used already"), "{e}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    for r in c.nodes.iter().flatten() {
+        assert!(r.node.sys(|s| s.operator_releases.contains("2.0.0")));
+    }
+}
+
+// ---------------------------------------------------------------- F1
+
+/// Before, every node held the session key K_s and could mint a session for
+/// any account. Now
+/// a node signs the sessions it issues with its attested receipt key, and
+/// other nodes accept one only where the issuer's release may serve the
+/// account and, for an app, hold the app's data.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn sessions_signed_by_an_unapproved_node_reach_nothing() {
+    let c = split_cluster().await;
+    let (alice, mut key, account, app, _bundle) = alices_app(&c).await;
+    let token = alice.session().await.unwrap().session_token;
+    assert!(token.starts_with("v2."), "{token}");
+
+    // Node 3 does not issue her a session: no other node would take it.
+    let on3 = c.client(2);
+    let e = on3.sign_in(&mut key).await.unwrap_err();
+    assert!(matches!(e, calimero_client::Error::WrongNode { .. }), "{e}");
+    // Its image can still sign whatever it likes with its own key: a token
+    // for alice, as node 3 would mint it.
+    // Without alice's refresh token, which a client would otherwise use on
+    // the 401 and get a session an approved node signs.
+    let mut minted = alice.session().await.unwrap();
+    minted.refresh_token = String::new();
+    minted.session_token = running(&c, 2)
+        .node
+        .mint_session(calimero_identity::SessionClaims {
+            account: account.clone(),
+            session: "forged".into(),
+            expires_at: calimero_node::types::now_secs() + 600,
+            passkey: None,
+            app: None,
+            origin: None,
+            node: 0,
+            key: String::new(),
+        });
+    let on1 = c.client(0);
+    on1.use_session(minted.clone()).await;
+    let e = on1.auth().me().await.unwrap_err();
+    assert!(e.to_string().starts_with("401"), "{e}");
+    let e = on1
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "x" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("401"), "{e}");
+    on3.use_session(minted.clone()).await;
+    let e = on3.auth().me().await.unwrap_err();
+    assert_eq!(e.code(), Some("WRONG_NODE"), "{e}");
+
+    // Her session from node 1 works on every approved node.
+    let on2 = c.client(1);
+    on2.use_session(alice.session().await.unwrap()).await;
+    assert_eq!(
+        on2.auth().me().await.map(wire).unwrap()["accountId"],
+        json!(account)
+    );
+
+    // A refresh node 3 may not serve is refused before the refresh token is
+    // spent: the same token then works on an approved node (spent, it would
+    // look like a stolen copy there and revoke the session).
+    on3.use_session(alice.session().await.unwrap()).await;
+    let e = on3.refresh().await.unwrap_err();
+    assert!(matches!(e, calimero_client::Error::WrongNode { .. }), "{e}");
+    // The same token, through an approved node: a session that node signed.
+    let fresh = alice.refresh().await.unwrap();
+    // A sign-in node 3 may not serve is refused before its challenge is spent:
+    // the same ceremony then finishes on an approved node.
+    let begin = on3.auth().login_begin(None).await.map(wire).unwrap();
+    let challenge =
+        calimero_identity::from_b64url(begin["options"]["challenge"].as_str().unwrap()).unwrap();
+    let finish = json!({
+        "challengeId": begin["challengeId"],
+        "assertion": calimero_client::Passkey::get(&mut key, &challenge),
+    });
+    let e = on3
+        .transport()
+        .json(Request::new(Method::POST, "auth/passkey/login/finish").json(finish.clone()))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, calimero_client::Error::WrongNode { .. }), "{e}");
+    let signed_in = c
+        .client(0)
+        .auth()
+        .login_finish(
+            begin["challengeId"].as_str().unwrap(),
+            calimero_client::Passkey::get(&mut key, &challenge),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(signed_in["accountId"], json!(account));
+    assert!(
+        fresh.session_token.starts_with("v2."),
+        "{}",
+        fresh.session_token
+    );
+    on2.use_session(fresh).await;
+    assert_eq!(
+        on2.auth().me().await.map(wire).unwrap()["accountId"],
+        json!(account)
+    );
+}

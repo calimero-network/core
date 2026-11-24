@@ -153,8 +153,10 @@ impl Cluster {
             let mut nodes = Vec::new();
             let mut dirs = Vec::new();
             let mut configs = Vec::new();
+            // `c` keeps these apart from `harness::cluster_name`'s, whose counter is its own
+            // and which shares the process with this one in `tests/it`.
             let name = format!(
-                "test-{}-{}",
+                "test-{}-c{}",
                 std::process::id(),
                 NEXT_CLUSTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             );
