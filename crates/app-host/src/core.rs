@@ -150,6 +150,8 @@ pub struct HostCore {
     xcalls: Vec<Xcall>,
     logs: Vec<String>,
     log_bytes: usize,
+    /// Whether `log` keeps lines at all (`with_logs`); off unless the embedder asks.
+    keep_logs: bool,
     unique_ids: u64,
     rng: ChaCha20Rng,
     cursors: BTreeMap<u32, Cursor>,
@@ -214,6 +216,7 @@ impl HostCore {
             xcalls: Vec::new(),
             logs: Vec::new(),
             log_bytes: 0,
+            keep_logs: false,
             unique_ids: 0,
             rng,
             cursors: BTreeMap::new(),
@@ -265,6 +268,14 @@ impl HostCore {
     #[must_use]
     pub fn with_http(mut self, http: Arc<dyn HttpHost>) -> Self {
         self.http = http;
+        self
+    }
+
+    /// Keep the app's log lines (`log`, stdout, stderr) on the outcome. They may hold user
+    /// data, so the default drops every line: only a development node or a local run asks.
+    #[must_use]
+    pub fn with_logs(mut self, keep: bool) -> Self {
+        self.keep_logs = keep;
         self
     }
 
@@ -1194,9 +1205,10 @@ impl HostCore {
         self.rng.fill_bytes(buf);
     }
 
-    /// One line of the owner-only app log, kept up to `MAX_LOG_BYTES` per run.
+    /// One line of the app's log, kept up to `MAX_LOG_BYTES` per run, and only when the
+    /// embedder asked (`with_logs`); otherwise dropped at once.
     pub fn log(&mut self, line: String) {
-        if self.log_bytes > MAX_LOG_BYTES {
+        if !self.keep_logs || self.log_bytes > MAX_LOG_BYTES {
             return;
         }
         self.log_bytes = self.log_bytes.saturating_add(line.len());

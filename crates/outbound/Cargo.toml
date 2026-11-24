@@ -34,3 +34,5 @@ tokio-rustls.workspace = true
 # in-process and takes literal secrets.
 outbound-testing = []
 
+[lints]
+workspace = true

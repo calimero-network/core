@@ -42,3 +42,6 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 [features]
 # DEV/TEST ONLY: accept mock KMS attestation. Default off.
 mock-attestation = ["calimero-tee-attestation/mock-attestation"]
+
+[lints]
+workspace = true

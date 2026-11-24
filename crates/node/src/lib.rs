@@ -18,6 +18,7 @@ pub mod app_host;
 pub mod attest;
 pub mod backup;
 pub mod cluster_key;
+pub mod compile;
 pub mod component;
 pub mod consent_page;
 mod egress;

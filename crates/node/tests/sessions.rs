@@ -4,6 +4,11 @@
 //! sees or ends them: another account's session is `404`, and an API key is
 //! refused the list.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::time::Duration;
 
 use calimero_identity::testing::SoftAuthenticator;
