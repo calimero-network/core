@@ -1,7 +1,8 @@
-//! The KMS settings a TEE node fetches its keys with (v1's `[tee.kms]`).
+//! The KMS settings a TEE node fetches its keys with (v1's `[tee.kms]`): where
+//! the KMS is and how to reach it, never what to trust it on. A KMS is trusted
+//! only through the signed release policy (`crate::policy`).
 
 use camino::Utf8PathBuf;
-use eyre::{bail, Result as EyreResult};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -17,34 +18,16 @@ impl TeeConfig {
     /// A TEE config that fetches its storage key from the KMS at `url`, with
     /// every other setting at its default.
     ///
-    /// The shape `merod init --kms-url` writes. The KMS's own attestation is
-    /// verified against the release policy merod fetches at startup (see
-    /// `merod`'s `kms_policy`), so no allowlists are needed here.
+    /// The KMS's own attestation is verified against the release policy
+    /// (`crate::policy::resolve_policy`), so no allowlists are needed here.
     #[must_use]
     pub fn kms(url: Url) -> Self {
         Self {
             kms: Some(KmsConfig {
                 url,
                 tls: KmsTlsConfig::default(),
-                attestation: KmsAttestationConfig::default(),
             }),
         }
-    }
-
-    /// Whether this node is configured to enforce *real* KMS attestation.
-    ///
-    /// Returns true when the KMS has attestation verification enabled and is
-    /// not running in mock-accepting development mode. This is the predicate
-    /// used to refuse the dev-only `--mock-tee` flag: mock and real attestation
-    /// must be mutually exclusive on a single node.
-    ///
-    /// Returns `false` when no KMS is configured (`tee.kms` absent), which
-    /// permits `--mock-tee`.
-    #[must_use]
-    pub fn has_real_attestation(&self) -> bool {
-        self.kms
-            .as_ref()
-            .is_some_and(|kms| kms.attestation.enabled && !kms.attestation.accept_mock)
     }
 }
 
@@ -57,9 +40,9 @@ pub struct KmsConfig {
     /// Optional TLS hardening settings for KMS transport.
     #[serde(default)]
     pub tls: KmsTlsConfig,
-    /// KMS self-attestation verification policy.
-    #[serde(default)]
-    pub attestation: KmsAttestationConfig,
+    // An `attestation` table (v1's `[tee.kms.attestation]` allowlists) still
+    // parses and is ignored: a KMS is trusted only through the signed release
+    // policy. Test: `an_attestation_table_parses_and_pins_nothing`.
 }
 
 /// TLS configuration for KMS transport hardening.
@@ -86,131 +69,6 @@ pub struct KmsTlsConfig {
     pub client_key_path: Option<Utf8PathBuf>,
 }
 
-/// Configuration for verifying KMS self-attestation (`POST /attest`).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct KmsAttestationConfig {
-    /// Enable KMS attestation verification before requesting keys.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Accept mock quotes for development only.
-    ///
-    /// WARNING: Enabling this in production bypasses real attestation
-    /// cryptographic guarantees and weakens the trust model.
-    #[serde(default)]
-    pub accept_mock: bool,
-    /// Allowed TCB statuses for KMS quote verification.
-    #[serde(default = "default_kms_attestation_tcb_statuses")]
-    pub allowed_tcb_statuses: Vec<String>,
-    /// Allowed KMS MRTD values (hex, with or without `0x` prefix).
-    #[serde(default)]
-    pub allowed_mrtd: Vec<String>,
-    /// Allowed KMS RTMR0 values (hex).
-    ///
-    /// Required when `enabled=true` and `accept_mock=false`.
-    #[serde(default)]
-    pub allowed_rtmr0: Vec<String>,
-    /// Allowed KMS RTMR1 values (hex).
-    ///
-    /// Required when `enabled=true` and `accept_mock=false`.
-    #[serde(default)]
-    pub allowed_rtmr1: Vec<String>,
-    /// Allowed KMS RTMR2 values (hex).
-    ///
-    /// Required when `enabled=true` and `accept_mock=false`.
-    #[serde(default)]
-    pub allowed_rtmr2: Vec<String>,
-    /// Allowed KMS RTMR3 values (hex).
-    ///
-    /// Required when `enabled=true` and `accept_mock=false`.
-    #[serde(default)]
-    pub allowed_rtmr3: Vec<String>,
-    /// Optional base64-encoded 32-byte binding value for `/attest`.
-    ///
-    /// If unset, merod uses the default domain separator binding.
-    #[serde(default)]
-    pub binding_b64: Option<String>,
-    /// Optional path to externally-generated attestation policy JSON.
-    ///
-    /// This is intended for deployment startup scripts (e.g. mero-tee image
-    /// startup hooks) that fetch and verify signed policy artifacts, then
-    /// provide policy allowlists to merod.
-    #[serde(default)]
-    pub policy_json_path: Option<Utf8PathBuf>,
-}
-
-impl Default for KmsAttestationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            accept_mock: false,
-            allowed_tcb_statuses: default_kms_attestation_tcb_statuses(),
-            allowed_mrtd: Vec::new(),
-            allowed_rtmr0: Vec::new(),
-            allowed_rtmr1: Vec::new(),
-            allowed_rtmr2: Vec::new(),
-            allowed_rtmr3: Vec::new(),
-            binding_b64: None,
-            policy_json_path: None,
-        }
-    }
-}
-
-impl KmsAttestationConfig {
-    /// Validate required attestation policy fields when attestation is enabled.
-    ///
-    /// This keeps startup validation consistent with runtime policy normalization.
-    pub fn validate_enabled_policy(&self) -> EyreResult<()> {
-        if !self.enabled {
-            return Ok(());
-        }
-        if self.accept_mock {
-            // Development mode: production strictness does not apply.
-            return Ok(());
-        }
-
-        if !has_non_empty_status_allowlist(&self.allowed_tcb_statuses) {
-            bail!("tee.kms.attestation.enabled is true, but allowed_tcb_statuses is empty.");
-        }
-
-        if !has_non_empty_measurement_allowlist(&self.allowed_mrtd) {
-            bail!(
-                "tee.kms.attestation.enabled is true, but allowed_mrtd is empty. \
-                 Configure at least one trusted KMS MRTD."
-            );
-        }
-
-        for (field_name, values) in [
-            ("allowed_rtmr0", &self.allowed_rtmr0),
-            ("allowed_rtmr1", &self.allowed_rtmr1),
-            ("allowed_rtmr2", &self.allowed_rtmr2),
-            ("allowed_rtmr3", &self.allowed_rtmr3),
-        ] {
-            if has_non_empty_measurement_allowlist(values) {
-                continue;
-            }
-
-            bail!(
-                "tee.kms.attestation.enabled is true and accept_mock is false, \
-                 but {field_name} is empty."
-            );
-        }
-
-        Ok(())
-    }
-}
-
-fn has_non_empty_status_allowlist(values: &[String]) -> bool {
-    values.iter().any(|status| !status.trim().is_empty())
-}
-
-fn has_non_empty_measurement_allowlist(values: &[String]) -> bool {
-    values
-        .iter()
-        .map(|measurement| normalize_attestation_measurement(measurement))
-        .any(|measurement| !measurement.is_empty())
-}
-
 /// Normalize a configured attestation measurement value for comparison.
 ///
 /// Trims surrounding whitespace, strips a leading `0x` prefix if present, and
@@ -223,6 +81,24 @@ pub fn normalize_attestation_measurement(value: &str) -> String {
         .to_owned()
 }
 
-fn default_kms_attestation_tcb_statuses() -> Vec<String> {
-    vec!["UpToDate".to_owned()]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `[tee.kms]` table written for an earlier release, with allowlists
+    /// under `attestation`, still loads; the allowlists go nowhere.
+    #[test]
+    fn an_attestation_table_parses_and_pins_nothing() {
+        let kms: KmsConfig = serde_json::from_value(serde_json::json!({
+            "url": "http://kms.example.com/",
+            "attestation": {
+                "enabled": true,
+                "accept_mock": false,
+                "allowed_mrtd": ["aa".repeat(48)],
+                "policy_json_path": "/etc/calimero/kms-policy.json"
+            }
+        }))
+        .expect("an old [tee.kms] table still parses");
+        assert_eq!(kms.url.as_str(), "http://kms.example.com/");
+    }
 }

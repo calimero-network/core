@@ -3,18 +3,18 @@
 //! This module handles communication with KMS services to obtain storage
 //! encryption keys using TDX attestation, from mero-kms running as a TDX cluster.
 //!
-//! When MERO_KMS_RELEASE_TAG, MERO_KMS_VERSION, or MERO_TEE_VERSION is set,
-//! merod verifies the KMS via POST /attest before requesting keys, using
-//! policy fetched from the release.
+//! The KMS is trusted only through the signed mero-tee release policy
+//! (`crate::policy`, named by MERO_KMS_RELEASE_TAG, MERO_KMS_VERSION or
+//! MERO_TEE_VERSION): its `POST /attest` quote must match that policy before
+//! anything is asked of it. Without the policy there is no key.
 
-use crate::config::{normalize_attestation_measurement, KmsAttestationConfig, KmsConfig};
+use crate::config::{normalize_attestation_measurement, KmsConfig};
 use base64::Engine;
 use calimero_tee_attestation::{
     generate_attestation, verify_attestation, KmsEvidence, VerificationResult,
 };
 #[cfg(feature = "mock-attestation")]
 use calimero_tee_attestation::{is_mock_quote, verify_mock_attestation};
-use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{bail, Context, Result};
 use libp2p_identity::Keypair;
 use serde::{Deserialize, Serialize};
@@ -65,9 +65,7 @@ struct KmsGetKeyRequest {
 }
 
 /// Response body from the KMS get-key endpoint.
-///
-/// A KMS that predates sealed release answers with `key` alone; that answer is
-/// refused, because the key in it was readable by whatever terminated TLS.
+/// A key-only answer (no sealed release) is refused: whatever terminated TLS could read it.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct KmsGetKeyResponse {
@@ -172,9 +170,8 @@ struct Transport {
     rollback: bool,
 }
 
-/// The binding an `/attest` answer's quote must carry after the nonce, and
-/// whether that KMS keeps rollback counters: a v2 binding commits to the
-/// capabilities, so a relay that strips them breaks the quote.
+/// The binding an `/attest` quote must carry after the nonce, and whether the KMS keeps counters.
+/// A v2 binding commits to the capabilities, so a relay that strips them breaks the quote.
 fn transport_binding(
     binding: &[u8; 32],
     kms_public: &[u8; 32],
@@ -193,75 +190,6 @@ fn transport_binding(
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum KeyFetchAttestationMode {
-    /// Use attestation settings configured in `config.toml`.
-    UseConfigPolicy,
-    /// Skip config attestation because release-policy verification already ran
-    /// and attested this transport key.
-    AlreadyVerifiedFromReleasePolicy { transport: Transport },
-}
-
-#[derive(Debug, Clone)]
-struct NormalizedKmsAttestationPolicy {
-    accept_mock: bool,
-    allowed_tcb_statuses: Vec<String>,
-    allowed_mrtd: Vec<String>,
-    allowed_rtmr0: Vec<String>,
-    allowed_rtmr1: Vec<String>,
-    allowed_rtmr2: Vec<String>,
-    allowed_rtmr3: Vec<String>,
-    binding: [u8; 32],
-    binding_b64: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ExternalKmsAttestationPolicy {
-    #[serde(default)]
-    allowed_tcb_statuses: Option<Vec<String>>,
-    #[serde(default)]
-    allowed_mrtd: Option<Vec<String>>,
-    #[serde(default)]
-    allowed_rtmr0: Option<Vec<String>>,
-    #[serde(default)]
-    allowed_rtmr1: Option<Vec<String>>,
-    #[serde(default)]
-    allowed_rtmr2: Option<Vec<String>>,
-    #[serde(default)]
-    allowed_rtmr3: Option<Vec<String>>,
-    #[serde(default)]
-    binding_b64: Option<String>,
-    // Canonical mero-tee policy schema nests allowlists under `policy`.
-    #[serde(default)]
-    policy: Option<ExternalKmsAttestationPolicyValues>,
-    // Canonical mero-tee policy schema nests default binding under `kms`.
-    #[serde(default)]
-    kms: Option<ExternalKmsAttestationPolicyKms>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ExternalKmsAttestationPolicyValues {
-    #[serde(default)]
-    allowed_tcb_statuses: Option<Vec<String>>,
-    #[serde(default)]
-    allowed_mrtd: Option<Vec<String>>,
-    #[serde(default)]
-    allowed_rtmr0: Option<Vec<String>>,
-    #[serde(default)]
-    allowed_rtmr1: Option<Vec<String>>,
-    #[serde(default)]
-    allowed_rtmr2: Option<Vec<String>>,
-    #[serde(default)]
-    allowed_rtmr3: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ExternalKmsAttestationPolicyKms {
-    #[serde(default)]
-    default_binding_b64: Option<String>,
-}
-
-const EXTERNAL_POLICY_ALLOWED_DIRS: &[&str] = &["/etc/calimero", "/run/calimero"];
 #[cfg(feature = "mock-attestation")]
 const MOCK_KMS_ATTESTATION_ENV: &str = "MEROD_ALLOW_MOCK_KMS_ATTESTATION";
 const MAX_KMS_ATTEST_QUOTE_B64_LEN: usize = 128 * 1024;
@@ -269,9 +197,7 @@ const MAX_KMS_REPORT_DATA_HEX_LEN: usize = 1024;
 const MAX_KMS_CHALLENGE_ID_LEN: usize = 512;
 const MAX_KMS_NONCE_B64_LEN: usize = 2048;
 const MAX_KMS_KEY_HEX_LEN: usize = 4096;
-/// A v2 release's sealed record (base64): the key's hex plus the counters and
-/// the session, well under this.
-const MAX_KMS_RECORD_B64_LEN: usize = 16 * 1024;
+const MAX_KMS_RECORD_B64_LEN: usize = 16 * 1024; // a v2 sealed record: key hex, counters and session
 const MIN_KMS_KEY_BYTES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -387,10 +313,6 @@ fn map_probe_attestation_failure(err: eyre::Report) -> KmsProbeFailure {
 
     let code = if details.contains("reportData mismatch") {
         "KMS_ATTEST_REPORT_DATA_MISMATCH"
-    } else if details.contains("mock attestation quote")
-        && details.contains("accept_mock is disabled")
-    {
-        "KMS_ATTEST_MOCK_QUOTE_REJECTED"
     } else if details.contains("Policy JSON")
         || details.contains("allowed_")
         || details.contains("allowlist")
@@ -474,7 +396,7 @@ fn generate_probe_attestation(
 }
 
 /// Probe the KMS the way [`fetch_storage_key`] would use it, with the same
-/// refusal of a KMS that nothing pins (see there).
+/// refusal of a KMS the signed release policy does not pin (see there).
 pub async fn probe_storage_key(
     kms: &KmsConfig,
     peer_id: &str,
@@ -500,21 +422,19 @@ pub async fn probe_storage_key(
 
 /// Fetch the storage encryption key from the configured KMS.
 ///
-/// When `policy` is provided (from release-policy env vars), verifies the KMS
-/// via POST /attest before requesting keys.
+/// The KMS is verified via POST /attest against `policy`, the signed mero-tee
+/// release policy ([`crate::policy::resolve_policy`]), before any key is asked
+/// for. With no policy the KMS is refused before any request, in every build:
+/// nothing else (no config allowlist, no environment variable) pins a KMS.
 ///
 /// Returns an error if no KMS is configured (incomplete TEE configuration) or
 /// if key fetching fails.
-///
-/// In builds without `mock-attestation` it also refuses, before any request, a
-/// KMS that nothing pins: no `policy` and no enabled config allowlists
-/// (`attestation.enabled` with `accept_mock = false`).
 ///
 /// # Arguments
 /// * `kms` - The `[tee.kms]` configuration, if any
 /// * `peer_id` - The peer ID string (base58 encoded)
 /// * `identity` - Local node identity keypair used to sign challenge payloads
-/// * `policy` - Optional attestation policy fetched from a release version
+/// * `policy` - The attestation policy of the release the node names; `None` is refused
 pub async fn fetch_storage_key(
     kms: Option<&KmsConfig>,
     peer_id: &str,
@@ -552,28 +472,13 @@ where
              Running a TEE node without storage encryption is not supported."
         );
     };
-    ensure_kms_is_pinned(kms, policy)?;
+    let policy = require_release_policy(kms, policy)?;
     info!("Using mero-kms");
-    validate_kms_transport(&kms.url, transport_rule(kms, policy.is_some()))?;
+    validate_kms_transport(&kms.url)?;
 
-    let (attestation_mode, evidence) = if let Some(p) = policy {
-        let (transport, evidence) = verify_kms_attestation_from_release_policy(kms, p).await?;
-        (
-            KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy { transport },
-            Some(evidence),
-        )
-    } else {
-        (KeyFetchAttestationMode::UseConfigPolicy, None)
-    };
-    let (key, counters) = fetch_from_kms(
-        kms,
-        peer_id,
-        identity,
-        attestation_mode,
-        rollback_node,
-        attestor,
-    )
-    .await?;
+    let (transport, evidence) = verify_kms_attestation_from_release_policy(kms, policy).await?;
+    let (key, counters) =
+        fetch_from_kms(kms, peer_id, identity, transport, rollback_node, attestor).await?;
     Ok(ReleasedKey {
         key,
         evidence,
@@ -586,29 +491,28 @@ where
 /// No `Debug`: it holds the key.
 pub struct ReleasedKey {
     pub key: Vec<u8>,
-    /// What the TD verified of the KMS: `Some` whenever the signed release
-    /// policy verified it, `None` on the config-allowlist path (air-gapped
-    /// deployments, which name no release to report).
-    pub evidence: Option<KmsEvidence>,
+    /// What the TD verified of the KMS against the signed release policy.
+    pub evidence: KmsEvidence,
     /// This node's rollback counters, when asked for (`rollback_node`) and the
     /// KMS keeps them; `None` from a KMS that predates them.
     pub counters: Option<Counters>,
 }
 
-/// Refused before any request: nothing pins this KMS (release policy or config
-/// allowlists). Mock builds keep the lenient development path.
-fn ensure_kms_is_pinned(kms: &KmsConfig, policy: Option<&KmsAttestationPolicy>) -> Result<()> {
-    let pinned = policy.is_some() || (kms.attestation.enabled && !kms.attestation.accept_mock);
-    if cfg!(feature = "mock-attestation") || pinned {
-        return Ok(());
-    }
-    bail!(
-        "the KMS at {} is not verified. Name the release it runs (MERO_TEE_VERSION, \
-         MERO_KMS_VERSION or MERO_KMS_RELEASE_TAG) so its signed policy is used, or set \
-         tee.kms.attestation.enabled with accept_mock = false, allowed_mrtd and \
-         allowed_rtmr0..3 in config.toml",
-        kms.url
-    )
+/// Refused before any request: only the signed release policy pins a KMS, in
+/// every build. Config allowlists (an `attestation` table under `[tee.kms]`)
+/// are ignored, and nothing in the environment stands in for the policy.
+fn require_release_policy<'a>(
+    kms: &KmsConfig,
+    policy: Option<&'a KmsAttestationPolicy>,
+) -> Result<&'a KmsAttestationPolicy> {
+    policy.ok_or_else(|| {
+        eyre::eyre!(
+            "the KMS at {} is not verified. Name the release it runs (MERO_TEE_VERSION, \
+             MERO_KMS_VERSION or MERO_KMS_RELEASE_TAG) so its signed policy is used; \
+             nothing else pins a KMS",
+            kms.url
+        )
+    })
 }
 
 async fn probe_storage_key_with_attestor<F>(
@@ -621,7 +525,7 @@ async fn probe_storage_key_with_attestor<F>(
 where
     F: Fn([u8; 64]) -> std::result::Result<ProbeAttestation, String>,
 {
-    ensure_kms_is_pinned(kms, policy).map_err(|err| {
+    let policy = require_release_policy(kms, policy).map_err(|err| {
         probe_failure(
             KmsProbeStage::Attest,
             "KMS_UNVERIFIED",
@@ -629,10 +533,10 @@ where
             err.to_string(),
         )
     })?;
-    validate_kms_transport(&kms.url, transport_rule(kms, policy.is_some())).map_err(|err| {
+    validate_kms_transport(&kms.url).map_err(|err| {
         probe_failure(
             KmsProbeStage::Transport,
-            "KMS_HTTP_INSECURE",
+            "KMS_URL_UNSUPPORTED",
             None,
             err.to_string(),
         )
@@ -665,20 +569,10 @@ where
         )
     })?;
 
-    let kms_public = if let Some(policy) = policy {
-        verify_kms_attestation_from_release_policy(kms, policy)
-            .await
-            .map(|(transport, _evidence)| transport.public)
-    } else if kms.attestation.enabled {
-        verify_kms_attestation(&client, &base_url, &kms.attestation)
-            .await
-            .map(|t| t.public)
-    } else {
-        request_unverified_transport_key(&client, &base_url)
-            .await
-            .map(|t| t.public)
-    }
-    .map_err(map_probe_attestation_failure)?;
+    let kms_public = verify_kms_attestation_from_release_policy(kms, policy)
+        .await
+        .map(|(transport, _evidence)| transport.public)
+        .map_err(map_probe_attestation_failure)?;
 
     let challenge = request_kms_challenge(&client, &challenge_endpoint, peer_id)
         .await
@@ -749,11 +643,8 @@ where
         .map_err(map_probe_get_key_failure)
 }
 
-/// Verify KMS via POST /attest using policy fetched from release.
-///
-/// Calls KMS /attest, verifies the quote, and enforces measurement policy.
-/// Answers the KMS's attested transport key and the record of the quote that
-/// passed, which the node reports in its own attestation.
+/// Verify KMS via POST /attest using the release policy and enforce its measurement allowlists.
+/// Answers the attested transport key and the record of the quote that passed.
 async fn verify_kms_attestation_from_release_policy(
     kms: &KmsConfig,
     policy: &KmsAttestationPolicy,
@@ -860,13 +751,7 @@ async fn verify_kms_attestation_from_release_policy(
         bail!("KMS attestation verification failed");
     }
 
-    enforce_attestation_policy(
-        &AttestationAllowlists::from_release(policy),
-        &verification_result,
-        PolicyEnforcementMode::ReleaseStrict {
-            allow_missing_tcb_status: is_mock,
-        },
-    )?;
+    enforce_attestation_policy(policy, &verification_result, is_mock)?;
     info!("KMS is a TDX cluster replica, pinned by MRTD and RTMR0-3");
     info!("KMS attestation verified successfully");
     let evidence = KmsEvidence::of_quote(
@@ -902,202 +787,66 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// How an attestation policy is enforced.
+/// Enforce the signed release policy's measurement and TCB-status allowlists
+/// against a verified KMS quote.
 ///
-/// The release-policy and config-policy verifiers share the same measurement and
-/// TCB-status checks but differ in strictness and in the config-key names used in
-/// error messages. Routing both through a single enforcement helper keyed on this
-/// mode keeps the two call sites from silently diverging.
-#[derive(Debug, Clone, Copy)]
-enum PolicyEnforcementMode {
-    /// Release-fetched, Sigstore-verified policy: unconditionally strict.
-    ///
-    /// Required allowlists are always enforced and every measurement must be in
-    /// its allowlist. A missing TCB status is tolerated only when the quote is a
-    /// (development-gated) mock quote.
-    ReleaseStrict { allow_missing_tcb_status: bool },
-    /// Config-derived policy: strict unless `accept_mock` relaxes it
-    /// (development/testing only). When relaxed, empty allowlists are skipped
-    /// instead of being required.
-    Config { accept_mock: bool },
-}
-
-impl PolicyEnforcementMode {
-    /// Whether required allowlists must be non-empty and every measurement must match.
-    fn is_strict(self) -> bool {
-        match self {
-            PolicyEnforcementMode::ReleaseStrict { .. } => true,
-            PolicyEnforcementMode::Config { accept_mock } => !accept_mock,
-        }
-    }
-
-    /// Config-key prefix used when reporting a missing required allowlist.
-    fn field_prefix(self) -> &'static str {
-        match self {
-            PolicyEnforcementMode::ReleaseStrict { .. } => "policy",
-            PolicyEnforcementMode::Config { .. } => "tee.kms.attestation",
-        }
-    }
-}
-
-/// Borrowed view over the allowlists of either policy representation, so a single
-/// enforcement helper can serve both the release-policy and config-policy paths.
-struct AttestationAllowlists<'a> {
-    tcb_statuses: &'a [String],
-    mrtd: &'a [String],
-    rtmr0: &'a [String],
-    rtmr1: &'a [String],
-    rtmr2: &'a [String],
-    rtmr3: &'a [String],
-}
-
-impl<'a> AttestationAllowlists<'a> {
-    fn from_release(policy: &'a KmsAttestationPolicy) -> Self {
-        Self {
-            tcb_statuses: &policy.allowed_tcb_statuses,
-            mrtd: &policy.allowed_mrtd,
-            rtmr0: &policy.allowed_rtmr0,
-            rtmr1: &policy.allowed_rtmr1,
-            rtmr2: &policy.allowed_rtmr2,
-            rtmr3: &policy.allowed_rtmr3,
-        }
-    }
-
-    fn from_config(policy: &'a NormalizedKmsAttestationPolicy) -> Self {
-        Self {
-            tcb_statuses: &policy.allowed_tcb_statuses,
-            mrtd: &policy.allowed_mrtd,
-            rtmr0: &policy.allowed_rtmr0,
-            rtmr1: &policy.allowed_rtmr1,
-            rtmr2: &policy.allowed_rtmr2,
-            rtmr3: &policy.allowed_rtmr3,
-        }
-    }
-}
-
-/// Enforce the measurement and TCB-status allowlists against a verified KMS quote.
-///
-/// This is the single enforcement point shared by both KMS verification paths:
-/// the release-policy path (always strict) and the config-policy path (strict
-/// unless `accept_mock`). `mode` selects the strictness and the config-key names
-/// used in error messages, so the two call sites can no longer silently diverge.
-///
-/// Defense in depth: release-policy verification can run on paths that do not
-/// rely on startup config validation, so under strict mode we re-check that the
-/// required allowlists are present before enforcing measurement and TCB matching.
+/// Defense in depth: the policy parser already refuses empty allowlists, but
+/// they are checked again here so a policy built any other way cannot pass a
+/// KMS with a register unchecked. A missing TCB status is tolerated only for a
+/// (development-gated) mock quote (`allow_missing_tcb_status`).
 fn enforce_attestation_policy(
-    allowlists: &AttestationAllowlists<'_>,
+    policy: &KmsAttestationPolicy,
     verification_result: &VerificationResult,
-    mode: PolicyEnforcementMode,
+    allow_missing_tcb_status: bool,
 ) -> Result<()> {
-    if mode.is_strict() {
-        let prefix = mode.field_prefix();
-        enforce_required_allowlist_non_empty(
-            &format!("{prefix}.allowed_tcb_statuses"),
-            allowlists.tcb_statuses,
-        )?;
-        for (field_suffix, values) in [
-            ("allowed_mrtd", allowlists.mrtd),
-            ("allowed_rtmr0", allowlists.rtmr0),
-            ("allowed_rtmr1", allowlists.rtmr1),
-            ("allowed_rtmr2", allowlists.rtmr2),
-            ("allowed_rtmr3", allowlists.rtmr3),
-        ] {
-            enforce_required_measurement_allowlist_non_empty(
-                &format!("{prefix}.{field_suffix}"),
-                values,
-            )?;
-        }
+    enforce_required_allowlist_non_empty(
+        "policy.allowed_tcb_statuses",
+        &policy.allowed_tcb_statuses,
+    )?;
+    for (field_name, values) in [
+        ("policy.allowed_mrtd", &policy.allowed_mrtd),
+        ("policy.allowed_rtmr0", &policy.allowed_rtmr0),
+        ("policy.allowed_rtmr1", &policy.allowed_rtmr1),
+        ("policy.allowed_rtmr2", &policy.allowed_rtmr2),
+        ("policy.allowed_rtmr3", &policy.allowed_rtmr3),
+    ] {
+        enforce_required_measurement_allowlist_non_empty(field_name, values)?;
     }
 
-    enforce_tcb_status_allowlist(allowlists.tcb_statuses, verification_result, mode)?;
+    if let Some(actual_tcb_status) = verification_result.tcb_status.as_ref() {
+        let normalized_tcb = actual_tcb_status.to_ascii_lowercase();
+        if !policy
+            .allowed_tcb_statuses
+            .iter()
+            .any(|a| a == &normalized_tcb)
+        {
+            bail!(
+                "KMS TCB status '{}' is not allowed. Allowed: {:?}",
+                actual_tcb_status,
+                policy.allowed_tcb_statuses
+            );
+        }
+    } else if allow_missing_tcb_status {
+        warn!("Mock KMS quote did not provide TCB status; skipping TCB status allowlist check");
+    } else {
+        bail!("Quote verification did not provide a TCB status");
+    }
 
     let body = &verification_result.quote.body;
-    enforce_measurement_allowlist("MRTD", &body.mrtd, allowlists.mrtd, mode)?;
-    enforce_measurement_allowlist("RTMR0", &body.rtmr0, allowlists.rtmr0, mode)?;
-    enforce_measurement_allowlist("RTMR1", &body.rtmr1, allowlists.rtmr1, mode)?;
-    enforce_measurement_allowlist("RTMR2", &body.rtmr2, allowlists.rtmr2, mode)?;
-    enforce_measurement_allowlist("RTMR3", &body.rtmr3, allowlists.rtmr3, mode)?;
+    enforce_measurement_allowlist("MRTD", &body.mrtd, &policy.allowed_mrtd)?;
+    enforce_measurement_allowlist("RTMR0", &body.rtmr0, &policy.allowed_rtmr0)?;
+    enforce_measurement_allowlist("RTMR1", &body.rtmr1, &policy.allowed_rtmr1)?;
+    enforce_measurement_allowlist("RTMR2", &body.rtmr2, &policy.allowed_rtmr2)?;
+    enforce_measurement_allowlist("RTMR3", &body.rtmr3, &policy.allowed_rtmr3)?;
     Ok(())
 }
 
-/// Enforce the TCB-status allowlist.
-///
-/// The release path waives a missing TCB status only for (dev-gated) mock quotes;
-/// the config path additionally skips the check entirely when running in relaxed
-/// mock mode with an empty allowlist. The two paths intentionally keep distinct
-/// control flow and error strings, so they are matched per mode.
-fn enforce_tcb_status_allowlist(
-    allowed_tcb_statuses: &[String],
-    verification_result: &VerificationResult,
-    mode: PolicyEnforcementMode,
-) -> Result<()> {
-    match mode {
-        PolicyEnforcementMode::ReleaseStrict {
-            allow_missing_tcb_status,
-        } => {
-            if let Some(actual_tcb_status) = verification_result.tcb_status.as_ref() {
-                let normalized_tcb = actual_tcb_status.to_ascii_lowercase();
-                if !allowed_tcb_statuses.iter().any(|a| a == &normalized_tcb) {
-                    bail!(
-                        "KMS TCB status '{}' is not allowed. Allowed: {:?}",
-                        actual_tcb_status,
-                        allowed_tcb_statuses
-                    );
-                }
-            } else if allow_missing_tcb_status {
-                warn!(
-                    "Mock KMS quote did not provide TCB status; skipping TCB status allowlist check"
-                );
-            } else {
-                bail!("Quote verification did not provide a TCB status");
-            }
-        }
-        PolicyEnforcementMode::Config { accept_mock } => {
-            let strict_policy = !accept_mock;
-            if !strict_policy && allowed_tcb_statuses.is_empty() {
-                debug!("Skipping TCB status allowlist check (allowlist is empty in mock mode)");
-            } else {
-                let actual_tcb_status = verification_result
-                    .tcb_status
-                    .as_deref()
-                    .ok_or_else(|| eyre::eyre!("KMS attestation did not include TCB status"))?;
-                let normalized_tcb_status = actual_tcb_status.to_ascii_lowercase();
-                if !allowed_tcb_statuses
-                    .iter()
-                    .any(|allowed| allowed == &normalized_tcb_status)
-                {
-                    bail!(
-                        "KMS TCB status '{}' is not allowed. Allowed: {}",
-                        actual_tcb_status,
-                        allowed_tcb_statuses.join(", ")
-                    );
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Enforce a single measurement allowlist.
-///
-/// Empty allowlists are skipped (only reachable in relaxed config mock mode; the
-/// strict paths require them to be non-empty first). The error format differs per
-/// mode to preserve the exact messages each verification path previously produced.
+/// Enforce a single measurement allowlist (non-empty: checked above).
 fn enforce_measurement_allowlist(
     label: &str,
     actual_measurement: &str,
     allowed_measurements: &[String],
-    mode: PolicyEnforcementMode,
 ) -> Result<()> {
-    if allowed_measurements.is_empty() {
-        debug!(
-            measurement = label,
-            "Skipping measurement allowlist check (allowlist is empty)"
-        );
-        return Ok(());
-    }
-
     let normalized_actual = normalize_attestation_measurement(actual_measurement);
     if allowed_measurements
         .iter()
@@ -1105,28 +854,20 @@ fn enforce_measurement_allowlist(
     {
         return Ok(());
     }
-
-    match mode {
-        PolicyEnforcementMode::ReleaseStrict { .. } => {
-            let preview_len = 5usize.min(allowed_measurements.len());
-            let preview = allowed_measurements[..preview_len].join(", ");
-            let suffix = if allowed_measurements.len() > preview_len {
-                format!(" ... ({} total)", allowed_measurements.len())
-            } else {
-                String::new()
-            };
-            bail!(
-                "KMS {} '{}' is not in allowlist [{}{}]",
-                label,
-                normalized_actual,
-                preview,
-                suffix
-            )
-        }
-        PolicyEnforcementMode::Config { .. } => {
-            bail!("{label} '{}' is not in allowlist", normalized_actual)
-        }
-    }
+    let preview_len = 5usize.min(allowed_measurements.len());
+    let preview = allowed_measurements[..preview_len].join(", ");
+    let suffix = if allowed_measurements.len() > preview_len {
+        format!(" ... ({} total)", allowed_measurements.len())
+    } else {
+        String::new()
+    };
+    bail!(
+        "KMS {} '{}' is not in allowlist [{}{}]",
+        label,
+        normalized_actual,
+        preview,
+        suffix
+    )
 }
 
 fn enforce_required_allowlist_non_empty(field_name: &str, values: &[String]) -> Result<()> {
@@ -1170,6 +911,7 @@ fn enforce_required_measurement_allowlist_non_empty(
 /// * `kms` - KMS configuration
 /// * `peer_id` - The peer ID string (base58 encoded)
 /// * `identity` - Local node identity keypair used to sign challenge payloads
+/// * `transport` - The KMS's transport key, attested against the release policy
 ///
 /// # Returns
 /// The storage encryption key bytes (hex-decoded from KMS response).
@@ -1177,7 +919,7 @@ async fn fetch_from_kms<F>(
     kms: &KmsConfig,
     peer_id: &str,
     identity: &Keypair,
-    attestation_mode: KeyFetchAttestationMode,
+    transport: Transport,
     rollback_node: Option<u64>,
     attestor: F,
 ) -> Result<(Vec<u8>, Option<Counters>)>
@@ -1197,21 +939,6 @@ where
 
     // Build HTTP client once and reuse for all KMS requests.
     let client = build_kms_http_client(kms)?;
-
-    let transport = match attestation_mode {
-        KeyFetchAttestationMode::AlreadyVerifiedFromReleasePolicy { transport } => {
-            info!(
-                "Skipping config-based KMS attestation: release policy verification already completed"
-            );
-            transport
-        }
-        KeyFetchAttestationMode::UseConfigPolicy if kms.attestation.enabled => {
-            verify_kms_attestation(&client, &base_url, &kms.attestation).await?
-        }
-        KeyFetchAttestationMode::UseConfigPolicy => {
-            request_unverified_transport_key(&client, &base_url).await?
-        }
-    };
 
     // 1) Request one-time challenge nonce.
     info!(challenge_endpoint = %calimero_primitives::utils::loggable_url(&challenge_endpoint), "Requesting key release challenge from KMS");
@@ -1317,11 +1044,8 @@ where
 
 fn build_kms_http_client(kms: &KmsConfig) -> Result<reqwest::Client> {
     let uses_https = kms.url.scheme().eq_ignore_ascii_case("https");
-    // `tee.kms.url` may be a DNS name resolving to every replica of the KMS
-    // cluster, and a dead replica can stay in that record for about a minute.
-    // reqwest/hyper-util divides the connect timeout evenly across the resolved
-    // addresses, so with five replicas each gets ~2s before the next is tried,
-    // instead of one dead address consuming the whole request timeout.
+    // `tee.kms.url` may resolve to every KMS replica and a dead one can linger in DNS;
+    // the connect timeout is split across addresses so one dead address cannot consume the whole timeout.
     let mut builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30));
@@ -1332,9 +1056,8 @@ fn build_kms_http_client(kms: &KmsConfig) -> Result<reqwest::Client> {
         builder = builder.no_proxy();
     }
 
-    // Keep TLS invariants here even though startup config validation checks the
-    // same constraints. This preserves fail-closed behavior if config is edited
-    // between validation and client construction.
+    // Re-check TLS invariants here so client construction stays fail-closed
+    // if config is edited after startup validation.
     if let Some(ca_cert_path) = kms.tls.ca_cert_path.as_deref() {
         if !uses_https {
             bail!(
@@ -1394,129 +1117,6 @@ fn build_kms_http_client(kms: &KmsConfig) -> Result<reqwest::Client> {
     }
 
     builder.build().context("Failed to build HTTP client")
-}
-
-async fn verify_kms_attestation(
-    client: &reqwest::Client,
-    base_url: &Url,
-    attestation_config: &KmsAttestationConfig,
-) -> Result<Transport> {
-    let effective_config = resolve_effective_attestation_config(attestation_config)?;
-    let policy = normalize_kms_attestation_policy(&effective_config)?;
-    let attest_endpoint = base_url
-        .join("attest")
-        .context("Failed to build KMS attest endpoint URL")?;
-
-    let nonce = random_nonce();
-
-    let request = KmsAttestRequest {
-        nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
-        binding_b64: policy.binding_b64.clone(),
-        transport_key: true,
-        capabilities: true,
-    };
-
-    info!(attest_endpoint = %calimero_primitives::utils::loggable_url(&attest_endpoint), "Verifying KMS self-attestation before key request");
-    let attest_response = request_kms_attestation(client, &attest_endpoint, &request).await?;
-    let kms_public = decode_kms_transport_key(&attest_response)?;
-    let (binding, rollback) = transport_binding(&policy.binding, &kms_public, &attest_response)?;
-    let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
-    let (quote_bytes, report_data_bytes) = decode_kms_attestation_response(&attest_response)?;
-
-    if report_data_bytes.len() != 64 {
-        bail!(
-            "KMS attest reportDataHex must be 64 bytes, got {}",
-            report_data_bytes.len()
-        );
-    }
-
-    if !bool::from(report_data_bytes.ct_eq(expected_report_data.as_slice())) {
-        bail!(
-            "KMS attest reportData mismatch (nonce/binding mismatch or tampered response payload)"
-        );
-    }
-
-    // Without the `mock-attestation` feature there is no mock path: every quote
-    // is verified with the real DCAP verifier.
-    #[cfg(feature = "mock-attestation")]
-    let verification_result = if is_mock_quote(&quote_bytes) {
-        if !policy.accept_mock {
-            bail!("KMS returned mock attestation quote, but attestation.accept_mock is disabled");
-        }
-        if !mock_kms_attestation_runtime_opt_in() {
-            bail!(
-                "KMS returned mock attestation quote, but {} is not enabled. \
-                 Set {}=true only for development/testing.",
-                MOCK_KMS_ATTESTATION_ENV,
-                MOCK_KMS_ATTESTATION_ENV
-            );
-        }
-
-        warn!("Accepting mock KMS attestation quote - this is insecure and for development only");
-        verify_mock_attestation(&quote_bytes, &nonce, &binding)
-            .context("Failed to verify mock KMS attestation")?
-    } else {
-        verify_attestation(&quote_bytes, &nonce, &binding)
-            .await
-            .context("Failed to verify KMS attestation quote")?
-    };
-    #[cfg(not(feature = "mock-attestation"))]
-    let verification_result = verify_attestation(&quote_bytes, &nonce, &binding)
-        .await
-        .context("Failed to verify KMS attestation quote")?;
-
-    if !verification_result.is_valid() {
-        bail!(
-            "KMS attestation verification failed: quote_verified={}, nonce_verified={}, app_hash_verified={}",
-            verification_result.quote_verified,
-            verification_result.nonce_verified,
-            verification_result.application_hash_verified
-        );
-    }
-
-    enforce_attestation_policy(
-        &AttestationAllowlists::from_config(&policy),
-        &verification_result,
-        PolicyEnforcementMode::Config {
-            accept_mock: policy.accept_mock,
-        },
-    )?;
-    info!("KMS is a TDX cluster replica, pinned by MRTD and RTMR0-3");
-    info!("KMS self-attestation verified successfully");
-
-    Ok(Transport {
-        public: kms_public,
-        rollback,
-    })
-}
-
-/// The KMS's transport key with its quote left unverified, for a config with
-/// attestation disabled (development only). The key is still sealed, so a
-/// passive observer of the connection learns nothing, but nothing proves the
-/// transport key belongs to a genuine KMS — so neither is the key it releases.
-async fn request_unverified_transport_key(
-    client: &reqwest::Client,
-    base_url: &Url,
-) -> Result<Transport> {
-    warn!(
-        "KMS attestation is disabled: the KMS's transport key is not verified, so the storage \
-         key may come from whoever answers at this URL. Development only."
-    );
-    let attest_endpoint = base_url
-        .join("attest")
-        .context("Failed to build KMS attest endpoint URL")?;
-    let nonce = random_nonce();
-    let request = KmsAttestRequest {
-        nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
-        binding_b64: None,
-        transport_key: true,
-        capabilities: true,
-    };
-    let attest_response = request_kms_attestation(client, &attest_endpoint, &request).await?;
-    Ok(Transport {
-        public: decode_kms_transport_key(&attest_response)?,
-        rollback: attest_response.capabilities.is_some(),
-    })
 }
 
 fn decode_kms_transport_key(attest_response: &KmsAttestResponse) -> Result<[u8; 32]> {
@@ -1608,149 +1208,6 @@ fn open_released_record(
         &ciphertext,
     )?;
     serde_json::from_slice(&plaintext).context("the KMS's sealed record is not a v2 record")
-}
-
-pub(crate) fn resolve_effective_attestation_config(
-    config: &KmsAttestationConfig,
-) -> Result<KmsAttestationConfig> {
-    let mut effective_config = config.clone();
-
-    if !config.enabled {
-        return Ok(effective_config);
-    }
-
-    if let Some(policy_path) = config.policy_json_path.as_deref() {
-        if !policy_path.is_absolute() {
-            bail!(
-                "tee.kms.attestation.policy_json_path must be an absolute path: {}",
-                policy_path
-            );
-        }
-
-        let policy_path = canonicalize_external_policy_path(policy_path)?;
-        if !is_allowed_external_policy_path(&policy_path) {
-            bail!(
-                "tee.kms.attestation.policy_json_path must be under one of: {}",
-                EXTERNAL_POLICY_ALLOWED_DIRS.join(", ")
-            );
-        }
-
-        let external_policy = load_external_attestation_policy(&policy_path)?;
-        let nested_policy = external_policy
-            .policy
-            .unwrap_or(ExternalKmsAttestationPolicyValues {
-                allowed_tcb_statuses: None,
-                allowed_mrtd: None,
-                allowed_rtmr0: None,
-                allowed_rtmr1: None,
-                allowed_rtmr2: None,
-                allowed_rtmr3: None,
-            });
-        let nested_kms = external_policy
-            .kms
-            .unwrap_or(ExternalKmsAttestationPolicyKms {
-                default_binding_b64: None,
-            });
-
-        // Explicit `Some([])` from external policy intentionally clears the
-        // base allowlist (rather than "unset"), then validation enforces
-        // required production fields such as allowed_mrtd and allowed_rtmr0..3.
-        merge_external_allowlist(
-            &mut effective_config.allowed_tcb_statuses,
-            external_policy.allowed_tcb_statuses,
-            nested_policy.allowed_tcb_statuses,
-        );
-        merge_external_allowlist(
-            &mut effective_config.allowed_mrtd,
-            external_policy.allowed_mrtd,
-            nested_policy.allowed_mrtd,
-        );
-        merge_external_allowlist(
-            &mut effective_config.allowed_rtmr0,
-            external_policy.allowed_rtmr0,
-            nested_policy.allowed_rtmr0,
-        );
-        merge_external_allowlist(
-            &mut effective_config.allowed_rtmr1,
-            external_policy.allowed_rtmr1,
-            nested_policy.allowed_rtmr1,
-        );
-        merge_external_allowlist(
-            &mut effective_config.allowed_rtmr2,
-            external_policy.allowed_rtmr2,
-            nested_policy.allowed_rtmr2,
-        );
-        merge_external_allowlist(
-            &mut effective_config.allowed_rtmr3,
-            external_policy.allowed_rtmr3,
-            nested_policy.allowed_rtmr3,
-        );
-        if let Some(value) = external_policy
-            .binding_b64
-            .or(nested_kms.default_binding_b64)
-        {
-            effective_config.binding_b64 = Some(value);
-        }
-        // Mark policy as already resolved to avoid re-reading the JSON file on
-        // subsequent startup preflight calls.
-        effective_config.policy_json_path = None;
-
-        info!(
-            policy_path = %policy_path,
-            "Loaded external KMS attestation policy"
-        );
-    }
-
-    effective_config.validate_enabled_policy()?;
-    Ok(effective_config)
-}
-
-fn merge_external_allowlist(
-    target: &mut Vec<String>,
-    flat_override: Option<Vec<String>>,
-    nested_override: Option<Vec<String>>,
-) {
-    if let Some(values) = flat_override.or(nested_override) {
-        *target = values;
-    }
-}
-
-fn load_external_attestation_policy(
-    policy_path: &Utf8Path,
-) -> Result<ExternalKmsAttestationPolicy> {
-    // Intentional sync I/O: this path is used during startup preflight only.
-    let policy_raw = std::fs::read_to_string(policy_path).with_context(|| {
-        format!("Failed to read external KMS attestation policy file at {policy_path}")
-    })?;
-
-    serde_json::from_str::<ExternalKmsAttestationPolicy>(&policy_raw).with_context(|| {
-        format!("Failed to parse external KMS attestation policy JSON at {policy_path}")
-    })
-}
-
-fn canonicalize_external_policy_path(policy_path: &Utf8Path) -> Result<Utf8PathBuf> {
-    let canonical_path = std::fs::canonicalize(policy_path).with_context(|| {
-        format!("Failed to canonicalize external KMS attestation policy path at {policy_path}")
-    })?;
-    Utf8PathBuf::from_path_buf(canonical_path).map_err(|path| {
-        eyre::eyre!(
-            "External KMS attestation policy path is not valid UTF-8: {}",
-            path.display()
-        )
-    })
-}
-
-fn is_allowed_external_policy_path(policy_path: &Utf8Path) -> bool {
-    EXTERNAL_POLICY_ALLOWED_DIRS
-        .iter()
-        .any(|allowed_dir| policy_path.starts_with(allowed_dir))
-        || is_test_tmp_policy_path(policy_path)
-}
-
-fn is_test_tmp_policy_path(policy_path: &Utf8Path) -> bool {
-    // Allow /tmp and /private/tmp (macOS canonicalizes /tmp to /private/tmp) in tests
-    // so tempfile-backed policy fixtures work. Test binaries must never be deployed to production.
-    cfg!(test) && (policy_path.starts_with("/tmp") || policy_path.starts_with("/private/tmp"))
 }
 
 async fn request_kms_challenge(
@@ -1854,30 +1311,6 @@ fn decode_kms_encryption_key(key_hex: &str) -> Result<Vec<u8>> {
     Ok(key)
 }
 
-async fn request_kms_attestation(
-    client: &reqwest::Client,
-    attest_endpoint: &Url,
-    request: &KmsAttestRequest,
-) -> Result<KmsAttestResponse> {
-    let response = client
-        .post(attest_endpoint.as_str())
-        .json(request)
-        .send()
-        .await
-        .context("Failed to request KMS attestation")?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let error_body = response.text().await.unwrap_or_default();
-        return Err(KmsHttpFailure::from_response("attestation", status, &error_body).into());
-    }
-
-    response
-        .json()
-        .await
-        .context("Failed to parse KMS attest response")
-}
-
 fn decode_kms_attestation_response(
     attest_response: &KmsAttestResponse,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -1909,75 +1342,6 @@ fn decode_kms_attestation_response(
         .context("Failed to decode reportDataHex from KMS attest response")?;
 
     Ok((quote_bytes, report_data_bytes))
-}
-
-fn normalize_kms_attestation_policy(
-    config: &KmsAttestationConfig,
-) -> Result<NormalizedKmsAttestationPolicy> {
-    let allowed_tcb_statuses = config
-        .allowed_tcb_statuses
-        .iter()
-        .map(|status| status.trim().to_ascii_lowercase())
-        .filter(|status| !status.is_empty())
-        .collect::<Vec<_>>();
-
-    let allowed_mrtd = parse_measurement_allowlist(&config.allowed_mrtd, "allowed_mrtd")?;
-    let allowed_rtmr0 = parse_measurement_allowlist(&config.allowed_rtmr0, "allowed_rtmr0")?;
-    let allowed_rtmr1 = parse_measurement_allowlist(&config.allowed_rtmr1, "allowed_rtmr1")?;
-    let allowed_rtmr2 = parse_measurement_allowlist(&config.allowed_rtmr2, "allowed_rtmr2")?;
-    let allowed_rtmr3 = parse_measurement_allowlist(&config.allowed_rtmr3, "allowed_rtmr3")?;
-
-    let binding = if let Some(binding_b64) = config.binding_b64.as_deref() {
-        let binding_bytes = base64::engine::general_purpose::STANDARD
-            .decode(binding_b64)
-            .context("Failed to decode tee.kms.attestation.binding_b64")?;
-        binding_bytes.try_into().map_err(|_| {
-            eyre::eyre!("tee.kms.attestation.binding_b64 must decode to exactly 32 bytes")
-        })?
-    } else {
-        default_kms_attestation_binding()
-    };
-
-    Ok(NormalizedKmsAttestationPolicy {
-        accept_mock: config.accept_mock,
-        allowed_tcb_statuses,
-        allowed_mrtd,
-        allowed_rtmr0,
-        allowed_rtmr1,
-        allowed_rtmr2,
-        allowed_rtmr3,
-        binding,
-        binding_b64: config.binding_b64.clone(),
-    })
-}
-
-fn parse_measurement_allowlist(values: &[String], field_name: &str) -> Result<Vec<String>> {
-    let mut normalized_values = Vec::with_capacity(values.len());
-
-    for raw in values {
-        let normalized = normalize_attestation_measurement(raw);
-        if normalized.is_empty() {
-            continue;
-        }
-
-        if normalized.len() != 96 {
-            bail!(
-                "{field_name} contains invalid TDX measurement length (expected 48 bytes, got {} bytes)",
-                normalized.len() / 2
-            );
-        }
-
-        hex::decode(&normalized)
-            .with_context(|| format!("{field_name} contains non-hex value: {raw}"))?;
-
-        normalized_values.push(normalized);
-    }
-
-    Ok(normalized_values)
-}
-
-fn default_kms_attestation_binding() -> [u8; 32] {
-    Sha256::digest(b"mero-kms-attest-v1").into()
 }
 
 fn build_kms_attestation_report_data(nonce: &[u8; 32], binding: &[u8; 32]) -> [u8; 64] {
@@ -2016,12 +1380,8 @@ fn build_signature_payload(
     serde_json::to_vec(&payload).context("Failed to serialize challenge signature payload")
 }
 
-/// Ensure URL has a trailing slash to prevent `Url::join` from replacing the last path segment.
-///
-/// `Url::join` has counter-intuitive behavior: if the base URL lacks a trailing slash,
-/// it replaces the last path segment. For example:
-/// - `http://host/api/v1`.join("get-key") => `http://host/api/get-key` (wrong!)
-/// - `http://host/api/v1/`.join("get-key") => `http://host/api/v1/get-key` (correct)
+/// Ensure URL has a trailing slash: `Url::join` replaces the last path segment without one.
+/// `http://host/api/v1`.join("get-key") gives `http://host/api/get-key`.
 fn ensure_trailing_slash(url: &Url) -> Url {
     let mut url = url.clone();
     if !url.path().ends_with('/') {
@@ -2030,75 +1390,17 @@ fn ensure_trailing_slash(url: &Url) -> Url {
     url
 }
 
-/// What the KMS URL's scheme has to prove, given what else protects the key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KmsTransportRule {
-    /// The KMS is verified against the signed release policy before anything is
-    /// asked of it, and the key comes back sealed to a one-time key this node's
-    /// quote commits to, authenticated by the KMS's attested key
-    /// (`open_released_key`, which refuses an unsealed key). An on-path attacker
-    /// can neither read the key nor pass as the KMS, so TLS adds nothing, and a
-    /// VPC-internal name such as `<cluster>.kms.mdma.internal` has no public CA
-    /// to certify it anyway. Plain HTTP is allowed.
-    AttestedAndSealed,
-    /// Attestation from local config only: keep TLS as a second line.
-    Strict,
-    /// Development: attestation off or mocked. HTTP allowed, with a warning.
-    Lenient,
-}
-
-fn transport_rule(kms: &KmsConfig, has_release_policy: bool) -> KmsTransportRule {
-    if has_release_policy {
-        KmsTransportRule::AttestedAndSealed
-    } else if kms.attestation.enabled && !kms.attestation.accept_mock {
-        KmsTransportRule::Strict
-    } else {
-        KmsTransportRule::Lenient
-    }
-}
-
-fn validate_kms_transport(kms_url: &Url, rule: KmsTransportRule) -> Result<()> {
-    match rule {
-        KmsTransportRule::AttestedAndSealed => match kms_url.scheme() {
-            "https" | "http" => Ok(()),
-            scheme => bail!("Unsupported KMS URL scheme '{scheme}'; expected https:// or http://"),
-        },
-        KmsTransportRule::Strict => validate_kms_transport_security(kms_url, true),
-        KmsTransportRule::Lenient => validate_kms_transport_security(kms_url, false),
-    }
-}
-
-fn validate_kms_transport_security(kms_url: &Url, strict_mode: bool) -> Result<()> {
+/// The KMS URL's scheme. Plain HTTP is allowed: the KMS is verified against the
+/// signed release policy before anything is asked of it, and the key comes back
+/// sealed to a one-time key this node's quote commits to, authenticated by the
+/// KMS's attested key (`open_released_key`, which refuses an unsealed key). An
+/// on-path attacker can neither read the key nor pass as the KMS, so TLS adds
+/// nothing, and a VPC-internal name such as `<cluster>.kms.mdma.internal` has
+/// no public CA to certify it anyway.
+fn validate_kms_transport(kms_url: &Url) -> Result<()> {
     match kms_url.scheme() {
-        "https" => Ok(()),
-        "http" => {
-            if is_loopback_kms_host(kms_url) {
-                return Ok(());
-            }
-            if strict_mode {
-                bail!(
-                    "In production attestation mode, tee.kms.url must use HTTPS or loopback HTTP to prevent KMS spoofing: {}",
-                    calimero_primitives::utils::loggable_url(kms_url)
-                );
-            }
-            warn!(
-                kms_url = %calimero_primitives::utils::loggable_url(kms_url),
-                "Using non-loopback HTTP KMS endpoint; this is susceptible to spoofing/MITM and should only be used in trusted development setups"
-            );
-            Ok(())
-        }
-        scheme => bail!(
-            "Unsupported KMS URL scheme '{}'; expected https:// (or http:// for loopback development only)",
-            scheme
-        ),
-    }
-}
-
-fn is_loopback_kms_host(kms_url: &Url) -> bool {
-    match kms_url.host() {
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        _ => false,
+        "https" | "http" => Ok(()),
+        scheme => bail!("Unsupported KMS URL scheme '{scheme}'; expected https:// or http://"),
     }
 }
 
@@ -2112,7 +1414,6 @@ fn random_nonce() -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     // Only the mock HTTP test servers use these; gated with the mock tests.
     #[cfg(feature = "mock-attestation")]
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2127,11 +1428,15 @@ mod tests {
     use axum::routing::post;
     #[cfg(feature = "mock-attestation")]
     use axum::{Json, Router};
-    use camino::Utf8PathBuf;
     #[cfg(feature = "mock-attestation")]
     use serde::Deserialize;
     use serde_json::json;
-    use tempfile::NamedTempFile;
+
+    /// The binding a stand-in KMS uses when a request names none.
+    #[cfg(feature = "mock-attestation")]
+    fn default_kms_attestation_binding() -> [u8; 32] {
+        Sha256::digest(b"mero-kms-attest-v1").into()
+    }
 
     #[derive(Clone, Copy)]
     #[cfg(feature = "mock-attestation")]
@@ -2161,68 +1466,6 @@ mod tests {
         quote_bytes.extend_from_slice(report_data);
         quote_bytes.resize(256, 0);
         quote_bytes
-    }
-
-    #[cfg(feature = "mock-attestation")]
-    async fn attest_handler(
-        State(mode): State<AttestResponseMode>,
-        Json(request): Json<AttestRequestBody>,
-    ) -> Json<serde_json::Value> {
-        let nonce_bytes = base64::engine::general_purpose::STANDARD
-            .decode(&request.nonce_b64)
-            .expect("request nonce must be valid base64");
-        let nonce: [u8; 32] = nonce_bytes
-            .try_into()
-            .expect("request nonce must decode to 32 bytes");
-
-        let binding = if let Some(binding_b64) = request.binding_b64 {
-            let binding_bytes = base64::engine::general_purpose::STANDARD
-                .decode(binding_b64)
-                .expect("binding must be valid base64");
-            binding_bytes
-                .try_into()
-                .expect("binding must decode to 32 bytes")
-        } else {
-            default_kms_attestation_binding()
-        };
-
-        let kms_public = sealed::public_for_test(&TEST_KMS_SECRET);
-        let binding = sealed::attest_binding(&binding, &kms_public);
-        let expected_report_data = build_kms_attestation_report_data(&nonce, &binding);
-        let report_data_hex = match mode {
-            AttestResponseMode::Valid => hex::encode(expected_report_data),
-            AttestResponseMode::ReportDataMismatch => hex::encode([0u8; 64]),
-        };
-
-        let quote_b64 = base64::engine::general_purpose::STANDARD
-            .encode(mock_quote_bytes_with_report_data(&expected_report_data));
-
-        Json(json!({
-            "quoteB64": quote_b64,
-            "reportDataHex": report_data_hex,
-            "transportPublicKeyB64": base64::engine::general_purpose::STANDARD.encode(kms_public)
-        }))
-    }
-
-    #[cfg(feature = "mock-attestation")]
-    async fn spawn_attest_server(mode: AttestResponseMode) -> Url {
-        let app = Router::new()
-            .route("/attest", post(attest_handler))
-            .with_state(mode);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener should bind");
-        let addr = listener
-            .local_addr()
-            .expect("listener should have local addr");
-
-        tokio::spawn(async move {
-            axum::serve(listener, app)
-                .await
-                .expect("attest test server should run");
-        });
-
-        Url::parse(&format!("http://{addr}/")).expect("base URL should parse")
     }
 
     #[derive(Clone, Copy)]
@@ -2435,29 +1678,16 @@ mod tests {
     }
 
     #[cfg(feature = "mock-attestation")]
-    fn make_probe_kms_config(url: &Url, attestation_enabled: bool) -> KmsConfig {
-        if attestation_enabled {
-            return parse_kms_config(json!({
-                "url": url.as_str(),
-                "attestation": {
-                    "enabled": true,
-                    "accept_mock": true,
-                    "allowed_tcb_statuses": ["Mock"],
-                    "allowed_mrtd": ["00".repeat(48)],
-                    "allowed_rtmr0": ["00".repeat(48)],
-                    "allowed_rtmr1": ["00".repeat(48)],
-                    "allowed_rtmr2": ["00".repeat(48)],
-                    "allowed_rtmr3": ["00".repeat(48)]
-                }
-            }));
-        }
+    fn make_probe_kms_config(url: &Url) -> KmsConfig {
+        parse_kms_config(json!({ "url": url.as_str() }))
+    }
 
-        parse_kms_config(json!({
-            "url": url.as_str(),
-            "attestation": {
-                "enabled": false
-            }
-        }))
+    /// A release policy the stand-in KMS's mock quote matches.
+    #[cfg(feature = "mock-attestation")]
+    fn mock_release_policy() -> KmsAttestationPolicy {
+        let mock = make_mock_verification_result();
+        let mrtd = normalize_attestation_measurement(&mock.quote.body.mrtd);
+        make_release_policy(&mock, vec!["mock".to_owned()], vec![mrtd])
     }
 
     #[cfg(feature = "mock-attestation")]
@@ -2469,17 +1699,6 @@ mod tests {
             quote_b64,
             is_mock: true,
         })
-    }
-
-    fn write_temp_policy_file(contents: &str) -> NamedTempFile {
-        let mut file = tempfile::Builder::new()
-            .prefix("merod-kms-policy-")
-            .suffix(".json")
-            .tempfile_in("/tmp")
-            .expect("temp policy file should be created");
-        file.write_all(contents.as_bytes())
-            .expect("should write temp policy file");
-        file
     }
 
     #[cfg(feature = "mock-attestation")]
@@ -2510,93 +1729,23 @@ mod tests {
     }
 
     #[test]
-    fn test_url_join_with_trailing_slash() {
-        // This test verifies that our fix works correctly
-        let url_without_slash = Url::parse("http://host/api/v1").unwrap();
-        let url_with_slash = ensure_trailing_slash(&url_without_slash);
-
-        // Without the fix, this would produce http://host/api/get-key
-        let endpoint = url_with_slash.join("get-key").unwrap();
-        assert_eq!(endpoint.as_str(), "http://host/api/v1/get-key");
-    }
-
-    #[test]
-    fn test_validate_kms_transport_security_allows_https_and_loopback_http() {
-        let https_url = Url::parse("https://kms.example.com/").unwrap();
-        assert!(validate_kms_transport_security(&https_url, true).is_ok());
-
-        let loopback_http = Url::parse("http://127.0.0.1:8080/").unwrap();
-        assert!(validate_kms_transport_security(&loopback_http, true).is_ok());
-
-        let loopback_http_v6 = Url::parse("http://[::1]:8080/").unwrap();
-        assert!(validate_kms_transport_security(&loopback_http_v6, true).is_ok());
-    }
-
-    #[test]
-    fn test_validate_kms_transport_security_rejects_non_loopback_http_in_strict_mode() {
-        let remote_http = Url::parse("http://kms.example.com/").unwrap();
-        let err = validate_kms_transport_security(&remote_http, true)
-            .expect_err("strict mode must reject non-loopback HTTP")
-            .to_string();
-        assert!(err.contains("must use HTTPS or loopback HTTP"));
-
-        let localhost_http = Url::parse("http://localhost:8080/").unwrap();
-        let err = validate_kms_transport_security(&localhost_http, true)
-            .expect_err("strict mode must reject hostname-based localhost")
-            .to_string();
-        assert!(err.contains("must use HTTPS or loopback HTTP"));
-    }
-
-    #[test]
     fn test_release_policy_allows_vpc_http_kms() {
         // The GCP KMS cluster is reached at a private-zone name over plain HTTP;
         // the release policy plus sealed release protect the key instead of TLS.
         let vpc_http =
             Url::parse("http://mero-kms-locked-read-only-2-3-83.kms.mdma.internal:8080/").unwrap();
-        assert!(validate_kms_transport(&vpc_http, KmsTransportRule::AttestedAndSealed).is_ok());
+        assert!(validate_kms_transport(&vpc_http).is_ok());
         let https = Url::parse("https://kms.example.com/").unwrap();
-        assert!(validate_kms_transport(&https, KmsTransportRule::AttestedAndSealed).is_ok());
+        assert!(validate_kms_transport(&https).is_ok());
     }
 
     #[test]
     fn test_release_policy_still_rejects_other_schemes() {
         let ftp = Url::parse("ftp://kms.example.com/").unwrap();
-        let err = validate_kms_transport(&ftp, KmsTransportRule::AttestedAndSealed)
+        let err = validate_kms_transport(&ftp)
             .expect_err("only http and https carry the KMS protocol")
             .to_string();
         assert!(err.contains("Unsupported KMS URL scheme"));
-    }
-
-    #[test]
-    fn test_config_only_attestation_keeps_https_requirement() {
-        let remote_http = Url::parse("http://kms.example.com/").unwrap();
-        let err = validate_kms_transport(&remote_http, KmsTransportRule::Strict)
-            .expect_err("without the release policy, TLS stays required")
-            .to_string();
-        assert!(err.contains("must use HTTPS or loopback HTTP"));
-    }
-
-    #[test]
-    fn test_transport_rule_follows_the_release_policy() {
-        let strict = parse_kms_config(json!({
-            "url": "http://kms.example.com/",
-            "attestation": { "enabled": true, "accept_mock": false }
-        }));
-        assert_eq!(
-            transport_rule(&strict, true),
-            KmsTransportRule::AttestedAndSealed
-        );
-        assert_eq!(transport_rule(&strict, false), KmsTransportRule::Strict);
-
-        let mocked = parse_kms_config(json!({
-            "url": "http://kms.example.com/",
-            "attestation": { "enabled": true, "accept_mock": true }
-        }));
-        assert_eq!(transport_rule(&mocked, false), KmsTransportRule::Lenient);
-        assert_eq!(
-            transport_rule(&mocked, true),
-            KmsTransportRule::AttestedAndSealed
-        );
     }
 
     fn parse_kms_config(value: serde_json::Value) -> KmsConfig {
@@ -2752,38 +1901,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_measurement_allowlist_accepts_prefixed_hex() {
-        let values = vec![format!("0x{}", "ab".repeat(48))];
-        let parsed = parse_measurement_allowlist(&values, "allowed_mrtd").unwrap();
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0], "ab".repeat(48));
-    }
-
-    #[test]
-    fn test_parse_measurement_allowlist_accepts_uppercase_prefixed_hex() {
-        let values = vec![format!("0X{}", "AB".repeat(48))];
-        let parsed = parse_measurement_allowlist(&values, "allowed_mrtd").unwrap();
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0], "ab".repeat(48));
-    }
-
-    #[test]
-    fn test_parse_measurement_allowlist_rejects_invalid_length() {
-        let values = vec!["ff".repeat(47)];
-        assert!(parse_measurement_allowlist(&values, "allowed_mrtd").is_err());
-    }
-
-    #[test]
-    fn test_normalize_kms_attestation_policy_requires_mrtd() {
-        let cfg = KmsAttestationConfig {
-            enabled: true,
-            ..Default::default()
-        };
-        let result = resolve_effective_attestation_config(&cfg);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_build_kms_attestation_report_data_layout() {
         let nonce = [0x11; 32];
         let binding = [0x22; 32];
@@ -2791,194 +1908,6 @@ mod tests {
         let report_data = build_kms_attestation_report_data(&nonce, &binding);
         assert_eq!(&report_data[..32], &nonce);
         assert_eq!(&report_data[32..], &binding);
-    }
-
-    #[test]
-    fn test_resolve_effective_attestation_config_applies_external_policy() {
-        let policy_file = write_temp_policy_file(&format!(
-            r#"{{
-  "allowed_tcb_statuses": ["Mock"],
-  "allowed_mrtd": ["{measurement}"],
-  "allowed_rtmr0": ["{measurement}"],
-  "allowed_rtmr1": ["{measurement}"],
-  "allowed_rtmr2": ["{measurement}"],
-  "allowed_rtmr3": ["{measurement}"]
-}}"#,
-            measurement = "00".repeat(48)
-        ));
-        let policy_path = Utf8PathBuf::from_path_buf(policy_file.path().to_path_buf())
-            .expect("temp policy path should be valid utf-8");
-
-        let cfg = KmsAttestationConfig {
-            enabled: true,
-            allowed_tcb_statuses: vec!["UpToDate".to_owned()],
-            allowed_mrtd: vec!["ab".repeat(48)],
-            policy_json_path: Some(policy_path.clone()),
-            ..Default::default()
-        };
-
-        let resolved = resolve_effective_attestation_config(&cfg).unwrap();
-        assert_eq!(resolved.allowed_tcb_statuses, vec!["Mock".to_owned()]);
-        assert_eq!(resolved.allowed_mrtd, vec!["00".repeat(48)]);
-        assert_eq!(resolved.allowed_rtmr0, vec!["00".repeat(48)]);
-        assert_eq!(resolved.allowed_rtmr1, vec!["00".repeat(48)]);
-        assert_eq!(resolved.allowed_rtmr2, vec!["00".repeat(48)]);
-        assert_eq!(resolved.allowed_rtmr3, vec!["00".repeat(48)]);
-    }
-
-    #[test]
-    fn test_resolve_effective_attestation_config_accepts_mero_tee_policy_shape() {
-        let binding_b64 = base64::engine::general_purpose::STANDARD.encode([0x33u8; 32]);
-        let policy_file = write_temp_policy_file(&format!(
-            r#"{{
-  "schema_version": 2,
-  "policy": {{
-    "allowed_tcb_statuses": ["Mock"],
-    "allowed_mrtd": ["{mrtd}"],
-    "allowed_rtmr0": ["{rtmr0}"],
-    "allowed_rtmr1": ["{rtmr1}"],
-    "allowed_rtmr2": ["{rtmr2}"],
-    "allowed_rtmr3": ["{rtmr3}"]
-  }},
-  "kms": {{
-    "default_binding_b64": "{binding}"
-  }}
-}}"#,
-            mrtd = "00".repeat(48),
-            rtmr0 = "11".repeat(48),
-            rtmr1 = "22".repeat(48),
-            rtmr2 = "33".repeat(48),
-            rtmr3 = "44".repeat(48),
-            binding = binding_b64
-        ));
-        let policy_path = Utf8PathBuf::from_path_buf(policy_file.path().to_path_buf())
-            .expect("temp policy path should be valid utf-8");
-
-        let cfg = KmsAttestationConfig {
-            enabled: true,
-            allowed_tcb_statuses: vec!["UpToDate".to_owned()],
-            allowed_mrtd: vec!["ab".repeat(48)],
-            policy_json_path: Some(policy_path),
-            ..Default::default()
-        };
-
-        let resolved = resolve_effective_attestation_config(&cfg).unwrap();
-        assert_eq!(resolved.allowed_tcb_statuses, vec!["Mock".to_owned()]);
-        assert_eq!(resolved.allowed_mrtd, vec!["00".repeat(48)]);
-        assert_eq!(resolved.allowed_rtmr0, vec!["11".repeat(48)]);
-        assert_eq!(resolved.allowed_rtmr1, vec!["22".repeat(48)]);
-        assert_eq!(resolved.allowed_rtmr2, vec!["33".repeat(48)]);
-        assert_eq!(resolved.allowed_rtmr3, vec!["44".repeat(48)]);
-        assert_eq!(resolved.binding_b64, Some(binding_b64));
-    }
-
-    #[test]
-    fn test_resolve_effective_attestation_config_rejects_policy_outside_allowed_dirs() {
-        let cfg = KmsAttestationConfig {
-            enabled: true,
-            allowed_tcb_statuses: vec!["Mock".to_owned()],
-            allowed_mrtd: vec![format!("{:0>96}", "")],
-            policy_json_path: Some(Utf8PathBuf::from("/etc/hosts")),
-            ..Default::default()
-        };
-
-        let result = resolve_effective_attestation_config(&cfg);
-        assert!(result.is_err());
-        let error_text = result.unwrap_err().to_string();
-        assert!(error_text.contains("must be under one of"));
-    }
-
-    #[cfg(feature = "mock-attestation")]
-    fn make_runtime_attestation_config(accept_mock: bool) -> KmsAttestationConfig {
-        KmsAttestationConfig {
-            enabled: true,
-            accept_mock,
-            allowed_tcb_statuses: vec!["Mock".to_owned()],
-            allowed_mrtd: vec!["00".repeat(48)],
-            allowed_rtmr0: vec!["00".repeat(48)],
-            allowed_rtmr1: vec!["00".repeat(48)],
-            allowed_rtmr2: vec!["00".repeat(48)],
-            allowed_rtmr3: vec!["00".repeat(48)],
-            ..Default::default()
-        }
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "mock-attestation")]
-    async fn test_verify_kms_attestation_accepts_external_policy_json() {
-        enable_mock_kms_attestation_env();
-
-        let policy_file = write_temp_policy_file(&format!(
-            r#"{{
-  "allowed_tcb_statuses": ["Mock"],
-  "allowed_mrtd": ["{measurement}"],
-  "allowed_rtmr0": ["{measurement}"],
-  "allowed_rtmr1": ["{measurement}"],
-  "allowed_rtmr2": ["{measurement}"],
-  "allowed_rtmr3": ["{measurement}"]
-}}"#,
-            measurement = "00".repeat(48)
-        ));
-        let policy_path = Utf8PathBuf::from_path_buf(policy_file.path().to_path_buf())
-            .expect("temp policy path should be valid utf-8");
-
-        let mut cfg = make_runtime_attestation_config(true);
-        cfg.policy_json_path = Some(policy_path.clone());
-
-        let client = reqwest::Client::new();
-        let base_url = spawn_attest_server(AttestResponseMode::Valid).await;
-        let result = verify_kms_attestation(&client, &base_url, &cfg).await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "mock-attestation")]
-    async fn test_verify_kms_attestation_rejects_report_data_mismatch() {
-        enable_mock_kms_attestation_env();
-
-        let cfg = make_runtime_attestation_config(true);
-
-        let client = reqwest::Client::new();
-        let base_url = spawn_attest_server(AttestResponseMode::ReportDataMismatch).await;
-        let result = verify_kms_attestation(&client, &base_url, &cfg).await;
-
-        assert!(result.is_err());
-        let error_text = result.unwrap_err().to_string();
-        assert!(error_text.contains("reportData mismatch"));
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "mock-attestation")]
-    async fn test_verify_kms_attestation_rejects_disallowed_measurement() {
-        enable_mock_kms_attestation_env();
-
-        let mut cfg = make_runtime_attestation_config(true);
-        cfg.allowed_mrtd = vec!["ab".repeat(48)];
-
-        let client = reqwest::Client::new();
-        let base_url = spawn_attest_server(AttestResponseMode::Valid).await;
-        let result = verify_kms_attestation(&client, &base_url, &cfg).await;
-
-        assert!(result.is_err());
-        let error_text = result.unwrap_err().to_string();
-        assert!(error_text.contains("MRTD"));
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "mock-attestation")]
-    async fn test_verify_kms_attestation_rejects_mock_quote_when_accept_mock_disabled() {
-        enable_mock_kms_attestation_env();
-
-        let cfg = make_runtime_attestation_config(false);
-
-        let client = reqwest::Client::new();
-        let base_url = spawn_attest_server(AttestResponseMode::Valid).await;
-        let result = verify_kms_attestation(&client, &base_url, &cfg).await;
-
-        assert!(result.is_err());
-        let error_text = result.unwrap_err().to_string();
-        assert!(error_text.contains("accept_mock is disabled"));
     }
 
     #[tokio::test]
@@ -2991,14 +1920,20 @@ mod tests {
             get_key: ProbeGetKeyMode::Success,
         })
         .await;
-        let kms = make_probe_kms_config(&base_url, true);
+        let kms = make_probe_kms_config(&base_url);
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let key =
-            probe_storage_key_with_attestor(&kms, &peer_id, &identity, None, mock_probe_attestor)
-                .await
-                .expect("probe flow should succeed");
+        let policy = mock_release_policy();
+        let key = probe_storage_key_with_attestor(
+            &kms,
+            &peer_id,
+            &identity,
+            Some(&policy),
+            mock_probe_attestor,
+        )
+        .await
+        .expect("probe flow should succeed");
 
         assert_eq!(key, vec![0x11u8; 32]);
         assert_eq!(get_key_hits.load(Ordering::SeqCst), 1);
@@ -3014,14 +1949,20 @@ mod tests {
             get_key: ProbeGetKeyMode::Success,
         })
         .await;
-        let kms = make_probe_kms_config(&base_url, true);
+        let kms = make_probe_kms_config(&base_url);
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err =
-            probe_storage_key_with_attestor(&kms, &peer_id, &identity, None, mock_probe_attestor)
-                .await
-                .expect_err("reportData mismatch must fail probe");
+        let policy = mock_release_policy();
+        let err = probe_storage_key_with_attestor(
+            &kms,
+            &peer_id,
+            &identity,
+            Some(&policy),
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("reportData mismatch must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::Attest);
         assert_eq!(err.code, "KMS_ATTEST_REPORT_DATA_MISMATCH");
@@ -3038,14 +1979,20 @@ mod tests {
             get_key: ProbeGetKeyMode::MeasurementPolicyRejected,
         })
         .await;
-        let kms = make_probe_kms_config(&base_url, true);
+        let kms = make_probe_kms_config(&base_url);
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err =
-            probe_storage_key_with_attestor(&kms, &peer_id, &identity, None, mock_probe_attestor)
-                .await
-                .expect_err("measurement policy rejection must fail probe");
+        let policy = mock_release_policy();
+        let err = probe_storage_key_with_attestor(
+            &kms,
+            &peer_id,
+            &identity,
+            Some(&policy),
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("measurement policy rejection must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::GetKey);
         assert_eq!(err.code, "KMS_PROFILE_POLICY_REJECTED");
@@ -3065,14 +2012,20 @@ mod tests {
             get_key: ProbeGetKeyMode::Success,
         })
         .await;
-        let kms = make_probe_kms_config(&base_url, false);
+        let kms = make_probe_kms_config(&base_url);
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err =
-            probe_storage_key_with_attestor(&kms, &peer_id, &identity, None, mock_probe_attestor)
-                .await
-                .expect_err("malformed challenge nonce must fail probe");
+        let policy = mock_release_policy();
+        let err = probe_storage_key_with_attestor(
+            &kms,
+            &peer_id,
+            &identity,
+            Some(&policy),
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("malformed challenge nonce must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::Challenge);
         assert_eq!(err.code, "KMS_CHALLENGE_NONCE_INVALID");
@@ -3088,41 +2041,36 @@ mod tests {
             get_key: ProbeGetKeyMode::Success,
         })
         .await;
-        let kms = make_probe_kms_config(&base_url, false);
+        let kms = make_probe_kms_config(&base_url);
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let err =
-            probe_storage_key_with_attestor(&kms, &peer_id, &identity, None, mock_probe_attestor)
-                .await
-                .expect_err("oversized challenge nonce must fail probe");
+        let policy = mock_release_policy();
+        let err = probe_storage_key_with_attestor(
+            &kms,
+            &peer_id,
+            &identity,
+            Some(&policy),
+            mock_probe_attestor,
+        )
+        .await
+        .expect_err("oversized challenge nonce must fail probe");
 
         assert_eq!(err.stage, KmsProbeStage::Challenge);
         assert_eq!(err.code, "KMS_CHALLENGE_NONCE_OVERSIZED");
     }
 
     #[tokio::test]
-    async fn test_probe_storage_key_rejects_insecure_transport_in_strict_mode() {
-        let kms = parse_kms_config(json!({
-            "url": "http://kms.example.com/",
-            "attestation": {
-                "enabled": true,
-                "accept_mock": false,
-                "allowed_tcb_statuses": ["UpToDate"],
-                "allowed_mrtd": ["00".repeat(48)],
-                "allowed_rtmr0": ["00".repeat(48)],
-                "allowed_rtmr1": ["00".repeat(48)],
-                "allowed_rtmr2": ["00".repeat(48)],
-                "allowed_rtmr3": ["00".repeat(48)]
-            }
-        }));
+    async fn test_probe_storage_key_rejects_an_unsupported_scheme() {
+        let kms = parse_kms_config(json!({ "url": "ftp://kms.example.com/" }));
         let identity = Keypair::generate_ed25519();
         let peer_id = identity.public().to_peer_id().to_base58();
 
-        let result = probe_storage_key(&kms, &peer_id, &identity, None).await;
+        let policy = pinning_release_policy();
+        let result = probe_storage_key(&kms, &peer_id, &identity, Some(&policy)).await;
         assert!(!result.ok);
         assert_eq!(result.stage, KmsProbeStage::Transport);
-        assert_eq!(result.code, "KMS_HTTP_INSECURE");
+        assert_eq!(result.code, "KMS_URL_UNSUPPORTED");
     }
 
     #[cfg(feature = "mock-attestation")]
@@ -3131,27 +2079,7 @@ mod tests {
         verification_result: &VerificationResult,
         allow_missing_tcb_status: bool,
     ) -> Result<()> {
-        enforce_attestation_policy(
-            &AttestationAllowlists::from_release(policy),
-            verification_result,
-            PolicyEnforcementMode::ReleaseStrict {
-                allow_missing_tcb_status,
-            },
-        )
-    }
-
-    #[cfg(feature = "mock-attestation")]
-    fn enforce_config_policy(
-        policy: &NormalizedKmsAttestationPolicy,
-        verification_result: &VerificationResult,
-    ) -> Result<()> {
-        enforce_attestation_policy(
-            &AttestationAllowlists::from_config(policy),
-            verification_result,
-            PolicyEnforcementMode::Config {
-                accept_mock: policy.accept_mock,
-            },
-        )
+        enforce_attestation_policy(policy, verification_result, allow_missing_tcb_status)
     }
 
     /// A stand-in mero-kms with rollback counters (`strip`: a relay that drops
@@ -3262,9 +2190,8 @@ mod tests {
         Url::parse(&format!("http://{addr}/")).unwrap()
     }
 
-    /// A v2 release returns the node's counters sealed with the key, and the
-    /// sealed session moves them; a relay that strips the capabilities leaves
-    /// the node with the key and no counters, which the node then judges.
+    /// A v2 release returns the counters sealed with the key; a relay that strips the capabilities
+    /// leaves the node with the key and no counters, which the node then judges.
     #[tokio::test]
     #[cfg(feature = "mock-attestation")]
     async fn a_v2_release_carries_the_counters_and_a_session_that_raises_them() {
@@ -3275,7 +2202,7 @@ mod tests {
         let identity = Keypair::generate_ed25519();
         let peer = identity.public().to_peer_id().to_base58();
 
-        let kms = make_probe_kms_config(&spawn_v2_kms(false).await, false);
+        let kms = make_probe_kms_config(&spawn_v2_kms(false).await);
         let released = fetch_storage_key_with_attestor(
             Some(&kms),
             &peer,
@@ -3306,7 +2233,7 @@ mod tests {
             }
         );
 
-        let kms = make_probe_kms_config(&spawn_v2_kms(true).await, false);
+        let kms = make_probe_kms_config(&spawn_v2_kms(true).await);
         let released = fetch_storage_key_with_attestor(
             Some(&kms),
             &peer,
@@ -3351,10 +2278,8 @@ mod tests {
             .expect("mock verification result should be created")
     }
 
-    /// A key fetch records the KMS quote it accepted: the registers and hash
-    /// of the very quote that passed, the signed policy's release and profile,
-    /// and the host it dialled. The node reports this record in its own
-    /// attestation, so it has to be what was verified, not what was asked.
+    /// A key fetch records the KMS quote it accepted, which the node reports in its own attestation,
+    /// so it has to be what was verified, not what was asked.
     #[tokio::test]
     #[cfg(feature = "mock-attestation")]
     async fn the_kms_a_key_fetch_accepted_is_recorded() {
@@ -3365,7 +2290,7 @@ mod tests {
             get_key: ProbeGetKeyMode::Success,
         })
         .await;
-        let kms = make_probe_kms_config(&url, false);
+        let kms = make_probe_kms_config(&url);
         let mock = make_mock_verification_result();
         let mrtd = normalize_attestation_measurement(&mock.quote.body.mrtd);
         let policy = make_release_policy(&mock, vec!["mock".to_owned()], vec![mrtd.clone()]);
@@ -3413,7 +2338,7 @@ mod tests {
             get_key: ProbeGetKeyMode::Success,
         })
         .await;
-        let kms = make_probe_kms_config(&url, false);
+        let kms = make_probe_kms_config(&url);
         let mock = make_mock_verification_result();
         let policy = make_release_policy(&mock, vec!["mock".to_owned()], vec!["ab".repeat(48)]);
         let err = verify_kms_attestation_from_release_policy(&kms, &policy)
@@ -3473,43 +2398,12 @@ mod tests {
         assert!(err.contains("MRTD"));
     }
 
-    #[cfg(feature = "mock-attestation")]
-    fn make_strict_runtime_policy(
-        verification_result: &VerificationResult,
-    ) -> NormalizedKmsAttestationPolicy {
-        let body = &verification_result.quote.body;
-        NormalizedKmsAttestationPolicy {
-            accept_mock: false,
-            allowed_tcb_statuses: vec!["mock".to_owned()],
-            allowed_mrtd: vec![normalize_attestation_measurement(&body.mrtd)],
-            allowed_rtmr0: vec![normalize_attestation_measurement(&body.rtmr0)],
-            allowed_rtmr1: vec![normalize_attestation_measurement(&body.rtmr1)],
-            allowed_rtmr2: vec![normalize_attestation_measurement(&body.rtmr2)],
-            allowed_rtmr3: vec![normalize_attestation_measurement(&body.rtmr3)],
-            binding: [0x22; 32],
-            binding_b64: None,
-        }
-    }
-
     #[test]
     #[cfg(feature = "mock-attestation")]
-    fn test_enforce_kms_attestation_policy_rejects_disallowed_tcb_status() {
-        let verification_result = make_mock_verification_result();
-        let mut policy = make_strict_runtime_policy(&verification_result);
-        policy.allowed_tcb_statuses = vec!["uptodate".to_owned()];
-
-        let err = enforce_config_policy(&policy, &verification_result)
-            .expect_err("disallowed TCB status must fail")
-            .to_string();
-        assert!(err.contains("TCB status"));
-    }
-
-    #[test]
-    #[cfg(feature = "mock-attestation")]
-    fn test_enforce_kms_attestation_policy_rejects_rtmr_mismatch_for_each_lane() {
+    fn test_enforce_attestation_policy_rejects_rtmr_mismatch_for_each_lane() {
         for lane in ["RTMR0", "RTMR1", "RTMR2", "RTMR3"] {
             let mut verification_result = make_mock_verification_result();
-            let policy = make_strict_runtime_policy(&verification_result);
+            let policy = mock_release_policy();
 
             match lane {
                 "RTMR0" => verification_result.quote.body.rtmr0 = "ab".repeat(48),
@@ -3519,7 +2413,7 @@ mod tests {
                 _ => unreachable!(),
             }
 
-            let err = enforce_config_policy(&policy, &verification_result)
+            let err = enforce_release_policy(&policy, &verification_result, true)
                 .expect_err("RTMR mismatch must fail")
                 .to_string();
             assert!(err.contains(lane));
@@ -3528,98 +2422,22 @@ mod tests {
 
     #[test]
     #[cfg(feature = "mock-attestation")]
-    fn test_enforce_kms_attestation_policy_rejects_empty_required_allowlists_in_strict_mode() {
+    fn test_enforce_attestation_policy_rejects_effectively_empty_allowlists() {
         let verification_result = make_mock_verification_result();
 
-        let mut policy = make_strict_runtime_policy(&verification_result);
-        policy.allowed_mrtd.clear();
-        let err = enforce_config_policy(&policy, &verification_result)
-            .expect_err("empty MRTD allowlist must fail")
-            .to_string();
-        assert!(err.contains("allowed_mrtd"));
-
-        let mut policy = make_strict_runtime_policy(&verification_result);
-        policy.allowed_rtmr0.clear();
-        let err = enforce_config_policy(&policy, &verification_result)
-            .expect_err("empty RTMR0 allowlist must fail")
-            .to_string();
-        assert!(err.contains("allowed_rtmr0"));
-
-        let mut policy = make_strict_runtime_policy(&verification_result);
-        policy.allowed_rtmr1.clear();
-        let err = enforce_config_policy(&policy, &verification_result)
-            .expect_err("empty RTMR1 allowlist must fail")
-            .to_string();
-        assert!(err.contains("allowed_rtmr1"));
-
-        let mut policy = make_strict_runtime_policy(&verification_result);
-        policy.allowed_rtmr2.clear();
-        let err = enforce_config_policy(&policy, &verification_result)
-            .expect_err("empty RTMR2 allowlist must fail")
-            .to_string();
-        assert!(err.contains("allowed_rtmr2"));
-
-        let mut policy = make_strict_runtime_policy(&verification_result);
-        policy.allowed_rtmr3.clear();
-        let err = enforce_config_policy(&policy, &verification_result)
-            .expect_err("empty RTMR3 allowlist must fail")
-            .to_string();
-        assert!(err.contains("allowed_rtmr3"));
-    }
-
-    #[test]
-    #[cfg(feature = "mock-attestation")]
-    fn test_enforce_kms_attestation_policy_rejects_effectively_empty_allowlists_in_strict_mode() {
-        let verification_result = make_mock_verification_result();
-
-        let mut policy = make_strict_runtime_policy(&verification_result);
+        let mut policy = mock_release_policy();
         policy.allowed_tcb_statuses = vec!["   ".to_owned()];
-        let err = enforce_config_policy(&policy, &verification_result)
+        let err = enforce_release_policy(&policy, &verification_result, true)
             .expect_err("whitespace-only TCB status allowlist must fail")
             .to_string();
         assert!(err.contains("allowed_tcb_statuses"));
 
-        let mut policy = make_strict_runtime_policy(&verification_result);
+        let mut policy = mock_release_policy();
         policy.allowed_mrtd = vec!["0x".to_owned(), " ".to_owned()];
-        let err = enforce_config_policy(&policy, &verification_result)
+        let err = enforce_release_policy(&policy, &verification_result, true)
             .expect_err("normalized-empty MRTD allowlist must fail")
             .to_string();
         assert!(err.contains("allowed_mrtd"));
-    }
-
-    #[test]
-    #[cfg(feature = "mock-attestation")]
-    fn test_enforce_kms_attestation_policy_allows_empty_tcb_allowlist_in_mock_mode() {
-        let verification_result = make_mock_verification_result();
-        let mut policy = make_strict_runtime_policy(&verification_result);
-        policy.accept_mock = true;
-        policy.allowed_tcb_statuses.clear();
-
-        assert!(enforce_config_policy(&policy, &verification_result).is_ok());
-    }
-
-    #[test]
-    #[cfg(feature = "mock-attestation")]
-    fn test_enforce_config_policy_measurement_allowlist_gated_by_mock_mode() {
-        // The same disallowed MRTD is rejected under strict config, but accepted
-        // once accept_mock relaxes the (now-empty) allowlist. This pins the mock
-        // gate to the consolidated enforcement helper.
-        let mut verification_result = make_mock_verification_result();
-        let strict_policy = make_strict_runtime_policy(&verification_result);
-        verification_result.quote.body.mrtd = "ab".repeat(48);
-
-        let err = enforce_config_policy(&strict_policy, &verification_result)
-            .expect_err("strict config must reject a disallowed MRTD")
-            .to_string();
-        assert!(err.contains("MRTD"));
-
-        let mut mock_policy = make_strict_runtime_policy(&verification_result);
-        mock_policy.accept_mock = true;
-        mock_policy.allowed_mrtd.clear();
-        assert!(
-            enforce_config_policy(&mock_policy, &verification_result).is_ok(),
-            "mock mode with an empty MRTD allowlist must skip the measurement check"
-        );
     }
 
     #[test]
@@ -3643,7 +2461,6 @@ mod tests {
 
     /// A listener standing in for the KMS that counts the POSTs it receives; a stray
     /// connection or probe of the port is not a contact.
-    #[cfg(not(feature = "mock-attestation"))]
     async fn silent_kms() -> (Url, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
@@ -3665,42 +2482,48 @@ mod tests {
         (url, contacts)
     }
 
-    #[cfg(not(feature = "mock-attestation"))]
-    fn attestation_with(edit: impl FnOnce(&mut KmsAttestationConfig)) -> KmsAttestationConfig {
-        let mut attestation = KmsAttestationConfig::default();
-        edit(&mut attestation);
-        attestation
-    }
-
-    /// Config allowlists that pin a KMS, for the tests that expect it to be asked.
-    #[cfg(not(feature = "mock-attestation"))]
-    fn pinning_allowlists() -> KmsAttestationConfig {
-        attestation_with(|a| {
-            a.enabled = true;
-            a.allowed_mrtd = vec!["aa".repeat(48)];
-            a.allowed_rtmr0 = vec!["bb".repeat(48)];
-            a.allowed_rtmr1 = vec!["cc".repeat(48)];
-            a.allowed_rtmr2 = vec!["dd".repeat(48)];
-            a.allowed_rtmr3 = vec!["ee".repeat(48)];
+    /// The `[tee.kms.attestation]` table a config could carry, allowlists that
+    /// pin a KMS. It still parses; nothing reads it.
+    fn pinning_allowlists() -> serde_json::Value {
+        json!({
+            "enabled": true,
+            "accept_mock": false,
+            "allowed_tcb_statuses": ["UpToDate"],
+            "allowed_mrtd": ["aa".repeat(48)],
+            "allowed_rtmr0": ["bb".repeat(48)],
+            "allowed_rtmr1": ["cc".repeat(48)],
+            "allowed_rtmr2": ["dd".repeat(48)],
+            "allowed_rtmr3": ["ee".repeat(48)]
         })
     }
 
-    /// A config pointing at a stand-in KMS, and the count of who dialled it.
-    #[cfg(not(feature = "mock-attestation"))]
+    /// A signed release policy's allowlists, as `policy.rs` parses them.
+    fn pinning_release_policy() -> KmsAttestationPolicy {
+        KmsAttestationPolicy {
+            allowed_tcb_statuses: vec!["uptodate".to_owned()],
+            allowed_mrtd: vec!["aa".repeat(48)],
+            allowed_rtmr0: vec!["bb".repeat(48)],
+            allowed_rtmr1: vec!["cc".repeat(48)],
+            allowed_rtmr2: vec!["dd".repeat(48)],
+            allowed_rtmr3: vec!["ee".repeat(48)],
+            default_binding_b64: base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]),
+            release: "2.4.1".to_owned(),
+            profile: None,
+        }
+    }
+
+    /// A config pointing at a stand-in KMS, with `attestation` as its
+    /// `[tee.kms.attestation]` table, and the count of who dialled it.
     async fn stand_in_kms_config(
-        attestation: KmsAttestationConfig,
+        attestation: serde_json::Value,
     ) -> (KmsConfig, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         let (url, contacts) = silent_kms().await;
-        let mut kms = crate::config::TeeConfig::kms(url)
-            .kms
-            .expect("TeeConfig::kms names a KMS");
-        kms.attestation = attestation;
+        let kms = parse_kms_config(json!({ "url": url.as_str(), "attestation": attestation }));
         (kms, contacts)
     }
 
-    #[cfg(not(feature = "mock-attestation"))]
     async fn fetch_with(
-        attestation: KmsAttestationConfig,
+        attestation: serde_json::Value,
         policy: Option<&KmsAttestationPolicy>,
     ) -> (Result<Vec<u8>>, usize) {
         let (kms, contacts) = stand_in_kms_config(attestation).await;
@@ -3711,15 +2534,13 @@ mod tests {
         (result, contacts.load(std::sync::atomic::Ordering::SeqCst))
     }
 
-    #[cfg(not(feature = "mock-attestation"))]
-    async fn probe_with(attestation: KmsAttestationConfig) -> (KmsProbeResult, usize) {
+    async fn probe_with(attestation: serde_json::Value) -> (KmsProbeResult, usize) {
         let (kms, contacts) = stand_in_kms_config(attestation).await;
         let identity = Keypair::generate_ed25519();
         let result = probe_storage_key(&kms, "peer", &identity, None).await;
         (result, contacts.load(std::sync::atomic::Ordering::SeqCst))
     }
 
-    #[cfg(not(feature = "mock-attestation"))]
     #[tokio::test]
     async fn the_stand_in_counts_posts_not_probes_of_its_port() {
         use std::sync::atomic::Ordering;
@@ -3745,12 +2566,11 @@ mod tests {
         assert_eq!(contacts.load(Ordering::SeqCst), 1, "a POST is a contact");
     }
 
-    /// A KMS nothing pins is never asked for a key: with no release policy and
-    /// no config allowlists the fetch ends before the first request.
-    #[cfg(not(feature = "mock-attestation"))]
+    /// A KMS nothing pins is never asked for a key: with no release policy the
+    /// fetch ends before the first request, in every build.
     #[tokio::test]
     async fn a_kms_nothing_verifies_is_not_contacted() {
-        let (result, contacts) = fetch_with(KmsAttestationConfig::default(), None).await;
+        let (result, contacts) = fetch_with(json!({}), None).await;
         let err = result
             .expect_err("an unverified KMS is refused")
             .to_string();
@@ -3758,15 +2578,10 @@ mod tests {
         assert_eq!(contacts, 0, "the KMS was contacted");
     }
 
-    /// `accept_mock` cannot stand in for a policy: this build has no mock quotes,
-    /// so the setting only switches the allowlists off.
-    #[cfg(not(feature = "mock-attestation"))]
+    /// `accept_mock` cannot stand in for a policy.
     #[tokio::test]
     async fn a_kms_only_verified_by_accept_mock_is_not_contacted() {
-        let attestation = attestation_with(|a| {
-            a.enabled = true;
-            a.accept_mock = true;
-        });
+        let attestation = json!({ "enabled": true, "accept_mock": true });
         let (result, contacts) = fetch_with(attestation, None).await;
         let err = result
             .expect_err("accept_mock does not verify a KMS")
@@ -3775,21 +2590,33 @@ mod tests {
         assert_eq!(contacts, 0, "the KMS was contacted");
     }
 
-    /// Allowlists in config are a verification: the fetch goes on to ask the KMS.
-    #[cfg(not(feature = "mock-attestation"))]
+    /// Allowlists in config are not a verification: only the signed release
+    /// policy is, so a KMS they alone pin is never asked for a key.
     #[tokio::test]
-    async fn a_kms_pinned_by_config_allowlists_is_contacted() {
+    async fn a_kms_pinned_only_by_config_allowlists_is_not_contacted() {
         let (result, contacts) = fetch_with(pinning_allowlists(), None).await;
+        let err = result
+            .expect_err("config allowlists do not verify a KMS")
+            .to_string();
+        assert!(err.contains("not verified"), "{err}");
+        assert_eq!(contacts, 0, "the KMS was contacted");
+    }
+
+    /// The signed release policy is a verification: the fetch goes on to ask
+    /// the KMS for its attestation, whatever the config's table says.
+    #[tokio::test]
+    async fn a_kms_the_release_policy_pins_is_contacted() {
+        let policy = pinning_release_policy();
+        let (result, contacts) = fetch_with(json!({}), Some(&policy)).await;
         assert!(result.is_err(), "the stand-in KMS answers nothing");
         assert!(contacts > 0, "the pinned KMS was never asked");
     }
 
     /// The probe holds to the rule the fetch does: it does not dial a KMS
-    /// nothing pins.
-    #[cfg(not(feature = "mock-attestation"))]
+    /// the release policy does not pin.
     #[tokio::test]
     async fn a_probe_of_a_kms_nothing_verifies_does_not_contact_it() {
-        let (result, contacts) = probe_with(KmsAttestationConfig::default()).await;
+        let (result, contacts) = probe_with(json!({})).await;
         assert!(!result.ok);
         assert_eq!(result.code, "KMS_UNVERIFIED");
         assert!(
@@ -3803,12 +2630,11 @@ mod tests {
         assert_eq!(contacts, 0, "the KMS was contacted");
     }
 
-    #[cfg(not(feature = "mock-attestation"))]
     #[tokio::test]
-    async fn a_probe_of_a_kms_pinned_by_config_allowlists_contacts_it() {
+    async fn a_probe_of_a_kms_pinned_only_by_config_allowlists_does_not_contact_it() {
         let (result, contacts) = probe_with(pinning_allowlists()).await;
-        assert!(!result.ok, "the stand-in KMS answers nothing");
-        assert_ne!(result.code, "KMS_UNVERIFIED");
-        assert!(contacts > 0, "the pinned KMS was never asked");
+        assert!(!result.ok);
+        assert_eq!(result.code, "KMS_UNVERIFIED");
+        assert_eq!(contacts, 0, "the KMS was contacted");
     }
 }

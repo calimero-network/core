@@ -1,6 +1,11 @@
 //! `meroctl app check` offline (`--against FILE.mpk`): releases packed with `app pack`,
 //! judged green or red by the node's classifier, with the gate's exit codes. No node.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -122,8 +127,10 @@ fn the_same_signer_and_egress_is_green_and_passes_the_gate() {
         "{summary}"
     );
     assert!(!summary.to_lowercase().contains("sealed"), "{summary}");
+    // Green, but the release sends data out: no policy applies it on its own.
+    assert!(!summary.contains("apply it on their own"), "{summary}");
     assert!(
-        summary.contains("apply it on their own (green"),
+        summary.contains("wait for an owner's or admin's approval (green, but the app or the apps it created can send data out"),
         "{summary}"
     );
     assert!(

@@ -121,6 +121,31 @@ steps (`verify_report`):
 Only then does the client open a [sealed session](/protocol/networking/#the-sealed-channel)
 to the transport key.
 
+## What a node trusts its KMS on
+
+A TDX node takes its storage key, and its data disk's key, only from a mero-kms
+replica whose quote matches the KMS allowlists of a signed mero-tee release:
+the release's `kms-attestation-policy[.<profile>].json`, fetched and verified
+against its Sigstore signature and the release workflow's identity
+(`calimero-kms-client`'s `policy.rs`). Nothing else pins a KMS. With no release
+named there is no policy and no key; there are no allowlists in `config.toml`
+and no variable that skips the release (`USE_ENV_POLICY` is gone: a node that
+finds it set warns and ignores it).
+
+The release and the KMS URL come from outside the TD, so the rest of the chain
+is what keeps the host from choosing what the node trusts:
+
+- The image's root filesystem, merod and its init script included, is behind
+  dm-verity. Its root hash is on the kernel command line, which RTMR2
+  measures, so the node's quote names the code that runs.
+- The host supplies only values: the init script reads a whitelist of instance
+  metadata and passes those values to `merod init` and `merod.env`, never a
+  file or a setting of its own choosing.
+- `config.toml` lives on the data disk, which the TD encrypts with a key from
+  the KMS, so the host cannot edit it.
+- A release older than the image's own (`MERO_TEE_MIN_VERSION`) is refused, and
+  a URL that reaches any other KMS reaches one the signed policy refuses.
+
 ## Which KMS a node took its keys from
 
 A node's quote proves it runs code that refuses a KMS outside the signed
@@ -152,8 +177,7 @@ epoch yet: a node reports it in `/health` (`rollbackEpoch`) and in
 
 The binding is opt in, so nothing changes for a client that does not ask: its
 report data is the transport form above, byte for byte. A node with no record
-(`--dev`, a KMS pinned by config rather than a signed release, or a merod
-before this) answers `purpose=kms` with the transport form and no `kms`, which
+(`--dev`, a key from a file, or a merod before this) answers `purpose=kms` with the transport form and no `kms`, which
 a verifier shows as "not reported", not as a failure.
 
 ## Peers are judged the same way

@@ -43,3 +43,6 @@ tempfile.workspace = true
 
 [features]
 testing = ["calimero-identity/testing"]
+
+[lints]
+workspace = true
