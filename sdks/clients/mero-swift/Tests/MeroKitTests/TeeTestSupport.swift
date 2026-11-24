@@ -36,6 +36,33 @@ enum TeeFixture {
         get throws { try JSONDecoder().decode(DcapCollateral.self, from: try data("tdx_quote_collateral.json")) }
     }
 
+    /// The sample collateral as it reads naming Intel TCB evaluation data
+    /// `number` instead of its own 17. Only Intel can re-sign it, so its
+    /// signatures no longer verify for any other number.
+    static func evaluationDataCollateral(_ number: Int) throws -> DcapCollateral {
+        var edited = try collateral
+        edited.tcbInfo = edited.tcbInfo.replacingOccurrences(
+            of: "\"tcbEvaluationDataNumber\":17", with: "\"tcbEvaluationDataNumber\":\(number)")
+        return edited
+    }
+
+    /// The sample collateral (Intel's evaluation data 17, June 2025) is below
+    /// the floor every verifier enforces (``TeeTrust/defaultMinTcbEvaluationDataNumber``,
+    /// 20). To test the other checks on the real quote, ``genuine`` verifies
+    /// its signatures against the genuine collateral while the floor reads
+    /// this: the same collateral naming 20.
+    static var current: DcapCollateral {
+        get throws { try evaluationDataCollateral(TeeTrust.defaultMinTcbEvaluationDataNumber) }
+    }
+
+    /// ``Dcap/verify(_:collateral:nowSecs:)``, against the genuine sample
+    /// collateral when handed ``current``.
+    static let genuine: DcapVerify = { quote, collateral, nowSecs in
+        let genuine = try TeeFixture.collateral
+        let current = try TeeFixture.current
+        return try Dcap.verify(quote, collateral: collateral == current ? genuine : collateral, nowSecs: nowSecs)
+    }
+
     /// A moment inside the sample collateral's validity window (2025-06-27), in milliseconds.
     static let at: Int64 = 1_751_000_000_000
 

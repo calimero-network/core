@@ -12,7 +12,8 @@
  * release must be at least `minReleaseVersion`; its `published-mrtds.json` is
  * fetched and its Sigstore signature checked against the node release workflow;
  * the quote's signature chain and TCB status are checked against Intel's
- * collateral (fetched here: the node sends none, and cannot forge it); the TD
+ * collateral (fetched here: the node sends none, and cannot forge it), whose
+ * TCB evaluation data must be at least core's floor; the TD
  * must not be a debug TD; and its registers must be the release's image for the
  * trusted profile, `locked-read-only` unless a debug profile is explicitly
  * allowed. Nothing here reads the environment: mock quotes pass only with
@@ -79,6 +80,12 @@ export interface NodeReleasePolicy {
    * refuses every node if Intel is slow to re-sign.
    */
   maxCollateralAgeDays?: number;
+  /**
+   * Refuse collateral whose TCB info names Intel TCB evaluation data older
+   * than this. Raises `DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER` (core's floor),
+   * never lowers it; see `QuoteVerifierOptions.minTcbEvaluationDataNumber`.
+   */
+  minTcbEvaluationDataNumber?: number;
   /** Override the release signer (defaults to the mero-tee node release workflow). */
   identity?: string;
   issuer?: string;
@@ -287,6 +294,7 @@ async function verifyRelease(
     dcapVerify: policy.dcapVerify ?? (await dcap<DcapVerify>('verify')),
     fetchCollateral,
     now: policy.now,
+    minTcbEvaluationDataNumber: policy.minTcbEvaluationDataNumber,
     ...trusted,
   });
   return (await verifier(args)) ? { release: version, profile } : undefined;
