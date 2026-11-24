@@ -351,6 +351,12 @@ guard makes that recovery available wherever an org owns a deployment:
   deployment (section 9): at `POST /orgs { name, recoveryKey }`, or with
   `POST /orgs/{org}/recovery`; the seed is shown to the user once and never kept
   by mdma.
+- Transfer (decided): the sender picks the receiver by pasting the receiver's
+  workspace ID (`org:<id>` or `account:<id>`), never by email or a name search.
+  Settings show a workspace's ID with a Copy button. Before the passkey prompt,
+  the console resolves a pasted ID to the receiver's name, and warns early when the
+  receiver lacks a deployer grant or a recovery key (which acceptance would refuse).
+  mdma emails the receiver's owners and admins about the offer.
 - Deploying an app is `OfferApp`; deploying a new version of it replaces the
   entry; deleting the app from the console is `WithdrawApp`.
 - Inviting a workspace member also mints the cluster invite with the right
