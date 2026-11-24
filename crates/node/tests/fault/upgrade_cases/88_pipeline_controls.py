@@ -40,7 +40,9 @@ class PipelineControls(DeepCase):
 
     @staticmethod
     def _estimate(p, app, node=None):
-        return p.cli("cloud", "compute", "pipeline", "estimate", app, PIPELINE, "--count", "docs=4", node=node)
+        """The runs and fuel; the cost follows the operator's price table, which `price-table` changes."""
+        got = p.cli("cloud", "compute", "pipeline", "estimate", app, PIPELINE, "--count", "docs=4", node=node)
+        return {"fuel": got["fuel"], "steps": {n: {"runs": st["runs"], "fuel": st["fuel"]} for n, st in got["steps"].items()}}
 
     def _record(self, p, s, run):
         view = until("the run ends", lambda: _ended(_get(p, s["app"], run)), 180)
@@ -56,7 +58,7 @@ class PipelineControls(DeepCase):
         s = {"app": app, "files": files, "runs": []}
         by_file = p.cli("cloud", "compute", "pipeline", "estimate", app, PIPELINE, "--input", "docs=" + ",".join(files))
         s["estimate"] = self._estimate(p, app)
-        eq(by_file, s["estimate"], "an estimate by file and by count")
+        eq(by_file["fuel"], s["estimate"]["fuel"], "an estimate by file and by count")
         check(int(s["estimate"]["fuel"]) > 0, f"the estimate: {s['estimate']}")
         first = p.cli("cloud", "compute", "pipeline", "run", app, PIPELINE, "--input", "docs=" + ",".join(files))["run"]
         self._record(p, s, first)
