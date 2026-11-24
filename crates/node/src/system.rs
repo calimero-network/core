@@ -3225,7 +3225,9 @@ impl SystemState {
         let by_operator = self.governance().app_upgrades == Authority::Operator;
         match holder {
             BackupHolder::Operator => by_operator && actor == OPERATOR,
-            BackupHolder::Org(org) if self.cluster_brings(cluster_version::Feature::BackupKeyApprovers) => {
+            BackupHolder::Org(org)
+                if self.cluster_brings(cluster_version::Feature::BackupKeyApprovers) =>
+            {
                 !by_operator && self.approves_upgrades(org, actor)
             }
             BackupHolder::Org(org) => !by_operator && self.manages_apps(org, actor, None),

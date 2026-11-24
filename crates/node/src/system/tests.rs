@@ -13601,7 +13601,13 @@ fn team_row(
 }
 
 /// `actor`'s `SetCapabilities` of `account`'s row in `team`.
-fn team_caps(pk: &mut Soft, team: &str, account: &str, capabilities: u32, actor: &str) -> SystemCmd {
+fn team_caps(
+    pk: &mut Soft,
+    team: &str,
+    account: &str,
+    capabilities: u32,
+    actor: &str,
+) -> SystemCmd {
     let c = consent(
         pk,
         "org:org",
@@ -13660,15 +13666,23 @@ fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
     // Before the version: the escalation applies, as an earlier release logged it.
     let (mut m, _alice, mut bob, _carol) = cluster_at(None);
     with_manage_members(&mut m);
-    let _ok = m.run(team_row(&mut bob, "t", "bob", Some(escalate), "bob")).unwrap();
+    let _ok = m
+        .run(team_row(&mut bob, "t", "bob", Some(escalate), "bob"))
+        .unwrap();
     assert!(m.state.orgs["org"].in_team("bob", "t"));
-    assert!(m.state.manages_apps("org", "bob", Some("t")), "the old rule");
+    assert!(
+        m.state.manages_apps("org", "bob", Some("t")),
+        "the old rule"
+    );
 
     // From it: a team he does not see is refused, and nothing is written.
     let (mut m, mut alice, mut bob, _carol) = cluster_at(Some(Feature::HeldTeamGrants.since()));
     with_manage_members(&mut m);
     assert_eq!(
-        refused(&mut m, team_row(&mut bob, "t", "bob", Some(escalate), "bob")),
+        refused(
+            &mut m,
+            team_row(&mut bob, "t", "bob", Some(escalate), "bob")
+        ),
         TEAM_NOT_SEEN
     );
     assert_eq!(
@@ -13683,7 +13697,13 @@ fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
     // grants no bit he lacks organization-wide: not to his own row, not
     // through the team's default, not to someone else.
     let _ok = m
-        .run(team_row(&mut alice, "t", "bob", Some(caps::MANAGE_MEMBERS), "alice"))
+        .run(team_row(
+            &mut alice,
+            "t",
+            "bob",
+            Some(caps::MANAGE_MEMBERS),
+            "alice",
+        ))
         .unwrap();
     let _prev = m
         .state
@@ -13697,22 +13717,37 @@ fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
         super::CANNOT_GRANT_UNHELD
     );
     assert_eq!(
-        refused(&mut m, team_default(&mut bob, "t", caps::MANAGE_APPLICATION, "bob")),
+        refused(
+            &mut m,
+            team_default(&mut bob, "t", caps::MANAGE_APPLICATION, "bob")
+        ),
         super::CANNOT_GRANT_UNHELD
     );
     assert_eq!(
-        refused(&mut m, team_row(&mut bob, "t", "carol", Some(escalate), "bob")),
+        refused(
+            &mut m,
+            team_row(&mut bob, "t", "carol", Some(escalate), "bob")
+        ),
         super::CANNOT_GRANT_UNHELD
     );
     assert!(!m.state.manages_apps("org", "bob", Some("t")));
     assert!(!m.state.orgs["org"].in_team("carol", "t"));
     // What he holds he hands on, and an unknown bit is refused to anyone.
     let _ok = m
-        .run(team_row(&mut bob, "t", "carol", Some(caps::MANAGE_MEMBERS), "bob"))
+        .run(team_row(
+            &mut bob,
+            "t",
+            "carol",
+            Some(caps::MANAGE_MEMBERS),
+            "bob",
+        ))
         .unwrap();
     assert!(m.state.orgs["org"].in_team("carol", "t"));
     assert_eq!(
-        refused(&mut m, team_caps(&mut alice, "t", "carol", 1 << 31, "alice")),
+        refused(
+            &mut m,
+            team_caps(&mut alice, "t", "carol", 1 << 31, "alice")
+        ),
         super::UNKNOWN_CAPABILITIES
     );
     // The owner grants any defined bit.
@@ -13847,8 +13882,7 @@ fn an_organizations_backup_key_is_set_by_its_owner_and_admins() {
     assert_eq!(m.state.backup_keys["org:org"].set_by, "bob");
 
     // From it, refused for him; the owner, and an admin, set it.
-    let (mut m, mut alice, mut bob, _carol) =
-        cluster_at(Some(Feature::BackupKeyApprovers.since()));
+    let (mut m, mut alice, mut bob, _carol) = cluster_at(Some(Feature::BackupKeyApprovers.since()));
     manages_apps(&mut m);
     assert_eq!(set(&mut m, &mut bob, "bob").unwrap_err(), NOT_BACKUP_HOLDER);
     assert!(!m.state.backup_keys.contains_key("org:org"));

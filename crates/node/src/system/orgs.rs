@@ -593,7 +593,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             actor,
             ..
         } => {
-            let held = m.state.cluster_brings(cluster_version::Feature::HeldTeamGrants);
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             let role = role.unwrap_or(if lead {
                 TeamRole::Lead
@@ -614,7 +616,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // All or nothing: each row is judged as its own
             // `SetTeamMember` would be, in order, on a copy kept only
             // when every one holds.
-            let held = m.state.cluster_brings(cluster_version::Feature::HeldTeamGrants);
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             let mut next = o.clone();
             for row in teams {
@@ -793,7 +797,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             actor,
             ..
         } => {
-            let held = m.state.cluster_brings(cluster_version::Feature::HeldTeamGrants);
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             if o.role(&account).is_none() {
                 return Err("not a member");
@@ -849,7 +855,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             actor,
             ..
         } => {
-            let held = m.state.cluster_brings(cluster_version::Feature::HeldTeamGrants);
+            let held = m
+                .state
+                .cluster_brings(cluster_version::Feature::HeldTeamGrants);
             let o = m.org_mut(&org)?;
             let Some(team) = team else {
                 if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
