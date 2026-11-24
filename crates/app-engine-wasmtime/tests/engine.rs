@@ -689,6 +689,123 @@ fn artifacts_are_only_loaded_under_the_key_they_were_written_with() {
     );
 }
 
+/// Sets `path`'s modification time two hours back, past the sweep's grace.
+fn age(path: &Path) {
+    let then = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(then)
+        .unwrap();
+}
+
+/// Writes `name` (and its `.mac`) into `dir` as a leftover artifact, aged unless `fresh`.
+fn plant(dir: &Path, name: &str, fresh: bool) -> [PathBuf; 2] {
+    let artifact = dir.join(name);
+    let sidecar = dir.join(format!("{name}.mac"));
+    for p in [&artifact, &sidecar] {
+        std::fs::write(p, b"leftover").unwrap();
+        if !fresh {
+            age(p);
+        }
+    }
+    [artifact, sidecar]
+}
+
+/// A wasmtime or engine-config change names every artifact anew: a new engine deletes the
+/// old ones (once past the grace, so a process still writing one keeps it) and keeps its own.
+#[test]
+fn a_new_engine_deletes_artifacts_of_another_wasmtime_or_config() {
+    let fx = fixture();
+    let component = guest("global_counter");
+    let _ = fx.engine.prepare("gc", &component).expect("prepare");
+    let own = cache_files(fx.cache.path(), &component);
+    for p in &own {
+        age(p);
+    }
+    let sha = hex::encode(Sha256::digest(&component));
+    let old_wasmtime = plant(
+        fx.cache.path(),
+        &format!("{sha}-wasmtime49-0123456789abcdef.cwasm"),
+        false,
+    );
+    let old_config = plant(
+        fx.cache.path(),
+        &format!("{}-wasmtime50-0123456789abcdef.cwasm", "ab".repeat(32)),
+        false,
+    );
+    let just_written = plant(
+        fx.cache.path(),
+        &format!("{}-wasmtime50-fedcba9876543210.cwasm", "cd".repeat(32)),
+        true,
+    );
+    let stray_temp = fx
+        .cache
+        .path()
+        .join(format!("{sha}-wasmtime50-0123456789abcdef.tmp-1-0"));
+    std::fs::write(&stray_temp, b"half").unwrap();
+    age(&stray_temp);
+    let unrelated = fx.cache.path().join("notes.txt");
+    std::fs::write(&unrelated, b"not ours").unwrap();
+    age(&unrelated);
+
+    let restarted = WasmtimeEngine::new(fx.cache.path().to_path_buf(), &CACHE_KEY).expect("engine");
+    for p in old_wasmtime.iter().chain(&old_config).chain([&stray_temp]) {
+        assert!(!p.exists(), "{p:?} left behind");
+    }
+    for p in just_written.iter().chain(&own).chain([&unrelated]) {
+        assert!(p.exists(), "{p:?} deleted");
+    }
+    let _ = restarted.prepare("gc", &component).expect("prepare again");
+    assert_eq!(restarted.compiles(), 0, "loaded from the cache");
+}
+
+/// The node's sweep keeps the artifacts of the components it names and deletes the rest,
+/// except one written within the grace (a release installed, no app made from it yet).
+#[test]
+fn sweeping_keeps_the_artifacts_of_live_components_only() {
+    let fx = fixture();
+    let (live, dead, fresh) = (
+        guest("global_counter"),
+        guest("view_writer"),
+        guest("clock_reader"),
+    );
+    for (name, component) in [("live", &live), ("dead", &dead)] {
+        let _ = fx.engine.prepare(name, component).expect("prepare");
+        for p in cache_files(fx.cache.path(), component) {
+            age(&p);
+        }
+    }
+    let _ = fx.engine.prepare("fresh", &fresh).expect("prepare");
+    let live_sha = hex::encode(Sha256::digest(&live));
+    let swept = fx.engine.sweep_cache(|c| c == live_sha);
+    assert_eq!(swept.files, 2, "{swept:?}");
+    assert!(swept.bytes > 0, "{swept:?}");
+    assert!(cache_files(fx.cache.path(), &dead).is_empty());
+    assert_eq!(cache_files(fx.cache.path(), &live).len(), 2);
+    assert_eq!(cache_files(fx.cache.path(), &fresh).len(), 2);
+
+    let restarted = WasmtimeEngine::new(fx.cache.path().to_path_buf(), &CACHE_KEY).expect("engine");
+    let _ = restarted.prepare("live", &live).expect("prepare live");
+    assert_eq!(
+        restarted.compiles(),
+        0,
+        "the live component loads from the cache"
+    );
+    let _ = restarted.prepare("dead", &dead).expect("prepare dead");
+    assert_eq!(restarted.compiles(), 1, "a swept component compiles again");
+}
+
+/// A compute engine has no disk cache: its sweep deletes nothing.
+#[test]
+fn a_compute_engine_sweeps_nothing() {
+    assert_eq!(
+        compute_engine().sweep_cache(|_| false),
+        calimero_app_engine_wasmtime::CacheSweep::default()
+    );
+}
+
 #[test]
 fn ten_thousand_and_one_writes_trap() {
     let fx = fixture();
@@ -986,6 +1103,31 @@ fn prepare_compute(engine: &WasmtimeEngine, name: &str) -> Prepared {
     engine
         .prepare(&format!("{name}-hash"), &guest(name))
         .unwrap_or_else(|e| panic!("prepare {name}: {e}"))
+}
+
+/// A node reads a compute component's methods and caps without compiling it: `abi_of`
+/// gives what `prepare` would, after the same checks, and compiles nothing.
+#[test]
+fn abi_of_reads_a_compute_components_abi_without_compiling_it() {
+    let engine = compute_engine();
+    let component = guest("compute_probe");
+    let abi = engine.abi_of(&component).expect("abi");
+    assert_eq!(engine.compiles(), 0, "read without compiling");
+    let prepared = engine.prepare("probe", &component).expect("prepare");
+    assert_eq!(engine.compiles(), 1);
+    assert_eq!(abi, prepared.abi);
+
+    let err = engine.abi_of(&guest("compute_publish")).unwrap_err();
+    assert!(matches!(err, PrepareError::ForbiddenImport(_)), "{err:?}");
+    let err = engine.abi_of(&guest("global_counter")).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            PrepareError::ForbiddenImport(_) | PrepareError::BadAbi(_)
+        ),
+        "{err:?}"
+    );
+    assert_eq!(engine.compiles(), 1);
 }
 
 #[test]

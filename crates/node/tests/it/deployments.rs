@@ -783,6 +783,8 @@ async fn frontends_open_the_deployed_release() {
         known["deployments"],
         json!([{ "id": d, "name": "alpha", "app": "site", "version": "1.0.0" }])
     );
+    // The page learns which cluster served it, to connect and to show.
+    assert_eq!(known["cluster"], json!(c.name));
     // Not another package's instance, nor an unknown one; files only.
     assert_eq!(get(format!("/app/{other}/")).await.unwrap().status(), 404);
     assert_eq!(get("/app/nope/".into()).await.unwrap().status(), 404);

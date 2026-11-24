@@ -9,6 +9,7 @@ use std::panic::catch_unwind;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::PoisonError;
@@ -52,6 +53,7 @@ mod wasi;
 
 use bindings::AppPre;
 use cache::Cache;
+pub use cache::{CacheSweep, CACHE_SWEEP_GRACE};
 use compute::ComputePre;
 use errors::{classify, Cancelled, GrowFailed, GrowRefused, HostPanic, Phase};
 
@@ -135,6 +137,8 @@ pub struct WasmtimeEngine {
     /// Most linear memory one run may be given.
     max_memory_bytes: usize,
     ticker_stop: Arc<AtomicBool>,
+    /// How many components this engine compiled (a cache hit is not one).
+    compiles: AtomicU64,
 }
 
 impl WasmtimeEngine {
@@ -183,6 +187,9 @@ impl WasmtimeEngine {
             .allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
         let engine = wasmtime::Engine::new(&config).map_err(report)?;
         let cache = Cache::new(cache_dir, &engine, cache_key)?;
+        // A wasmtime or config change leaves every earlier artifact unloadable: drop them.
+        // Which components are still needed only the node knows (`sweep_cache`).
+        let _swept = cache.sweep(&|_| true);
         Self::finish(World::App, engine, Some(cache), MAX_MEMORY_BYTES)
     }
 
@@ -232,6 +239,7 @@ impl WasmtimeEngine {
             cache,
             max_memory_bytes,
             ticker_stop,
+            compiles: AtomicU64::new(0),
         })
     }
 }
@@ -244,6 +252,41 @@ impl Drop for WasmtimeEngine {
 
 impl Engine for WasmtimeEngine {
     fn prepare(&self, bundle_hash: &str, component: &[u8]) -> Result<Prepared, PrepareError> {
+        let abi = self.abi_of(component)?;
+        let compile_now = || {
+            let _n = self.compiles.fetch_add(1, Ordering::Relaxed);
+            Component::new(&self.engine, component)
+                .map_err(|e| PrepareError::Compile(e.to_string()))
+        };
+        let compiled: Component = match &self.cache {
+            Some(cache) => cache.load_or_compile(&self.engine, component, compile_now)?,
+            None => compile_now()?,
+        };
+        let pre = self
+            .linker
+            .instantiate_pre(&compiled)
+            .map_err(|e| PrepareError::Compile(e.to_string()))?;
+        let inner: Arc<dyn std::any::Any + Send + Sync> = match self.world {
+            World::App => Arc::new(AppPre::new(pre).map_err(compile)?),
+            World::Compute => Arc::new(ComputePre::new(pre).map_err(compile)?),
+        };
+        Ok(Prepared {
+            hash: bundle_hash.to_owned(),
+            abi,
+            inner,
+        })
+    }
+
+    fn invoke(&self, app: &Prepared, host: HostCore, budget: Budget) -> Outcome {
+        self.run(app, host, budget, None)
+    }
+}
+
+impl WasmtimeEngine {
+    /// The ABI [`Engine::prepare`] would give `component`, after every check it makes
+    /// before compiling (imports, the ABI and its world, defined memories), without
+    /// compiling it: what a node needs to read a compute component's methods and caps.
+    pub fn abi_of(&self, component: &[u8]) -> Result<Abi, PrepareError> {
         let imports = calimero_app_build::imports_of(component)
             .map_err(|e| PrepareError::Compile(e.to_string()))?;
         if let Some(forbidden) = imports.into_iter().find(|i| !import_allowed(self.world, i)) {
@@ -277,33 +320,27 @@ impl Engine for WasmtimeEngine {
                 "component defines {memories} memories; at most {MAX_MEMORIES}"
             )));
         }
-
-        let compiled: Component = match &self.cache {
-            Some(cache) => cache.load_or_compile(&self.engine, component)?,
-            None => Component::new(&self.engine, component)
-                .map_err(|e| PrepareError::Compile(e.to_string()))?,
-        };
-        let pre = self
-            .linker
-            .instantiate_pre(&compiled)
-            .map_err(|e| PrepareError::Compile(e.to_string()))?;
-        let inner: Arc<dyn std::any::Any + Send + Sync> = match self.world {
-            World::App => Arc::new(AppPre::new(pre).map_err(compile)?),
-            World::Compute => Arc::new(ComputePre::new(pre).map_err(compile)?),
-        };
-        Ok(Prepared {
-            hash: bundle_hash.to_owned(),
-            abi,
-            inner,
-        })
+        Ok(abi)
     }
 
-    fn invoke(&self, app: &Prepared, host: HostCore, budget: Budget) -> Outcome {
-        self.run(app, host, budget, None)
+    /// Deletes the cached artifacts no longer needed: those of components `live` refuses
+    /// (by their SHA-256, lowercase hex), of another wasmtime or engine config, and temp
+    /// files a crashed write left, each once unmodified for [`CACHE_SWEEP_GRACE`]. A
+    /// component deleted here that comes back is compiled again. Blocking file work. A
+    /// compute engine has no cache and deletes nothing.
+    pub fn sweep_cache(&self, live: impl Fn(&str) -> bool) -> CacheSweep {
+        self.cache
+            .as_ref()
+            .map_or_else(CacheSweep::default, |c| c.sweep(&live))
     }
-}
 
-impl WasmtimeEngine {
+    /// How many components this engine has compiled since it was made; a component
+    /// loaded from the disk cache is not counted.
+    #[must_use]
+    pub fn compiles(&self) -> u64 {
+        self.compiles.load(Ordering::Relaxed)
+    }
+
     /// Like [`Engine::invoke`], but the run also ends, detail [`CANCELLED`], at the next
     /// epoch tick after `cancel` is set from another thread.
     pub fn invoke_cancellable(

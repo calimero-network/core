@@ -453,6 +453,60 @@ async fn a_green_update_applies_after_its_hold_and_is_undone_within_a_week() {
     shift_update_clock(0);
 }
 
+/// A developer who uninstalls a release it no longer offers takes it from the customer's
+/// undo too, even where the release the app runs ships the same WASM and keeps the bundle:
+/// the route says why before the passkey is asked for, and the app stays where it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_undo_is_refused_to_a_release_that_was_uninstalled() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    let app = auto_app(&alice, &mut alice_pk, &publisher).await;
+    let same_wasm = variant(&kv_wasm(), "v11");
+    for version in ["1.1.0", "1.1.1"] {
+        let _ = alice
+            .packages()
+            .upload(release(version, &same_wasm, &publisher))
+            .await
+            .unwrap();
+        let _up = alice
+            .apps()
+            .upgrade(
+                &app,
+                typed(json!({ "version": version })),
+                Some(&mut alice_pk),
+            )
+            .await
+            .unwrap();
+        let _moved = get_until(&alice, &format!("apps/{app}"), 15, |a| {
+            a["release"]["version"] == version
+        })
+        .await;
+    }
+    let plan = get(&alice, &format!("apps/{app}/undo")).await.unwrap();
+    assert_eq!(plan["available"], true, "{plan}");
+    let _gone = alice
+        .packages()
+        .version_uninstall(PACKAGE, "1.1.0")
+        .await
+        .unwrap();
+    let plan = get(&alice, &format!("apps/{app}/undo")).await.unwrap();
+    assert_eq!(plan["available"], false, "{plan}");
+    assert_eq!(plan["reason"]["code"], "UNDO_RELEASE_GONE", "{plan}");
+    let e = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("apps/{app}/undo").as_str()).json(json!({})),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("UNDO_RELEASE_GONE"), "{e}");
+    assert_eq!(running(&alice, &app).await, "1.1.1");
+    shift_update_clock(0);
+}
+
 /// An app on a `noDestinations` policy (`holdHours` 24), at 1.0.0 with key `k` set, and
 /// its organization: what the tests below start from.
 async fn auto_app(
@@ -764,89 +818,6 @@ async fn a_pass_off_the_system_leader_moves_nothing() {
     shift_update_clock(0);
 }
 
-/// A green update of an instance whose release creates apps (`uses`, `mode: create`), with
-/// no destination in the unit, applies on its own even though the new release pins newer
-/// releases of its members: it moves the instance alone and the members stay where they
-/// are, until an owner or admin upgrades the unit. `meroctl app check`'s line and the
-/// protocol docs say so; this is the rule they describe.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn an_update_whose_members_differ_applies_on_its_own_and_moves_the_instance_alone() {
-    shift_update_clock(0);
-    let c = Cluster::start(3).await;
-    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
-    let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
-    let uses = |kv: &str| json!({ "kv": { "package": "com.test.auto-kv", "range": "^0.1", "version": kv } });
-    for (package, version, uses, tag) in [
-        ("com.test.auto-kv", "0.1.0", Value::Null, "kv10"),
-        ("com.test.auto-kv", "0.1.1", Value::Null, "kv11"),
-        ("com.test.auto-unit", "0.1.0", uses("0.1.0"), "u10"),
-    ] {
-        let _ = alice
-            .packages()
-            .upload(release_of(
-                package,
-                version,
-                &variant(&kv_wasm(), tag),
-                &publisher,
-                uses,
-            ))
-            .await
-            .unwrap();
-    }
-    let org = home_org(&alice).await;
-    let made = alice
-        .apps()
-        .create(typed(
-            json!({ "name": "notes", "package": "com.test.auto-unit", "version": "0.1.0", "org": org }),
-        ))
-        .await
-        .map(wire)
-        .unwrap();
-    let notes = made["appId"].as_str().unwrap().to_owned();
-    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
-    let _set = alice
-        .transport()
-        .confirmed(
-            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
-                .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
-            &mut alice_pk,
-        )
-        .await
-        .unwrap();
-    let _ = alice
-        .packages()
-        .upload(release_of(
-            "com.test.auto-unit",
-            "0.2.0",
-            &variant(&kv_wasm(), "u20"),
-            &publisher,
-            uses("0.1.1"),
-        ))
-        .await
-        .unwrap();
-    let update = get_until(&alice, &format!("apps/{notes}/update"), 15, |u| {
-        u["available"]["version"] == "0.2.0"
-    })
-    .await;
-    assert_eq!(update["available"]["class"], "green", "{update}");
-    assert_eq!(update["unit"], true, "{update}");
-
-    shift_update_clock(DAY + 600);
-    passes_until(
-        &c,
-        || async { running(&alice, &notes).await == "0.2.0" },
-        "the instance never applied on its own",
-    )
-    .await;
-    let moved = get(&alice, &format!("apps/{notes}")).await.unwrap();
-    assert_eq!(moved["lastUpgrade"]["by"], "policy:auto-update", "{moved}");
-    assert_eq!(moved["lastUpgrade"]["auto"], true, "{moved}");
-    assert_eq!(running(&alice, &kv).await, "0.1.0");
-    assert_eq!(pass(&c).await, 0);
-    assert_eq!(running(&alice, &kv).await, "0.1.0");
-    shift_update_clock(0);
-}
-
 /// A green update that drops a method waits for a person: another app may call it (here
 /// the plugin's `askWho` calls the calendar's `whoView`), so it never applies on its own,
 /// and a quiet release below it still does. A person may still approve it.
@@ -941,5 +912,103 @@ async fn a_green_update_that_drops_a_method_waits_for_a_person() {
         .unwrap();
     assert_eq!(waiting["available"]["version"], "1.1.0", "{waiting}");
     assert_eq!(waiting["mayApprove"], true, "{waiting}");
+    shift_update_clock(0);
+}
+
+/// An update that would move the unit's members waits for a person: an update on its own
+/// moves the instance alone, so `notes` 0.2.0, whose lock pins its member `kv` at 0.1.1,
+/// never applies on its own while `kv` runs 0.1.0, and a release below it that keeps
+/// `kv` where it is still does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_update_that_would_move_the_units_members_waits_for_a_person() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
+    let (notes, kv) = ("com.test.unit-notes", "com.test.unit-kv");
+    let kv_at =
+        |version: &str| json!({ "kv": { "package": kv, "range": "^0.1", "version": version } });
+    for mpk in [
+        release_of(kv, "0.1.0", &kv_wasm(), &publisher, Value::Null),
+        release_of(
+            kv,
+            "0.1.1",
+            &variant(&kv_wasm(), "kv011"),
+            &publisher,
+            Value::Null,
+        ),
+        release_of(notes, "0.1.0", &kv_wasm(), &publisher, kv_at("0.1.0")),
+    ] {
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let org = home_org(&alice).await;
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": notes, "version": "0.1.0", "org": org }),
+        ))
+        .await
+        .unwrap()
+        .app_id;
+    let created = get(&alice, &format!("apps/{app}")).await.unwrap();
+    let member = created["links"]["kv"]
+        .as_str()
+        .expect("the unit's member")
+        .to_owned();
+    assert_eq!(running(&alice, &member).await, "0.1.0");
+
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    for mpk in [
+        release_of(
+            notes,
+            "0.1.5",
+            &variant(&kv_wasm(), "n015"),
+            &publisher,
+            kv_at("0.1.0"),
+        ),
+        release_of(
+            notes,
+            "0.2.0",
+            &variant(&kv_wasm(), "n020"),
+            &publisher,
+            kv_at("0.1.1"),
+        ),
+    ] {
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let update = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
+        u["available"]["version"] == "0.2.0"
+    })
+    .await;
+    assert_eq!(update["available"]["class"], "green", "{update}");
+    assert_eq!(update["unit"], true, "{update}");
+
+    // Past the hold, 0.1.5 applies on its own and 0.2.0 never does.
+    shift_update_clock(DAY + 600);
+    passes_until(
+        &c,
+        || async { running(&alice, &app).await == "0.1.5" },
+        "the release that keeps the members never applied",
+    )
+    .await;
+    for _ in 0..3 {
+        assert_eq!(
+            pass(&c).await,
+            0,
+            "an update that moves the members applied on its own"
+        );
+    }
+    assert_eq!(running(&alice, &app).await, "0.1.5");
+    assert_eq!(running(&alice, &member).await, "0.1.0");
+    let waiting = get(&alice, &format!("apps/{app}/update")).await.unwrap();
+    assert_eq!(waiting["available"]["version"], "0.2.0", "{waiting}");
     shift_update_clock(0);
 }
