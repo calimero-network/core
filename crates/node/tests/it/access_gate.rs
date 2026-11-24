@@ -693,12 +693,20 @@ async fn a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader(
     let _deleted = delete.await.unwrap().unwrap();
 
     // Once the follower catches up, it holds neither the mark nor the bytes.
-    for _ in 0..150 {
-        if !follower_group.read_local(|m, _| m.holds_blob(&raw)) && !follower_has_bytes() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    harness::poll::eventually(
+        harness::poll::EVENTUALLY,
+        "the follower applies the delete",
+        || async {
+            let mark = follower_group.read_local(|m, _| m.holds_blob(&raw));
+            let bytes = follower_has_bytes();
+            if mark || bytes {
+                Err(format!("mark {mark}, bytes {bytes}"))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .await;
     assert!(
         !follower_group.read_local(|m, _| m.holds_blob(&raw)),
         "the follower applied the delete"

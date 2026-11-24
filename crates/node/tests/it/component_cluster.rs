@@ -5376,7 +5376,7 @@ fn mpk_full(
     tar.into_inner().unwrap().finish().unwrap()
 }
 
-/// Polls view `method` until `done` holds of its result (at most 10 s).
+/// Polls view `method` until `done` holds of its result.
 async fn eventually(
     cl: &Client,
     app: &str,
@@ -5384,15 +5384,16 @@ async fn eventually(
     args: Value,
     done: impl Fn(&Value) -> bool,
 ) -> Value {
-    let mut last = Value::Null;
-    for _ in 0..100 {
-        last = strong_view(cl, app, method, args.clone()).await;
-        if done(&last) {
-            return last;
+    let (args, done) = (&args, &done);
+    common::poll::eventually(common::poll::EVENTUALLY, method, move || async move {
+        let v = strong_view(cl, app, method, args.clone()).await;
+        if done(&v) {
+            Ok(v)
+        } else {
+            Err(v)
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("{method} never got there: {last}");
+    })
+    .await
 }
 
 /// D12, D17, D22, S9, R14: an action runs on the app's leader outside the log, reads
