@@ -416,7 +416,7 @@ impl Node {
         self.frontends
             .get_or_load(key, || async {
                 let mpk = self.release_mpk(package, &v).await?;
-                let (bundle, _wasm) = crate::packages::verify(Arc::clone(&mpk))?;
+                let (bundle, _wasm) = crate::packages::verify(Arc::clone(&mpk)).await?;
                 let Some(entry) = bundle.manifest().frontend.as_ref().map(|f| f.entry.clone())
                 else {
                     return Ok(None);
