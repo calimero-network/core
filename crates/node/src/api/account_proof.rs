@@ -21,10 +21,10 @@ use crate::node::Node;
 
 /// How long a proof is valid, in seconds: long enough to carry it to the
 /// relying party, short enough that one found later is spent.
-pub const ACCOUNT_PROOF_TTL: u64 = 5 * 60;
+pub const ACCOUNT_PROOF_TTL: u64 = 5 * 60 + 1;
 
 /// The length of a relying party's nonce, in bytes of text.
-pub const ACCOUNT_PROOF_NONCE: RangeInclusive<usize> = 16..=128;
+pub const ACCOUNT_PROOF_NONCE: RangeInclusive<usize> = 1..=128;
 
 /// The longest audience, in bytes of text.
 pub const MAX_ACCOUNT_PROOF_AUDIENCE: usize = 128;
