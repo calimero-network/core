@@ -466,7 +466,8 @@ impl Kv {
             env::xcall_call::<u32, _>(&b, "slowBump", &args),
         );
         let counts = vec![x?, y?];
-        // Host calls, not a busy loop: the wall clock stops the run before its fuel does.
+        // Host calls, not a busy loop. Each costs fuel per byte (C7), so the test that
+        // stalls gives its cluster fuel enough for the wall clock to stop the run first.
         while stall == Some(true) {
             let _ = std::hint::black_box(env::random_bytes(1 << 20));
         }
@@ -475,7 +476,8 @@ impl Kv {
 
     /// Draws 1 MiB of randomness from the host `spins` times, then counts one more under
     /// `key` and answers the count: a slow target for `bumpBoth`. The host fills the bytes,
-    /// so the call takes wall time without spending its fuel. Also stores the run's time
+    /// which costs fuel per byte (C7), so the test sizing it in wall time lifts its fuel.
+    /// Also stores the run's time
     /// (the entry's, stamped as the run starts) under `<key>@<count>`, so a test tells calls
     /// that started together from calls that took turns.
     #[app::allow(app = "*")]

@@ -105,12 +105,13 @@ Rust heap, counting allocator, the `RamDirectory`'s bytes included:
 SDK 0.12's wasmer runtime charged `search_query` gas from a fit like this one
 (`SEARCH_BASE_GAS + SEARCH_GAS_PER_MATCH·matched + SEARCH_GAS_PER_HIT·hits +
 SEARCH_GAS_PER_BYTE·response bytes`); that runtime is gone. A component's query
-through the WIT `search` interface is bounded by `MAX_SEARCH_LIMIT` (100 hits) and
-`MAX_SEARCH_QUERY_BYTES` (256) in `crates/app-host/src/search.rs`, and no
-constant charges the host's time for it (fuel counts the guest's instructions).
-The `gas` section still times the host side of a call (the query and its
-response) against the work it reports, over 2,608 queries of every mode at every
-size, and fits it by least squares, for whoever prices search again:
+through the WIT `search` interface is bounded by `MAX_SEARCH_LIMIT` (100 hits),
+`MAX_SEARCH_QUERY_BYTES` (256) and `MAX_SEARCHES_PER_RUN` (32), and costs fuel
+from the v1 row below at one fuel per nanosecond (`FUEL_SEARCH_QUERY`,
+`FUEL_PER_SEARCH_MATCH`, `FUEL_PER_SEARCH_HIT`, `FUEL_PER_SEARCH_BYTE` in
+`crates/app-host/src/fuel.rs`). The `gas` section times the host side of a call
+(the query and its response) against the work it reports, over 2,608 queries of
+every mode at every size, and fits it by least squares, for whoever prices search again:
 
 | run | per call | per matched document | per hit | per response byte |
 |---|---|---|---|---|

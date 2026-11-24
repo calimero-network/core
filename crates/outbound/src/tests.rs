@@ -819,6 +819,47 @@ fn an_instances_own_value_wins_for_its_declared_name_only() {
     assert!(!format!("{:?}", declared_for(HOST)).contains("owners-own"));
 }
 
+#[test]
+fn egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again() {
+    use std::sync::atomic::AtomicBool;
+
+    let fake = Arc::new(Fake::default());
+    let run = service(&fake)
+        .for_run(
+            forms(),
+            vec![VERIFY.to_owned()],
+            Some(approving(&declared())),
+            "ctx".to_owned(),
+        )
+        .expect("the app declares a URL");
+    let off = Arc::new(AtomicBool::new(true));
+    let switch = Arc::clone(&off);
+    let gated = egress_gated(
+        run,
+        Arc::new(move || switch.load(Ordering::SeqCst).then_some("its organization")),
+    );
+    let request = borsh::to_vec(&post(VERIFY, "response=tok")).unwrap();
+
+    let refused = gated.send(&request).expect_err("egress is off");
+    assert!(
+        refused.starts_with("EgressOff: its organization"),
+        "{refused}"
+    );
+    assert_eq!(
+        calimero_primitives::outbound::OutboundRefusal::of(&refused),
+        Some(calimero_primitives::outbound::OutboundRefusal::EgressOff)
+    );
+    assert!(
+        fake.0.lock().unwrap().is_empty(),
+        "nothing reached the transport"
+    );
+
+    // Asked again for each request: on again, the approved request goes out.
+    off.store(false, Ordering::SeqCst);
+    let _answer = gated.send(&request).expect("egress is on");
+    assert_eq!(fake.0.lock().unwrap().len(), 1);
+}
+
 /// A secret with bytes every encoding below changes: `/`, `+`, `=`, a quote, a
 /// non-ASCII letter, and bytes whose base64 differs between the standard and
 /// the URL-safe alphabet.

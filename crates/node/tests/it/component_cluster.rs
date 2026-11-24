@@ -880,7 +880,7 @@ async fn a_follower_answers_a_strong_view_after_a_read_index() {
     }
 }
 
-async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
+pub(crate) async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
     cl.apps()
         .view(
             app,
@@ -4521,6 +4521,185 @@ async fn hosted_on(
     panic!("node {i} never hosted {app}");
 }
 
+/// C2: a logged run does not hold its app's applied state while it runs. The leader runs a
+/// call's guest inside the proposal, and it ran on the state machine's read lock, so an
+/// entry that commits meanwhile (here a barrier, as `delete_unmarked_outputs` writes) waited
+/// for the whole run to apply, and every read of the app's state (`read_local`: a view's
+/// snapshot, a call's bundle lookup) queued behind that waiting apply (std's `RwLock`
+/// prefers a waiting writer). The run here waits in a host call, a synchronous xcall batch
+/// to one busy target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_logged_run_waiting_in_a_host_call_holds_up_no_apply_or_read_of_its_app() {
+    const WALL: Duration = Duration::from_millis(600);
+    const QUICK: Duration = Duration::from_millis(200);
+    let c = Cluster::start_with(1, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            wall_clock: WALL,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let mut apps = Vec::new();
+    for name in ["source", "target"] {
+        let app = alice
+            .apps()
+            .create(typed(json!({ "name": name, "bundle": &bundle })))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "warm", "value": "1" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        apps.push(app);
+    }
+    let (source, target) = (&apps[0], &apps[1]);
+    let g = hosted_on(&c, 0, source).await;
+    // The run: waits in its host call for the target's two calls in turn.
+    let started = std::time::Instant::now();
+    let run = async {
+        let answer = alice
+            .transport()
+            .json(
+                Request::new(Method::POST, format!("apps/{source}/intents")).json(json!({
+                    "method": "bumpBoth",
+                    "args": { "a": &target, "b": &target, "key": "k", "spins": 1_000_000 },
+                })),
+            )
+            .await;
+        (answer.is_err(), started.elapsed())
+    };
+    // Meanwhile an entry commits on the source's group, and its state is read.
+    let meanwhile = async {
+        tokio::time::sleep(WALL / 3).await;
+        let barrier = {
+            let g = Arc::clone(&g);
+            tokio::spawn(async move {
+                let at = std::time::Instant::now();
+                let entry = calimero_node::component::entry_json(
+                    &calimero_node::component::ComponentCmd::Barrier,
+                );
+                g.write(entry).await.unwrap();
+                at.elapsed()
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let at = std::time::Instant::now();
+        let _applied = g.read_local(|_, applied| applied);
+        let read = at.elapsed();
+        (barrier.await.unwrap(), read)
+    };
+    let ((timed_out, ran), (barrier, read)) = tokio::join!(run, meanwhile);
+    eprintln!(
+        "during a {ran:?} run: an entry applied after {barrier:?}, a read answered after {read:?}"
+    );
+    assert!(timed_out, "the run ends past its budget");
+    assert!(barrier < QUICK, "the entry waited {barrier:?} for the run");
+    assert!(read < QUICK, "the read waited {read:?} for the run");
+    tokio::time::sleep(WALL * 2).await;
+}
+
+/// C2: a logged run takes the app's state in its proposal's read step and runs with the
+/// read lock released, so an entry can commit between that snapshot and the run's own
+/// append. The run's entry then fails its `base_index` check (`conflict`), and the call runs
+/// again on the state that includes it and answers once: its synchronous xcalls replay
+/// their answers under their keys, so each target counts the call once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_call_whose_app_moved_on_while_it_ran_runs_again_and_answers_once() {
+    const WALL: Duration = Duration::from_millis(1_500);
+    let c = Cluster::start_with(1, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            wall_clock: WALL,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let mut apps = Vec::new();
+    for name in ["source", "left", "right"] {
+        let app = alice
+            .apps()
+            .create(typed(json!({ "name": name, "bundle": &bundle })))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "warm", "value": "1" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        apps.push(app);
+    }
+    let (source, left, right) = (&apps[0], &apps[1], &apps[2]);
+    let g = hosted_on(&c, 0, source).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let conflicts = || node.conflicts.load(std::sync::atomic::Ordering::Relaxed);
+    let before = conflicts();
+    // `left` is busy: a run that spins to its deadline (not logged) holds its proposal lock.
+    let busy = alice.transport().json(
+        Request::new(Method::POST, format!("apps/{left}/intents")).json(json!({
+            "method": "slowBump",
+            "args": { "key": "busy", "spins": 1_000_000 },
+        })),
+    );
+    // The call waits in `bumpBoth` for `left`'s lock; a barrier commits on its app meanwhile.
+    let call = async {
+        tokio::time::sleep(WALL / 3).await;
+        alice
+            .apps()
+            .call(
+                source,
+                "bumpBoth",
+                Some(json!({ "a": left, "b": right, "key": "k", "spins": 1 })),
+                None,
+                None,
+            )
+            .await
+    };
+    let barrier = async {
+        tokio::time::sleep(WALL / 2).await;
+        let entry =
+            calimero_node::component::entry_json(&calimero_node::component::ComponentCmd::Barrier);
+        g.write(entry).await.unwrap();
+    };
+    let (busy, answer, ()) = tokio::join!(busy, call, barrier);
+    assert_eq!(busy.unwrap_err().code(), Some("TIMEOUT"));
+    assert_eq!(answer.unwrap().result, json!([1, 1]));
+    assert!(conflicts() > before, "the call's first entry conflicted");
+    for app in [left, right] {
+        let count = strong_view(&alice, app, "get", json!({ "key": "k" })).await;
+        assert_eq!(count, json!("1"), "{app} counted the call once");
+    }
+}
+
 /// Calls `newId` until one answers (the app may be electing), up to ~10 s.
 async fn new_id(cl: &Client, app: &str) -> (u64, u64, u64) {
     for _ in 0..40 {
@@ -5601,7 +5780,7 @@ async fn dead_letters_move_with_the_app_and_any_node_lists_them() {
 
 /// A signed `.mpk` of `wasm` as `package@version` whose manifest declares the outbound
 /// URL prefixes `outbound` (S9), signed by `key`.
-fn mpk_declaring(
+pub(crate) fn mpk_declaring(
     package: &str,
     version: &str,
     wasm: &[u8],
@@ -5713,7 +5892,7 @@ fn mpk_full(
 }
 
 /// Polls view `method` until `done` holds of its result.
-async fn eventually(
+pub(crate) async fn eventually(
     cl: &Client,
     app: &str,
     method: &str,
@@ -7407,7 +7586,17 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
 /// a timeout, which is not logged, D23) replays both answers instead of counting again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
-    let c = Cluster::start(3).await;
+    // The stalled run must end on the wall clock (`TIMEOUT`, not logged), and `slowBump`'s
+    // body is sized in wall time. Both draw host randomness, which costs fuel per byte
+    // (C7), so their fuel is lifted, as `timeouts_are_not_logged` lifts it: the wall clock
+    // ends them, never the fuel.
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
         .packages()

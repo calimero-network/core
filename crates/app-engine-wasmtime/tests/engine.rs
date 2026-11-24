@@ -1549,3 +1549,167 @@ fn each_engine_refuses_an_abi_of_the_other_world() {
         .expect("an app component whose ABI names the compute world");
     assert!(matches!(err, PrepareError::BadAbi(_)), "{err:?}");
 }
+
+// --- host work and fuel (C7) ---------------------------------------------------------------
+
+/// A 64 KiB value under `big`, as the node's state holds it.
+const BIG_VALUE_BYTES: usize = 64 << 10;
+
+fn host_work(kind: InvocationKind, method: &str, n: u32) -> HostCore {
+    let inv = Invocation {
+        kind,
+        method: method.to_owned(),
+        args: n.to_le_bytes().to_vec(),
+        caller: Caller::Account("alice".to_owned()),
+        entry_ts_ms: ENTRY_TS_MS,
+        id_term: 1,
+        id_seq: 1,
+        seed: [7; 32],
+        timer: None,
+        compute: None,
+    };
+    let mut state: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    let _ = state.insert(
+        calimero_app_host::stored_key(calimero_app_host::GENERATION, b"big"),
+        vec![1; BIG_VALUE_BYTES],
+    );
+    HostCore::new(
+        "app-1",
+        Arc::new(state),
+        1,
+        inv,
+        Arc::new(TestDir {
+            panic_on_org: false,
+        }),
+    )
+    .expect("valid invocation")
+}
+
+/// Every query answers a full page: 100 hits out of 10,000 matches.
+struct FullPages;
+
+impl calimero_app_host::SearchHost for FullPages {
+    fn query(
+        &self,
+        query: &calimero_app_host::SearchQuery,
+    ) -> Result<calimero_app_host::SearchPage, String> {
+        let hits = (0..query.limit)
+            .map(|i| calimero_app_host::SearchHit {
+                key: i.to_be_bytes().to_vec(),
+                score: 1.0,
+                snippet: "s".repeat(64),
+            })
+            .collect();
+        Ok(calimero_app_host::SearchPage {
+            hits,
+            next: Some(query.limit),
+            total: 10_000,
+        })
+    }
+}
+
+fn u64_at(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
+}
+
+/// C7: a view that reads 64 MiB of state through `storage.get` pays for the host's work, so a
+/// small budget runs out of fuel instead of finishing.
+#[test]
+fn reading_megabytes_of_state_costs_fuel() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    // The run is judged on fuel alone: 64 MiB copied by a debug build on a loaded runner
+    // can take longer than a call's 2 s, so the wall clock is out of the way.
+    let budget = Budget {
+        fuel: 10_000_000,
+        wall_clock: Duration::from_secs(60),
+        ..Budget::call()
+    };
+    let reads = 1_000;
+    let out = fx.engine.invoke(
+        &app,
+        host_work(InvocationKind::View, "reads", reads),
+        budget,
+    );
+    let handed = if out.status == Status::Ok {
+        u64_at(&out.result, 0)
+    } else {
+        0
+    };
+    eprintln!(
+        "{reads} reads of {BIG_VALUE_BYTES} bytes on {} fuel: {:?} after {} fuel",
+        budget.fuel, out.status, out.usage.fuel
+    );
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{reads} reads of {BIG_VALUE_BYTES} bytes: status {:?}, the host handed over {handed} \
+         bytes for {} fuel",
+        out.status,
+        out.usage.fuel
+    );
+    assert_eq!(out.usage.fuel, budget.fuel);
+}
+
+/// C7: a view's searches are capped per run, however much fuel it has.
+#[test]
+fn a_view_makes_at_most_max_searches_per_run() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    let host = host_work(InvocationKind::View, "searches", 1_000).with_search(Arc::new(FullPages));
+    let out = fx.engine.invoke(&app, host, heavy());
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    let (answered, hits) = (u64_at(&out.result, 0), u64_at(&out.result, 8));
+    eprintln!(
+        "1000 searches asked: {answered} answered with {hits} hits for {} fuel",
+        out.usage.fuel
+    );
+    assert_eq!(
+        answered,
+        u64::from(calimero_app_host::MAX_SEARCHES_PER_RUN),
+        "1000 searches asked: {answered} answered with {hits} hits for {} fuel",
+        out.usage.fuel
+    );
+}
+
+/// Below the cluster version that brings host fuel the node runs with `with_host_fuel(false)`:
+/// the same view finishes on the same budget, as it did before (an earlier release's
+/// answer is kept through a rolling upgrade).
+#[test]
+fn a_host_without_host_fuel_charges_as_before() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    // The run is judged on fuel alone: 64 MiB copied by a debug build on a loaded runner
+    // can take longer than a call's 2 s, so the wall clock is out of the way.
+    let budget = Budget {
+        fuel: 10_000_000,
+        wall_clock: Duration::from_secs(60),
+        ..Budget::call()
+    };
+    let host = host_work(InvocationKind::View, "reads", 1_000).with_host_fuel(false);
+    let out = fx.engine.invoke(&app, host, budget);
+    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+    assert_eq!(u64_at(&out.result, 0), 1_000 * BIG_VALUE_BYTES as u64);
+    assert!(out.usage.fuel < budget.fuel / 10, "{}", out.usage.fuel);
+}
+
+/// One read costs exactly what the table says: the base of a state access and a fuel per
+/// byte of the key and the value, on top of the guest's own fuel.
+#[test]
+fn a_read_costs_what_the_fuel_table_says() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    let run = |charged: bool| {
+        let host = host_work(InvocationKind::View, "reads", 1).with_host_fuel(charged);
+        let out = fx.engine.invoke(&app, host, Budget::call());
+        assert_eq!(out.status, Status::Ok, "{:?}", out.status);
+        out.usage.fuel
+    };
+    let (charged, free) = (run(true), run(false));
+    let key = b"big".len() as u64;
+    assert_eq!(
+        charged - free,
+        calimero_app_host::FUEL_STATE_ACCESS
+            + (key + BIG_VALUE_BYTES as u64) * calimero_app_host::FUEL_PER_BYTE
+    );
+}

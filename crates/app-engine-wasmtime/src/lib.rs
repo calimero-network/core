@@ -28,11 +28,14 @@ use wasmparser::Payload;
 use wasmtime::component::Component;
 use wasmtime::component::Linker;
 use wasmtime::component::ResourceTable;
+use wasmtime::AsContext;
+use wasmtime::CallHook;
 use wasmtime::Config;
 use wasmtime::InstanceAllocationStrategy;
 use wasmtime::PoolingAllocationConfig;
 use wasmtime::ResourceLimiter;
 use wasmtime::Store;
+use wasmtime::StoreHookState;
 use wasmtime::StoreLimits;
 use wasmtime::StoreLimitsBuilder;
 use wasmtime::Trap;
@@ -385,6 +388,7 @@ impl WasmtimeEngine {
             StoreData::new(host, &budget, &log, self.max_memory_bytes),
         );
         store.limiter(|d| &mut d.limits);
+        store.call_hook(charge_host_fuel);
         let ticks = budget
             .wall_clock
             .as_nanos()
@@ -429,8 +433,19 @@ impl WasmtimeEngine {
             }))
             .unwrap_or_else(|_| Err(wasmtime::Error::new(HostPanic)))
         });
+        // The host work of the last calls is paid with the guest's fuel too: a run that
+        // finished owing more than its budget ran out of fuel.
+        let used = budget
+            .fuel
+            .saturating_sub(store.get_fuel().unwrap_or(0))
+            .saturating_add(store.data().host_fuel);
+        let ran = match ran {
+            Ok(Ok(_) | Err(_)) if used > budget.fuel => Err(wasmtime::Error::new(Trap::OutOfFuel)),
+            Ok(result) => Ok(result),
+            Err(error) => Err(error),
+        };
         let usage = Usage {
-            fuel: budget.fuel.saturating_sub(store.get_fuel().unwrap_or(0)),
+            fuel: used.min(budget.fuel),
             cpu: started.elapsed(),
             writes: 0,
             peak_memory: store.data().limits.peak as u64,
@@ -457,6 +472,31 @@ impl WasmtimeEngine {
         };
         data.host.finish(status, result, usage)
     }
+}
+
+/// Adds what a host call owes for its work (`calimero_app_host`'s fuel table) to the run's
+/// host fuel as the call returns to the guest, and ends the run out of fuel when the fuel
+/// left cannot pay it, as a guest that runs out of its own fuel ends (C7). A call hook cannot
+/// take fuel out of the store, so the guest's own fuel and the host's are added up: here at
+/// every host call, and once more when the run ends (`within_fuel`).
+fn charge_host_fuel(
+    mut store: StoreHookState<'_, StoreData>,
+    hook: CallHook,
+) -> wasmtime::Result<()> {
+    if !matches!(hook, CallHook::ReturningFromHost) {
+        return Ok(());
+    }
+    let data = store.data_mut();
+    let owed = data.host.take_host_fuel();
+    if owed == 0 {
+        return Ok(());
+    }
+    data.host_fuel = data.host_fuel.saturating_add(owed);
+    let host_fuel = data.host_fuel;
+    if host_fuel > store.as_context().get_fuel()? {
+        return Err(wasmtime::Error::new(Trap::OutOfFuel));
+    }
+    Ok(())
 }
 
 fn compile(error: wasmtime::Error) -> PrepareError {
@@ -532,6 +572,8 @@ pub(crate) struct StoreData {
     table: ResourceTable,
     wasi: WasiCtx,
     limits: Limits,
+    /// Fuel the run's host calls owed so far (C7); the run's fuel pays it with the guest's.
+    host_fuel: u64,
 }
 
 impl StoreData {
@@ -559,6 +601,7 @@ impl StoreData {
                     .build(),
                 peak: 0,
             },
+            host_fuel: 0,
         }
     }
 }
