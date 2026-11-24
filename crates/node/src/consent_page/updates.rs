@@ -551,9 +551,6 @@ pub(super) async fn install_request(
         where_words.clone()
     }));
     points.push(json!(update_words[0]));
-    if let Some(d) = &shown {
-        points.push(json!(super::offered_by(d)));
-    }
     if let Some(who) = &payer {
         points.push(json!(format!(
             "{who} pays for {app_name}; you have no Calimero bill for it."
@@ -569,6 +566,7 @@ pub(super) async fn install_request(
         "app": { "name": app_name, "package": package },
         "publisher": { "name": author, "signer": facts.signer },
         "deployment": shown,
+        "offeredBy": shown.as_ref().map(super::offered_by),
         "install": {
             "name": subject.name,
             "package": package,

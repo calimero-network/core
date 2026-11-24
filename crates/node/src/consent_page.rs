@@ -1972,9 +1972,9 @@ enum Part {
     Member,
 }
 
-/// The sheet's line naming the deployment an instance comes from
-/// ([`crate::system::SystemState::deployment_shown`]): its name, id and owner together.
-fn offered_by(d: &Value) -> String {
+/// The sheet's fact naming the deployment an instance comes from
+/// ([`crate::system::SystemState::deployment_shown`]): its name and owner, then its id.
+fn offered_by(d: &Value) -> Value {
     let kind = if d["owner"]["kind"] == "org" {
         "organization"
     } else {
@@ -1984,11 +1984,10 @@ fn offered_by(d: &Value) -> String {
         || format!("an {kind} no longer on this cluster"),
         |n| format!("the {kind} {n}"),
     );
-    format!(
-        "Offered by {} (deployment {}), run by {owner}.",
-        d["name"].as_str().unwrap_or_default(),
-        d["id"].as_str().unwrap_or_default()
-    )
+    json!({
+        "title": format!("Offered by {}, run by {owner}.", d["name"].as_str().unwrap_or_default()),
+        "detail": format!("Deployment {}", d["id"].as_str().unwrap_or_default()),
+    })
 }
 
 async fn upgrade_request(
@@ -2159,9 +2158,6 @@ async fn upgrade_request(
         .deployment
         .as_ref()
         .and_then(|d| node.sys(|s| s.deployment_shown(d)));
-    if let Some(d) = &shown {
-        points.push(json!(offered_by(d)));
-    }
     let mut attention = upgrade_attention(&sheet);
     if let Some(c) = &unit {
         points.push(json!(destinations_point(c, !app.links.is_empty())));
@@ -2185,6 +2181,7 @@ async fn upgrade_request(
         "unit": unit.as_ref().map(crate::egress::verdict_json),
         "app": { "name": name, "package": package },
         "deployment": shown,
+        "offeredBy": shown.as_ref().map(offered_by),
         "publisher": {
             "name": author,
             "signer": to.signer,
@@ -3794,11 +3791,14 @@ mod tests {
         let shown = |owner: Value| json!({ "id": "d1", "name": "acme", "owner": owner });
         assert_eq!(
             offered_by(&shown(json!({ "kind": "org", "name": "Acme Labs" }))),
-            "Offered by acme (deployment d1), run by the organization Acme Labs."
+            json!({
+                "title": "Offered by acme, run by the organization Acme Labs.",
+                "detail": "Deployment d1",
+            })
         );
         assert_eq!(
-            offered_by(&shown(json!({ "kind": "account", "name": null }))),
-            "Offered by acme (deployment d1), run by an account no longer on this cluster."
+            offered_by(&shown(json!({ "kind": "account", "name": null })))["title"],
+            "Offered by acme, run by an account no longer on this cluster."
         );
     }
 
