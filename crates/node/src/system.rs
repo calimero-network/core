@@ -1987,7 +1987,7 @@ impl SystemState {
     /// answered as if it were not installed.
     #[must_use]
     pub fn sees_release(&self, v: &PackageVersion, who: &str) -> bool {
-        if v.installed_by_any(who) || v.installed_by_any(OPERATOR) {
+        if v.installed_by_any(who) {
             return true;
         }
         if who == OPERATOR {

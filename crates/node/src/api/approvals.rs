@@ -301,7 +301,7 @@ async fn releases_public(State(node): State<Arc<Node>>) -> ApiResult {
     Ok(Json(node.sys(|s| {
         json!({
             "governance": s.governance(),
-            "deadlines": s.deadlines_json(),
+            "deadlines": Vec::<u8>::new(),
         })
     })))
 }
