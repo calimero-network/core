@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 #[path = "harness/cluster.rs"]
 #[allow(
     dead_code,
-    reason = "shared with tests/cluster.rs, which uses the parts this test does not"
+    reason = "shared with tests/it/cluster.rs, which uses the parts this test does not"
 )]
 mod harness;
 

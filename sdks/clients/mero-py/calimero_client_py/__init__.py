@@ -18,8 +18,10 @@ from ._native import (
     WrongNode,
 )
 from .client import Client, CloudClient, Visitor, new_visitor_seed
+from .products.calimero import Calimero
 
 __all__ = [
+    "Calimero",
     "Client",
     "CloudClient",
     "CloudError",
