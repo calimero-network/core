@@ -2296,6 +2296,8 @@ impl Fixture {
     }
 }
 
+/// An upload in three parts commits one file mark in one entry, and charges nothing before
+/// `complete`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_three_part_upload_commits_one_mark_at_one_index() {
     let f = start_with(Cluster::start_with(3, more_time).await).await;

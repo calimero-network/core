@@ -178,3 +178,51 @@ its release or newer (`409 UPGRADE_PENDING`).
 Organization roles (`guest < member < admin < owner`), team row roles (`lead`,
 `member`, `read-only`) and the capability bits are on
 [Organizations, teams & access](/protocol/organizations/).
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Quotas
+
+Code: `system::Quotas`, set with `POST /ops/quotas`.
+
+Live in the system state and are checked at apply, so every node enforces the same limits; refusals
+are `429 QUOTA_EXCEEDED`.
+`maxFileBytesPerOrg` counts the plaintext bytes of a component's files.
+`SystemState::app_file_bytes` holds them per app, and `payer_file_bytes` is its sum per payer
+(`usage::payer`), kept in step by `set_app_file_bytes`.
+`SystemCmd::ChargeFileBytes { app_id, delta }` refuses a charge past the quota and floors a release
+at 0.
+`DeleteApp`, `DeleteOrg` and `DeleteTeam` free an app's files through `remove_app`.
+`TransferApp` of an app leaving a personal organization (to the new owner's) is refused when that
+organization's quota would not hold its files.
+The exception is `maxFuelPerDeveloperPerDay` (Q20, D76, D78; `"0"`, the default, is no limit; a
+decimal string in JSON, a number refused, `system::decimal_u64`).
+It is charged to the app's developer, `usage::developer` (#4839), the same identity usage is billed
+to: the owner of the deployment an app was created from, else the app's organization or owner.
+So two payers' instances of one developer's deployment share one cap.
+The fuel lives in the app groups' usage books, so it is checked where a client's call, a delivered
+xcall or a synchronous xcall runs (`Node::fuel_quota_refusal`, from `call_local_component`, after
+the idempotent replay and the delivered-xcall check, before the run); an action's own calls are not
+refused, as its start was.
+The check asks no peer (`Node::developer_fuel_cached`): apps this node replicates are read from the
+replica, the others from `Node::refresh_usage`, which every `USAGE_REFRESH` (5 s) while a cap is set
+asks all peers at once (`internal/usage/today`) and keeps a silent peer's last figures; so the cap
+is approximate by one interval and an app no peer ever reported counts as nothing (fails open).
+A refused delivered xcall is the target's final answer (D29, `deliver_one`), not a dead letter.
+The refusal is not logged, so the key is not spent; `init`, timer ticks and event handlers are never
+refused, and they still count toward the developer's day.
+The quota is fuel; wall time is information only (D76).
+A non-zero cap is written only once every registered node's attested release is this node's or newer
+(`Node::nodes_behind_release`, as D71 gates `base_seq`), else `409 UPGRADE_PENDING`
+(`api::UPGRADE_PENDING`, one code for every such release gate), judged before the operator is asked
+to sign (`__set_quotas`, #4791): an older node would drop the field and its snapshots would reset
+the cap.
+Accepted gap (#4809): an older node added after the cap is set, then sent a quota change itself,
+writes the quotas without the cap; the runbook says not to add nodes older than `1.0.0-rc.12` then,
+and the W19 minimum-release gate closes it.
+Usage reads (`app_usage`, `internal/usage`, `replicas_usage_on`) use `replica_group`, never a group
+the node keeps after the app moved away.

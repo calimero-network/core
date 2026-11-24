@@ -3887,6 +3887,8 @@ mod tests {
         assert_eq!(e.status, 429);
     }
 
+    /// The consent page's verifier link has the shape mdma's verifier reads, on a base checked by
+    /// `verifier_base`.
     #[test]
     fn the_verifier_link_is_mdmas_shape_on_a_checked_base() {
         let base = verifier_base("https://verify.calimero.network/").unwrap();
