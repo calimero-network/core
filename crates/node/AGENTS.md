@@ -1465,11 +1465,11 @@ is its command line.
   `removed`), `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
   unit's moves its direct members as `unit_plan` does. The class decides how it applies:
   under `secondApprover` a red one takes two approvers (C8), under `noDestinations` a
-  green one of a unit with no destination before or after that removes no method applies on
-  its own, moving the app alone (C9).
+  green one of a unit with no destination before or after applies on its own, unless it
+  removes a method or would move the unit's members (C9).
   Regressions: `a_units_destinations_are_judged_over_its_members`
   (`tests/it/consent_page.rs`), `calimero_bundle::update::tests`,
-  `an_update_whose_members_differ_applies_on_its_own_and_moves_the_instance_alone`
+  `an_update_that_would_move_the_units_members_waits_for_a_person`
   (`tests/auto_updates.rs`).
 - **Update classes and policies** (C8; `system/updates.rs`, `api/update_policies.rs`;
   docs: protocol upgrades "The class at apply", "Update policies"): every `UpgradeApp`
@@ -1534,8 +1534,8 @@ is its command line.
   `a_first_approval_answers_a_release_its_approver_may_not_use_as_a_missing_one`,
   `system::tests::a_first_approval_of_a_release_its_approver_may_not_use_is_refused`).
   The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
-  `autoApply` (`noDestinations`: a green update that removes no method, of an app whose
-  unit has no destinations before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
+  `autoApply` (`noDestinations`: a green update that removes no method and moves none of
+  the apps it created, of an app whose unit has no destinations before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
   /apps/{app}/upgrade-policy` (`policy_json`), `GET /apps/{app}/update` adds `policy`,
   `pendingApprovals`, `available.approvalsNeeded`/`approvedBy`
   (`api::upgrades::update_view`), `GET /orgs/{org}/updates?after=` (owners and admins,
@@ -1590,7 +1590,9 @@ is its command line.
   `an_update_on_its_own_moves_only_to_a_release_its_owner_may_use`,
   `an_update_never_applies_on_its_own_to_a_release_its_owner_may_not_use`), not a unit
   member, the logged unit with
-  no destination before or after, the hold (`at` >= `installedAt`, or the deployment
+  no destination before or after, a release that keeps the unit's members where they
+  are (`moves_members` over `release_of_use`; `UpgradeApp { members_stay }`,
+  `Feature::AutoUpdateMembersStay`, rc.36), the hold (`at` >= `installedAt`, or the deployment
   offer's `addedAt`, + `holdHours`), a restore point
   (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `RESTORE_POINT_REQUIRED`;
   `UpgradeRecord::auto`). Every update decision's time is `types::update_now`
@@ -1621,13 +1623,18 @@ is its command line.
   none, or no majority is `null`, `any` included, never `0`/`false`:
   `api::undo::lost_writes`; regressions `api::undo::tests`, `node::group_progress_tests`,
   `access_gate::an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_node_lags`). Errors `NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE`,
-  `UNDO_NOT_AS_NAMED`, `409 RESTORE_POINT_UNAVAILABLE`. Regressions: `system::tests`
+  `UNDO_NOT_AS_NAMED`, `UNDO_RELEASE_GONE` (the release it returns to is uninstalled while another
+  release's WASM kept the bundle; `UndoUpgrade { release_installed }`,
+  `Feature::UndoToInstalledRelease` rc.36, `SystemState::undo_release_installed`, or the logged
+  cluster version bringing it; an undo to a release the deployment no longer offers is allowed),
+  `409 RESTORE_POINT_UNAVAILABLE`. Regressions: `system::tests`
   (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`,
   `an_upgrade_is_undone_within_a_week_back_to_its_restore_point`,
+  `an_undo_never_returns_to_a_release_that_is_no_longer_installed`,
   `a_deployment_instances_hold_runs_from_its_offer`,
   `an_automatic_failure_is_judged_on_the_derived_release_of_an_app_without_one`),
   `tests/auto_updates.rs`
-  (`a_passing_failure_before_an_automatic_update_is_retried_not_held_against_it`,
+  (`an_undo_is_refused_to_a_release_that_was_uninstalled`, `a_passing_failure_before_an_automatic_update_is_retried_not_held_against_it`,
   `a_red_newest_release_does_not_hold_back_a_green_one_below_it`,
   `an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app`,
   `passes_take_turns_and_move_an_app_once`, `a_pass_off_the_system_leader_moves_nothing`;
