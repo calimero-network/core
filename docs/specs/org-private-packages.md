@@ -58,6 +58,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
   The caller is a member of `org` (judged again at apply); `org` is required when the caller belongs to more than one.
   A caller in no organization installs for none: the release is recorded private with no `orgs` and is its installing accounts' alone, so development flows (`meroctl local dev`, pushes) keep working; an install for an organization later adds it, and the organization rule then holds.
   A member of the package's Cloud org may install it for any cluster org they belong to: nothing maps Cloud orgs to cluster orgs, and that is the member's own deliberate share.
+  The consent page's install sheet offers a person in several organizations theirs by name when the frontend names none, and says to which of theirs a private release belongs ("Private to Acme").
 - **C3. Kind and the two rights.**
   `InstallPackage` records `PackageVersion::visibility: public | private`.
   Core learns it from the registry itself: the install first fetches without a credential, and a release served to anyone is public; else (a `404`, or a `401`/`403` asking for a sign-in) it fetches with the credential and the account (C4) and records private. An upload is private.

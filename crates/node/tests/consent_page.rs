@@ -203,7 +203,17 @@ impl Page {
     /// 412, then the assertion over its challenge. Answers the second reply
     /// and the arguments the challenge committed to.
     async fn approve(&self, c: &Cluster, key: &mut SoftAuthenticator) -> ((u16, Value), Value) {
-        let (code, asked) = self.post("approve", json!({})).await;
+        self.approve_with(c, key, json!({})).await
+    }
+
+    /// [`Self::approve`] with `body`'s fields (a chosen `org`) on both posts.
+    async fn approve_with(
+        &self,
+        c: &Cluster,
+        key: &mut SoftAuthenticator,
+        body: Value,
+    ) -> ((u16, Value), Value) {
+        let (code, asked) = self.post("approve", body.clone()).await;
         assert_eq!(code, 412, "{asked}");
         assert_eq!(asked["error"], "CONFIRM_REQUIRED");
         let d = &asked["details"];
@@ -211,12 +221,9 @@ impl Page {
         let args = challenge_args(c, id);
         let challenge = calimero_identity::from_b64url(d["challenge"].as_str().unwrap()).unwrap();
         let assertion = key.assert(&challenge);
-        let answer = self
-            .post(
-                "approve",
-                json!({ "confirm": { "challengeId": id, "assertion": assertion } }),
-            )
-            .await;
+        let mut confirm = body;
+        confirm["confirm"] = json!({ "challengeId": id, "assertion": assertion });
+        let answer = self.post("approve", confirm).await;
         (answer, args)
     }
 }
@@ -4208,6 +4215,101 @@ async fn an_install_sheet_shows_what_gets_created_and_where_data_can_go() {
     assert_eq!(made["org"], json!(org), "{made}");
     let egress = get(&alice, &format!("apps/{notes}/egress")).await.unwrap();
     assert_eq!(egress["destinations"], json!([AI]), "{egress}");
+}
+
+/// A person in two organizations installs from a frontend that names none: the sheet lists
+/// their organizations by name and says the release is private to Acme, and the one they
+/// choose reaches the install as `org` does, under their passkey; no choice, or one they are
+/// not in, is refused before the passkey.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_person_in_two_organizations_chooses_one_on_the_install_sheet() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let org = |v: Value| v["orgId"].as_str().unwrap().to_owned();
+    let acme = org(alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap());
+    let globex = org(alice
+        .orgs()
+        .create("Globex", None, None)
+        .await
+        .map(wire)
+        .unwrap());
+    let bobco = org(bob
+        .orgs()
+        .create("Bobco", None, None)
+        .await
+        .map(wire)
+        .unwrap());
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[38; 32]);
+    let (mpk, _) = release_of(
+        PACKAGE,
+        "1.0.0",
+        &kv_wasm(),
+        &publisher,
+        &Declares::default(),
+    );
+    let _ = alice
+        .packages()
+        .upload(mpk, Some(acme.as_str()))
+        .await
+        .unwrap();
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let back = format!("{app_origin}/1.0.0/");
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+
+    let made = ask(
+        &in_app,
+        &back,
+        "install",
+        json!({ "package": PACKAGE, "version": "1.0.0", "name": "notes" }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(
+        model["install"]["chooseOrg"],
+        json!([{ "orgId": acme, "name": "Acme" }, { "orgId": globex, "name": "Globex" }]),
+        "{model}"
+    );
+    assert_eq!(model["install"]["privateTo"], "Private to Acme", "{model}");
+
+    for (body, code) in [
+        (json!({}), "ORG_REQUIRED"),
+        (json!({ "org": bobco }), "NOT_FOUND"),
+    ] {
+        let (status, refused) = page.post("approve", body.clone()).await;
+        assert_eq!(refused["error"], code, "{body}: {status} {refused}");
+    }
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
+    let ((code, done), args) = page
+        .approve_with(&c, &mut alice_page, json!({ "org": acme }))
+        .await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(
+        args["org"],
+        json!(acme),
+        "the passkey signs the choice: {args}"
+    );
+    let made = get(
+        &alice,
+        &format!("apps/{}", done["result"]["appId"].as_str().unwrap()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(made["org"], json!(acme), "{made}");
 }
 
 /// C10, screens 2, 3 and 5: an update's sheet says its class in plain words. A green one

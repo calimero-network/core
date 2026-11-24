@@ -1626,7 +1626,12 @@ is its command line.
   release installed already, `409 NOT_INSTALLED`; the unit from `egress::release_unit`; `act`
   runs `api::apps::create_installed` (`POST /apps`'s `create_instance`, `from_frontend` for
   the bound session's visibility) behind an unlogged `account:<a> / __create_instance` step-up;
-  `outcome { appId, links }`), `updatePolicy` (`policy_request`; `act` runs
+  `outcome { appId, links }`; `install.privateTo` names the reader's organizations a private
+  release is for; a person in several organizations installing with no `org` is offered
+  theirs (`install.chooseOrg`, `org_choices`), and `POST /consent/{id}/approve { org }` takes
+  the choice into the action before the step-up, so the passkey signs it (`with_chosen_org`:
+  none `400 ORG_REQUIRED`, not theirs `404`, offered nothing `400`; regression
+  `a_person_in_two_organizations_chooses_one_on_the_install_sheet`), `updatePolicy` (`policy_request`; `act` runs
   `api::set_upgrade_policy`, the routes' shared code), and the upgrade sheets' `update`
   (`update_section`: class, reasons in words, destinations, state version, policy,
   `approval { needed, step: only|first|second }`, `keepByDefault` for a red update adding a

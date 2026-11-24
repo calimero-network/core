@@ -193,12 +193,16 @@
     if (u.hold) pol.appendChild(el("p", u.hold, "note-box"));
     labels(u.approveLabel, u.keepLabel, u.keepByDefault, u.class === "red" ? u.keepWords : null);
   }
+  // The organization chosen on an install sheet that asks for one; posted with the approval.
+  var chosenOrg = null;
   function renderInstall(x, i) {
+    if (has(i.chooseOrg)) chooseOrg(x, i.chooseOrg);
     var made = section(x, "What gets created for you");
     var ul = add(made, el("ul", null, "creates"));
-    (i.creates || []).forEach(function (c) {
+    (i.creates || []).forEach(function (c, n) {
       var li = add(ul, el("li"));
       li.appendChild(el("span", c.name + " " + c.version, "n"));
+      if (!n && i.privateTo) li.appendChild(el("span", i.privateTo, "pill pill-plain"));
       li.appendChild(el("span", c.what, "s"));
     });
     var where = section(x, "Where your data can go");
@@ -208,6 +212,19 @@
     bullets(up, i.updates);
     if (i.payer) x.appendChild(el("p", i.payer + " pays for this app; you have no Calimero bill for it.", "note-box"));
     labels("Create with passkey", "Cancel", false, null);
+  }
+  function chooseOrg(x, orgs) {
+    var box = section(x, "Create it in");
+    var select = add(box, el("select", null, "choose-org"));
+    select.id = "org";
+    select.setAttribute("aria-label", "Organization");
+    var none = add(select, el("option", "Choose an organization"));
+    none.value = ""; none.disabled = true; none.selected = true;
+    orgs.forEach(function (o) { add(select, el("option", o.name)).value = o.orgId; });
+    box.appendChild(el("p", "You are in several organizations. The app and its data belong to the one you choose.", "small muted"));
+    chosenOrg = "";
+    $("approve").disabled = true;
+    select.addEventListener("change", function () { chosenOrg = select.value; $("approve").disabled = !chosenOrg; });
   }
   function renderPolicyChange(x, p) {
     bullets(section(x, "Now"), p.now && p.now.words);
@@ -630,7 +647,7 @@
     location.assign(u.href);
   }
   function busy(on, text) {
-    $("approve").disabled = on; $("decline").disabled = on;
+    $("approve").disabled = on || chosenOrg === ""; $("decline").disabled = on;
     $("status").textContent = text || "";
   }
   // Where the approval is: 1 asks the node, 2 waits for the passkey, 3
@@ -654,8 +671,9 @@
   }
 
   function approve() {
+    var extra = chosenOrg ? { org: chosenOrg } : {};
     step(1);
-    post("/approve").then(function (r) {
+    post("/approve", extra).then(function (r) {
       if (r.status !== 412) throw new Error((r.body && r.body.message) || "unexpected answer " + r.status);
       var d = r.body.details;
       step(2);
@@ -667,12 +685,12 @@
         timeout: 120000,
       } }).then(function (cred) {
         step(3);
-        return post("/approve", { confirm: { challengeId: d.challengeId, assertion: {
+        return post("/approve", Object.assign({ confirm: { challengeId: d.challengeId, assertion: {
           credentialId: bytesToB64url(cred.rawId),
           authenticatorData: bytesToB64url(cred.response.authenticatorData),
           clientDataJson: bytesToB64url(cred.response.clientDataJSON),
           signature: bytesToB64url(cred.response.signature),
-        } } });
+        } } }, extra));
       });
     }).then(function (r) {
       if (r.status !== 200) throw new Error((r.body && r.body.message) || "refused: " + r.status);

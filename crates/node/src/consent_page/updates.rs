@@ -443,6 +443,24 @@ pub(super) async fn install_request(
         })
         .ok_or_else(|| ApiError::not_found("no such release"))?;
     let facts = release_facts(node, &package, &target).await?;
+    let named = subject.org.is_some() || subject.new_org.is_some();
+    let choose_org = org_choices(node, account, named, &release).await?;
+    let private_to = node.sys(|s| {
+        (target.visibility_shown() == Some(crate::system::Visibility::Private)).then(|| {
+            let names: Vec<String> = s
+                .release_orgs_of(&target, account)
+                .map(|o| o.name.clone())
+                .collect();
+            format!(
+                "Private to {}",
+                if names.is_empty() {
+                    "you".to_owned()
+                } else {
+                    phrase(&names)
+                }
+            )
+        })
+    });
     let app_name = facts
         .manifest
         .metadata
@@ -581,6 +599,8 @@ pub(super) async fn install_request(
             "updates": update_words,
             "policy": policy_view(&policy, source),
             "payer": payer,
+            "chooseOrg": choose_org,
+            "privateTo": private_to,
         },
         "before": "Until you approve, nothing is created.",
         "after": format!(
@@ -605,6 +625,40 @@ pub(super) async fn install_request(
         },
         model,
     ))
+}
+
+/// The organizations the person chooses the instance's from, by name: theirs, when the subject
+/// names none (`named`), the release makes no organization of its own and they are in several.
+async fn org_choices(
+    node: &Node,
+    account: &str,
+    named: bool,
+    release: &PackageRef,
+) -> Result<Option<Vec<Value>>, ApiError> {
+    use crate::system::cluster_version::Feature;
+    if named
+        || node
+            .require_features(&[Feature::OrdinaryOrgs])
+            .await
+            .is_err()
+        || crate::api::apps::instance_org_of(node, Some(release)).await?
+            == calimero_bundle::InstanceOrg::Standalone
+    {
+        return Ok(None);
+    }
+    let mut orgs: Vec<(String, String)> = node.sys(|s| {
+        s.orgs_of(account)
+            .into_iter()
+            .filter_map(|id| s.orgs.get(id))
+            .map(|o| (o.name.clone(), o.org_id.clone()))
+            .collect()
+    });
+    orgs.sort();
+    Ok((orgs.len() > 1).then(|| {
+        orgs.into_iter()
+            .map(|(name, org)| json!({ "orgId": org, "name": name }))
+            .collect()
+    }))
 }
 
 // ---------------------------------------------------------------- update policy
