@@ -858,7 +858,7 @@ async fn installer(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiErr
 /// Only a passkey session, not an API key, may manage credentials.
 pub(crate) async fn person(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
     let p = signed_in(node, headers).await?;
-    if false && p.session.is_none() {
+    if p.session.is_none() {
         return Err(ApiError::forbidden(
             "this needs a passkey session, not an API key",
         ));
