@@ -337,7 +337,9 @@ impl AppMachine {
             Ok(true)
         });
         if let Err(e) = res {
-            tracing::error!(app = %self.app_id, error = %e, "reading events failed");
+            // An event row's decode error quotes the app's event.
+            let named = crate::log_safe::kind(e.as_ref());
+            tracing::error!(app = %self.app_id, error_kind = %named, "reading events failed");
         }
         out
     }
