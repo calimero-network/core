@@ -88,6 +88,19 @@ class Concurrency(unittest.TestCase):
         run([fake(f"c{i}", body) for i in range(6)], jobs=2)
         self.assertEqual(peak[0], 2)
 
+    def test_a_phase_can_take_fewer_jobs_than_the_world(self):
+        now, peak, lock = [0], [0], threading.Lock()
+        def body(w):
+            with lock:
+                now[0] += 1
+                peak[0] = max(peak[0], now[0])
+            time.sleep(0.05)
+            with lock:
+                now[0] -= 1
+        with contextlib.redirect_stdout(io.StringIO()):
+            upgrade_path.run_step(world(8), [fake(f"c{i}", body) for i in range(6)], "seed", [], jobs=3)
+        self.assertEqual(peak[0], 3)
+
     def test_a_group_runs_in_order_and_never_at_once(self):
         sp = Spans()
         run([sp.case("a1", 0.1, group="a"), sp.case("a2", 0.1, group="a"), sp.case("b", 0.1)], jobs=4)

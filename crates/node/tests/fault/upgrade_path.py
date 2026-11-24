@@ -85,6 +85,7 @@ UPLOAD_TRIES = 5
 BUILD_WAIT_S = 1800  # the most the roll waits for this tree's build
 PHASES: dict[str, float] = {}  # seconds each phase took, in run order
 JOBS = 8  # case groups that run at once within a phase (UPGRADE_JOBS, --jobs; 1 runs them one by one)
+SEED_JOBS = 3  # ... while this tree builds beside the seed: the build is the longest step, so the seed leaves it CPU
 _ctx = threading.local()  # the case group this thread runs, and where its log goes
 _LONGEST: dict[str, float] = {}  # seconds a group's cases took in its slowest phase so far
 
@@ -401,13 +402,14 @@ def _run_group(w, group, members, step, fatal, buffered, aborted):
         _ctx.group = _ctx.log = None
 
 
-def run_step(w, cases, step, results, fatal=False, label=None):
-    """`step` of every case, groups at once (`w.jobs` at a time), then the exclusive ones alone."""
+def run_step(w, cases, step, results, fatal=False, label=None, jobs=None):
+    """`step` of every case, groups at once (`jobs`, else `w.jobs`, at a time), then the exclusive ones alone."""
+    jobs = jobs or w.jobs
     w.phase = label or step
     say(f"== {w.phase}")
     started = time.time()
     groups = case_groups(cases)
-    shared = {g: m for g, m in groups.items() if w.jobs > 1 and not any(c.exclusive for c in m)}
+    shared = {g: m for g, m in groups.items() if jobs > 1 and not any(c.exclusive for c in m)}
     alone = [(g, m) for g, m in groups.items() if g not in shared]
     done: dict[str, list] = {}
     stops: list[str] = []
@@ -426,7 +428,7 @@ def run_step(w, cases, step, results, fatal=False, label=None):
     try:
         if shared:
             first = sorted(shared, key=lambda g: -_LONGEST.get(g, 0))
-            with ThreadPoolExecutor(max_workers=w.jobs) as pool:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
                 pending = {pool.submit(_run_group, w, g, shared[g], step, fatal, True, aborted): g for g in first}
                 for f in as_completed(pending):
                     finish(pending[f], f.result())
@@ -535,7 +537,7 @@ def main(argv=None):
     try:
         fleet.start()
         fleet.start_job(OLD_JOB, old_merod, FROM_RELEASE)
-        run_step(w, cases, "seed", results, fatal=True)
+        run_step(w, cases, "seed", results, fatal=True, jobs=min(w.jobs, SEED_JOBS) if args.build_status else None)
 
         def mixed():
             run_step(w, cases, "mixed", results)

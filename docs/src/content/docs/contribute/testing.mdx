@@ -454,7 +454,7 @@ What is written and checked lives in cases, `upgrade_cases/NN_*.py`, each a
 `Case` with `seed`, `mixed`, `verify` and `extend` steps (the
 [module's docstring](https://github.com/calimero-network/core/blob/master/crates/node/tests/fault/upgrade_path.py)
 says when each runs); a new kind of stored data gets a case. Within a phase the
-cases run at once (eight at a time; `UPGRADE_JOBS=1` or `--jobs 1` runs them one
+cases run at once (eight at a time, three in the seed while this tree builds; `UPGRADE_JOBS=1` or `--jobs 1` runs them one
 by one with live output), each group's log printed whole when it ends, so a case
 is independent of the others: an account name belongs to one case (a second case
 that claims it fails the run, naming both, and `upgrade_runner_test.py` checks
