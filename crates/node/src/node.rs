@@ -43,6 +43,12 @@ mod segments;
 
 pub use segments::{SegmentPin, SEGMENT_GRACE, SWEEP_EVERY};
 
+/// How often a node deletes the compiled components no app uses any more
+/// ([`Node::sweep_component_cache`]). The first sweep waits this long after start, so the
+/// system group has caught up and names every app's bundle.
+pub const COMPONENT_CACHE_SWEEP_EVERY: std::time::Duration =
+    std::time::Duration::from_secs(60 * 60);
+
 #[cfg(feature = "testing")]
 pub use component::ComputeLimits;
 pub(crate) use job::JobAttestError;

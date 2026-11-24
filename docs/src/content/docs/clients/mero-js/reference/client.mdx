@@ -11,12 +11,25 @@ sidebar:
 await CalimeroClient.connect({
   cluster: string,         // e.g. 'eu-shared-1'
   policy: NodePolicy,
-  directory?: string,      // default DEFAULT_DIRECTORY (Calimero Cloud's)
+  directory?: string,      // default: environment's directory (DEFAULT_DIRECTORY for production)
+  environment?: 'production' | 'staging', // which Calimero Cloud; default 'production'
   zone?: string,           // try this zone's nodes first
   fetch?: typeof fetch,
   retry?: { retries?: number; baseDelayMs?: number; maxDelayMs?: number },
   random?: () => number,   // for the weighted order; default Math.random
 }) // throws DirectoryError (reason 'unreachable' | 'not-found' | 'bad-response' | 'empty')
+
+// The cluster that serves the page: its /.well-known/calimero.json names the
+// nodes; anywhere else (Vercel, localhost, Node) `fallback` does.
+await CalimeroClient.connectHere({
+  policy: NodePolicy,
+  fallback?: { cluster, environment?, directory?, zone? } | { baseUrl, nodes? },
+  origin?: string,         // default location.origin
+  href?: string,           // default location.href, for ?deployment=
+  fetch?, retry?, random?,
+}) // throws when no manifest and no fallback, or on a Calimero Cloud app host whose manifest cannot be read
+
+cloudEnvironment(hostname?) // 'production' | 'staging' | null, from the hostname alone (default location.hostname)
 
 // A fixed list of nodes, or a cluster you run yourself.
 new CalimeroClient({
@@ -30,6 +43,9 @@ new CalimeroClient({
 
 `client.nodeUrl` is the node in use and `client.nodes` every node the client
 may move to.
+`client.cluster` is the cluster's name when `connect` was given it or a served
+page's manifest named it, and `client.deployment` the deployment `connectHere`
+found the page opened for (`null` otherwise); both are for display and routing, not trust.
 
 `client.verification(url?)` is where the client's attestation check of a node
 stands, `url` being one of `client.nodes` exactly as listed (default: the node in use):
