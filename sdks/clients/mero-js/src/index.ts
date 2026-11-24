@@ -39,6 +39,13 @@ export type {
   Transport,
 } from './runtime/transport.js';
 
+// `Calimero.fromEnv().kv()`: the Confidential KV's client, generated from its ABI
+// (`KvClient`; its argument, answer and error types under `Kv`).
+export { Calimero } from './products/calimero.js';
+export type { CalimeroEnv } from './products/calimero.js';
+export { KvClient } from './products/kv/client.js';
+export * as Kv from './products/kv/client.js';
+
 // Sealed transport: requests encrypted end to end to a TEE node's attested key,
 // and the checks that decide whether a quote is trusted.
 export * from './sealed/index.js';
