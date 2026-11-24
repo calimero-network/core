@@ -8,7 +8,8 @@ use crate::env::Env;
 
 #[derive(Debug, Subcommand)]
 pub enum RunCmd {
-    /// Print a compute run's module log (stdout, stderr and `log` lines) to stdout.
+    /// Print a compute run's module log (stdout, stderr and `log` lines) to stdout, where an
+    /// earlier release kept one: a current cluster keeps none.
     Logs {
         /// The app instance (alias or id).
         app: String,
@@ -31,10 +32,14 @@ fn pick_log(listed: &Value, attempt: Option<u32>) -> eyre::Result<String> {
             .as_str()
             .map(str::to_owned)
             .ok_or_else(|| eyre!("the node listed a log without an id")),
-        (None, Some(n)) => bail!("attempt {n} kept no log"),
-        (None, None) => bail!("the run kept no log"),
+        (None, Some(n)) => bail!("attempt {n} kept no log: {NO_RUN_LOGS}"),
+        (None, None) => bail!("the run kept no log: {NO_RUN_LOGS}"),
     }
 }
+
+/// Why a run lists no log on a current cluster.
+const NO_RUN_LOGS: &str = "a cluster keeps no compute run's log, as an app's log lines may hold \
+     user data; run the method on your own machine with `meroctl local compute run` to see them";
 
 /// Writes the log of compute run `run` of `app` to stdout: attempt `attempt`, else the latest.
 pub async fn print_log(env: &Env, app: &str, run: &str, attempt: Option<u32>) -> eyre::Result<()> {
@@ -70,7 +75,16 @@ mod tests {
         assert_eq!(pick_log(&listed, None).unwrap(), "c");
         assert_eq!(pick_log(&listed, Some(2)).unwrap(), "b");
         assert!(pick_log(&listed, Some(4)).is_err());
-        assert!(pick_log(&json!({ "logs": [] }), None).is_err());
         assert!(pick_log(&json!({}), None).is_err());
+    }
+
+    /// A current cluster keeps no run log and lists none: the command says so and why.
+    #[test]
+    fn a_run_without_a_log_says_the_cluster_keeps_none() {
+        let e = pick_log(&json!({ "logs": [] }), None).unwrap_err();
+        let said = e.to_string();
+        assert!(said.starts_with("the run kept no log: "), "{said}");
+        assert!(said.contains("keeps no compute run's log"), "{said}");
+        assert!(said.contains("meroctl local compute run"), "{said}");
     }
 }

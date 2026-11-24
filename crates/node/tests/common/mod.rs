@@ -14,6 +14,9 @@ use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::attest::Mode;
 use calimero_node::{run, run_job, Config, JobConfig, Running, RunningJob};
 
+#[path = "../harness/eventually.rs"]
+pub mod poll;
+
 /// The app `apps/<name>` (e.g. "fixture-kv" or "team-space") as a component, built on first use and cached
 /// by source hash under `target/app-components` (the fixture, the SDK crates, the toolchain and
 /// app-build's post-processing are hashed; see `calimero_app_build::cache_key`).
@@ -205,6 +208,7 @@ impl Cluster {
                     // The component fixtures are raw uploads (`POST /bundles`), development only.
                     allow_unsigned_bundles: true,
                     allow_package_uploads: true,
+                    app_logs: false,
                     outbound: None,
                     governance: Default::default(),
                     apps_domain: None,

@@ -31,15 +31,8 @@ async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Bod
         return Err(ApiError::unsupported_bundle());
     }
     let _prepared = node
-        .prepare_bytes(&hash, body.to_vec())
-        .await
-        .map_err(|e| {
-            if e.code == crate::node::BAD_BUNDLE {
-                ApiError::bad_request(crate::node::BAD_BUNDLE, &e.message)
-            } else {
-                e
-            }
-        })?;
+        .compile(crate::compile::Engine::App, &hash, body.to_vec())
+        .await?;
     node.replicate_bundle(&hash, &body).await?;
     let _ok = node
         .sys_write(&SystemCmd::PutBundle {
