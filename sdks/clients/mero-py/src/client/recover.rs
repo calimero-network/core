@@ -58,6 +58,7 @@ pub(crate) trait Node: Send + Sync {
     async fn use_session(&self, session: Session);
     async fn use_api_key(&self, key: &str);
     async fn use_visitor(&self, visitor: Visitor);
+    async fn forget(&self);
     async fn refresh(&self) -> Result<Session, Error>;
 }
 
@@ -245,6 +246,20 @@ impl<N: Node> Nodes<N> {
     /// Record the credential: `visitor`, through its public link.
     pub(crate) fn set_visitor(&self, visitor: Visitor) {
         self.set_credential(Credential::Visitor(Box::new(visitor)));
+    }
+
+    /// Drop the credential on every node: no request after this carries one.
+    pub(crate) async fn forget(&self) {
+        self.set_credential(Credential::Session);
+        let nodes: Vec<_> = self
+            .read()
+            .list
+            .iter()
+            .map(|(_, n)| Arc::clone(n))
+            .collect();
+        for node in nodes {
+            node.forget().await;
+        }
     }
 
     /// The session token a request sent to `node` now carries, if it carries one.
@@ -506,6 +521,11 @@ mod tests {
         async fn use_visitor(&self, visitor: Visitor) {
             *self.visitor.write().await = Some(visitor.public_key());
         }
+        async fn forget(&self) {
+            *self.session.write().await = None;
+            *self.api_key.write().await = None;
+            *self.visitor.write().await = None;
+        }
         async fn refresh(&self) -> Result<Session, Error> {
             let _ = self.refreshes.fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -691,6 +711,23 @@ mod tests {
         let e = nodes.run(async |n| n.ask().await).await.unwrap_err();
         assert!(unauthenticated(&e), "{e}");
         assert_eq!(nodes.current().1.refreshes.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn forgetting_leaves_every_node_without_a_credential() {
+        let nodes = signed_in(vec![Stand::default(), Stand::default()]).await;
+        nodes.set_visitor(Visitor::new("pl_token", [9; 32]));
+        nodes
+            .node(0)
+            .use_visitor(Visitor::new("pl_token", [9; 32]))
+            .await;
+        nodes.node(1).use_session(session("v2.old", "rt_old")).await;
+        nodes.forget().await;
+        assert!(matches!(nodes.credential(), Credential::Session));
+        for i in 0..2 {
+            assert!(nodes.node(i).session().await.is_none());
+            assert!(nodes.node(i).visitor.read().await.is_none());
+        }
     }
 
     #[tokio::test]

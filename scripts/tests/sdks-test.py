@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -176,6 +177,31 @@ def test_manifest_errors(root: Path) -> None:
         check("rejects a kind that is not its folder", "kind" in str(e), str(e))
 
 
+def test_generate_container() -> None:
+    """A Swift generator runs in the pinned image when swift is not installed (or forced)."""
+    sdk = {"name": "mero-swift", "dir": "sdks/clients/mero-swift", "toolchain": "swift"}
+    plain = {"name": "mero-js", "dir": "sdks/clients/mero-js"}
+    real_which = sdks.shutil.which
+    try:
+        sdks.shutil.which = lambda tool: "/usr/bin/" + tool
+        check("local swift runs bash", sdks.generate_argv(sdk, "gen")[0] == "bash", "")
+        check("forced container uses docker", sdks.generate_argv(sdk, "gen", {"SDKS_GENERATE_IN_CONTAINER": "1"})[0] == "docker", "")
+        sdks.shutil.which = lambda tool: "/usr/bin/docker" if tool == "docker" else None
+        argv = sdks.generate_argv(sdk, "gen")
+        check("missing swift uses docker", argv[0] == "docker" and sdks.SWIFT_IMAGE_TAG in argv, str(argv))
+        check("container runs as the caller", "--user" in argv and f"{os.getuid()}:{os.getgid()}" in argv, str(argv))
+        check("container keeps its own cache", any(a.startswith("MERO_OPENAPI_CACHE=") for a in argv), str(argv))
+        check("no toolchain runs bash", sdks.generate_argv(plain, "gen")[0] == "bash", "")
+        sdks.shutil.which = lambda tool: None
+        try:
+            sdks.generate_argv(sdk, "gen")
+            check("no swift and no docker is an error", False, "returned")
+        except sdks.SdkError as e:
+            check("no swift and no docker is an error", "docker" in str(e), str(e))
+    finally:
+        sdks.shutil.which = real_which
+
+
 def test_repository() -> None:
     """The real tree: manifests load, and every SDK names a workflow that exists."""
     loaded = sdks.load_sdks(ROOT)
@@ -197,6 +223,7 @@ def main() -> int:
         test_scope(root)
         test_versions(root)
         test_manifest_errors(root)
+    test_generate_container()
     test_repository()
     for failure in FAILURES:
         print(f"FAIL {failure}")

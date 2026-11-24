@@ -83,7 +83,7 @@ returned as it is. Why a `401` can need it: the node that issued the session was
 removed, or replaced on a new data directory (a new signing key); a node's
 restart keeps its key, and a stopped node's sessions verify on the others
 (node `AGENTS.md`, "Sessions are node-signed"). Test:
-`a_removed_nodes_sessions_are_refused` (node `tests/cluster.rs`).
+`a_removed_nodes_sessions_are_refused` (node `tests/it/cluster.rs`).
 
 Calls are retried with the same key (D70): `client.apps().call` (and
 `apps().method`, the routes the document marks `x-calimero-retry-requires:
@@ -93,7 +93,7 @@ sends the call again with that key while the node answers `503` or cannot be
 reached (`Error::is_unavailable`; 200 ms doubling to 2 s, 6 retries); `apps().view`
 is retried too. A call that did commit is answered from its record. A call sent
 with a passkey (a `confirm` method) is not retried: its challenge is single-use. Tests: `retry_tests`, and `calls_without_a_key_each_run_once` in
-`crates/node/tests/cluster.rs`.
+`crates/node/tests/it/cluster.rs`.
 
 Files are uploaded by `Client::upload_file(app, reader, size)` (`files.rs`, `meroctl file upload`):
 a file of at most one part (`FILE_PART_BYTES`, 16 MiB) is one `POST /apps/{app}/files`; a larger one
@@ -201,7 +201,7 @@ cargo run -p calimero-client-gen
 `the_checked_in_client_is_what_the_document_generates` (in `crates/client/gen`,
 run by CI's workspace tests) regenerates into a temporary directory and fails
 while the checked-in code differs. Tests of the generated layer against a node:
-`crates/node/tests/generated_routes.rs` (a step-up route, an operator route, raw
+`crates/node/tests/it/generated_routes.rs` (a step-up route, an operator route, raw
 bodies, an explicit `null`).
 
 The command line over this client is `meroctl` (`crates/meroctl`).
@@ -209,5 +209,5 @@ The command line over this client is `meroctl` (`crates/meroctl`).
 ```bash
 cargo test -p calimero-client
 cargo test -p calimero-client-gen      # the generated layer is current
-cargo test -p calimero-node --test generated_routes
+cargo test -p calimero-node --test it generated_routes::
 ```

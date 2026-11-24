@@ -188,10 +188,10 @@ Generated from core's `docs/public/openapi.json`.
 | `org_upgrade(org, package, version, team=…, cascade=…, migrate=…, operator_proof=None)` | `POST /ops/orgs/{org}/upgrade` | An operator's upgrade run. **operator** |
 | `orgs(after=…, limit=…)` | `GET /ops/orgs` | Each organization's approved releases |
 | `outbound(package, prefixes=…, replace=…, operator_proof=None)` | `POST /ops/outbound` | Approve outbound prefixes. **operator** |
-| `package_install(package, version)` | `POST /ops/packages/install` | Install a release from the registry as the operator. *Refusals:* `400 BAD_BUNDLE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE` |
+| `package_install(package, version)` | `POST /ops/packages/install` | Install a release from the registry as the operator. *Refusals:* `400 BAD_BUNDLE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
 | `package_list()` | `GET /ops/packages` | The releases the operator installed |
 | `package_uninstall(package)` | `DELETE /ops/packages/{package}` | Uninstall what the operator installed |
-| `package_upload(body)` | `POST /ops/packages` | Install an uploaded release as the operator. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE` |
+| `package_upload(body)` | `POST /ops/packages` | Install an uploaded release as the operator. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
 | `package_version_uninstall(package, version)` | `DELETE /ops/packages/{package}/{version}` | Uninstall one operator-installed version |
 | `placement()` | `GET /ops/placement` | Where every app's replicas are |
 | `pools_get()` | `GET /ops/pools` | Compute pools |
@@ -273,17 +273,17 @@ Generated from core's `docs/public/openapi.json`.
 
 | Method | Route | What it does |
 | --- | --- | --- |
-| `bundle_put(body)` | `POST /bundles` | Upload a raw component. *Refusals:* `400 BAD_BUNDLE`, `400 UNSUPPORTED_BUNDLE`, `429 QUOTA_EXCEEDED` |
+| `bundle_put(body)` | `POST /bundles` | Upload a raw component. *Refusals:* `400 BAD_BUNDLE`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `429 QUOTA_EXCEEDED`, `503 BUSY` |
 | `capabilities(package, version, service=…)` | `GET /packages/{package}/{version}/capabilities` | A release's capabilities. *Refusals:* `400 NO_SUCH_SERVICE` |
 | `get(package)` | `GET /packages/{package}` | One package |
-| `install(package, version)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED` |
+| `install(package, version)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
 | `list()` | `GET /packages` | Installed packages |
 | `origins_add(package, origin, rp_id=…, served=…, confirm=None)` | `POST /package-origins/{package}` | Register a frontend origin. **passkey**. *Refusals:* `400 BAD_RP_ID`, `429 QUOTA_EXCEEDED` |
 | `origins_list(package)` | `GET /package-origins/{package}` | A package's frontend origins |
 | `origins_remove(package, origin, confirm=None)` | `DELETE /package-origins/{package}` | Remove a frontend origin. **passkey** |
 | `pipelines(package, version)` | `GET /packages/{package}/{version}/pipelines` | A release's pipelines |
 | `uninstall(package)` | `DELETE /packages/{package}` | Uninstall a package |
-| `upload(body)` | `POST /packages` | Upload a signed release. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `403 UPLOADS_DISABLED` |
+| `upload(body)` | `POST /packages` | Upload a signed release. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `403 UPLOADS_DISABLED`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
 | `version_uninstall(package, version)` | `DELETE /packages/{package}/{version}` | Uninstall one version |
 
 ## `client.public`

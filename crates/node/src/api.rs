@@ -1542,11 +1542,24 @@ async fn step_up(
     })
 }
 
+/// How many events that reached this replica together one freshness round
+/// ([`Node::sys_caught_up`]) in [`local_events`] covers.
+pub const MAX_EVENT_BATCH: usize = 256;
+
 /// The app's events from `from`, then live. A component's event carries its
 /// audience (R9) and goes to `subscriber` (`None`: anonymous) only if the system
-/// state, when it is sent, says it still reaches the app and is in the audience,
-/// so a member removed from the org or the team stops receiving at once. An
-/// event of an app on wasmer has no audience and goes out as before.
+/// state says it still reaches the app and is in the audience, so a member removed
+/// from the org or the team stops receiving at once. That state is fresh for each
+/// event: a read-index round begun after the event reached this replica, applied
+/// here ([`Node::sys_caught_up`]), so it holds every system write committed before
+/// the event's entry was, a removal committed on other nodes included, though this
+/// replica's system log lags its app log (the two are different logs). One round
+/// covers the backlog, and one each batch of live events that arrived together (at
+/// most [`MAX_EVENT_BATCH`]). When this replica cannot catch up in
+/// `Config::read_wait`, the stream ends: the subscriber resumes from the last id it
+/// got, judged afresh. An event of an app on wasmer has no audience and goes out as
+/// before. Regression:
+/// `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`.
 fn local_events(
     node: &Arc<Node>,
     app_id: &str,
@@ -1565,20 +1578,36 @@ fn local_events(
             let fresh = last.is_none_or(|l| (e.index, e.seq) > l);
             async move { fresh }
         });
+    let batches = futures_util::stream::once(std::future::ready(backlog))
+        .chain(live.ready_chunks(MAX_EVENT_BATCH));
     let (node, app) = (Arc::clone(node), app_id.to_owned());
-    let receives = move |e: &crate::types::EventRecord| match &e.audience {
-        None => true,
-        Some(audience) => node.sys(|s| {
-            s.apps.get(&app).is_some_and(|a| {
-                s.receives(a, audience, e.caller.as_deref(), subscriber.as_deref())
-            })
-        }),
-    };
-    let stream = futures_util::stream::iter(backlog).chain(live);
-    let stream = stream.filter(move |e| {
-        let ok = receives(e);
-        async move { ok }
+    let judged = batches.then(move |batch| {
+        let (node, app, subscriber) = (Arc::clone(&node), app.clone(), subscriber.clone());
+        async move {
+            if batch.iter().all(|e| e.audience.is_none()) {
+                return Some(batch);
+            }
+            // Every event of the batch is here already: a round begun now names an
+            // index at or past every system write committed before any of them.
+            if !node.sys_caught_up().await {
+                return None;
+            }
+            Some(node.sys(|s| {
+                batch
+                    .into_iter()
+                    .filter(|e| match &e.audience {
+                        None => true,
+                        Some(audience) => s.apps.get(&app).is_some_and(|a| {
+                            s.receives(a, audience, e.caller.as_deref(), subscriber.as_deref())
+                        }),
+                    })
+                    .collect::<Vec<_>>()
+            }))
+        }
     });
+    let stream = judged
+        .take_while(|batch| std::future::ready(batch.is_some()))
+        .flat_map(|batch| futures_util::stream::iter(batch.unwrap_or_default()));
     let stream = stream.map(|e| {
         Ok(Event::default()
             .id(format!("{}:{}", e.index, e.seq))

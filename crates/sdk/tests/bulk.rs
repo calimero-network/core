@@ -1,6 +1,11 @@
 //! Removing many records or entries: once, without a second read per record, and a slice at
 //! a time when one run's 10,000 writes are not enough.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_sdk::collections::{Set, UnorderedMap, Vector};
 use calimero_sdk::prelude::*;
 use calimero_sdk::{MemStore, Progress, StorageError};

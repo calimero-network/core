@@ -14,8 +14,8 @@
 //! node advertises it, and it only moves forward: after it, a node below it
 //! is not admitted to the system group. Until it is logged (and above it, until
 //! the leader logs the next one), a proposing node judges by what the nodes
-//! advertise now ([`floor`]). Apply never reads either: an entry applies as
-//! it did, so a log replays unchanged.
+//! advertise now ([`floor`]). Apply reads only the logged version at the entry's own
+//! position ([`SystemState::cluster_brings`]), so a log replays unchanged.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -204,6 +204,13 @@ pub enum Feature {
     /// a part's release no longer installed, approved first and applied as red. rc.34
     /// cannot decode the reason, and a node stops a group on an entry it cannot decode.
     UnclassifiedUpdates,
+    /// `CreateApp { offers_only }`: where deployments are granted, an instance from no
+    /// deployment's offer is a deployer's (`SystemState::creates_outside_offers`). An earlier
+    /// release ignores the field and would create one a later one refuses. Apply also reads the
+    /// logged version for the rule, so an entry before it replays as it applied; from that
+    /// version an `UpgradeApp` moving such an instance into another package is judged alike
+    /// (`SystemState::upgrades_outside_offers`).
+    OffersOnly,
     /// `CreateDeployment` and `SetRecoveryKey` with `deployment_needs_recovery`: an
     /// organization owns a deployment only with a recovery key, and keeps it while it does
     /// (`SystemState::keeps_recoverable`). An earlier release ignores the field. Apply also
@@ -215,7 +222,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 48] = [
+pub const FEATURES: [Feature; 49] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -262,6 +269,7 @@ pub const FEATURES: [Feature; 48] = [
     Feature::AutoUpdates,
     Feature::RestorePoints,
     Feature::UnclassifiedUpdates,
+    Feature::OffersOnly,
     Feature::DeploymentNeedsRecovery,
     Feature::DeploymentTransfer,
 ];
@@ -317,6 +325,7 @@ impl Feature {
             Self::AutoUpdates => "autoUpdates",
             Self::RestorePoints => "restorePoints",
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
+            Self::OffersOnly => "offersOnly",
             Self::DeploymentNeedsRecovery => "deploymentNeedsRecovery",
             Self::DeploymentTransfer => "deploymentTransfer",
         }
@@ -370,7 +379,9 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
-            Self::DeploymentNeedsRecovery | Self::DeploymentTransfer => "1.0.0-rc.36",
+            Self::OffersOnly | Self::DeploymentNeedsRecovery | Self::DeploymentTransfer => {
+                "1.0.0-rc.36"
+            }
         }
     }
 }
@@ -783,7 +794,11 @@ impl SystemCmd {
                 }
                 f
             }
-            Self::CreateApp { app, unit_offer } => {
+            Self::CreateApp {
+                app,
+                unit_offer,
+                offers_only,
+            } => {
                 let mut f = Vec::new();
                 if !app.components.is_app() {
                     f.push(Feature::ComputeOnly);
@@ -796,6 +811,9 @@ impl SystemCmd {
                 }
                 if !app.access.grants().is_empty() {
                     f.push(Feature::AccessGrants);
+                }
+                if *offers_only {
+                    f.push(Feature::OffersOnly);
                 }
                 f
             }
@@ -1200,6 +1218,11 @@ mod tests {
                 "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true })),
             Feature::RestorePoints => entry(json!({ "op": "undoUpgrade",
                 "app_id": "app", "apps": { "app": [1] }, "actor": "alice", "at": 1 })),
+            Feature::OffersOnly => entry(json!({ "op": "createApp", "app": {
+                "appId": "app", "name": "notes", "group": 0, "bundle": "b", "owner": "a",
+                "org": "org", "confirmMethods": [], "replicas": [1],
+                "createdAt": 1, "initArgs": null, "metadata": null,
+            }, "offers_only": true })),
             Feature::DeploymentNeedsRecovery => entry(json!({ "op": "createDeployment",
                 "id": "d", "name": "acme", "owner": { "org": "org" }, "actor": "alice", "at": 1,
                 "deployment_needs_recovery": true })),
@@ -1796,12 +1819,14 @@ mod tests {
         for &feature in &rc35 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.36's (an organization owns a deployment only with a recovery key; a deployment
-        // changes hands) for every node on rc.36: an rc.35 node ignores the flag and would
-        // create what rc.36 refuses, and cannot read a transfer.
+        // rc.36's (an instance outside every deployment is a deployer's; an organization owns
+        // a deployment only with a recovery key; a deployment changes hands) for every node on
+        // rc.36: an rc.35 node ignores the flags and would create what rc.36 refuses, and cannot
+        // read a transfer.
         assert_eq!(
             rc36,
             [
+                Feature::OffersOnly,
                 Feature::DeploymentNeedsRecovery,
                 Feature::DeploymentTransfer
             ]

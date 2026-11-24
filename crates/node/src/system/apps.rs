@@ -314,7 +314,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
     let index = m.index;
     let s = &mut m.state;
     match cmd {
-        SystemCmd::CreateApp { app, unit_offer } => {
+        SystemCmd::CreateApp {
+            app,
+            unit_offer,
+            offers_only,
+        } => {
             let mut app = *app;
             if !s.bundles.contains_key(&app.bundle) {
                 return Err("unknown bundle");
@@ -362,6 +366,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 }
             } else if unit_offer.is_some() {
                 return Err("a unit's offer comes with the deployment that makes it");
+            } else if (offers_only || s.cluster_brings(cluster_version::Feature::OffersOnly))
+                && !s.creates_outside_offers(&app.owner, app.release.as_ref(), app.created_at)
+            {
+                return Err(NOT_A_DEPLOYER);
             }
             {
                 let o = s.orgs.get(&app.org);
@@ -501,6 +509,15 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if in_deployment || s.cluster_brings(cluster_version::Feature::UpgradeInDeployment) {
                 if let Some(a) = s.apps.get(&app_id) {
                     s.within_deployment(a, release.as_ref(), run.as_deref())?;
+                }
+            }
+            // An instance from no deployment enters another package only as its upgrader
+            // could create one there; read from the logged version alone.
+            if !by_operator && s.cluster_brings(cluster_version::Feature::OffersOnly) {
+                if let Some(a) = s.apps.get(&app_id) {
+                    if !s.upgrades_outside_offers(a, &actor, release.as_ref(), &bundle, at) {
+                        return Err(NOT_A_DEPLOYER);
+                    }
                 }
             }
             // A run moves each app it names once, along its package and
