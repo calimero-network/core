@@ -1,6 +1,7 @@
 // Compiled by tsconfig.consumer.json as an external NodeNext consumer of the built
 // dist/. The @ts-expect-error lines fail if unresolvable specifiers widen the API to any.
 import {
+  Calimero,
   CalimeroClient,
   ConfirmRequired,
   browserPasskey,
@@ -8,7 +9,7 @@ import {
   upgradeConsent,
   withdrawConsent,
 } from '@calimero-network/mero-js';
-import type { CalimeroClientOptions, CalimeroSession, NodePolicy, UpgradeRun } from '@calimero-network/mero-js';
+import type { CalimeroClientOptions, CalimeroSession, Kv, KvClient, NodePolicy, UpgradeRun } from '@calimero-network/mero-js';
 
 const policy: NodePolicy = { release: { minReleaseVersion: '2.3.109' } };
 const options: CalimeroClientOptions = { baseUrl: 'https://node.example', policy };
@@ -132,3 +133,13 @@ export const badOrgRole = () => setMemberRoleConsent('o', 'a', 'lead', back);
 export const badTeamRole = () => setMemberTeamsConsent('o', 'a', [{ team: 't', role: 'admin' }], back);
 // @ts-expect-error capabilities are required
 export const noCaps = () => setCapabilitiesConsent({ org: 'o', team: 't' }, back);
+
+export async function setFlag(): Promise<string> {
+  const kv: KvClient = (await Calimero.fromEnv({ CALIMERO_CLUSTER: 'eu-shared-1' })).kv();
+  const entry: Kv.EntryView | null = await kv.get({ bucket: 'default', key: 'flags/beta' });
+  // @ts-expect-error a KV value is a string
+  await kv.set({ bucket: 'default', key: 'flags/beta', value: { enabled: true } });
+  return entry?.version ?? (await kv.set({ bucket: 'default', key: 'flags/beta', value: JSON.stringify({ enabled: true }) }));
+}
+
+export const notGranted: Kv.AppErrorCode = 'NotGranted';

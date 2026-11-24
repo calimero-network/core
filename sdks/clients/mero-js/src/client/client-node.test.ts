@@ -210,6 +210,23 @@ describe('refusals map to typed errors in one place (D64)', () => {
     const error = await failure(client().apps.call({ app: 'app-1', method: 'book', args: {} }));
     expect(error).toBeInstanceOf(AppError);
     expect(error).toMatchObject({ status: 422, code: 'APP_ERROR', appCode: 'Taken', fields: { start: '1800000000000' } });
+    expect((error as Error).message).toBe('422 APP_ERROR: app_error (stand-in)');
+  });
+
+  it.each([
+    [{ code: 'NotGranted', fields: { bucket: 'default', need: 'read' } }, "You can't view bucket default."],
+    [{ code: 'NotGranted', fields: { bucket: 'default', need: 'write' } }, "You can't edit bucket default."],
+    [{ code: 'NotGranted', fields: { bucket: 'b', need: 'admin' } }, "You can't manage bucket b."],
+    [{ code: 'NotLinked', fields: { name: 'kv' } }, "This app isn't connected to a KV store yet."],
+    [{ code: 'NotLinked', fields: { name: 'calendar' } }, "This app isn't connected to its calendar yet."],
+    [{ code: 'NotGranted', fields: { bucket: 'b', need: 'purge' } }, 'app_error (stand-in)'],
+    [{ code: 'NotGranted', fields: { bucket: 'b', need: 'toString' } }, 'app_error (stand-in)'],
+    [{ code: 'NotGranted', fields: { need: 'read' } }, 'app_error (stand-in)'],
+    [{ code: 'NotLinked', fields: {} }, 'app_error (stand-in)'],
+  ])('422 APP_ERROR %j reads as a sentence where its fields make one', async (details, sentence) => {
+    node.answer = () => refused(422, 'APP_ERROR', details);
+    const error = await failure(client().apps.call({ app: 'app-1', method: 'set', args: {} }));
+    expect(error).toMatchObject({ appCode: details.code, fields: details.fields, message: `422 APP_ERROR: ${sentence}` });
   });
 
   it('422 TRAP is TrapError with its kind', async () => {

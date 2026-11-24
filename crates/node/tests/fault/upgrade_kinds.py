@@ -13,7 +13,7 @@ import uuid
 
 import ed25519_sign
 from rv2 import HttpError
-from upgrade_deep import install, join, new_org, operator, ops, people, team_id
+from upgrade_deep import install, join, new_org, signed_ops, ops, people, team_id
 
 FAR = "2099-01-01T00:00:00Z"  # a time no run reaches: a deadline or an invite that never ends
 
@@ -103,25 +103,25 @@ def origin(w):
 
 def operator_decisions(w):
     """The operator's sign-up policy and invite, price table, release approval and deadline."""
-    operator(w, "POST", "ops/sign-up", {"policy": "invite"})
+    signed_ops(w, "POST", "ops/sign-up", {"policy": "invite"})
     month = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 30 * 24 * 3600))
-    made = operator(w, "POST", "ops/sign-up/invites", {"token": uuid.uuid4().hex, "uses": 2, "expiresAt": month})
+    made = signed_ops(w, "POST", "ops/sign-up/invites", {"token": uuid.uuid4().hex, "uses": 2, "expiresAt": month})
     key = made["inviteKey"]
-    operator(w, "POST", f"ops/sign-up/invites/{key}/revoke", {})
-    operator(w, "POST", "ops/sign-up", {"policy": "open"})
+    signed_ops(w, "POST", f"ops/sign-up/invites/{key}/revoke", {})
+    signed_ops(w, "POST", "ops/sign-up", {"policy": "open"})
     table = {"version": (ops(w, "GET", "ops/prices").get("version") or 0) + 1, "fuelPerVcpuSecond": 1,
              "vcpuSecond": 1, "gibSecond": 1, "connectorGib": 1, "storageGibMonth": 1, "egressGib": 1}
-    operator(w, "POST", "ops/prices", {"table": table})
-    operator(w, "POST", "ops/releases", {"version": "9.9.9", "approved": True})
-    operator(w, "POST", "ops/releases", {"version": "9.9.9", "approved": False})
-    operator(w, "POST", "ops/releases/9.9.9/deadline", {"after": FAR})
-    operator(w, "DELETE", "ops/releases/9.9.9/deadline")
+    signed_ops(w, "POST", "ops/prices", {"table": table})
+    signed_ops(w, "POST", "ops/releases", {"version": "9.9.9", "approved": True})
+    signed_ops(w, "POST", "ops/releases", {"version": "9.9.9", "approved": False})
+    signed_ops(w, "POST", "ops/releases/9.9.9/deadline", {"after": FAR})
+    signed_ops(w, "DELETE", "ops/releases/9.9.9/deadline")
 
 
 def fleet(w, job):
     """The job node removed from the directory, then the one-way switch to granted deployments."""
     w.fleet.retire_job(job)
-    operator(w, "POST", "ops/deployments/granted", {})
+    signed_ops(w, "POST", "ops/deployments/granted", {})
 
 
 def record_every_kind(w, job):

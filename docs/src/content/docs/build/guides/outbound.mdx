@@ -291,10 +291,10 @@ this way: `actions_run_on_the_leader_and_reach_only_declared_approved_hosts`
 (declared and approved prefixes, secrets, redaction) and
 `a_call_checks_a_turnstile_token_through_a_captcha_service` (a call's
 `env::fetch` through `apps/fixture-captcha`), both in
-`crates/node/tests/component_cluster.rs`:
+`crates/node/tests/it/component_cluster.rs`:
 
 ```bash
-cargo test -p calimero-node --test component_cluster -- reach_only_declared_approved_hosts
+cargo test -p calimero-node --test it component_cluster::actions_run_on_the_leader_and_reach_only_declared_approved_hosts
 ```
 
 ## Retries and actions

@@ -80,6 +80,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Generates the vendored app clients (scripts/app-codegen.sh).
+      - name: Install the pinned Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
       - name: Install the JS workspace
         working-directory: sdks
         run: pnpm install --frozen-lockfile

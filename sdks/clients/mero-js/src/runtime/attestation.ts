@@ -87,7 +87,7 @@ export interface NodeReleasePolicy {
 }
 
 export interface NodePolicy {
-  /** Accept mock quotes. Development clusters only; never set from the environment. */
+  /** Accept mock quotes. Development nodes only; `Calimero.fromEnv` sets it only for `CALIMERO_ALLOW_UNATTESTED=1`. */
   allowMock?: boolean;
   /** Trust real quotes from the signed release the node runs. */
   release?: NodeReleasePolicy;

@@ -144,7 +144,7 @@ A second round, reflecting the built-out site: depth, completeness, polish. Item
 - [ ] R22. CLI reference generated from `--help` (merod/meroctl), always current.
 - [x] R23. Sample Grafana dashboard JSON: `operate/observability` links the fleet's dashboard and alert rules (in the infrastructure repository).
 - [ ] R24. Kubernetes/Helm deployment guide + manifests.
-- [x] R25. Tested backup/restore with RPO/RTO guidance (`crates/node/tests/restore.rs`; `operate/runbooks` "Schedule, RPO and RTO").
+- [x] R25. Tested backup/restore with RPO/RTO guidance (`crates/node/tests/it/restore.rs`; `operate/runbooks` "Schedule, RPO and RTO").
 - [ ] R26. Capacity planning & sizing (disk per app, replicas per node, system group size).
 - [x] R27. Cross-version upgrade runbook (node binary + app together): `operate/runbooks` "Upgrade the cluster's release", "Upgrade apps".
 - [x] R28. Disaster recovery (losing a system-group majority; restoring an app from its snapshot): `operate/runbooks` "Disaster recovery", "Found a cluster again from its backups", "Restore an app".

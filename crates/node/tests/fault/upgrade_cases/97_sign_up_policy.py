@@ -5,7 +5,7 @@ refuse a sign-up and changes it back."""
 
 from __future__ import annotations
 
-from upgrade_deep import DeepCase, anyone, eq, operator, refused, until
+from upgrade_deep import DeepCase, anyone, eq, signed_ops, refused, until
 from upgrade_path import case
 
 
@@ -22,7 +22,7 @@ class SignUpPolicy(DeepCase):
         return anyone(w, "POST", "auth/passkey/register/begin", {"name": "policy-probe"}, node=node)
 
     def _enforced(self, w, policy):
-        operator(w, "POST", "ops/sign-up", {"policy": policy})
+        signed_ops(w, "POST", "ops/sign-up", {"policy": policy})
         try:
             for n in w.members():
                 until(f"the policy on node {n}", lambda n=n: eq(anyone(w, "GET", "sign-up", node=n).get("policy"),
@@ -30,7 +30,7 @@ class SignUpPolicy(DeepCase):
                 refused("SIGN_UP_REFUSED", lambda n=n: self._begin(w, n), f"a sign-up on node {n} under {policy}",
                         retry_for=10)
         finally:
-            operator(w, "POST", "ops/sign-up", {"policy": "open"})
+            signed_ops(w, "POST", "ops/sign-up", {"policy": "open"})
 
     def populate(self, w):
         return {"policies": ["invite", "closed"]}
