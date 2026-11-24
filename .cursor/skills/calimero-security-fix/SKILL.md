@@ -22,9 +22,9 @@ This skill is the workflow; it does not repeat them.
 6. **Rebase onto current master and rerun the gates** right before opening: `./scripts/check-like-ci.py`, which includes the feature-gated test jobs (`--list` shows them).
 7. **Use a neutral title and body**: say what the code now does, not how to exploit what it did, and answer the template's Trust boundary block.
 8. **Check open PRs** for the same files and for a schema version number someone else has already claimed.
-9. **Pair SDK changes** with the matching mero-js PR, named in the body as `sdk-ref: <branch>`.
+9. **Change the clients in the same PR**: a wire or signed-format change carries the matching fix in `sdks/clients/`.
 
 ## Mistakes to avoid
 
 - Merging on stale CI: a green run from before the last rebase proves nothing about the merged code.
-- A wire or signed-format change without its mero-js PR (the sealed transport, the attestation check): the SDK breaks on the next release.
+- A wire or signed-format change without its fix in `sdks/clients/mero-js` (the sealed transport, the attestation check): the SDK breaks on the next release.

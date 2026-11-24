@@ -373,8 +373,8 @@ async fn only_granted_accounts_install_on_a_granted_cluster() {
     let e = bob.deployments().deployer_list().await.unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
 
-    // Revoked: no new install; her app runs, and she still creates
-    // instances of the release she installed.
+    // Revoked: no new install, and no instance outside a deployment, even of
+    // the release she installed; her app runs.
     let path = format!("ops/deployers/account:{alice_id}");
     let e = ops
         .ops()
@@ -415,14 +415,16 @@ async fn only_granted_accounts_install_on_a_granted_cluster() {
         )
         .await
         .unwrap();
-    let _again = alice
-        .apps()
-        .create(typed(
-            json!({ "name": "kv2", "package": "com.test.kv", "version": "1.0.0" }),
-        ))
-        .await
-        .map(|a| a.app_id)
-        .unwrap();
+    refused(
+        &alice
+            .apps()
+            .create(typed(
+                json!({ "name": "kv2", "package": "com.test.kv", "version": "1.0.0" }),
+            ))
+            .await
+            .map(|a| a.app_id)
+            .unwrap_err(),
+    );
 }
 
 /// A cluster deployed with the defaults behaves as before and attests the
@@ -483,12 +485,14 @@ async fn an_open_cluster_installs_as_before_until_the_operator_grants_deployment
             .map(|b| b.hash)
             .unwrap_err(),
     );
-    let _instance = alice
-        .apps()
-        .create(typed(json!({ "name": "kv2", "bundle": &bundle })))
-        .await
-        .map(|a| a.app_id)
-        .unwrap();
+    refused(
+        &alice
+            .apps()
+            .create(typed(json!({ "name": "kv2", "bundle": &bundle })))
+            .await
+            .map(|a| a.app_id)
+            .unwrap_err(),
+    );
     let rules = alice.public().releases_public().await.map(wire).unwrap();
     assert_eq!(rules["governance"]["deployments"], "granted");
     // Every replica attests it once it has applied the change.
