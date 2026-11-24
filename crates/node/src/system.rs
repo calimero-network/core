@@ -442,10 +442,11 @@ pub struct PackageVersion {
     /// URL prefixes the app may call out to (the manifest's signed `outbound`).
     #[serde(default)]
     pub outbound: Vec<String>,
-    /// The secrets the release declares (`BundleManifest::secrets`): the node fills only
-    /// these names, each only into a request to one of its hosts. Empty for a release that
-    /// declares none (and every release recorded before), which keeps the operator's
-    /// bindings alone, as before.
+    /// The credentials the release binds (`BundleManifest::secrets`): the node attaches
+    /// each to its host's requests, in its header or body field, and no other. Empty for a
+    /// release that binds none, whose requests carry no secret. Its shape changed in
+    /// 1.0.0-rc.36 (one host and one place, from a list of hosts), a hard cutover: an
+    /// `InstallPackage` an earlier release recorded is not read.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secrets: BTreeMap<String, calimero_bundle::BundleSecret>,
     /// The apps the release references (`BundleManifest::uses`), by reference name: a
@@ -2853,8 +2854,8 @@ impl SystemState {
     }
 
     /// The secret values of the deployment `app_id` was created from, by name,
-    /// for a run of `package`: what fills `{{secret:NAME}}` for it where the
-    /// instance set no value of its own. `None` for an instance from no
+    /// for a run of `package`: what the outbound gate attaches where the
+    /// release binds `NAME` and the instance set no value of its own. `None` for an instance from no
     /// deployment, one deleted since, or a run of a package the deployment does
     /// not offer or reference ([`Self::deployment_covers`]): its managers set
     /// the values for the code they ship, and no other code gets them, whatever the record

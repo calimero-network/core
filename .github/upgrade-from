@@ -11,4 +11,4 @@
 # cutover: replace the version line with `hard-cutover: <PR> <why>` in that PR, title
 # it with `!`, and add it to mdma's release_compat CUTOVERS. The job then
 # reports the cutover instead of running, until the next release puts a version back.
-1.0.0-rc.35
+hard-cutover: 0 a release's secrets are credential bindings (one host, one header or body field, attached by the node); manifests and InstallPackage records in the earlier {{secret:NAME}} shape are not read

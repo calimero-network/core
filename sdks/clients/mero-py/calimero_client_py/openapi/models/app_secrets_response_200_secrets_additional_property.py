@@ -10,7 +10,6 @@ from ..models.app_secrets_response_200_secrets_additional_property_source import
     AppSecretsResponse200SecretsAdditionalPropertySource,
 )
 from ..types import UNSET, Unset
-from typing import cast
 from typing import Union
 
 T = TypeVar("T", bound="AppSecretsResponse200SecretsAdditionalProperty")
@@ -20,32 +19,48 @@ T = TypeVar("T", bound="AppSecretsResponse200SecretsAdditionalProperty")
 class AppSecretsResponse200SecretsAdditionalProperty:
     """
     Attributes:
-        hosts (list[str]):
+        host (str):
+        binding (str):
         description (str):
         required (bool):
         source (AppSecretsResponse200SecretsAdditionalPropertySource):
+        header (Union[Unset, str]):
+        format_ (Union[Unset, str]):
+        body_field (Union[Unset, str]):
         fingerprint (Union[Unset, str]):
         set_by (Union[Unset, str]):
         set_at (Union[Unset, int]):
     """
 
-    hosts: list[str]
+    host: str
+    binding: str
     description: str
     required: bool
     source: AppSecretsResponse200SecretsAdditionalPropertySource
+    header: Union[Unset, str] = UNSET
+    format_: Union[Unset, str] = UNSET
+    body_field: Union[Unset, str] = UNSET
     fingerprint: Union[Unset, str] = UNSET
     set_by: Union[Unset, str] = UNSET
     set_at: Union[Unset, int] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        hosts = self.hosts
+        host = self.host
+
+        binding = self.binding
 
         description = self.description
 
         required = self.required
 
         source = self.source.value
+
+        header = self.header
+
+        format_ = self.format_
+
+        body_field = self.body_field
 
         fingerprint = self.fingerprint
 
@@ -57,12 +72,19 @@ class AppSecretsResponse200SecretsAdditionalProperty:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "hosts": hosts,
+                "host": host,
+                "binding": binding,
                 "description": description,
                 "required": required,
                 "source": source,
             }
         )
+        if header is not UNSET:
+            field_dict["header"] = header
+        if format_ is not UNSET:
+            field_dict["format"] = format_
+        if body_field is not UNSET:
+            field_dict["bodyField"] = body_field
         if fingerprint is not UNSET:
             field_dict["fingerprint"] = fingerprint
         if set_by is not UNSET:
@@ -75,13 +97,21 @@ class AppSecretsResponse200SecretsAdditionalProperty:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        hosts = cast(list[str], d.pop("hosts"))
+        host = d.pop("host")
+
+        binding = d.pop("binding")
 
         description = d.pop("description")
 
         required = d.pop("required")
 
         source = AppSecretsResponse200SecretsAdditionalPropertySource(d.pop("source"))
+
+        header = d.pop("header", UNSET)
+
+        format_ = d.pop("format", UNSET)
+
+        body_field = d.pop("bodyField", UNSET)
 
         fingerprint = d.pop("fingerprint", UNSET)
 
@@ -90,10 +120,14 @@ class AppSecretsResponse200SecretsAdditionalProperty:
         set_at = d.pop("setAt", UNSET)
 
         app_secrets_response_200_secrets_additional_property = cls(
-            hosts=hosts,
+            host=host,
+            binding=binding,
             description=description,
             required=required,
             source=source,
+            header=header,
+            format_=format_,
+            body_field=body_field,
             fingerprint=fingerprint,
             set_by=set_by,
             set_at=set_at,

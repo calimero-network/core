@@ -1911,10 +1911,10 @@ pub struct InstanceSecret {
 /// The instance's own secrets, by name.
 pub type InstanceSecrets = BTreeMap<String, InstanceSecret>;
 
-/// The values that fill `{{secret:NAME}}` for a run, ahead of the operator's: for each
-/// name the release declares, the instance's own value, else the one its deployment's
-/// managers set (`SystemState::deployment_secrets_of`). A name the release does not
-/// declare gets neither; the outbound gate still sends each only to its declared hosts.
+/// The values of the secrets a run's release binds, ahead of the operator's: for each name
+/// the release declares, the instance's own value, else the one its deployment's managers
+/// set (`SystemState::deployment_secrets_of`). A name the release does not declare gets
+/// neither; the outbound gate attaches each only where its binding says.
 #[must_use]
 pub fn run_secrets(
     own: &InstanceSecrets,
@@ -2128,11 +2128,12 @@ mod tests {
             .map(|n| {
                 (
                     n.to_owned(),
-                    calimero_bundle::BundleSecret {
-                        hosts: vec!["api.example.com".into()],
-                        description: String::new(),
-                        required: false,
-                    },
+                    calimero_bundle::BundleSecret::header(
+                        "api.example.com",
+                        &["/"],
+                        &format!("x-{}", n.to_ascii_lowercase()),
+                        None,
+                    ),
                 )
             })
             .collect();
@@ -2184,7 +2185,7 @@ mod tests {
             method: "POST".into(),
             url: "https://challenges.cloudflare.com/turnstile/v0/siteverify".into(),
             headers: vec![("Content-Type".into(), "x".into())],
-            body: b"secret={{secret:TURNSTILE_SECRET}}&response=t".to_vec(),
+            body: b"response=t".to_vec(),
         };
         let response = Ok(host::HttpResponse {
             status: 200,
@@ -2214,8 +2215,8 @@ mod tests {
         let x = &entry.http[0];
         assert_eq!(x.status, Some(200));
         assert_eq!(x.response_body.0, br#"{"success":true}"#);
-        // The request as the app made it: the placeholder, never the secret.
-        assert!(String::from_utf8_lossy(&x.body.0).contains("{{secret:TURNSTILE_SECRET}}"));
+        // The request as the app made it: never the secret the node attached.
+        assert_eq!(x.body.0, b"response=t");
         // An outcome without one keeps its old bytes (no `http` key).
         let plain = serde_json::to_value(Outcome::default()).unwrap();
         assert!(plain.get("http").is_none());

@@ -508,7 +508,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
                 "removed": [],
                 "kept": ["https://api.example/v1/"],
             },
-            "secrets": { "added": [], "removed": [], "kept": [], "hostsChanged": [] },
+            "secrets": { "added": [], "removed": [], "kept": [], "bindingChanged": [], "words": [] },
             "uses": { "added": [], "removed": [], "kept": [], "changed": [], "createdAdded": [] },
             "frontend": {
                 "from": "https://notes.example",
@@ -2375,6 +2375,7 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
             "author": "Example",
             "outbound": ["https://api.example/v1/", "https://metrics.example/"],
             "secrets": {},
+            "secretBindings": [],
             "uses": {},
             "abi": abi,
             "destinations": ["https://api.example/v1/", "https://metrics.example/"],

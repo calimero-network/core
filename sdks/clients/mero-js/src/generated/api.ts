@@ -1059,7 +1059,7 @@ export interface paths {
         };
         /**
          * The secrets an app's release declares
-         * @description For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+         * @description For each secret the release the instance runs declares (its signed manifest's `secrets`): its binding, the one `host` and the one place the node attaches it there (`header` with its `format`, or `bodyField`), with `binding` saying it in one line ("sends OPENAI_API_KEY as the Authorization header (Bearer …) to api.openai.com"), its description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -1082,7 +1082,7 @@ export interface paths {
         get?: never;
         /**
          * Set an app's own value of a declared secret
-         * @description Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+         * @description Attached by the node only where the secret's binding says (its host, header or body field), never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
          *
          *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -2248,7 +2248,7 @@ export interface paths {
         get?: never;
         /**
          * Set a deployment's value of a secret
-         * @description Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+         * @description Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name, or a release one of those references in its signed `uses` (an installed release of the package inside the reference's range), whose value reaches the apps an instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
          *
          *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -4723,7 +4723,7 @@ export interface components {
             signer: string;
             destinations: string[];
         };
-        /** @description Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red. */
+        /** @description Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere, each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red. */
         UpdateReason: {
             /** @enum {string} */
             code: "signerChanged";
@@ -4760,6 +4760,13 @@ export interface components {
             member: string | null;
             package: string;
             methods: string[];
+        } | {
+            /** @enum {string} */
+            code: "secretBindingChanged";
+            member: string | null;
+            name: string;
+            before: string | null;
+            after: string;
         } | {
             /** @enum {string} */
             code: "unclassified";
@@ -9515,7 +9522,11 @@ export interface operations {
                     "application/json": {
                         secrets: {
                             [key: string]: {
-                                hosts: string[];
+                                host: string;
+                                header?: string;
+                                format?: string;
+                                bodyField?: string;
+                                binding: string;
                                 description: string;
                                 required: boolean;
                                 /** @enum {string} */
@@ -20961,6 +20972,7 @@ export interface operations {
                         outbound: string[];
                         /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
                         secrets: unknown;
+                        secretBindings: string[];
                         /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
                         uses: unknown;
                         /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */

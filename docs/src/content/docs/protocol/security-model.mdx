@@ -62,7 +62,9 @@ code, and app code beyond what its owner approved.
   passkey step-up for owners.
 - **Exfiltration over the network** — outbound HTTPS only to hosts the operator
   allows, under prefixes the app's signed manifest declares and its approver
-  approved, from writing runs only.
+  approved, from writing runs only. An API key goes only where the signed
+  manifest binds it, attached by the node: the app never places or reads one
+  ([Secrets](/protocol/secrets/)).
 - **A stolen session** — 15-minute tokens, refresh tokens exchanged once they
   are an hour old whose reuse after that revokes the session (a copy taken
   within the hour refreshes beside its owner until then), revocation that

@@ -307,7 +307,9 @@ fn xcall_failure(message: &str) -> AppError {
 
 /// Send `request` over `wasi:http` from a call, a timer or a delivery (D76), as an action's
 /// `ctx.fetch` does: only to a URL under a prefix the app's signed manifest declares and its
-/// organization approved, with `{{secret:NAME}}` filled in by the node (R14), at most 8
+/// organization approved, with the credentials its manifest binds to the host (`secrets`)
+/// attached by the node, never by the app (R14; a request writing the retired
+/// `{{secret:NAME}}`, or setting a bound header or field itself, is refused), at most 8
 /// requests per run (`MAX_HTTP_REQUESTS`) and within the call's time budget. The exchange is recorded in the call's log
 /// entry: followers and a retry with the same idempotency key read the recorded answer and
 /// never fetch again. Views, `init` and migrations cannot send (the run traps).

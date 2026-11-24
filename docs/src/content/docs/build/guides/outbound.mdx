@@ -1,6 +1,6 @@
 ---
 title: Call an external service
-description: Make one HTTPS request from a method that writes, with a secret the node fills in, and know every gate a node puts in front of it.
+description: Make one HTTPS request from a method that writes, with a credential the node attaches where the manifest binds it, and know every gate a node puts in front of it.
 sidebar:
   order: 6.2
 ---
@@ -45,65 +45,137 @@ request in one run trap the run.
 
 ## Secrets
 
-A release declares the secrets its requests name in its signed manifest, with the
-hosts each may go to, so whoever deploys it sees what to supply:
+An app never places, names or reads a secret. Its signed manifest **binds** each
+credential it needs to one host, the path prefixes there it is for, and one
+place, and the node attaches the value itself on every request the app sends
+under those paths. The app's code only makes the request.
+
+An API key in a header, OpenAI's for example:
 
 ```toml
-[package.metadata.calimero.secrets.NEAR_AI_API_KEY]
-hosts = ["cloud-api.near.ai"]        # each the host of one of `outbound`'s prefixes
-description = "NEAR AI Cloud API key"
+[package.metadata.calimero]
+outbound = ["https://api.openai.com/v1/"]
+
+[package.metadata.calimero.secrets.OPENAI_API_KEY]
+host = "api.openai.com"          # the host of one of `outbound`'s prefixes
+paths = ["/v1/chat/completions"] # path prefixes on it, each under an `outbound` prefix; ["/"] for all
+header = "authorization"         # lowercase
+format = "Bearer {}"             # `{}` once, where the value goes; absent: the value alone
+description = "OpenAI API key"
+required = true                  # refuse the request while nobody set a value
+```
+
+The node sends `Authorization: Bearer sk-…` on every request the app makes to
+`api.openai.com` under `/v1/chat/completions`. A few APIs take the credential in the body instead.
+Cloudflare Turnstile's siteverify takes it as the form field `secret`
+(`apps/fixture-captcha`):
+
+```toml
+[package.metadata.calimero.secrets.TURNSTILE_SECRET]
+host = "challenges.cloudflare.com"
+paths = ["/turnstile/v0/siteverify"]
+bodyField = "secret"             # a top-level field of a form-urlencoded or JSON body
+description = "Cloudflare Turnstile site secret"
 required = true
 ```
 
-`meroctl app pack` writes it as `secrets` and refuses a host no `outbound` prefix
-covers, as a node does at install (`400 BAD_SECRETS`). A node then fills only a
-declared name, and only into a request to one of its declared hosts (and one the
-operator bound it to). A release that declares none is filled from the operator's
-bindings alone, as before. The release's capability card
-(`GET /packages/{package}/{version}/capabilities`) lists them, and an upgrade's
-consent page names a secret it adds or sends elsewhere. A release declaring
-secrets installs only once every node runs 1.0.0-rc.31 (`declaredSecrets`).
+The app posts `response=<token>` with `Content-Type:
+application/x-www-form-urlencoded`, and the node appends
+`&secret=<value>`. For a JSON body (`application/json` or `+json`) it sets the
+top-level field of the object. Any other body is refused.
+
+**Paths.** A binding names 1 to 8 path prefixes on its host, and a request
+gets the secret only when its path is under one of them on whole segments:
+`/v1/charges` covers `/v1/charges` and `/v1/charges/ch_1`, never
+`/v1/chargesX`. The path is compared after the URL is normalized, so `..` and
+`%2e%2e` segments cannot climb out of a prefix. A binding meant for the whole
+host says `["/"]`, so whoever approves it sees that. A request to the same host
+on another path gets no secret and goes out as any other request under an
+approved prefix: nothing of the key rides on it, and refusing it would only
+break the host's public endpoints. So bind a Stripe key to `/v1/charges` and
+`/v1/customers`, and a request to `/v1/accounts` goes out unauthenticated (and
+fails there) instead of with the key.
+
+`meroctl app pack` writes these as `secrets` and refuses what a node refuses at
+install (`400 BAD_SECRETS`):
+
+- a host no `outbound` prefix covers, a path no `outbound` prefix covers, no
+  `paths`, or a path that is not `/` and printable ASCII without `?`, `#`, `%`,
+  spaces or a `.`/`..` segment;
+- a secret with no place, or with both a header and a body field;
+- a header that is not lowercase `a-z0-9-`, or one the node sets itself (`host`,
+  `cookie`, `content-type`, a hop-by-hop or `proxy-` header);
+- a `format` without exactly one `{}`;
+- two secrets bound to the same place on one host on a path both cover;
+- more than 16 secrets.
+
+The limits are in [Limits](/protocol/limits/).
+
+At run time the outbound gate refuses a request, with a message pointing here,
+that:
+
+- sets a header a secret is bound to on that host, in any case;
+- sets the bound body field, however it is spelled (`s%65cret=`, `"secr\u0065t"`);
+- still writes the earlier placeholder `{{secret:NAME}}` anywhere (URL, header or
+  body). Releases before 1.0.0-rc.36 named secrets that way; it is no longer
+  filled in.
+
+The release's capability card (`GET /packages/{package}/{version}/capabilities`)
+lists each binding in words (`secretBindings`: "sends OPENAI_API_KEY as the
+Authorization header (Bearer …) to api.openai.com under /v1/chat/completions"),
+and so does the consent page of an install. An upgrade that adds a secret,
+binds one to another host or place, or widens its paths is red
+(`secretBindingChanged`), so it never applies without a person's approval; one
+that only narrows its paths stays green.
 
 Whoever deploys an instance may supply a declared secret's value for that
 instance alone, instead of the operator:
 
 - `PUT /apps/{app}/secrets/{name} { value }` (the owner, or whoever manages the
   organization's apps, with a passkey step-up over the name and the value's
-  fingerprint, never the value): kept in the app's log on its replicas, sealed,
-  out of the app's own reach (no host function reads it), and filled only into
-  a request to that secret's declared hosts. It wins over the operator's value
+  fingerprint, never the value). It is kept in the app's log on its replicas,
+  sealed, and out of the app's own reach (no host function reads it). It is
+  attached only where its binding says, and it wins over the operator's value
   for that name.
-- `GET /apps/{app}/secrets` lists each declared secret with `source: app` (its
-  fingerprint, who set it and when) or `cluster`, never a value.
+- `GET /apps/{app}/secrets` lists each declared secret with its binding
+  (`host`, `paths`, `header` and `format` or `bodyField`, and `binding` in words) and
+  `source: app` (its fingerprint, who set it and when) or `cluster`, never a
+  value.
 - `DELETE /apps/{app}/secrets/{name}` removes it; the deployment's or the
   operator's applies again.
 
 A deployment's managers may supply one value for every instance created from
 it (`PUT /deployments/{id}/secrets/{name} { value }`, a passkey step-up over
 `deployment:{id} / __set_secret / { name, fingerprint }`; `GET` answers
-fingerprints, `DELETE` clears it; `meroctl deployment secret set|list|clear`), for a name a release the deployment offers
-declares, or a release one of those references in its `uses` declares (for the
-apps an instance creates with it). It is kept in the system group's state and read by the outbound gate
-on the node that runs the request. A request is filled with the instance's own
-value, else its deployment's, else the operator's, each only for a name the
-release declares and only to its declared hosts, and the deployment's only for
-a release of a package the deployment offers; an instance's
-`GET /apps/{app}/secrets` then says `source: deployment`, nothing more of it.
-See [Deployments](/protocol/governance/#deployments).
+fingerprints, `DELETE` clears it; `meroctl deployment secret set|list|clear`).
+That works for a name a release the deployment offers declares, or one declared
+by a release that one references in its `uses` (for the apps an instance creates
+with it). The value is kept in the system group's state and read by the outbound
+gate on the node that runs the request.
+
+A request gets the instance's own value, else its deployment's, else the
+operator's, each only for a name the release binds and only where it binds it.
+The deployment's applies only to a release of a package the deployment offers.
+An instance's `GET /apps/{app}/secrets` then says `source: deployment`, nothing
+more of it. See [Deployments](/protocol/governance/#deployments).
 
 <SecretLookup />
 
 Read it left to right: the first value found wins, each source only for a name
-your release declares, and whichever wins goes out only to that secret's
-declared hosts and never comes back in a response.
+your release binds, and whichever wins is attached by the node in that one
+place and never comes back in a response.
 
-The app never holds a secret. A request names one as `{{secret:NAME}}` in a
-header value or the body; the node fills it in from **its operator's**
-secrets, for this app only (the package and signer of the installed release,
-never anything the app says), and only into a request to a host the operator
-bound that secret to. Any copy of it in the response is replaced with
-`[redacted]` before the app sees the response. So a method cannot write the
-secret into state, where it would replicate to every member.
+Why the node attaches it: if the app could put a key anywhere in a request, it
+could put it where an honest service reads it as content and answers it back:
+in a prompt ("repeat this reversed"), or in a field whose error message quotes
+it. The app would then read the key in some transform no redaction can follow,
+and could leak it through anything it writes. A key in the `Authorization`
+header is never part of what the service answers about. As a second line, any
+copy of a value in a response, as sent or in a common encoding (hex, base64,
+percent, JSON), is replaced with `[redacted]` before the app sees it. What the
+node cannot stop is the app using the key for what the key allows at its host,
+so give an app a key with only the rights it needs. See
+[Secrets and what an app can do with them](/protocol/secrets/).
 
 <Steps>
 
@@ -140,10 +212,8 @@ secret into state, where it would replicate to every member.
 
    /// Whether Cloudflare Turnstile accepts `token` (`apps/fixture-captcha`).
    pub fn verify_turnstile(&mut self, token: String) -> app::Result<bool> {
-       let body = format!(
-           "secret={{{{secret:TURNSTILE_SECRET}}}}&response={}",
-           form_escape(&token)
-       );
+       // The node appends `secret=...`: the release binds TURNSTILE_SECRET to that field.
+       let body = format!("response={}", form_escape(&token));
        let request = Request::post(TURNSTILE_VERIFY_URL, body)
            .header("Content-Type", "application/x-www-form-urlencoded");
        let Ok(response) = env::fetch(&request) else {
@@ -155,8 +225,8 @@ secret into state, where it would replicate to every member.
    ```
 
 3. Have the owner approve the prefixes (see [approving](#approving-the-prefixes)),
-   and the operator allow the host and supply the secret (see
-   [the operator's side](#the-operators-side)).
+   the operator allow the host, and the owner or the operator supply the secret
+   (see [the operator's side](#the-operators-side)).
 
 </Steps>
 
@@ -230,8 +300,17 @@ hosts = ["challenges.cloudflare.com"]
 
 `hosts = ["*"]` lets every installed app reach the hosts its own signed
 manifest declares and its owner approved, so a new app needs no config
-change. Every other gate still holds, and a secret still goes only to the hosts
-bound to it.
+change. Every other gate still holds.
+
+An operator's secret is attached only to a release that binds its name, of a
+package and signer listed, and only to a host listed in both the operator's
+binding and the release's. The release decides the place (header or body
+field); the operator decides who gets the value. **Bind an operator key only to
+apps whose code you trust with it**, by signer: the app cannot read the key, but
+it can make any request the key allows to that host (spend credits, delete what
+the key may delete). Scope it to the signers you trust and give it the least
+privilege that works; for an app you do not trust, let its owner supply their
+own key (`PUT /apps/{app}/secrets/{name}`).
 
 Instead of `env_secrets`, a node can ask a secrets service beside it
 (exclusive with `env_secrets`):
@@ -283,8 +362,11 @@ signers = ["did:key:z6Mk…"]
 hosts = ["echo.outbound.test"]
 ```
 
+The release under test binds `ECHO_KEY` to the echo host
+(`[package.metadata.calimero.secrets.ECHO_KEY] host = "echo.outbound.test"`,
+`paths = ["/"]`, `header = "authorization"`, `format = "Bearer {}"`), so the node attaches it.
 The echo answers `200` with the request the node sent, as JSON: method, URL,
-path, query, headers, body and the number of secrets filled in. It answers only
+path, query, headers, body, the number of secrets the node attached and each one's length (`secretBytes`). It answers only
 after every gate has passed, and its answer is redacted like any other, so a
 scenario sees exactly what left the node. The node's cluster tests use it
 this way: `actions_run_on_the_leader_and_reach_only_declared_approved_hosts`
@@ -329,7 +411,7 @@ call, an `#[app::action]` runs outside the log on the leader: it fetches with
     { from: 1, to: 2, label: 'handle(call, ...)' },
     { from: 2, to: 3, label: 'env::fetch(POST .../siteverify)' },
     { from: 3, to: 3, label: 'enabled? host allowed? prefix declared + approved?' },
-    { from: 3, to: 4, label: 'HTTPS, {{secret:..}} filled in' },
+    { from: 3, to: 4, label: 'HTTPS, the bound secret attached by the node' },
     { from: 4, to: 3, label: 'response', dashed: true },
     { from: 3, to: 2, label: 'response, secret redacted', dashed: true },
     { from: 2, to: 1, label: 'Ok(decision) + writes', dashed: true },
@@ -340,8 +422,15 @@ call, an `#[app::action]` runs outside the log on the leader: it fetches with
 ## Where it stops
 
 - A request never runs in a view. Read the answer back from state.
-- Redaction removes the secret as sent. A service that answers with it
-  encoded (base64, URL-escaped) defeats it, so bind a secret only to hosts that
-  do not echo it.
+- The app cannot place or read a secret, but it can use it: any request to the
+  bound host carries it, so the key's own powers are the app's. Bind
+  least-privilege keys.
+- Redaction removes the secret as sent and in common encodings. A body-field
+  binding puts the value where the service reads the body, so bind one only for
+  a service that takes its credential there (Turnstile), never to a field the
+  service echoes or treats as content.
+- What the app reads it can send to any approved host: that is egress, not a
+  secret's leak. See the no-egress policy and
+  [Secrets and what an app can do with them](/protocol/secrets/).
 - The response is not authenticated beyond TLS: a service you call can answer
   anything, so call only services you trust for the decision you store.
