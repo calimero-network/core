@@ -161,7 +161,7 @@ export default defineConfig({
                 { label: 'Overview', slug: 'clients/mero-js' },
                 { label: 'Get started', items: ['clients/mero-js/get-started/quickstart', 'clients/mero-js/get-started/authentication'] },
                 { label: 'Understand', items: ['clients/mero-js/understand/system-overview', 'clients/mero-js/understand/glossary'] },
-                { label: 'Guides', items: ['clients/mero-js/guides/apps', 'clients/mero-js/guides/organizations', 'clients/mero-js/guides/user-approvals', 'clients/mero-js/guides/sealed-transport', 'clients/mero-js/guides/bundling-and-runtimes'] },
+                { label: 'Guides', items: ['clients/mero-js/guides/apps', 'clients/mero-js/guides/organizations', 'clients/mero-js/guides/user-approvals', 'clients/mero-js/guides/sealed-transport', 'clients/mero-js/guides/bundling-and-runtimes', 'clients/mero-js/guides/confidential-kv'] },
                 { label: 'Reference', items: ['clients/mero-js/reference/client', 'clients/mero-js/reference/error-model', 'clients/mero-js/reference/migrating-from-v1'] },
               ],
             },
@@ -172,7 +172,7 @@ export default defineConfig({
                 { label: 'Overview', slug: 'clients/mero-py' },
                 { label: 'Get started', items: ['clients/mero-py/get-started/installation', 'clients/mero-py/get-started/quickstart', 'clients/mero-py/get-started/concepts'] },
                 { label: 'Reference', items: ['clients/mero-py/reference/client', 'clients/mero-py/reference/methods', 'clients/mero-py/reference/errors'] },
-                { label: 'Guides', items: ['clients/mero-py/guides/migration', 'clients/mero-py/guides/updates-and-public-links'] },
+                { label: 'Guides', items: ['clients/mero-py/guides/migration', 'clients/mero-py/guides/updates-and-public-links', 'clients/mero-py/guides/confidential-kv'] },
               ],
             },
             {
