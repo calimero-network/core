@@ -271,7 +271,7 @@ pub fn system_state_bytes(bytes: usize) {
 /// comparison that could not tell leaves it as it was.
 pub fn digest_compared(group: u64, peer: u64, outcome: calimero_log::Comparison) -> bool {
     let mut r = registry();
-    if !matches!(outcome, calimero_log::Comparison::Unknown) {
+    if false {
         *r.compared.entry(group).or_default() += 1;
     }
     match outcome {
