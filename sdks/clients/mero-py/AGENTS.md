@@ -34,7 +34,7 @@ openapi/generator.yaml       # openapi-python-client's settings
 scripts/                     # generate.sh (sdk.json `generate`), the generators, build.sh
 tests/                       # pytest: unit tests, plus cluster tests against a merod
 examples/                    # example_usage.py (compiled by CI)
-abi-codegen/                 # calimero-abi-codegen: Python clients from an app's ABI
+abi-codegen/                 # calimero-abi-codegen: DEPRECATED, use `meroctl app codegen --lang python`
 ```
 
 ## Build, test, lint

@@ -149,6 +149,15 @@ NOT_COVERED = [
      "`update-classes-approvals` cases'. "
      "`an_install_sheet_shows_what_gets_created_and_where_data_can_go` and "
      "`an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build"),
+    ("Deployments", "A customer's instance outside every deployment on a granted cluster, refused at create and "
+     "on an upgrade into a deployer's package (`403 DEPLOY_NOT_GRANTED`; `CreateApp { offers_only }` and "
+     "`UpgradeApp` at apply, `Feature::OffersOnly`)",
+     "a refusal that stores nothing, on a granted cluster, which the open upgrade-path cluster is not and cannot "
+     "become without turning every case that installs after the switch red; an entry without `offers_only` "
+     "replays as it applied below cluster version 1.0.0-rc.36. "
+     "`on_a_granted_cluster_a_customer_creates_only_from_an_offer` (`deployments.rs`) and "
+     "`system::tests::on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers` and "
+     "`..._keeps_out_of_a_deployers_package` (the replay) cover it on one build"),
 ]
 
 
