@@ -1,5 +1,10 @@
 //! The host core's policy, overlay and determinism rules (spec sections 3-5, D19, D46, D47).
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;

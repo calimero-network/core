@@ -1,6 +1,11 @@
 //! `meroctl app new` against a local stand-in for the apps repository: no
 //! network, no node.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::path::Path;
 use std::process::Command;
 

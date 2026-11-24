@@ -4,6 +4,11 @@
 //! Builds the kv component `apps/fixture-kv` from this checkout (cached under
 //! `$CARGO_TARGET_DIR/app-components`), or reads `KV_STORE_WASM`.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;

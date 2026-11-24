@@ -814,7 +814,8 @@ is its command line.
   quote block its thread).
 - **Access is judged fresh**: every request carrying a credential, every gated request, an anonymous
   `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
-  (a read index), so a removal committed elsewhere holds before the next request. Regression:
+  (a read index), so a removal committed elsewhere holds before the next request; an event
+  stream judges each event the same way (Events below). Regression:
   `a_revocation_holds_on_a_follower_that_has_not_applied_it_yet`.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
@@ -1448,7 +1449,8 @@ is its command line.
   `removed`), `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
   unit's moves its direct members as `unit_plan` does. The class decides how it applies:
   under `secondApprover` a red one takes two approvers (C8), under `noDestinations` a
-  green one of a unit with no destination before or after applies on its own, moving the app alone (C9).
+  green one of a unit with no destination before or after that removes no method applies on
+  its own, moving the app alone (C9).
   Regressions: `a_units_destinations_are_judged_over_its_members`
   (`tests/consent_page.rs`), `calimero_bundle::update::tests`,
   `an_update_whose_members_differ_applies_on_its_own_and_moves_the_instance_alone`
@@ -1516,8 +1518,8 @@ is its command line.
   `a_first_approval_answers_a_release_its_approver_may_not_use_as_a_missing_one`,
   `system::tests::a_first_approval_of_a_release_its_approver_may_not_use_is_refused`).
   The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
-  `autoApply` (`noDestinations`: a green update of an app whose unit has no destinations
-  before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
+  `autoApply` (`noDestinations`: a green update that removes no method, of an app whose
+  unit has no destinations before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
   /apps/{app}/upgrade-policy` (`policy_json`), `GET /apps/{app}/update` adds `policy`,
   `pendingApprovals`, `available.approvalsNeeded`/`approvedBy`
   (`api::upgrades::update_view`), `GET /orgs/{org}/updates?after=` (owners and admins,
@@ -1550,7 +1552,9 @@ is its command line.
   `MAX_AUTO_UPDATE_CLASSES_PER_PASS` a pass) and runs each app's first green one through
   `api::upgrades::auto_upgrade` -> `run_upgrade` (`Upgrader::auto`, `Caller::System`,
   actor `system::AUTO_UPDATE`): a release red only by its code (state version, delegated
-  methods) never holds back a green one below it. Only the release's own failure is
+  methods) never holds back a green one below it, and a green one that drops a method
+  (`removed_methods`, read from the leader's verdict, `api::upgrades::move_verdict`) waits
+  for a person as a red one does: another app may call it. Only the release's own failure is
   noted (`UpgradeFailed`: the group ran it and it failed or refused it); one before
   anything ran (refusal, restore point, runtime, no leader) is not, and the leader
   retries that move after a backoff (`node::auto_updates::AutoUpdateMemory`, in memory:
@@ -2417,7 +2421,17 @@ API and system group:
 - **Events** (R9): a component's `EventRecord` carries its `audience` and caller;
   the event stream (`api::local_events`, the subscriber passed to a peer's
   `internal/events`) and a call's answer check `SystemState::receives` when they
-  send it, so a removed member stops receiving at once.
+  send it, so a removed member stops receiving at once. The stream judges each
+  event on fresh system state, not the replica's own: the app's log and the system
+  log are different logs, so an event made after a removal committed can reach a
+  replica that has not applied it. A read-index round begun once the event is here,
+  applied here (`Node::sys_caught_up`), covers the backlog, then each batch of live
+  events that arrived together (`api::MAX_EVENT_BATCH`); a replica that cannot catch
+  up in `Config::read_wait` (or reach a system leader in that time) ends the stream,
+  and the subscriber resumes from its last id, judged afresh. Regressions:
+  `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`
+  (`testing`: `Node::hold_system_log` makes a node refuse the system group's Raft
+  messages while its app groups go on), `removed_member_stops_receiving_org_events`.
 - **Usage** (Q20, `component::RunUsage`, `DayUsage`): each `componentInit`,
   `componentCall` and `componentTick` outcome carries `usage { fuel, wallMs, writes,
   bytesWritten, events }`, measured by the leader (`Outcome::from_host`; a `HostDenied`

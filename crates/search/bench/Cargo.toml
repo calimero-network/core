@@ -17,3 +17,6 @@ tantivy = { workspace = true, features = ["mmap"] }
 
 calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-search.workspace = true
+
+[lints]
+workspace = true

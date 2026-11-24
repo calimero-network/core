@@ -7,6 +7,11 @@
 //! Builds the component fixtures `apps/fixture-kv`, `notes-v1` and `notes-v2`
 //! from this checkout (see `harness/cluster.rs`).
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::api::Pending;
 use serde_json::{json, Value};

@@ -40,3 +40,5 @@ bench = false
 name = "log"
 harness = false
 
+[lints]
+workspace = true

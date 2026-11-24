@@ -256,7 +256,8 @@ make an update red. The class decides how an update applies: a red one waits
 for an owner's or admin's approval, for two of them under a `secondApprover`
 policy ([A second approver](#a-second-approver)), and a green one applies on its
 own only under a `noDestinations` policy, when the app's unit has no destination
-before or after it, moving the app alone ([Updates that apply on their own](#updates-that-apply-on-their-own));
+before or after it and the update removes no method, moving the app alone
+([Updates that apply on their own](#updates-that-apply-on-their-own));
 any other green update waits for one owner's or admin's approval.
 
 ### The class at apply
@@ -316,7 +317,7 @@ force and its `source`). Moving an app to another organization drops its own.
 | Field | Default | Effect |
 | --- | --- | --- |
 | `secondApprover` | off | A red (or unclassified) update needs two distinct owners or admins |
-| `autoApply` | `never` | `noDestinations`: a green update of an app whose unit has no destinations before or after it (no data leaves Calimero) applies on its own after the hold ([Updates that apply on their own](#updates-that-apply-on-their-own)) |
+| `autoApply` | `never` | `noDestinations`: a green update that removes no method, of an app whose unit has no destinations before or after it (no data leaves Calimero), applies on its own after the hold ([Updates that apply on their own](#updates-that-apply-on-their-own)) |
 | `holdHours` | 24 | How long a green update waits before applying on its own: 24 to 168 (`400 BAD_UPGRADE_POLICY`) |
 
 Nothing updates on its own by default.
@@ -374,8 +375,8 @@ node's updates page shows.
 
 ## Updates that apply on their own
 
-Under a `noDestinations` policy, a green update applies without anyone's
-approval once its hold has passed (`Feature::AutoUpdates`, 1.0.0-rc.34). The
+Under a `noDestinations` policy, a green update that removes no method applies
+without anyone's approval once its hold has passed (`Feature::AutoUpdates`, 1.0.0-rc.34). The
 system leader looks every `AUTO_UPDATE_EVERY` (5 s; `node::auto_updates`,
 from `reconcile`) for apps it would move and the releases each could move to,
 newest first (`SystemState::auto_update_candidates`), classifies each move as
@@ -411,8 +412,10 @@ Refusals: `409 AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`,
 a newer red one, whether the log shows it (its destinations or signer) or only
 the leader's classification does (a state version that changed, a new way to
 act as the person), waits for an owner or admin and does not hold back a quiet
-one below it. It never takes one an update to failed or an undo left: an owner
-or admin decides on those. Only the release's own failure counts: the app's
+one below it. So does a green one that drops a method (`removedMethods`): another
+app may call it, and nothing records which, so a person decides on it. It never
+takes one an update to failed or an undo left: an owner or admin decides on those.
+Only the release's own failure counts: the app's
 group ran the upgrade and it failed or refused it (`lastUpgrade.ok: false`),
 and not when another move of the app won meanwhile: an update on its own names
 the release it began from (`UpgradeFailed { fromRelease }`), and apply notes

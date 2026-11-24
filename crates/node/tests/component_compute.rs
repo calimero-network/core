@@ -1,6 +1,11 @@
 //! Starting and cancelling compute runs from app code on a cluster, through the `compute`
 //! fixture (`apps/fixture-compute`). No job node is registered, so a run stays queued.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod common;
 use common::UploadBytes as _;
 

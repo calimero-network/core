@@ -3,6 +3,11 @@
 //! decides which step starts when. The package is the `compute` fixture's compute component
 //! alone (a compute-only app).
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod common;
 use common::UploadBytes as _;
 

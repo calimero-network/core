@@ -138,8 +138,8 @@ pub fn policy_words(policy: &UpgradePolicy, source: &str) -> Vec<String> {
     let mut out = vec![match policy.auto_apply {
         AutoApply::Never => "You approve each update. Nothing changes until you do.".to_owned(),
         AutoApply::NoDestinations => format!(
-            "An update that keeps all data in Calimero applies on its own after a {} h hold; \
-             every other update waits for an approval.",
+            "A green update that keeps all data in Calimero and removes no method applies on \
+             its own after a {} h hold; every other update waits for an approval.",
             policy.hold_hours
         ),
     }];
@@ -219,6 +219,22 @@ pub(super) fn approval_step(
             ));
         }
         Ok(ApprovalStep::First)
+    })
+}
+
+/// The sheet's `hold`: said only of an update the automatic policy would apply on its own.
+fn hold_words(policy: &UpgradePolicy, c: Option<&Classification>) -> Option<String> {
+    let on_its_own = policy.auto_apply == AutoApply::NoDestinations
+        && c.is_some_and(|c| {
+            crate::egress::moves_on_its_own(c)
+                && c.egress.before.is_empty()
+                && c.egress.after.is_empty()
+        });
+    on_its_own.then(|| {
+        format!(
+            "With the automatic policy this would apply on its own after the {} h hold; you opened it early.",
+            policy.hold_hours
+        )
     })
 }
 
@@ -307,9 +323,6 @@ pub(super) fn update_section(
             "{by} approved this update first; your approval applies it."
         )),
     };
-    let held = green
-        && policy.auto_apply == AutoApply::NoDestinations
-        && c.is_some_and(|c| c.egress.before.is_empty() && c.egress.after.is_empty());
     json!({
         "class": c.map(|c| c.class),
         "summary": c.map_or_else(|| "This update could not be checked".to_owned(), update_summary),
@@ -342,10 +355,7 @@ pub(super) fn update_section(
         "keepWords": format!(
             "Keeping {from} is safe: it goes on working and your data stays where it is."
         ),
-        "hold": held.then(|| format!(
-            "With the automatic policy this would apply on its own after the {} h hold; you opened it early.",
-            policy.hold_hours
-        )),
+        "hold": hold_words(&policy, c),
         "to": to,
     })
 }
@@ -520,8 +530,9 @@ pub(super) async fn install_request(
     update_words.pop();
     if destinations.is_empty() && policy.auto_apply == AutoApply::Never {
         update_words.push(format!(
-            "Because {app_name} sends no data out of Calimero, you can later add a policy that \
-             applies its updates on their own after a 24 h hold, as long as they keep it that way."
+            "Because {app_name} sends no data out of Calimero, you can later add a policy under \
+             which its green updates apply on their own after a 24 h hold, as long as they keep \
+             it that way and remove no method."
         ));
     }
     let payer = subject.deployment.as_ref().and_then(|d| {
@@ -894,4 +905,48 @@ pub(super) async fn open(
     };
     let axum::Json(v) = super::hold(node, account.to_owned(), None, action, model, back).await?;
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_bundle::update::{Class, EgressDiff};
+
+    use super::*;
+
+    fn green(removed: &[&str]) -> Classification {
+        Classification {
+            class: Class::Green,
+            reasons: Vec::new(),
+            egress: EgressDiff::default(),
+            state_version_changed: false,
+            new_methods: Vec::new(),
+            removed_methods: removed.iter().map(|m| (*m).to_owned()).collect(),
+            signer_changed: false,
+        }
+    }
+
+    #[test]
+    fn the_sheet_says_a_green_update_would_apply_on_its_own_only_if_it_removes_no_method() {
+        let auto = UpgradePolicy {
+            auto_apply: AutoApply::NoDestinations,
+            ..UpgradePolicy::default()
+        };
+        assert!(hold_words(&auto, Some(&green(&[]))).is_some());
+        assert_eq!(hold_words(&auto, Some(&green(&["whoView"]))), None);
+        assert_eq!(
+            hold_words(&UpgradePolicy::default(), Some(&green(&[]))),
+            None
+        );
+        assert_eq!(hold_words(&auto, None), None);
+    }
+
+    #[test]
+    fn the_automatic_policy_says_an_update_that_removes_a_method_waits() {
+        let auto = UpgradePolicy {
+            auto_apply: AutoApply::NoDestinations,
+            ..UpgradePolicy::default()
+        };
+        let words = policy_words(&auto, "org");
+        assert!(words[0].contains("removes no method"), "{words:?}");
+    }
 }
