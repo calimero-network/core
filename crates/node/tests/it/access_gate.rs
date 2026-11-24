@@ -1171,3 +1171,73 @@ async fn an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_nod
         "the upgrade and the write since the restore point: {plan}"
     );
 }
+
+/// A credential that cannot be valid is refused before the request costs a
+/// read-index round on the system group, and is not held open (D4): junk, a
+/// malformed API key, a visitor credential whose signature does not hold and a
+/// session token its issuer did not sign cost no round. A well-formed API key
+/// no account has costs at most one round and answers at once rather than
+/// waiting out `Config::read_wait` for it to appear; the same key again costs
+/// none (`UNKNOWN_API_KEYS`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_credential_that_cannot_be_valid_costs_no_system_read_round() {
+    let c = ProxiedCluster::start().await;
+    let entry = 1;
+    let client = c.client(entry);
+    // The sealed session first, so the requests below carry only the credential.
+    let _anonymous = client.auth().me().await;
+    let forged_session = calimero_identity::mint_session(
+        &[7; 32],
+        &calimero_identity::SessionClaims {
+            account: "alice".into(),
+            session: "s1".into(),
+            expires_at: u64::MAX,
+            passkey: None,
+            app: None,
+            origin: None,
+            node: c.nodes[entry].node.config.node_id,
+            key: calimero_identity::b64url(&c.nodes[entry].node.receipt_public()),
+        },
+    );
+    let malformed_key = format!("cal_{}", "!".repeat(43));
+    let (unknown_key, _hash) = calimero_identity::new_api_key();
+    // Each credential, by name, and the most read-index rounds it may cost.
+    let cases = [
+        ("junk", "junk", 0),
+        ("short API key", "cal_short", 0),
+        ("API key of other characters", malformed_key.as_str(), 0),
+        ("unsigned visitor", "vis1.token.key.1.signature", 0),
+        ("forged session", forged_session.as_str(), 0),
+        ("unknown API key", unknown_key.as_str(), 1),
+        ("the same unknown API key again", unknown_key.as_str(), 0),
+    ];
+    let mut costs = Vec::new();
+    for (name, bogus, _) in &cases {
+        client.use_api_key(bogus).await;
+        let before = rounds(&c);
+        let started = std::time::Instant::now();
+        let e = client.auth().me().await.expect_err(name);
+        let took = started.elapsed();
+        assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{name}: {e}");
+        costs.push((rounds(&c) - before, took));
+    }
+    let table: Vec<String> = cases
+        .iter()
+        .zip(&costs)
+        .map(|((name, _, _), (n, took))| format!("{name}: {n} rounds, {} ms", took.as_millis()))
+        .collect();
+    eprintln!("{}", table.join("\n"));
+    for ((name, _, most), (n, took)) in cases.iter().zip(&costs) {
+        assert!(
+            n <= most,
+            "{name} cost {n} system read rounds:\n{}",
+            table.join("\n")
+        );
+        // Under `Config::read_wait` (2 s): nothing waits for the key to appear.
+        assert!(
+            *took < Duration::from_millis(1500),
+            "{name} was held open {took:?}:\n{}",
+            table.join("\n")
+        );
+    }
+}

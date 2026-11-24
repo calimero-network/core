@@ -2084,7 +2084,13 @@ is its command line.
   `internal/call`) wait to apply it (`Node::sys_fresh_from`, whose doc is the
   argument that this is as fresh as a round of their own) instead of running
   another. Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
+  A credential that cannot be valid costs no round (`api::credential`, D4): an
+  API key not of `new_api_key`'s shape, or one a caught-up read found missing in
+  the last `UNKNOWN_API_KEY_TTL` (`UnknownApiKeys`, `MAX_UNKNOWN_API_KEYS`), a
+  visitor credential whose signature fails, a session token its issuer did not
+  sign; a missing key waits (`sys_until`) only when the round did not catch up.
   Regressions: `a_call_costs_one_system_read_round`,
+  `a_credential_that_cannot_be_valid_costs_no_system_read_round`,
   `a_revocation_committed_before_the_round_holds_on_a_leader_behind`
   (`tests/it/access_gate.rs`).
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
