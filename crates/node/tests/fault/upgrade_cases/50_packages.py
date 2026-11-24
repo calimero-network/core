@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.parse
 
 import ed25519_sign
 from rv2 import b64url
-from upgrade_deep import (DeepCase, Failed, app_label, check, decision, decisions, eq, install, join, kv_wasm, new_org, ops,
+from upgrade_deep import (DeepCase, Failed, anyone, app_label, check, decision, decisions, eq, install, join, kv_wasm, new_org, ops,
                           people, person, refused, same_decisions, same_read, snap, subset, until)
 from upgrade_path import case
 
@@ -141,8 +142,9 @@ class PackageOrigins(DeepCase):
              "(a custom domain)")
     verifies = ("the manager's list as they read it; the operator's served-origins list naming the package's host "
                 "label; a stranger refused the list and the registration; on the new release one origin removed "
-                "and two registered while the other seeded served origin stays, after a restart too. "
-                "Only the stored record and the lists are read: no passkey ceremony runs from a registered origin")
+                "and two registered while the other seeded served origin stays, after a restart too; on every node a "
+                "sign-in begun from a registered origin names that origin's host as its rp-id and one begun from an "
+                "unregistered or removed origin is refused `ORIGIN_NOT_REGISTERED`. The assertion itself is not signed")
 
     def _path(self, s):
         return f"package-origins/{s['package']}"
@@ -158,6 +160,21 @@ class PackageOrigins(DeepCase):
                   if o["label"] == app_label(s["package"])]
         return sorted(listed)
 
+    def _begin(self, w, origin, node):
+        """What a sign-in begun from `origin` answers: the rp-id it would use, or the refusal's code."""
+        got = decision(lambda: anyone(w, "POST", "auth/passkey/login/begin", {"origin": origin}, node=node))
+        if got != "ok":
+            return got
+        return anyone(w, "POST", "auth/passkey/login/begin", {"origin": origin}, node=node)["options"]["rpId"]
+
+    def _ceremonies(self, w, s):
+        """On every node a registered origin begins a sign-in under its own host, any other one is refused."""
+        for node in w.members():
+            for origin in [s["plain"], *s["served"]]:
+                eq(self._begin(w, origin, node), urllib.parse.urlsplit(origin).hostname, f"{origin}'s rp-id on node {node}")
+            for origin in s["unregistered"]:
+                eq(self._begin(w, origin, node), "ORIGIN_NOT_REGISTERED", f"{origin} on node {node}")
+
     def _read(self, w, s):
         s["read"] = snap(person(w, "ora"), self._path(s))
         s["origins"] = sorted(o["origin"] for o in s["read"]["origins"])
@@ -165,7 +182,8 @@ class PackageOrigins(DeepCase):
     def populate(self, w):
         ora = person(w, "ora")
         package, _ = install(ora, w, "kv-p-1.0.0.mpk")
-        s = {"package": package, "plain": "https://plain-ora.example.test", "served": ["https://served-ora.example.test"]}
+        s = {"package": package, "plain": "https://plain-ora.example.test", "served": ["https://served-ora.example.test"],
+             "unregistered": ["https://never-registered.example.test"]}
         ora.raw("post", self._path(s), {"origin": s["plain"]})
         ora.raw("post", self._path(s), {"origin": s["served"][0], "served": True})
         s["decisions"] = self._decisions(w, s)
@@ -173,6 +191,7 @@ class PackageOrigins(DeepCase):
         self._read(w, s)
         eq(s["origins"], sorted([s["plain"], *s["served"]]), "the registered origins")
         eq(until("the served origin is listed", lambda: self._served(w, s)), s["served"], "the operator's served list")
+        self._ceremonies(w, s)
         return s
 
     def check(self, w, s):
@@ -181,10 +200,12 @@ class PackageOrigins(DeepCase):
         eq(until("the served origins are listed", lambda: self._served(w, s)), sorted(s["served"]),
            "the operator's served list")
         same_decisions(self._decisions(w, s), s["decisions"], "a stranger and the origins")
+        self._ceremonies(w, s)
 
     def exercise(self, w, s):
         ora = person(w, "ora")
         ora.raw("delete", self._path(s), {"origin": s["plain"]})
+        s["unregistered"].append(s["plain"])
         s["plain"] = "https://plain-ora-2.example.test"
         ora.raw("post", self._path(s), {"origin": s["plain"]})
         # The first served origin stays: the restart check then reads a record the old release wrote.
