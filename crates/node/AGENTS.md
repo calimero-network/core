@@ -1631,11 +1631,14 @@ is its command line.
   runs `api::apps::create_installed` (`POST /apps`'s `create_instance`, `from_frontend` for
   the bound session's visibility) behind an unlogged `account:<a> / __create_instance` step-up;
   `outcome { appId, links }`; `install.privateTo` names the reader's organizations a private
-  release is for; a person in several organizations installing with no `org` is offered
-  theirs (`install.chooseOrg`, `org_choices`), and `POST /consent/{id}/approve { org }` takes
+  release is for; installing with no `org`, a private release in exactly one of the person's
+  organizations is created there (filled in as `org`), else they choose among its
+  organizations they are in, or, with none of those or a public, catalog or earlier release,
+  among all of theirs when several (`install.chooseOrg`, each with its own first `point`;
+  `org_choices`), and `POST /consent/{id}/approve { org }` takes
   the choice into the action before the step-up, so the passkey signs it (`with_chosen_org`:
   none `400 ORG_REQUIRED`, not theirs `404`, offered nothing `400`; regression
-  `a_person_in_two_organizations_chooses_one_on_the_install_sheet`), `updatePolicy` (`policy_request`; `act` runs
+  `the_install_sheet_offers_the_organizations_a_release_is_for`), `updatePolicy` (`policy_request`; `act` runs
   `api::set_upgrade_policy`, the routes' shared code), and the upgrade sheets' `update`
   (`update_section`: class, reasons in words, destinations, state version, policy,
   `approval { needed, step: only|first|second }`, `keepByDefault` for a red update adding a

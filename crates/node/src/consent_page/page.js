@@ -221,10 +221,16 @@
     var none = add(select, el("option", "Choose an organization"));
     none.value = ""; none.disabled = true; none.selected = true;
     orgs.forEach(function (o) { add(select, el("option", o.name)).value = o.orgId; });
+    var points = {};
+    orgs.forEach(function (o) { points[o.orgId] = o.point; });
     box.appendChild(el("p", "You are in several organizations. The app and its data belong to the one you choose.", "small muted"));
     chosenOrg = "";
     $("approve").disabled = true;
-    select.addEventListener("change", function () { chosenOrg = select.value; $("approve").disabled = !chosenOrg; });
+    select.addEventListener("change", function () {
+      chosenOrg = select.value;
+      $("approve").disabled = !chosenOrg;
+      if ($("created") && points[chosenOrg]) $("created").textContent = points[chosenOrg];
+    });
   }
   function renderPolicyChange(x, p) {
     bullets(section(x, "Now"), p.now && p.now.words);
@@ -432,12 +438,13 @@
     var li = add($("attention"), el("li", null, "fact " + kind));
     add(li, el("span", null, "fact-ic")).appendChild(icon(name));
     var body = add(li, el("div"));
-    body.appendChild(el("p", title, "fact-t"));
+    var t = add(body, el("p", title, "fact-t"));
     if (sub) body.appendChild(el("p", sub, "fact-s"));
     if (has(items)) {
       var box = add(body, el("p", null, "fact-items"));
       items.forEach(function (i) { var c = add(box, el("code", i)); c.title = i; });
     }
+    return t;
   }
   // The main view: what needs care first (in colour), then what holds up,
   // then what happens. Only risk gets colour, so a warning stands out.
@@ -448,7 +455,7 @@
     if (!attn.length && (m.kind === "upgrade" || m.kind === "upgradeUnit")) fact("ok", "shield", "No new permissions", "It reaches what the version you run now reaches.");
     if (signed) fact("ok", "key", signed[0], signed[1]);
     var points = (m.points || []).filter(Boolean);
-    if (points.length) fact("", "info", points[0], points[1]);
+    if (points.length) fact("", "info", points[0], points[1]).id = "created";
   }
   function renderChecks(m, host) {
     var ul = $("checks"), mockShown = false;

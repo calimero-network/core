@@ -4217,15 +4217,17 @@ async fn an_install_sheet_shows_what_gets_created_and_where_data_can_go() {
     assert_eq!(egress["destinations"], json!([AI]), "{egress}");
 }
 
-/// A person in two organizations installs from a frontend that names none: the sheet lists
-/// their organizations by name and says the release is private to Acme, and the one they
-/// choose reaches the install as `org` does, under their passkey; no choice, or one they are
-/// not in, is refused before the passkey.
+/// A person in Acme and Globex installs from a frontend that names no organization. A release
+/// private to Acme alone is created in Acme with no choice, as a named `org`; one private to
+/// both, or the operator's catalog, offers both by name, and the choice reaches the install as
+/// `org` under the passkey; no choice, or one they are not in, is refused before the passkey.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_person_in_two_organizations_chooses_one_on_the_install_sheet() {
+async fn the_install_sheet_offers_the_organizations_a_release_is_for() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
     let org = |v: Value| v["orgId"].as_str().unwrap().to_owned();
     let acme = org(alice
         .orgs()
@@ -4246,70 +4248,120 @@ async fn a_person_in_two_organizations_chooses_one_on_the_install_sheet() {
         .map(wire)
         .unwrap());
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[38; 32]);
-    let (mpk, _) = release_of(
-        PACKAGE,
-        "1.0.0",
-        &kv_wasm(),
-        &publisher,
-        &Declares::default(),
-    );
+    let release = |package: &str| {
+        release_of(
+            package,
+            "1.0.0",
+            &kv_wasm(),
+            &publisher,
+            &Declares::default(),
+        )
+        .0
+    };
+    let (acme_only, both, catalog) = ("com.test.acme", "com.test.both", "com.test.catalog");
     let _ = alice
         .packages()
-        .upload(mpk, Some(acme.as_str()))
+        .upload(release(acme_only), Some(acme.as_str()))
         .await
         .unwrap();
+    for o in [&acme, &globex] {
+        let _ = alice
+            .packages()
+            .upload(release(both), Some(o.as_str()))
+            .await
+            .unwrap();
+    }
+    let _ = ops.ops().package_upload(release(catalog)).await.unwrap();
+
+    // Each sheet's passkey goes on from the last one's counter.
+    let (page, mut key) = install_sheet_naming_no_org(&c, &alice_key, acme_only).await;
+    let model = page.model().await;
+    let install = &model["install"];
+    assert_eq!(install["org"], json!(acme), "{model}");
+    assert_eq!(install["orgName"], "Acme", "{model}");
+    assert!(install["chooseOrg"].is_null(), "{model}");
+    assert_eq!(install["privateTo"], "Private to Acme", "{model}");
+    assert_eq!(
+        model["points"][0], "notes is created for you in Acme: Notes 1.0.0.",
+        "{model}"
+    );
+    let (code, refused) = page.post("approve", json!({ "org": globex })).await;
+    assert_eq!(code, 400, "nothing to choose: {refused}");
+    let ((code, done), args) = page.approve(&c, &mut key).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["org"], json!(acme), "{args}");
+    let app = done["result"]["appId"].as_str().unwrap();
+    let made = get(&alice, &format!("apps/{app}")).await.unwrap();
+    assert_eq!(made["org"], json!(acme), "{made}");
+
+    let offered = json!([
+        { "orgId": acme, "name": "Acme", "point": "notes is created for you in Acme: Notes 1.0.0." },
+        { "orgId": globex, "name": "Globex", "point": "notes is created for you in Globex: Notes 1.0.0." },
+    ]);
+    for (package, private_to) in [
+        (both, json!("Private to Acme and Globex")),
+        (catalog, Value::Null),
+    ] {
+        let (page, next) = install_sheet_naming_no_org(&c, &key, package).await;
+        key = next;
+        let model = page.model().await;
+        assert_eq!(model["install"]["chooseOrg"], offered, "{package}: {model}");
+        assert!(model["install"]["org"].is_null(), "{package}: {model}");
+        assert_eq!(
+            model["install"]["privateTo"], private_to,
+            "{package}: {model}"
+        );
+        for (body, code) in [
+            (json!({}), "ORG_REQUIRED"),
+            (json!({ "org": bobco }), "NOT_FOUND"),
+        ] {
+            let (status, refused) = page.post("approve", body.clone()).await;
+            assert_eq!(
+                refused["error"], code,
+                "{package} {body}: {status} {refused}"
+            );
+        }
+        let ((code, done), args) = page
+            .approve_with(&c, &mut key, json!({ "org": globex }))
+            .await;
+        assert_eq!(code, 200, "{package}: {done}");
+        assert_eq!(
+            args["org"],
+            json!(globex),
+            "the passkey signs the choice: {args}"
+        );
+        let app = done["result"]["appId"].as_str().unwrap();
+        let made = get(&alice, &format!("apps/{app}")).await.unwrap();
+        assert_eq!(made["org"], json!(globex), "{package}: {made}");
+    }
+}
+
+/// An install sheet for `package`, asked for by its frontend signed in as `key`'s account
+/// and naming no organization; with the passkey on the page's origin.
+async fn install_sheet_naming_no_org(
+    c: &Cluster,
+    key: &SoftAuthenticator,
+    package: &str,
+) -> (Page, SoftAuthenticator) {
     let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
     let app_origin = format!(
         "http://{}.localhost:{port}",
-        calimero_node::app_host::label(PACKAGE)
+        calimero_node::app_host::label(package)
     );
-    let back = format!("{app_origin}/1.0.0/");
     let in_app = c.client(1);
-    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
-    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
-
+    let mut in_app_key = SoftAuthenticator::with_key(key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut in_app_key).await.unwrap();
     let made = ask(
         &in_app,
-        &back,
+        &format!("{app_origin}/1.0.0/"),
         "install",
-        json!({ "package": PACKAGE, "version": "1.0.0", "name": "notes" }),
+        json!({ "package": package, "version": "1.0.0", "name": "notes" }),
     )
     .await
     .unwrap();
     let url = made["url"].as_str().unwrap().to_owned();
-    let page = Page::new(&url);
-    let model = page.model().await;
-    assert_eq!(
-        model["install"]["chooseOrg"],
-        json!([{ "orgId": acme, "name": "Acme" }, { "orgId": globex, "name": "Globex" }]),
-        "{model}"
-    );
-    assert_eq!(model["install"]["privateTo"], "Private to Acme", "{model}");
-
-    for (body, code) in [
-        (json!({}), "ORG_REQUIRED"),
-        (json!({ "org": bobco }), "NOT_FOUND"),
-    ] {
-        let (status, refused) = page.post("approve", body.clone()).await;
-        assert_eq!(refused["error"], code, "{body}: {status} {refused}");
-    }
-    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
-    let ((code, done), args) = page
-        .approve_with(&c, &mut alice_page, json!({ "org": acme }))
-        .await;
-    assert_eq!(code, 200, "{done}");
-    assert_eq!(
-        args["org"],
-        json!(acme),
-        "the passkey signs the choice: {args}"
-    );
-    let made = get(
-        &alice,
-        &format!("apps/{}", done["result"]["appId"].as_str().unwrap()),
-    )
-    .await
-    .unwrap();
-    assert_eq!(made["org"], json!(acme), "{made}");
+    let page_key = SoftAuthenticator::with_key(&in_app_key, "localhost", &origin(&url));
+    (Page::new(&url), page_key)
 }
 
 /// C10, screens 2, 3 and 5: an update's sheet says its class in plain words. A green one
