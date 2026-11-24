@@ -280,7 +280,8 @@ def _retry_unavailable(request):
 class World:
     """What a case sees: the fleet, its accounts, the registry, fixtures, shared values."""
 
-    def __init__(self, fleet: Fleet, registry: PackageRegistry, fixtures: dict, phase_log, jobs: int = 1):
+    def __init__(self, fleet: Fleet, registry: PackageRegistry, fixtures: dict, phase_log, jobs: int = 1,
+                 build=None):
         self.fleet = fleet
         self.registry = registry
         self.fixtures = fixtures
@@ -290,7 +291,17 @@ class World:
         self._accounts: dict[str, Account] = {}
         self._claims: dict[str, str] = {}
         self._lock = threading.Lock()
+        self._build = build  # waits for this tree's build; None when it is built already
+        self._build_lock = threading.Lock()
         self._log = phase_log
+
+    def this_tree(self):
+        """Block until this tree's build has ended: the seed phase runs while it builds, so a case
+        that seeds from one of its artifacts (`fixtures["pipelines"]`) calls this first."""
+        with self._build_lock:
+            if self._build:
+                self._build()
+                self._build = None
 
     def claim(self, name):
         """Record that the running case's group uses account `name`; another group's claim fails."""
@@ -512,7 +523,12 @@ def main(argv=None):
     registry = PackageRegistry(wd / "registry")
     fleet = Fleet(wd, base_port=BASE_PORT + offset, cluster="upgrade-path", binary=old_merod,
                   meroctl=old_meroctl, release=FROM_RELEASE, registry=registry)
-    w = World(fleet, registry, fixtures, say, jobs=max(1, args.jobs))
+    def built():
+        if args.build_status:
+            wait_for_build(args.build_status)
+        check_built(this_tree)
+
+    w = World(fleet, registry, fixtures, say, jobs=max(1, args.jobs), build=built)
     results: list[dict] = []
     timings: dict = {}
     t0 = time.time()
@@ -525,12 +541,10 @@ def main(argv=None):
             run_step(w, cases, "mixed", results)
 
         w.phase = "build"
-        if args.build_status:
-            t = time.time()
-            say("== waiting for the build of this tree")
-            wait_for_build(args.build_status)
-            PHASES["build wait"] = round(time.time() - t, 1)
-        check_built(this_tree)
+        say("== waiting for the build of this tree")
+        t = time.time()
+        w.this_tree()
+        PHASES["build wait"] = round(time.time() - t, 1)
         w.phase = "rollout"
         timings = rollout.roll_forward(fleet, new_merod, TO_RELEASE, NEW_IDS, log=say, on_mixed=mixed)
         # Clients move to this tree's meroctl; the job node is replaced as the replicas were.

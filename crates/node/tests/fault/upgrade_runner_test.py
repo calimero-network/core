@@ -263,6 +263,26 @@ class MoveApps(unittest.TestCase):
         self.assertEqual(loads, [3, 3, 3, 3])
 
 
+class ThisTree(unittest.TestCase):
+    def test_the_build_is_waited_for_once_however_many_cases_ask(self):
+        calls = []
+        w = upgrade_path.World(None, None, {}, upgrade_path.say, build=lambda: calls.append(1))
+        w.this_tree()
+        w.this_tree()
+        self.assertEqual(calls, [1])
+
+    def test_a_failed_build_fails_every_case_that_needs_it(self):
+        def failed():
+            raise upgrade_path.Failed("this tree's build failed (exit 101)")
+        w = upgrade_path.World(None, None, {}, upgrade_path.say, build=failed)
+        for _ in range(2):
+            with self.assertRaisesRegex(upgrade_path.Failed, "exit 101"):
+                w.this_tree()
+
+    def test_a_tree_built_already_needs_no_wait(self):
+        upgrade_path.World(None, None, {}, upgrade_path.say).this_tree()
+
+
 class WaitForBuild(unittest.TestCase):
     def status(self, text=None):
         path = Path(tempfile.mkdtemp()) / "build.status"
