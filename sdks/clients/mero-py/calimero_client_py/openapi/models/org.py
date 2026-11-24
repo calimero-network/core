@@ -36,9 +36,10 @@ class Org:
     `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later,
     `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version
     it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets
-    it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and
-    `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second
-    (absent when none).
+    it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `egressOff`: its egress switch is off, so
+    none of its apps sends anything out of the cluster (`POST /orgs/{org}/egress`). `upgradePolicy`,
+    `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates
+    waiting for a second (absent when none).
 
         Attributes:
             org_id (str):
@@ -57,6 +58,7 @@ class Org:
             personal (Union[Unset, bool]):
             allow_guests (Union[Unset, bool]):
             allow_public_links (Union[Unset, bool]):
+            egress_off (Union[Unset, bool]):
             upgrade_policy (Union[Unset, UpgradePolicy]): How an organization's owner and admins let an app's updates apply
                 (`POST /orgs/{org}/upgrade-policy`, `POST /apps/{app}/upgrade-policy`); every field is answered; a request may
                 leave any out (its default). `secondApprover` (default off): a red update needs two distinct owners or admins.
@@ -88,6 +90,7 @@ class Org:
     personal: Union[Unset, bool] = UNSET
     allow_guests: Union[Unset, bool] = UNSET
     allow_public_links: Union[Unset, bool] = UNSET
+    egress_off: Union[Unset, bool] = UNSET
     upgrade_policy: Union[Unset, "UpgradePolicy"] = UNSET
     app_upgrade_policies: Union[Unset, "OrgAppUpgradePolicies"] = UNSET
     pending_upgrades: Union[Unset, "OrgPendingUpgrades"] = UNSET
@@ -145,6 +148,8 @@ class Org:
         allow_guests = self.allow_guests
 
         allow_public_links = self.allow_public_links
+
+        egress_off = self.egress_off
 
         upgrade_policy: Union[Unset, dict[str, Any]] = UNSET
         if not isinstance(self.upgrade_policy, Unset):
@@ -205,6 +210,8 @@ class Org:
             field_dict["allowGuests"] = allow_guests
         if allow_public_links is not UNSET:
             field_dict["allowPublicLinks"] = allow_public_links
+        if egress_off is not UNSET:
+            field_dict["egressOff"] = egress_off
         if upgrade_policy is not UNSET:
             field_dict["upgradePolicy"] = upgrade_policy
         if app_upgrade_policies is not UNSET:
@@ -273,6 +280,8 @@ class Org:
         allow_guests = d.pop("allowGuests", UNSET)
 
         allow_public_links = d.pop("allowPublicLinks", UNSET)
+
+        egress_off = d.pop("egressOff", UNSET)
 
         _upgrade_policy = d.pop("upgradePolicy", UNSET)
         upgrade_policy: Union[Unset, UpgradePolicy]
@@ -344,6 +353,7 @@ class Org:
             personal=personal,
             allow_guests=allow_guests,
             allow_public_links=allow_public_links,
+            egress_off=egress_off,
             upgrade_policy=upgrade_policy,
             app_upgrade_policies=app_upgrade_policies,
             pending_upgrades=pending_upgrades,

@@ -10,10 +10,15 @@
 //! 2. **The app declared a prefix covering the URL** in its signed bundle
 //!    manifest (`outbound`): same host, and a path at or below the prefix's
 //!    at a `/`. A run gets a client only when its app declares one.
-//! 3. **The run writes on this node** (a call, a follow-up, a timer, a
+//! 3. **Egress is on for the app**: neither its organization nor the instance
+//!    turned it off. The node asks before every request ([`egress_gated`]), so
+//!    a switch turned off reaches a run already going; while it is off every
+//!    request is refused with [`EGRESS_OFF`], whatever the manifest declares
+//!    and whatever was approved.
+//! 4. **The run writes on this node** (a call, a follow-up, a timer, a
 //!    delivery) or is a component's action: never a view, `init`, a migration
 //!    or a compute run. The node and its component host decide that.
-//! 4. **The request fits**: `https` on port 443 to a DNS name that resolves
+//! 5. **The request fits**: `https` on port 443 to a DNS name that resolves
 //!    only to public addresses, no fragment, the size limits in
 //!    `calimero_primitives::outbound`, no redirect followed. How many one run
 //!    may send is the component host's bound (`MAX_HTTP_REQUESTS`).
@@ -143,6 +148,50 @@ pub const NOT_APPROVED: &str = calimero_primitives::outbound::OutboundRefusal::N
 /// matches on it to show an admin what to approve.
 pub const AWAITING_APPROVAL: &str =
     calimero_primitives::outbound::OutboundRefusal::AwaitingApproval.word();
+
+/// The start of every refusal while the app's organization, or the instance,
+/// turned egress off. Stable: an app matches on it to tell its user why
+/// nothing can leave the cluster.
+pub const EGRESS_OFF: &str = calimero_primitives::outbound::OutboundRefusal::EgressOff.word();
+
+/// Whether egress is off for one app right now: `Some(who)` names who turned it
+/// off ("its organization", "the instance"). The node answers it from its
+/// replicated system state.
+pub type EgressCheck = Arc<dyn Fn() -> Option<&'static str> + Send + Sync>;
+
+/// `inner`, asking `off` before each request and refusing it with
+/// [`EGRESS_OFF`] while egress is off, before any other gate: nothing is
+/// resolved, filled in or sent.
+#[must_use]
+pub fn egress_gated(inner: Arc<dyn OutboundHost>, off: EgressCheck) -> Arc<dyn OutboundHost> {
+    Arc::new(EgressGated { inner, off })
+}
+
+/// [`egress_gated`]'s host.
+struct EgressGated {
+    inner: Arc<dyn OutboundHost>,
+    off: EgressCheck,
+}
+
+impl fmt::Debug for EgressGated {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EgressGated")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OutboundHost for EgressGated {
+    fn send(&self, request: &[u8]) -> Result<Vec<u8>, String> {
+        if let Some(who) = (self.off)() {
+            return Err(format!(
+                "{EGRESS_OFF}: {who} turned egress off, so no request leaves the cluster \
+                 for this app, whatever was approved"
+            ));
+        }
+        self.inner.send(request)
+    }
+}
 
 /// A secret, and the hosts it may be sent to.
 pub struct Secret {

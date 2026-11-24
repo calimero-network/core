@@ -75,7 +75,7 @@ which only a development cluster's `localhost` relying party accepts.
 Without it, the command sends the request plainly and the node answers
 `412 CONFIRM_REQUIRED`: on a real cluster the owner approves in a browser.
 That holds for `call` (a confirm method), `instance update`, `instance transfer`,
-`instance move`, `org delete`, `org outbound`,
+`instance move`, `org delete`, `org outbound`, `org egress ... off`,
 `org approve-release`, `org upgrade-policy` (setting), `instance upgrade-policy` (setting), `instance approve-update`, `instance undo --yes`, `org invite`, `org leave`,
 `org members add`, `org members remove`, `org capabilities`,
 `account outbound`, `account approve-release`, `account api-key create`,
@@ -328,6 +328,7 @@ or `restricted` (only the members added).
 | `org member-metadata ORG ACCOUNT JSON` | `POST /orgs/{org}/members/{account}/metadata` | Set a member's metadata (theirs, or an admin's); `null` clears it. |
 | `org capabilities ORG BITS [--account ID \| --team TEAM]` | `POST /orgs/{org}/capabilities` | Set the capability bits of a member, of a team's members, or (neither) the organization's default. |
 | `org outbound ORG --package P [--prefix URL]... [--replace] [--dev-passkey FILE]` | `POST /orgs/{org}/outbound` | Approve URL prefixes the package's publisher may call out to from the organization's contexts (default: every prefix its latest release declares). `--replace` sets exactly these, which is how one is revoked. Where the owner holds outbound approvals. |
+| `org egress ORG [off\|on] [--app APP] [--return-to URL] [--dev-passkey FILE]` | `GET /orgs/{org}`, `POST /orgs/{org}/egress`, `POST /apps/{app}/egress`, `POST /consent/requests` | Without a state, show the organization's egress switch (with `--app`, the instance's: `egress`, `offBy`, its destinations). `off` turns it off at once (the owner or an admin): no app it covers sends anything out of the cluster, whatever was approved. `on` asks the consent page (`setEgress`, a red change made only there; `--return-to` one of the cluster's origins) and prints the page to open. |
 | `org approve-release ORG VERSION [--dev-passkey FILE]` | `POST /orgs/{org}/releases` | Approve a mero-tee release to hold the organization's contexts. Where the owner holds release approvals. |
 | `org upgrade-policy ORG [--second-approver BOOL] [--auto-apply never|no-destinations] [--hold-hours N] [--clear] [--dev-passkey FILE]` | `GET\|POST /orgs/{org}/upgrade-policy` | The organization's update policy, for its contexts without one of their own; with a flag, set it (the owner or an admin, with a passkey); `--clear` drops it (the defaults: one approval, nothing on its own). |
 | `org updates ORG [--after INSTANCE]` | `GET /orgs/{org}/updates` | The organization's contexts with an update available or a first approval waiting, each with its class, the approvals it needs and the policy in force (its owner and admins; 50 a page). |

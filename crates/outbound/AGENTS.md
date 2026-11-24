@@ -14,9 +14,15 @@ A request is made only when every gate holds:
    is the app's organization (whoever holds `MANAGE_APPLICATION` org-wide, with
    a passkey assertion), or the operator where `--outbound-approvals operator`
    gives it the decision; every app is in an organization since 1.0.0-rc.20.
-4. The run writes (calls, follow-ups, timers; a component's actions and, D76, its calls,
-   timers and deliveries): never a view, `init`, a migration or compute.
-5. `https` on 443 to a name resolving only to public addresses, size limits from
+4. Egress is on for the app: neither its organization (`Org::egress_off`) nor the
+   instance (`AppRecord::egress_off`) turned it off (`SystemCmd::SetEgress`, an owner or
+   admin; on again only through the consent page). The node wraps every run's client in
+   `egress_gated`, which asks before each request and refuses with `EGRESS_OFF`
+   (`OutboundRefusal::EgressOff`) before any other gate, over every approval.
+5. The run writes (calls, follow-ups, timers; a component's actions and, D76, its calls,
+   timers and deliveries): never a view, `init`, a migration or compute (a compute run
+   has no network at all, so the switch never concerns a job node).
+6. `https` on 443 to a name resolving only to public addresses, size limits from
    `calimero_primitives::outbound`, no redirects; at most
    `calimero_app_host::MAX_HTTP_REQUESTS` (8) per run, counted by the host.
 
@@ -34,6 +40,9 @@ filled-in value's length (`secretBytes`), never a value.
   `for_run_counted(.., sent)` also counts each request handed to the transport
   (the node's `calimero_app_outbound_requests_total`).
 - `merge_approval` computes the approval an owner's selection leaves.
+- `egress_gated(inner, EgressCheck)`: the egress switch, asked per request (so one
+  turned off reaches a run already going); test
+  `egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again`.
 - `TURNSTILE_VERIFY_URL`: Cloudflare Turnstile's siteverify, for apps that check a
   token from a call (D76; `apps/fixture-captcha`) and for the `turnstile` stand-in.
 - Feature `outbound-testing`: `[outbound.testing] echo` answers `.test` hosts

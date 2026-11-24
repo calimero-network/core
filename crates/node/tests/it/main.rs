@@ -43,6 +43,7 @@ mod component_packages;
 mod consent_page;
 mod deployers;
 mod deployments;
+mod egress;
 mod fixtures;
 mod generated_routes;
 mod guests;

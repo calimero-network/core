@@ -973,6 +973,8 @@ pub fn rejected(reason: &str) -> ApiError {
         ApiError::new(409, PERSONAL_ORG_EXISTS, reason)
     } else if reason == crate::system::GUESTS_NOT_ALLOWED {
         ApiError::new(409, "GUESTS_NOT_ALLOWED", reason)
+    } else if reason == crate::system::EGRESS_OFF {
+        ApiError::new(409, "EGRESS_OFF", reason)
     } else if reason == crate::system::NO_PERSONAL_ORGS {
         ApiError::new(409, "PERSONAL_ORGS_ENDED", reason)
     } else if reason == crate::system::CANNOT_GRANT_UNHELD {
@@ -2608,7 +2610,8 @@ impl Node {
     /// when the operator turned outbound off, or the bundle is no signed
     /// release declaring a prefix. A declared prefix not approved for the app
     /// still gets a client, whose refusal (`AWAITING_APPROVAL`, `NOT_APPROVED`)
-    /// the app can show.
+    /// the app can show. Every client asks the egress switch before each request
+    /// (`SystemState::egress_off`) and refuses with `EGRESS_OFF` while it is off.
     fn outbound_for(
         &self,
         app_id: &str,
@@ -2660,13 +2663,29 @@ impl Node {
                 approval,
             ))
         })?;
-        service.for_run_counted(
+        let gate = service.for_run_counted(
             identity,
             release.version.outbound.clone(),
             approval,
             app_id.to_owned(),
             sent,
-        )
+        )?;
+        // The egress switch, asked before each request on this node's system state, so one
+        // turned off refuses the next request of a run already going, over every approval.
+        let system = Arc::clone(&self.system);
+        let app = app_id.to_owned();
+        Some(calimero_outbound::egress_gated(
+            gate,
+            Arc::new(move || {
+                system.read_local(|m, _| {
+                    let s = &m.state;
+                    s.apps
+                        .get(&app)
+                        .and_then(|a| s.egress_off(a))
+                        .map(crate::system::EgressOff::who)
+                })
+            }),
+        ))
     }
 
     /// This node as the `Arc` it lives in, for work that outlives a borrowed request.

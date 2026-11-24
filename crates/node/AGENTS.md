@@ -663,7 +663,22 @@ is its command line.
   a bundle that is a signed release declaring prefixes; identity = (package,
   pinned signer), approval = `Org/Account::outbound_approvals[signer]`, set by
   whoever holds `MANAGE_APPLICATION` org-wide in the app's organization, with
-  `SetOutboundApproval` (`POST /orgs/{org}/outbound`, passkey consent; `merge_approval` at apply). The request is
+  `SetOutboundApproval` (`POST /orgs/{org}/outbound`, passkey consent; `merge_approval` at apply).
+  **Egress switch** (`SystemCmd::SetEgress { org, app?, egress }`, ungated: a hard cutover, an earlier
+  release cannot decode it;
+  `Org::egress_off`, `AppRecord::egress_off`, `SystemState::egress_off`): an organization's owner or
+  an admin turns egress off for every app of it or one instance (`POST /orgs/{org}/egress`, `POST
+  /apps/{app}/egress { egress }`, passkey over `org:<org> / __set_egress / { app, egress }`,
+  `system::egress_args`). `outbound_for` wraps every client in `calimero_outbound::egress_gated`,
+  which reads the system state before each request and refuses `EgressOff:` over every approval;
+  `SetOutboundApproval` for an organization whose switch is off is refused (`EGRESS_OFF`, `409`;
+  `api::refuse_egress_off` before the passkey, also on the consent page's `outbound`). Off is
+  instant; on again only through the consent page (`setEgress`, `consent_page::orgs::egress`, a
+  red `egressOn` attention), the route refusing any other principal `403 CONSENT_PAGE_REQUIRED`
+  (`Principal::consent_page`). `GET /apps/{app}/egress` answers `egress`, `offBy`, `summary`
+  (`egress::NO_EGRESS`); `GET /orgs/{org}` `egressOff`. Regressions: `tests/it/egress.rs`
+  (`egress_off_refuses_an_approved_host_whatever_the_approval`,
+  `an_instances_egress_is_turned_off_and_back_on_only_on_the_page`). The request is
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again. A component's calls, timers and deliveries get the same gate
   (D76, "Component executor").

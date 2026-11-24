@@ -880,7 +880,7 @@ async fn a_follower_answers_a_strong_view_after_a_read_index() {
     }
 }
 
-async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
+pub(crate) async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
     cl.apps()
         .view(
             app,
@@ -5379,7 +5379,7 @@ async fn dead_letters_move_with_the_app_and_any_node_lists_them() {
 
 /// A signed `.mpk` of `wasm` as `package@version` whose manifest declares the outbound
 /// URL prefixes `outbound` (S9), signed by `key`.
-fn mpk_declaring(
+pub(crate) fn mpk_declaring(
     package: &str,
     version: &str,
     wasm: &[u8],
@@ -5491,7 +5491,7 @@ fn mpk_full(
 }
 
 /// Polls view `method` until `done` holds of its result.
-async fn eventually(
+pub(crate) async fn eventually(
     cl: &Client,
     app: &str,
     method: &str,
