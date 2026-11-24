@@ -1621,8 +1621,11 @@ fn u64_at(bytes: &[u8], at: usize) -> u64 {
 fn reading_megabytes_of_state_costs_fuel() {
     let fx = fixture();
     let app = prepare(&fx, "host_work");
+    // The run is judged on fuel alone: 64 MiB copied by a debug build on a loaded runner
+    // can take longer than a call's 2 s, so the wall clock is out of the way.
     let budget = Budget {
         fuel: 10_000_000,
+        wall_clock: Duration::from_secs(60),
         ..Budget::call()
     };
     let reads = 1_000;
@@ -1679,8 +1682,11 @@ fn a_view_makes_at_most_max_searches_per_run() {
 fn a_host_without_host_fuel_charges_as_before() {
     let fx = fixture();
     let app = prepare(&fx, "host_work");
+    // The run is judged on fuel alone: 64 MiB copied by a debug build on a loaded runner
+    // can take longer than a call's 2 s, so the wall clock is out of the way.
     let budget = Budget {
         fuel: 10_000_000,
+        wall_clock: Duration::from_secs(60),
         ..Budget::call()
     };
     let host = host_work(InvocationKind::View, "reads", 1_000).with_host_fuel(false);
