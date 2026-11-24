@@ -56,6 +56,10 @@ pub fn find_notes(&self, text: String) -> app::Result<Vec<Note>> {
 - One index per table, over the fields its `#[table(search = [..])]` names.
 - A query is at most 256 bytes and 4 KiB encoded; a page at most 100 hits; a
   cursor at most 10,000 deep.
+- A view makes at most 32 searches (`MAX_SEARCHES_PER_RUN`); past it a search
+  answers `"too many searches in one run"`. Each search costs the view fuel for
+  the documents it matched and the hits it returns
+  ([What host work costs](/protocol/limits/#what-host-work-costs)).
 - Fuzzy matching is edit distance 1 on words: no stemming, no synonyms, no
   phonetics. Substring search needs 3 characters.
 - Scores are per app (each index has its own term statistics).

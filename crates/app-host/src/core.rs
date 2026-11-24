@@ -1,6 +1,7 @@
 //! The host core: the only code that reads or writes app state, applies access policy or
 //! decides what an invocation may do (spec section 3). Engines map WIT calls onto it.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -17,6 +18,11 @@ use crate::action::{
 };
 use crate::blobs::{blob_id_hex, blob_refs, parse_blob_id, BlobHost, NoBlobs, MAX_GRANT_TTL_SECS};
 use crate::files::{Files, NoFiles, FILE_UNAVAILABLE};
+use crate::fuel::{
+    per_byte, FUEL_HOST_CALL, FUEL_PER_RANGE_ENTRY, FUEL_PER_SEARCH_BYTE, FUEL_PER_SEARCH_HIT,
+    FUEL_PER_SEARCH_MATCH, FUEL_SEARCH_QUERY, FUEL_STATE_ACCESS, MAX_SEARCHES_PER_RUN,
+    SEARCH_TOO_MANY,
+};
 use crate::overlay::{Cursor, Overlay};
 use crate::runs::{
     ActiveRun, NoRuns, RunInput, Runs, StartedRun, MAX_ACTIVE_RUNS, MAX_COMPUTE_ARGS_BYTES,
@@ -168,6 +174,12 @@ pub struct HostCore {
     active: Option<Vec<ActiveRun>>,
     starts: Vec<StartedRun>,
     cancels: Vec<String>,
+    /// Fuel the run's host calls owe and the engine has not taken yet (C7, `crate::fuel`).
+    host_fuel: Cell<u64>,
+    /// Whether host calls are charged (`with_host_fuel`).
+    charges_fuel: bool,
+    /// Searches made in this run, at most `MAX_SEARCHES_PER_RUN`.
+    searches: u32,
 }
 
 impl HostCore {
@@ -231,6 +243,9 @@ impl HostCore {
             active: None,
             starts: Vec::new(),
             cancels: Vec::new(),
+            host_fuel: Cell::new(0),
+            charges_fuel: true,
+            searches: 0,
         })
     }
 
@@ -310,6 +325,34 @@ impl HostCore {
         self
     }
 
+    /// Whether host calls cost fuel (`crate::fuel`); the default is that they do. The node
+    /// turns it off below the cluster version that brings it, so a cluster on an earlier
+    /// release answers every call as that release did.
+    #[must_use]
+    pub fn with_host_fuel(mut self, charged: bool) -> Self {
+        self.charges_fuel = charged;
+        self
+    }
+
+    /// The fuel the host calls made since the last take owe; the engine takes it out of the
+    /// run's fuel as each call returns and ends the run out of fuel when it cannot pay.
+    pub fn take_host_fuel(&mut self) -> u64 {
+        self.host_fuel.take()
+    }
+
+    /// Adds `fuel` to what the run owes for host work.
+    fn burn(&self, fuel: u64) {
+        if self.charges_fuel {
+            self.host_fuel
+                .set(self.host_fuel.get().saturating_add(fuel));
+        }
+    }
+
+    /// A call's base cost plus `bytes` bytes.
+    fn burn_call(&self, base: u64, bytes: usize) {
+        self.burn(base.saturating_add(per_byte(bytes)));
+    }
+
     /// The invocation being run; the engine reads kind, method and args from it.
     #[must_use]
     pub fn invocation(&self) -> &Invocation {
@@ -321,7 +364,12 @@ impl HostCore {
     pub fn storage_get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, HostDenied> {
         self.may_read()?;
         check_key(key)?;
-        Ok(self.current(&stored_key(GENERATION, key)))
+        let value = self.current(&stored_key(GENERATION, key));
+        self.burn_call(
+            FUEL_STATE_ACCESS,
+            key.len().saturating_add(value.as_ref().map_or(0, Vec::len)),
+        );
+        Ok(value)
     }
 
     pub fn storage_put(&mut self, key: &[u8], value: &[u8]) -> Result<(), HostDenied> {
@@ -329,6 +377,7 @@ impl HostCore {
         check_key(key)?;
         self.check_blob_refs(value)?;
         self.charge(key.len().saturating_add(value.len()))?;
+        self.burn_call(FUEL_STATE_ACCESS, key.len().saturating_add(value.len()));
         self.overlay
             .put(stored_key(GENERATION, key), value.to_vec());
         self.writes += 1;
@@ -339,6 +388,7 @@ impl HostCore {
         self.check_write()?;
         check_key(key)?;
         self.charge(key.len())?;
+        self.burn_call(FUEL_STATE_ACCESS, key.len());
         self.overlay.delete(stored_key(GENERATION, key));
         self.writes += 1;
         Ok(())
@@ -361,6 +411,10 @@ impl HostCore {
         ciborium::into_writer(&Value::Integer(sum), &mut value)
             .map_err(|e| HostDenied::new(format!("storage.add encode: {e}")))?;
         self.charge((key.len() - GENERATION_PREFIX).saturating_add(value.len()))?;
+        self.burn_call(
+            FUEL_STATE_ACCESS,
+            (key.len() - GENERATION_PREFIX).saturating_add(value.len()),
+        );
         self.overlay.put(key, value);
         self.writes += 1;
         Ok(())
@@ -380,6 +434,7 @@ impl HostCore {
         if self.cursors.len() >= MAX_OPEN_CURSORS {
             return Err(HostDenied::new("too many open cursors"));
         }
+        self.burn_call(FUEL_STATE_ACCESS, start.len().saturating_add(end.len()));
         let start = stored_key(GENERATION, start);
         let end = if end.is_empty() {
             // The generation's own keyspace ends where the next generation starts.
@@ -414,6 +469,14 @@ impl HostCore {
             max,
             MAX_RANGE_BATCH_BYTES,
             &mut self.peak_buffered,
+        );
+        let bytes = batch.iter().fold(0usize, |n, (k, v)| {
+            n.saturating_add(k.len()).saturating_add(v.len())
+        });
+        self.burn(
+            FUEL_STATE_ACCESS
+                .saturating_add(FUEL_PER_RANGE_ENTRY.saturating_mul(batch.len() as u64))
+                .saturating_add(per_byte(bytes)),
         );
         Ok(batch
             .into_iter()
@@ -499,6 +562,7 @@ impl HostCore {
 
     #[must_use]
     pub fn app_owner(&self) -> String {
+        self.burn(FUEL_HOST_CALL);
         match &self.inv.compute {
             Some(run) => run.owner.clone(),
             None => self.dir.app_owner(),
@@ -508,6 +572,7 @@ impl HostCore {
     /// The app linked under `name` (`context.linked`); none in a compute run.
     #[must_use]
     pub fn linked(&self, name: &str) -> Option<String> {
+        self.burn(FUEL_HOST_CALL);
         if self.is_compute() {
             return None;
         }
@@ -517,6 +582,7 @@ impl HostCore {
     /// The app whose unit this one is a member of (`context.unit-of`); none in a compute run.
     #[must_use]
     pub fn unit_of(&self) -> Option<String> {
+        self.burn(FUEL_HOST_CALL);
         if self.is_compute() {
             return None;
         }
@@ -528,6 +594,7 @@ impl HostCore {
     /// a compute run.
     #[must_use]
     pub fn grant_scope(&self) -> Option<String> {
+        self.burn(FUEL_HOST_CALL);
         if self.is_compute() {
             return None;
         }
@@ -541,6 +608,7 @@ impl HostCore {
 
     #[must_use]
     pub fn org(&self) -> Option<String> {
+        self.burn(FUEL_HOST_CALL);
         if self.is_compute() {
             return None;
         }
@@ -549,6 +617,7 @@ impl HostCore {
 
     #[must_use]
     pub fn org_role(&self, account: &str) -> Option<OrgRole> {
+        self.burn(FUEL_HOST_CALL);
         if self.is_compute() {
             return None;
         }
@@ -566,6 +635,7 @@ impl HostCore {
 
     #[must_use]
     pub fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)> {
+        self.burn(FUEL_HOST_CALL);
         if self.is_compute() {
             return Vec::new();
         }
@@ -574,6 +644,7 @@ impl HostCore {
 
     #[must_use]
     pub fn in_team(&self, account: &str, team: &str) -> bool {
+        self.burn(FUEL_HOST_CALL);
         !self.is_compute() && self.dir.in_team(account, team)
     }
 
@@ -769,6 +840,10 @@ impl HostCore {
         if !self.is_logged_write() {
             return Err(self.denied("emit"));
         }
+        self.burn_call(
+            FUEL_HOST_CALL,
+            event.name.len().saturating_add(event.data.len()),
+        );
         if let Err(reason) = self.check_event(&event) {
             return Ok(Err(reason.to_owned()));
         }
@@ -847,6 +922,7 @@ impl HostCore {
         if !self.is_logged_write() {
             return Err(self.denied("xcall"));
         }
+        self.burn_call(FUEL_HOST_CALL, args.len());
         if self.xcalls.len() >= MAX_XCALLS {
             return Ok(Err(XCALL_TOO_MANY.to_owned()));
         }
@@ -888,7 +964,7 @@ impl HostCore {
             Err(e) => return Ok(Err(e)),
         };
         let key = self.next_sync_key(&host.key(), app, method, args);
-        Ok(bounded(host.call(app, method, args, &key)))
+        Ok(self.answered(args.len(), bounded(host.call(app, method, args, &key))))
     }
 
     /// Runs view `method` of `app` on its latest committed state and hands back its JSON
@@ -907,7 +983,7 @@ impl HostCore {
             Ok(host) => host,
             Err(e) => return Ok(Err(e)),
         };
-        Ok(bounded(host.view(app, method, args)))
+        Ok(self.answered(args.len(), bounded(host.view(app, method, args))))
     }
 
     /// Runs every request of `requests` at once (the node's [`XcallHost::batch`]) and
@@ -980,14 +1056,22 @@ impl HostCore {
                 key: key.as_deref(),
             })
             .collect();
+        let args: Vec<usize> = sent.iter().map(|x| x.args.len()).collect();
         let mut replies = host.batch(&sent).into_iter();
-        for answer in answers.iter_mut().filter(|a| a.is_none()) {
+        for (answer, args) in answers.iter_mut().filter(|a| a.is_none()).zip(args) {
             let reply = replies
                 .next()
                 .unwrap_or_else(|| Err("the node gave no answer to this xcall".to_owned()));
-            *answer = Some(bounded(reply));
+            *answer = Some(self.answered(args, bounded(reply)));
         }
         Ok(answers.into_iter().flatten().collect())
+    }
+
+    /// Charges a call that sent `args` bytes and got `answer` back, and hands it on.
+    fn answered(&self, args: usize, answer: Result<Vec<u8>, String>) -> Result<Vec<u8>, String> {
+        let back = answer.as_ref().map_or_else(String::len, Vec::len);
+        self.burn_call(FUEL_HOST_CALL, args.saturating_add(back));
+        answer
     }
 
     /// Whether this run may make a synchronous xcall of `kind`: calls in calls, timers and
@@ -1052,6 +1136,7 @@ impl HostCore {
     /// A blob's metadata (R8), if it is one of the app's blobs; `None` for any other id.
     /// Every kind but actions (which read through views) and migrations.
     pub fn blobs_info(&self, id: &str) -> Result<Option<BlobInfo>, HostDenied> {
+        self.burn(FUEL_HOST_CALL);
         self.may_use_blobs("blobs.info")?;
         let blob = parse_blob_id(id).and_then(|id| self.blobs.info(&id));
         Ok(blob.or_else(|| {
@@ -1068,6 +1153,7 @@ impl HostCore {
     /// range, a sealed file (only the app's code reads those), or a published blob outside a
     /// logged write, is refused: the WIT result has no error case.
     pub fn blobs_grant(&mut self, id: &str, ttl_seconds: u32) -> Result<String, HostDenied> {
+        self.burn(FUEL_HOST_CALL);
         self.may_use_blobs("blobs.grant")?;
         if ttl_seconds == 0 || ttl_seconds > MAX_GRANT_TTL_SECS {
             return Err(HostDenied::new("grant ttl out of range"));
@@ -1091,7 +1177,7 @@ impl HostCore {
     /// up to the state the view reads. A limit of 0 or past [`MAX_SEARCH_LIMIT`], and a
     /// query over [`MAX_SEARCH_QUERY_BYTES`], are the WIT result's error.
     pub fn search_query(
-        &self,
+        &mut self,
         query: &SearchQuery,
     ) -> Result<Result<SearchPage, String>, HostDenied> {
         if self.inv.kind != InvocationKind::View {
@@ -1105,7 +1191,24 @@ impl HostCore {
                 "a query is at most {MAX_SEARCH_QUERY_BYTES} bytes"
             )));
         }
-        Ok(self.search.query(query))
+        if self.searches >= MAX_SEARCHES_PER_RUN {
+            return Ok(Err(SEARCH_TOO_MANY.to_owned()));
+        }
+        self.searches += 1;
+        let page = self.search.query(query);
+        let mut fuel = FUEL_SEARCH_QUERY.saturating_add(per_byte(query.text.len()));
+        if let Ok(page) = &page {
+            let bytes = page.hits.iter().fold(0usize, |n, h| {
+                n.saturating_add(h.key.len())
+                    .saturating_add(h.snippet.len())
+            });
+            fuel = fuel
+                .saturating_add(FUEL_PER_SEARCH_MATCH.saturating_mul(page.total))
+                .saturating_add(FUEL_PER_SEARCH_HIT.saturating_mul(page.hits.len() as u64))
+                .saturating_add(FUEL_PER_SEARCH_BYTE.saturating_mul(bytes as u64));
+        }
+        self.burn(fuel);
+        Ok(page)
     }
 
     /// This action run's key (D17): actions only.
@@ -1120,7 +1223,8 @@ impl HostCore {
         args: &[u8],
     ) -> Result<Result<Vec<u8>, String>, HostDenied> {
         self.count_subcall()?;
-        Ok(self.action_host()?.view(method, args))
+        let answer = self.action_host()?.view(method, args);
+        Ok(self.answered(args.len(), answer))
     }
 
     /// Runs `method` as one logged call for the action, under the D27 key of this
@@ -1139,7 +1243,8 @@ impl HostCore {
             .or_insert(0);
         let key = subcall_key(&host.key(), method, args, *n);
         *n += 1;
-        Ok(host.call(method, args, &key))
+        let answer = host.call(method, args, &key);
+        Ok(self.answered(args.len(), answer))
     }
 
     /// Sends a run's outgoing HTTP request through the node's gate (S9, D76): actions,
@@ -1168,6 +1273,8 @@ impl HostCore {
         }
         self.http_requests += 1;
         let response = self.http.send(request);
+        let back = response.as_ref().map_or_else(String::len, |r| r.body.len());
+        self.burn_call(FUEL_HOST_CALL, request.body.len().saturating_add(back));
         if logged {
             self.http_log.push(HttpExchange::record(request, &response));
         }
@@ -1202,6 +1309,7 @@ impl HostCore {
     }
 
     pub fn random_fill(&mut self, buf: &mut [u8]) {
+        self.burn_call(FUEL_HOST_CALL, buf.len());
         self.rng.fill_bytes(buf);
     }
 

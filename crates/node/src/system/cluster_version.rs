@@ -214,10 +214,16 @@ pub enum Feature {
     /// `UndoUpgrade { release_installed }`: an undo goes back only to an installed release;
     /// an earlier release would apply one to a release uninstalled under a shared bundle.
     UndoToInstalledRelease,
+    /// Host work charged to fuel (C7, `calimero_app_host`'s fuel table): a run's host calls
+    /// pay a base and a per-byte or per-result cost out of its fuel. No entry changes shape:
+    /// only the leader runs and followers apply the diff, so the log replays alike either way.
+    /// It is gated so a call answers the same on every node through a rolling upgrade: below
+    /// it a node runs calls, views and actions without the charges, as an earlier release does.
+    HostFuel,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 48] = [
+pub const FEATURES: [Feature; 49] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -266,6 +272,7 @@ pub const FEATURES: [Feature; 48] = [
     Feature::UnclassifiedUpdates,
     Feature::OffersOnly,
     Feature::UndoToInstalledRelease,
+    Feature::HostFuel,
 ];
 
 impl Feature {
@@ -321,7 +328,15 @@ impl Feature {
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
             Self::OffersOnly => "offersOnly",
             Self::UndoToInstalledRelease => "undoToInstalledRelease",
+            Self::HostFuel => "hostFuel",
         }
+    }
+
+    /// Whether an entry carries it ([`SystemCmd::features`] names it). `HostFuel` is a rule
+    /// the node reads from the logged version when it runs an app, and no entry names it.
+    #[must_use]
+    pub const fn names_an_entry(self) -> bool {
+        !matches!(self, Self::HostFuel)
     }
 
     /// The first core release that applies it. The features of a release
@@ -372,7 +387,7 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
-            Self::OffersOnly | Self::UndoToInstalledRelease => "1.0.0-rc.36",
+            Self::OffersOnly | Self::UndoToInstalledRelease | Self::HostFuel => "1.0.0-rc.36",
         }
     }
 }
@@ -1225,6 +1240,7 @@ mod tests {
                 "outbound": ["https://api.example.com/"],
                 "secrets": { "API_KEY": { "hosts": ["api.example.com"] } },
             })),
+            Feature::HostFuel => unreachable!("no entry names hostFuel"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",
@@ -1472,7 +1488,7 @@ mod tests {
     #[test]
     fn a_feature_is_never_proposed_while_an_older_node_holds_the_log() {
         let mut nodes = cluster(&[RC16, RC16, RC14]);
-        for feature in FEATURES {
+        for feature in FEATURES.into_iter().filter(|f| f.names_an_entry()) {
             let cmd = uses(feature);
             let needs = cmd.features();
             assert!(needs.contains(&feature), "{feature:?}: {needs:?}");
@@ -1504,12 +1520,15 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES.iter().partition(|f| {
-            ![
-                RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
-            ]
-            .contains(&f.since())
-        });
+        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
+            .iter()
+            .filter(|f| f.names_an_entry())
+            .partition(|f| {
+                ![
+                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
+                ]
+                .contains(&f.since())
+            });
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -2035,6 +2054,20 @@ mod tests {
             let refused = check(Some(below), &invite_features(all_apps, capabilities)).unwrap_err();
             assert_eq!(refused.feature, feature);
         }
+    }
+
+    /// C7: host work is charged to fuel only from the logged cluster version that brings
+    /// `hostFuel` (`Node::charges_host_fuel`); a cluster on rc.35, or with none logged, runs
+    /// apps as rc.35 does. No entry names it.
+    #[test]
+    fn host_fuel_follows_the_logged_cluster_version() {
+        let mut state = crate::system::SystemState::default();
+        assert!(!state.cluster_brings(Feature::HostFuel));
+        state.cluster_version = Some(RC35.to_owned());
+        assert!(!state.cluster_brings(Feature::HostFuel));
+        state.cluster_version = Some(RC36.to_owned());
+        assert!(state.cluster_brings(Feature::HostFuel));
+        assert!(!Feature::HostFuel.names_an_entry());
     }
 
     #[test]

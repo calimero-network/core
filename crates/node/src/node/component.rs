@@ -958,7 +958,8 @@ impl Node {
                 let host = host
                     .with_blobs(blobs)
                     .with_files(files.clone())
-                    .with_logs(self.config.app_logs);
+                    .with_logs(self.config.app_logs)
+                    .with_host_fuel(self.charges_host_fuel());
                 let host = match extras.runs {
                     Some(runs) => host
                         .with_compute(prepared.abi.clone(), runs)
@@ -2486,6 +2487,7 @@ impl Node {
         };
         let (wasm, prepared, app) = (Arc::clone(&self.wasm), prepared.clone(), app_id.to_owned());
         let (keep_logs, method) = (self.config.app_logs, record.method.clone());
+        let host_fuel = self.charges_host_fuel();
         let ran = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
                 match HostCore::new(
@@ -2501,7 +2503,8 @@ impl Node {
                             host.with_action(runner)
                                 .with_http(http)
                                 .with_xcall_host(xcalls)
-                                .with_logs(keep_logs),
+                                .with_logs(keep_logs)
+                                .with_host_fuel(host_fuel),
                             budget,
                         );
                         print_app_logs(&app, InvocationKind::Action, &method, &out.logs);
@@ -2929,6 +2932,13 @@ impl Node {
     /// Whether a message's outbox row names the person its run served: from the logged
     /// cluster version that brings `Feature::Delegation` on, so every replica applies the
     /// row alike. Judged on the logged version alone (no round to the nodes).
+    /// Whether runs pay fuel for their host calls (C7): once the logged cluster version brings
+    /// [`crate::system::cluster_version::Feature::HostFuel`], so a call answers alike on every
+    /// node of a cluster mid-upgrade.
+    fn charges_host_fuel(&self) -> bool {
+        self.sys(|s| s.cluster_brings(crate::system::cluster_version::Feature::HostFuel))
+    }
+
     fn carries_person(&self) -> bool {
         self.sys(|s| {
             crate::system::cluster_version::check(

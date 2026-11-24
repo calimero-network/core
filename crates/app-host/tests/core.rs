@@ -1296,7 +1296,7 @@ fn query(limit: u32, text: &str) -> SearchQuery {
 #[test]
 fn only_views_search_and_queries_are_bounded() {
     let state = base(&[]);
-    let view = core_for(&state, &inv(InvocationKind::View)).with_search(Arc::new(OneHit));
+    let mut view = core_for(&state, &inv(InvocationKind::View)).with_search(Arc::new(OneHit));
     assert_eq!(
         view.search_query(&query(10, "eggs"))
             .unwrap()
@@ -1318,12 +1318,41 @@ fn only_views_search_and_queries_are_bounded() {
         InvocationKind::Init,
         InvocationKind::Action,
     ] {
-        let host = core_for(&state, &inv(kind)).with_search(Arc::new(OneHit));
+        let mut host = core_for(&state, &inv(kind)).with_search(Arc::new(OneHit));
         assert!(host.search_query(&query(10, "eggs")).is_err(), "{kind:?}");
     }
     // Without the node's index no table is searchable.
-    let bare = core_for(&state, &inv(InvocationKind::View));
+    let mut bare = core_for(&state, &inv(InvocationKind::View));
     assert!(bare.search_query(&query(10, "eggs")).unwrap().is_err());
+}
+
+/// C7: a run makes at most `MAX_SEARCHES_PER_RUN` searches, and each one owes fuel for the
+/// documents it matched and the hits it returned; a host without host fuel owes none.
+#[test]
+fn searches_are_capped_per_run_and_owe_fuel() {
+    let state = base(&[]);
+    let mut view = core_for(&state, &inv(InvocationKind::View)).with_search(Arc::new(OneHit));
+    for _ in 0..calimero_app_host::MAX_SEARCHES_PER_RUN {
+        assert!(view.search_query(&query(10, "eggs")).unwrap().is_ok());
+    }
+    assert_eq!(
+        view.search_query(&query(10, "eggs")).unwrap(),
+        Err(calimero_app_host::SEARCH_TOO_MANY.to_owned())
+    );
+    let owed = view.take_host_fuel();
+    assert!(
+        owed >= u64::from(calimero_app_host::MAX_SEARCHES_PER_RUN)
+            * (calimero_app_host::FUEL_SEARCH_QUERY + calimero_app_host::FUEL_PER_SEARCH_HIT),
+        "{owed}"
+    );
+    assert_eq!(view.take_host_fuel(), 0, "taken once");
+
+    let mut free = core_for(&state, &inv(InvocationKind::View))
+        .with_search(Arc::new(OneHit))
+        .with_host_fuel(false);
+    assert!(free.search_query(&query(10, "eggs")).unwrap().is_ok());
+    assert_eq!(free.storage_get(b"k"), Ok(None));
+    assert_eq!(free.take_host_fuel(), 0);
 }
 
 #[test]
