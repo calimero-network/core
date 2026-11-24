@@ -7195,10 +7195,15 @@ impl Machine for SystemMachine {
                 // joined on an older one). Skipping it would leave this node
                 // serving a state the others no longer have (a revoked key
                 // still working here), so the group stops on it instead.
+                // Named, never quoted: serde_json's words quote the entry (a name, an
+                // email), and the operator reads this line and the stop reason.
                 let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::System);
-                error!(index, error = %e, undecodable = n,
+                let named = crate::log_safe::serde(&e);
+                error!(index, error_kind = %named, undecodable = n,
                     "a system entry this node cannot decode: the system group stops here; run a release that reads it");
-                state.fail(format_args!("system entry {index} does not decode: {e}"));
+                state.fail(format_args!(
+                    "system entry {index} does not decode: {named}"
+                ));
                 err(&format!("malformed command: {e}"))
             }
         }

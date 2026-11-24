@@ -124,7 +124,7 @@ async fn verdict_of(
         }
         Ok(c) => c,
         Err(e) => {
-            warn!(app = %app_id, error = %e.message, "the upgrade was not classified");
+            warn!(app = %app_id, status = e.status, code = %e.code, "the upgrade was not classified");
             None
         }
     }
@@ -626,7 +626,7 @@ async fn run_upgrade(
         // is a passing failure, retried by the leader, not noted on the app.
         Err(e) if who.auto => return Err(e),
         Err(e) => {
-            warn!(app = %app_id, error = %e.message, "no restore point was taken; this upgrade cannot be undone");
+            warn!(app = %app_id, status = e.status, code = %e.code, "no restore point was taken; this upgrade cannot be undone");
             None
         }
     };
@@ -1883,7 +1883,7 @@ pub(crate) async fn update_view(
             }
             Ok(None) => {}
             Err(e) => {
-                warn!(app = %app.app_id, error = %e.message, "the available update was not classified")
+                warn!(app = %app.app_id, status = e.status, code = %e.code, "the available update was not classified")
             }
         }
     }

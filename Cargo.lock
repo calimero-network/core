@@ -944,6 +944,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "tracing-subscriber",
  "url",
  "wasmparser 0.263.0",
  "zeroize",
@@ -965,6 +966,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+ "tracing-subscriber",
  "url",
  "zeroize",
 ]

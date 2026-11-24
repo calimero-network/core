@@ -537,10 +537,7 @@ impl OutboundService {
         if !self.any_host && !self.hosts.contains(&host) {
             bail!("{host} is not a host this node's operator allows");
         }
-        let Some(under) = declared
-            .iter()
-            .find(|d| prefix(d).is_some_and(|p| covers(&p, &url)))
-        else {
+        let Some(under) = covering(declared, &url) else {
             bail!(
                 "{} is under no URL prefix this app's manifest declares under `outbound`",
                 request.url
@@ -681,18 +678,32 @@ impl OutboundHost for RunOutbound {
         let started = Instant::now();
         let request = OutboundRequest::try_from_slice(request)
             .map_err(|e| format!("a malformed outbound request: {e}"))?;
-        let prepared = match self.service.prepare(
-            &self.app,
-            &self.declared,
-            self.approval.as_ref(),
-            request,
-        ) {
-            Ok(prepared) => prepared,
-            Err(reason) => {
-                warn!(context = %self.context, package = %self.app.package, %reason, "outbound request refused");
-                return Err(reason.to_string());
-            }
-        };
+        // The host alone, for the log: the rest of the URL (its path and query) is the
+        // app's, and can carry a user's data or a token.
+        let host = reqwest::Url::parse(&request.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+        let prepared =
+            match self
+                .service
+                .prepare(&self.app, &self.declared, self.approval.as_ref(), request)
+            {
+                Ok(prepared) => prepared,
+                Err(reason) => {
+                    // The node's name for the refusal, never its words: they quote the
+                    // request (its URL, a header or secret name the guest wrote) and this
+                    // line ships to the operator's log. The guest gets the words.
+                    let reason = reason.to_string();
+                    warn!(
+                        context = %self.context,
+                        package = %self.app.package,
+                        host = host.as_deref().unwrap_or("-"),
+                        refusal = refusal_kind(&reason),
+                        "outbound request refused"
+                    );
+                    return Err(reason);
+                }
+            };
         let _before = self.sent.fetch_add(1, Ordering::Relaxed);
         let result = self.service.transport.send(&prepared);
         let (status, mut body) = match result {
@@ -716,7 +727,9 @@ impl OutboundHost for RunOutbound {
             context = %self.context,
             package = %self.app.package,
             host = %prepared.host,
-            path = %prepared.url.path(),
+            // The manifest's prefix that covers the URL, not its path: a path can
+            // name a user (`/users/{email}`), a prefix is what the app declared.
+            prefix = covering(&self.declared, &prepared.url).map_or("-", String::as_str),
             status,
             request_bytes = prepared.body.len(),
             response_bytes = body.len(),
@@ -906,6 +919,27 @@ fn run_blocking<T: Send>(future: impl core::future::Future<Output = T> + Send) -
 /// A declared prefix this node can match against: `https`, a DNS host, no
 /// credentials, query or fragment. `None` for anything else, which then
 /// covers nothing.
+/// The prefix in `declared` that covers `url`, if any.
+fn covering<'a>(declared: &'a BTreeSet<String>, url: &reqwest::Url) -> Option<&'a String> {
+    declared
+        .iter()
+        .find(|d| prefix(d).is_some_and(|p| covers(&p, url)))
+}
+
+/// A refusal as the node's log names it: the word an app matches on
+/// ([`OutboundRefusal::word`]) for an approval refusal, `Invalid` for any other
+/// (a URL, header, size or secret the app got wrong). The full reason goes
+/// to the guest only.
+///
+/// [`OutboundRefusal::word`]: calimero_primitives::outbound::OutboundRefusal::word
+#[must_use]
+pub fn refusal_kind(reason: &str) -> &'static str {
+    calimero_primitives::outbound::OutboundRefusal::of(reason).map_or(
+        "Invalid",
+        calimero_primitives::outbound::OutboundRefusal::word,
+    )
+}
+
 fn prefix(declared: &str) -> Option<reqwest::Url> {
     let url = reqwest::Url::parse(declared).ok()?;
     let usable = url.scheme() == "https"
@@ -1054,3 +1088,6 @@ mod tests;
 
 #[cfg(test)]
 mod transport_tests;
+
+#[cfg(test)]
+mod log_tests;

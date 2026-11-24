@@ -667,6 +667,18 @@ is its command line.
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again. A component's calls, timers and deliveries get the same gate
   (D76, "Component executor").
+- **Operator logs** (review finding F6): `merod run` logs at `info,openraft=warn` and
+  every line ships to the operator, so `info!`, `warn!` and `error!` carry what the
+  node names (ids, hosts, kinds, codes, counts, lengths), never an error's words where
+  they can quote input. `log_safe::serde` names a serde_json error by category and
+  position (its words quote the entry), `log_safe::kind` an error by its `ApiError`
+  code, JSON, io or HTTP kind; an `ApiError` is logged as `status`/`code`, never
+  `message`. `StateTx::fail` reasons end up in the group's stop reason and three log
+  lines, so a decode failure passes `log_safe::serde`, not `{e}`. The words go to
+  the caller's answer or `debug!`. `scripts/check-no-user-data-at-info.py` enforces
+  it, `scripts/check-no-user-data-at-info.allow` lists lines whose text is the node's
+  own. Regressions: `component::tests::an_entry_that_does_not_decode_is_logged_without_its_contents`,
+  `log_safe::tests`, calimero-outbound's `log_tests`.
 - **Files** (`files.rs`, `files/seal.rs`, `files/wrap.rs`): a file is 64 KiB AES-256-GCM STREAM chunks
   (`FileSealer`, `FileOpener`) under a random data key.
   The nonce is 4 zero bytes then the big-endian chunk index; the AAD is `calimero.file.v1` then a last-chunk flag byte.

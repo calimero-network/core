@@ -30,6 +30,11 @@ deployment managers'; `calimero_node::component::run_secrets`) wins over the
 operator's for that name, still only to its declared hosts. The echo answers each
 filled-in value's length (`secretBytes`), never a value.
 
+What it logs (every line reaches the operator): a refusal as `refusal_kind`
+(`NotApproved`, `AwaitingApproval`, `Invalid`) with the URL's host, a sent request
+with the declared prefix that covers it, never the URL's path, query, body or a
+name the guest wrote; the guest gets the refusal's words (`log_tests`).
+
 - `OutboundService::from_settings` → `for_run(app, declared, approval, context)`;
   `for_run_counted(.., sent)` also counts each request handed to the transport
   (the node's `calimero_app_outbound_requests_total`).
