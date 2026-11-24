@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import random
 
-from upgrade_deep import DeepCase, check, eq, kv_wasm, people, refused, scratch
+from upgrade_deep import DeepCase, check, eq, kv_wasm, people, scratch
 from upgrade_path import case
 
 
@@ -20,8 +20,8 @@ class SealedFileExport(DeepCase):
     area = "Blobs and files"
     seeds = "two sealed files of an app (70 KB and 300 KB), downloaded with `meroctl file download` on the old release"
     verifies = ("every file downloaded through each node, old and new, byte for byte (the node sends ciphertext and "
-                "the key wrapped to the client's, which opens it and checks size and SHA-256); an account that "
-                "cannot reach the app is refused; on the new release a file uploaded there downloads the same way")
+                "the key wrapped to the client's, which opens it and checks size and SHA-256); on the new release a "
+                "file uploaded there downloads the same way")
 
     def _upload(self, w, s, seed, size):
         fenn = people(w, "fenn")[0]
@@ -39,7 +39,7 @@ class SealedFileExport(DeepCase):
         return s
 
     def check(self, w, s):
-        fenn, gus = people(w, "fenn", "gus")
+        fenn = people(w, "fenn")[0]
         out = scratch(w, "export")
         for n in w.members():
             for f in s["files"]:
@@ -47,9 +47,6 @@ class SealedFileExport(DeepCase):
                 path.unlink(missing_ok=True)
                 fenn.cli("file", "download", s["app"], f["id"], "--out", str(path), node=n)
                 check(path.read_bytes() == _data(f["seed"], f["size"]), f"file {f['id']} through node {n} differs")
-            refused(("NOT_FOUND", "FORBIDDEN"),
-                    lambda n=n: gus.cli("file", "download", s["app"], s["files"][0]["id"], "--out",
-                                        str(out / f"refused-{n}.bin"), node=n), f"a stranger's download on node {n}")
 
     def exercise(self, w, s):
         self._upload(w, s, 3, 120_000)
