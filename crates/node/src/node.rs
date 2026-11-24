@@ -196,6 +196,11 @@ pub struct Config {
     /// (`/packages/install`), so any node that lacks one fetches it there again
     /// and no release lives only on the nodes it was uploaded to.
     pub allow_package_uploads: bool,
+    /// Print each app run's log lines (`log`, stdout, stderr) to this node's own log
+    /// (`--dev`). An app's lines may hold user data, which neither Calimero nor the
+    /// operator may see, so a production node never collects them at all: off, the host
+    /// drops every line as the app writes it.
+    pub app_logs: bool,
     /// The domain app frontends are served under (`--apps-domain`): a
     /// package's at `{label}.{apps_domain}` (`app_host`). `None`: not served.
     pub apps_domain: Option<String>,

@@ -7,6 +7,7 @@ component on its own, the way a job node would. (It was the `mero-compute` binar
 
 `meroctl local compute run` loads `compute.wasm`, runs one `#[app::compute]` method on the compute engine a job node uses, and prints the result.
 It uses the method's declared fuel and memory caps, the fixed clock and the seeded randomness of a real run, and no network.
+The module's log lines (stdout, stderr and `log`) are printed on stderr as `log: <line>`, a failed run's included: no cluster keeps them, so this is where they are read.
 Inputs are plain files and outputs are written as plain files, so no cluster, app or sealed file is needed.
 
 It does not build anything.

@@ -28,7 +28,7 @@ error the guest's host call returns.
 | Writes per run | 10 000 | `MAX_WRITES` |
 | Range reads | 1000 entries and 4 MiB (past the first entry) per batch; 1024 open cursors | `MAX_RANGE_BATCH`, `MAX_RANGE_BATCH_BYTES`, `MAX_OPEN_CURSORS` |
 | Events | 1000 per run; name 100 bytes; data 16 KiB; 1000 accounts in an audience | `MAX_EVENTS`, `MAX_EVENT_NAME_BYTES`, `MAX_EVENT_DATA_BYTES`, `MAX_AUDIENCE_ACCOUNTS` |
-| App log | 64 KiB per run; later lines dropped | `MAX_LOG_BYTES` |
+| App log | 64 KiB per run; later lines dropped; never kept by the node | `MAX_LOG_BYTES` |
 | Xcalls (outbox) | 100 per run; app id or method 128 bytes | `MAX_XCALLS`, `MAX_XCALL_NAME_BYTES` |
 | Synchronous xcalls | 16 per run; arguments 512 KiB; result 1 MiB | `MAX_SYNC_XCALLS`, `MAX_SYNC_XCALL_ARGS_BYTES`, `MAX_SYNC_XCALL_RESULT_BYTES` |
 | Actions | 100 started per call or timer; 1000 `ctx.view` and `ctx.call` per action run | `MAX_STARTED_ACTIONS`, `MAX_ACTION_SUBCALLS` |

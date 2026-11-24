@@ -80,7 +80,8 @@ pub enum ComputeCmd {
     /// An instance's pipelines: validate, estimate, run, follow, receipts, outputs.
     #[command(subcommand)]
     Pipeline(crate::pipeline::PipelineCmd),
-    /// A compute run's module log (stdout, stderr and `log` lines).
+    /// A compute run's module log (stdout, stderr and `log` lines), where an earlier release
+    /// kept one: a current cluster keeps none (`meroctl local compute run` shows them).
     Logs {
         /// The app instance (alias or id).
         app: String,
