@@ -22,3 +22,6 @@ syn = { workspace = true, features = ["full"] }
 # The core workspace can unify `preserve_order` into serde_json (dcap-qvl); the unit tests
 # turn it on so the ABI must be sorted whatever the build graph.
 serde_json = { workspace = true, features = ["preserve_order"] }
+
+[lints]
+workspace = true

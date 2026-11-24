@@ -267,6 +267,11 @@ async fn internal_raft(
             ));
         }
     }
+    // A test holding this node's system replica back while its app groups go on.
+    #[cfg(feature = "testing")]
+    if body.group == crate::node::SYSTEM_GROUP && node.system_log_held() {
+        return Err(ApiError::unavailable("the system log is held by a test"));
+    }
     let r = node.engine.handle_rpc(body.group, body.rpc).await;
     Ok(Json(serde_json::to_value(r).unwrap_or_default()))
 }
