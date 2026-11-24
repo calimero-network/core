@@ -3,6 +3,11 @@
 //! `minIndex` and hide titles), spec `docs/specs/app-runtime-v0.14.md` section 12.
 //! A4 (the fault test) runs against real processes: `tests/fault/rooms_fault.py`.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod common;
 
 use std::collections::{BTreeMap, HashMap};

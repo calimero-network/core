@@ -1893,7 +1893,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/runs/{run}/logs
      * A compute run&#39;s attempt logs
-     * Each attempt&#39;s module log, as a sealed file of the app: &#x60;{ attempt, id, size, sha256 }&#x60;. Only for those who may handle the app&#39;s files; the bytes are a files export.  **Who:** signed in (a session or an API key).
+     * Deprecated: always &#x60;{ logs: [] }&#x60;. A run keeps no log, as an app&#39;s log lines (stdout, stderr, &#x60;log&#x60;) may hold user data, which neither Calimero nor the operator may see; a log a release up to 1.0.0-rc.35 kept is answered to no one, and the files export does not know it. Only for those who may handle the app&#39;s files. To read a compute method&#39;s log lines, run it locally (&#x60;meroctl local compute run&#x60;).  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
      * @return AppRunLogs200Response
@@ -1926,7 +1926,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/runs/{run}/logs
      * A compute run&#39;s attempt logs
-     * Each attempt&#39;s module log, as a sealed file of the app: &#x60;{ attempt, id, size, sha256 }&#x60;. Only for those who may handle the app&#39;s files; the bytes are a files export.  **Who:** signed in (a session or an API key).
+     * Deprecated: always &#x60;{ logs: [] }&#x60;. A run keeps no log, as an app&#39;s log lines (stdout, stderr, &#x60;log&#x60;) may hold user data, which neither Calimero nor the operator may see; a log a release up to 1.0.0-rc.35 kept is answered to no one, and the files export does not know it. Only for those who may handle the app&#39;s files. To read a compute method&#39;s log lines, run it locally (&#x60;meroctl local compute run&#x60;).  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
      * @return ApiResponse<AppRunLogs200Response?>

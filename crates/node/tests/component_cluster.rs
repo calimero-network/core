@@ -2,6 +2,11 @@
 //! sealed channels, with the real app components (`apps/fixture-*`, `apps/team-space`,
 //! built on first use by `common::component`).
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod common;
 
 use std::sync::Arc;
@@ -2567,6 +2572,120 @@ async fn removed_member_stops_receiving_org_events() {
         .unwrap();
     assert_eq!(data["text"], "two");
     let got = tokio::time::timeout(Duration::from_secs(2), bob_events.next()).await;
+    assert!(
+        !matches!(got, Ok(Some(_))),
+        "a removed member still received {got:?}"
+    );
+}
+
+/// The intermittent CI failure of `removed_member_stops_receiving_org_events`, made
+/// certain: the replica serving a removed member's event stream judged each event on its
+/// own system state, which an app event can overtake (the app's log and the system log are
+/// different logs). Here that replica's system log is held back while the removal commits
+/// on the other two and the app's next event reaches it: the event was made after the
+/// removal committed, so it must never reach the removed member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica() {
+    // A held replica must not campaign while it waits (it would not hear the leader).
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.raft.election_min_ms = 5_000;
+        cfg.raft.election_max_ms = 6_000;
+    })
+    .await;
+    let node = |i: usize| &c.nodes[i].as_ref().unwrap().node;
+    let leader = (0..3)
+        .find(|i| node(*i).system.status().is_leader)
+        .expect("a system leader");
+    let lagging = (0..3).find(|i| *i != leader).unwrap();
+    let other = (0..3).find(|i| *i != leader && *i != lagging).unwrap();
+    let (alice, mut a) = signed_up(&c, leader, "alice").await;
+    let (bob, _b) = signed_up(&c, lagging, "bob").await;
+    let (carol, _c) = signed_up(&c, other, "carol").await;
+    let s = |v: Value, k: &str| v[k].as_str().unwrap().to_owned();
+    let org = s(
+        alice
+            .orgs()
+            .create("Acme", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+        "orgId",
+    );
+    for member in [&bob, &carol] {
+        let token = s(
+            alice
+                .orgs()
+                .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut a))
+                .await
+                .map(wire)
+                .unwrap(),
+            "token",
+        );
+        let _r = member.orgs().invite_redeem(&token).await.unwrap();
+    }
+    let bob_id = s(bob.auth().me().await.map(wire).unwrap(), "accountId");
+    let bundle = alice
+        .packages()
+        .bundle_put(wasm("team-space"))
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "bundle": &bundle, "org": org }),
+        ))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+
+    // Bob's stream is served by the replica on his node; Carol's by another.
+    let mut bob_events = bob.events(&app, 0).await.unwrap();
+    let mut carol_events = carol.events(&app, 0).await.unwrap();
+    let _r = alice
+        .apps()
+        .call(&app, "announce", Some(json!({ "text": "one" })), None, None)
+        .await
+        .unwrap();
+    for stream in [&mut bob_events, &mut carol_events] {
+        let (_id, kind, data) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(kind, "Announced");
+        assert_eq!(data["text"], "one");
+    }
+
+    // Bob's replica stops applying the system log; the removal commits on the other two.
+    let held = node(lagging);
+    held.hold_system_log(true);
+    let _r = alice
+        .orgs()
+        .remove_member(&org, &bob_id, Some(&mut a))
+        .await
+        .map(wire)
+        .unwrap();
+    assert!(
+        held.sys(|s| s
+            .apps
+            .get(&app)
+            .is_some_and(|r| s.may_reach(r, Some(&bob_id)))),
+        "the held replica must still hold Bob's membership"
+    );
+    let _r = alice
+        .apps()
+        .call(&app, "announce", Some(json!({ "text": "two" })), None, None)
+        .await
+        .unwrap();
+    let (_id, _kind, data) = tokio::time::timeout(Duration::from_secs(5), carol_events.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(data["text"], "two");
+    // The event has reached Bob's replica by now; let it apply the system log a moment later.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    held.hold_system_log(false);
+    let got = tokio::time::timeout(Duration::from_secs(3), bob_events.next()).await;
     assert!(
         !matches!(got, Ok(Some(_))),
         "a removed member still received {got:?}"
@@ -5376,7 +5495,7 @@ fn mpk_full(
     tar.into_inner().unwrap().finish().unwrap()
 }
 
-/// Polls view `method` until `done` holds of its result (at most 10 s).
+/// Polls view `method` until `done` holds of its result.
 async fn eventually(
     cl: &Client,
     app: &str,
@@ -5384,15 +5503,16 @@ async fn eventually(
     args: Value,
     done: impl Fn(&Value) -> bool,
 ) -> Value {
-    let mut last = Value::Null;
-    for _ in 0..100 {
-        last = strong_view(cl, app, method, args.clone()).await;
-        if done(&last) {
-            return last;
+    let (args, done) = (&args, &done);
+    common::poll::eventually(common::poll::EVENTUALLY, method, move || async move {
+        let v = strong_view(cl, app, method, args.clone()).await;
+        if done(&v) {
+            Ok(v)
+        } else {
+            Err(v)
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("{method} never got there: {last}");
+    })
+    .await
 }
 
 /// D12, D17, D22, S9, R14: an action runs on the app's leader outside the log, reads
@@ -6408,6 +6528,7 @@ async fn a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it() {
         .sys_write(&SystemCmd::CreateApp {
             app: Box::new(member),
             unit_offer: None,
+            offers_only: false,
         })
         .await
         .unwrap();

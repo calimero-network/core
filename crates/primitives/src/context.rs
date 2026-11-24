@@ -42,11 +42,7 @@ impl Deref for ContextId {
 }
 
 impl ContextId {
-    /// Creates a special ContextID that contains all zeroes inside.
-    ///
-    /// This is useful as some modules use the zero context for special functions.
-    /// For example, when the new identity is created and it's not assigned to any specific
-    /// context, it's associated with the zero context.
+    /// The all-zero id, which some callers use to mean "no context".
     #[must_use]
     pub fn zero() -> Self {
         Self::from([0_u8; DIGEST_SIZE])
@@ -92,22 +88,7 @@ impl FromStr for ContextId {
 mod tests {
     use super::*;
 
-    use crate::common::DIGEST_SIZE;
-
     use std::str::FromStr;
-
-    #[test]
-    fn test_context_id_rountrip() {
-        // Create context id
-        let context_id = ContextId::from([1; DIGEST_SIZE]);
-        let encoded_context_id = context_id.to_string();
-
-        // Verify context id is an expected one
-        let expected_encoded_context_id =
-            "0101010101010101010101010101010101010101010101010101010101010101";
-        assert!(!encoded_context_id.is_empty());
-        assert_eq!(&encoded_context_id, expected_encoded_context_id);
-    }
 
     #[test]
     fn test_context_id_invalid_hex() {

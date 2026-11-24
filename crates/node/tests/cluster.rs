@@ -2,6 +2,11 @@
 //! sealed channels, with the kv fixture component (the cluster itself is in
 //! `harness/cluster.rs`, shared with `benches/cluster_throughput.rs`).
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -610,10 +615,9 @@ async fn eventually(
     args: Value,
     done: impl Fn(&Value) -> bool,
 ) -> Value {
-    let mut last = Value::Null;
-    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
-    while tokio::time::Instant::now() < deadline {
-        if let Ok(v) = cl
+    let (args, done) = (&args, &done);
+    harness::poll::eventually(EVENTUALLY_DEADLINE, method, move || async move {
+        match cl
             .apps()
             .view(
                 app,
@@ -624,14 +628,12 @@ async fn eventually(
             )
             .await
         {
-            if done(&v.result) {
-                return v.result;
-            }
-            last = v.result;
+            Ok(v) if done(&v.result) => Ok(v.result),
+            Ok(v) => Err(format!("last answer {}", v.result)),
+            Err(e) => Err(format!("last error {e}")),
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("{method} never got there; last answer {last}");
+    })
+    .await
 }
 
 /// A blob reaches the other nodes base64-encoded inside a sealed request
@@ -1947,27 +1949,29 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     let session = alice.session().await.unwrap();
     let on3 = c.client(2);
     on3.use_session(session).await;
-    let mut seen = None;
-    for _ in 0..100 {
-        if let Ok(v) = on3
-            .apps()
-            .view(
-                &app,
-                "get",
-                Some(json!({ "key": "k" })),
-                Some(ViewsRequestConsistency::Stale),
-                Some(0),
-            )
-            .await
-        {
-            seen = Some(v.result);
-            if seen == Some(json!("v1")) {
-                break;
+    harness::poll::eventually(
+        harness::poll::EVENTUALLY,
+        "node 3 caught up once approved",
+        || async {
+            let v = on3
+                .apps()
+                .view(
+                    &app,
+                    "get",
+                    Some(json!({ "key": "k" })),
+                    Some(ViewsRequestConsistency::Stale),
+                    Some(0),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            if v.result == json!("v1") {
+                Ok(())
+            } else {
+                Err(v.result.to_string())
             }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(seen, Some(json!("v1")), "node 3 caught up once approved");
+        },
+    )
+    .await;
 
     // Withdrawn again: node 3 is sent nothing new.
     let _ok = alice
@@ -4527,16 +4531,31 @@ async fn a_replica_move_onto_lower_id_nodes_never_forms_a_second_group() {
         .await;
         assert_eq!(v, json!(format!("v{i}")), "k{i}");
     }
-    // Every replica holds every key.
+    // Every replica holds every key. The move commits on nodes 3 and 1, so
+    // node 2 may still be catching up when it answers.
+    let want = c.nodes[2]
+        .as_ref()
+        .unwrap()
+        .node
+        .hosted(&app)
+        .unwrap()
+        .status()
+        .applied;
     for n in 0..3 {
-        let applied = c.nodes[n]
-            .as_ref()
-            .unwrap()
-            .node
-            .hosted(&app)
-            .unwrap()
-            .status();
-        assert_eq!(applied.voters, vec![1, 2, 3], "node {}: {applied:?}", n + 1);
+        let g = c.nodes[n].as_ref().unwrap().node.hosted(&app).unwrap();
+        let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
+        let mut st = g.status();
+        while (st.voters != [1, 2, 3] || st.applied < want)
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            st = g.status();
+        }
+        assert!(
+            st.voters == [1, 2, 3] && st.applied >= want,
+            "node {} never caught up to node 3's applied {want}: {st:?}",
+            n + 1
+        );
     }
     let replicas = alice.apps().get(&app).await.map(wire).unwrap()["replicas"].clone();
     assert_eq!(
