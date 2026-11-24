@@ -2028,6 +2028,13 @@ async fn app_egress(
         crate::egress::describe,
     );
     out["app"] = json!(app.app_id);
+    // The egress switch, over the destinations: off, none of them is reached.
+    let off = node.sys(|s| s.egress_off(&app));
+    out["egress"] = json!(if off.is_some() { "off" } else { "on" });
+    if let Some(by) = off {
+        out["offBy"] = json!(by.wire());
+        out["summary"] = json!(crate::egress::NO_EGRESS);
+    }
     Ok(Json(out))
 }
 
@@ -2035,7 +2042,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/apps/{app}/upgrade", post(app_upgrade))
         .route("/apps/{app}/update", get(app_update))
-        .route("/apps/{app}/egress", get(app_egress))
+        .route("/apps/{app}/egress", get(app_egress).post(app_set_egress))
         .route("/apps/{app}/upgrade-unit", post(app_upgrade_unit))
         .route("/orgs/{org}/upgrade", post(org_upgrade))
         .route("/orgs/{org}/upgrades/{run}", get(org_upgrade_status))

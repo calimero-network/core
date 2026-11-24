@@ -6,25 +6,25 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..models.consent_page_create_body_type_19_subject_policy_type_0_auto_apply import (
-    ConsentPageCreateBodyType19SubjectPolicyType0AutoApply,
+from ..models.consent_page_create_body_type_20_subject_policy_type_0_auto_apply import (
+    ConsentPageCreateBodyType20SubjectPolicyType0AutoApply,
 )
 from ..types import UNSET, Unset
 from typing import Union
 
-T = TypeVar("T", bound="ConsentPageCreateBodyType19SubjectPolicyType0")
+T = TypeVar("T", bound="ConsentPageCreateBodyType20SubjectPolicyType0")
 
 
 @_attrs_define
-class ConsentPageCreateBodyType19SubjectPolicyType0:
+class ConsentPageCreateBodyType20SubjectPolicyType0:
     """
     Attributes:
-        auto_apply (Union[Unset, ConsentPageCreateBodyType19SubjectPolicyType0AutoApply]):
+        auto_apply (Union[Unset, ConsentPageCreateBodyType20SubjectPolicyType0AutoApply]):
         hold_hours (Union[Unset, int]):
         second_approver (Union[Unset, bool]):
     """
 
-    auto_apply: Union[Unset, ConsentPageCreateBodyType19SubjectPolicyType0AutoApply] = (
+    auto_apply: Union[Unset, ConsentPageCreateBodyType20SubjectPolicyType0AutoApply] = (
         UNSET
     )
     hold_hours: Union[Unset, int] = UNSET
@@ -56,11 +56,11 @@ class ConsentPageCreateBodyType19SubjectPolicyType0:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
         _auto_apply = d.pop("autoApply", UNSET)
-        auto_apply: Union[Unset, ConsentPageCreateBodyType19SubjectPolicyType0AutoApply]
+        auto_apply: Union[Unset, ConsentPageCreateBodyType20SubjectPolicyType0AutoApply]
         if isinstance(_auto_apply, Unset):
             auto_apply = UNSET
         else:
-            auto_apply = ConsentPageCreateBodyType19SubjectPolicyType0AutoApply(
+            auto_apply = ConsentPageCreateBodyType20SubjectPolicyType0AutoApply(
                 _auto_apply
             )
 
@@ -68,14 +68,14 @@ class ConsentPageCreateBodyType19SubjectPolicyType0:
 
         second_approver = d.pop("secondApprover", UNSET)
 
-        consent_page_create_body_type_19_subject_policy_type_0 = cls(
+        consent_page_create_body_type_20_subject_policy_type_0 = cls(
             auto_apply=auto_apply,
             hold_hours=hold_hours,
             second_approver=second_approver,
         )
 
-        consent_page_create_body_type_19_subject_policy_type_0.additional_properties = d
-        return consent_page_create_body_type_19_subject_policy_type_0
+        consent_page_create_body_type_20_subject_policy_type_0.additional_properties = d
+        return consent_page_create_body_type_20_subject_policy_type_0
 
     @property
     def additional_keys(self) -> list[str]:

@@ -898,6 +898,7 @@ impl SystemCmd {
             | Self::RemovePackageOrigin { .. }
             | Self::DeleteDeployment { .. }
             | Self::SetOutboundApproval { .. }
+            | Self::SetEgress { .. }
             | Self::DeleteOrg { .. }
             | Self::SetOrgMetadata { .. }
             | Self::SetMemberMetadata { .. }

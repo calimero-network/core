@@ -56,6 +56,11 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
+    ("Governance", "The egress switch (`POST /orgs/{org}/egress`, `POST /apps/{app}/egress`; `Org::egress_off`, "
+     "`AppRecord::egress_off`, `SetEgress`)",
+     "it ships as a hard cutover: `SetEgress` is ungated and a node of an earlier release cannot decode it, so a "
+     "cluster is recreated rather than rolled, and no release before it has the switch to seed. "
+     "`tests/it/egress.rs` covers the switch, its refusals and the consent page on one build"),
     ("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
      "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
      "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
@@ -100,7 +105,7 @@ NOT_COVERED = [
     ("Accounts", ("Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the "
                   "organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, "
                   "`setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, "
-                  "`deleteOrg`, `setCapabilities`, `setAllApps`) and the page's verifier link"),
+                  "`deleteOrg`, `setCapabilities`, `setAllApps`, `setEgress`) and the page's verifier link"),
      "a consent request is approved in a browser on the node's consent page; the cluster test "
      "`consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as "
      "the API's route, which the organization and team cases cover; a `createOrg` asked from an app's "

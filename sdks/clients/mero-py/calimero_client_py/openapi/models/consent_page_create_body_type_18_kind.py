@@ -2,7 +2,7 @@ from enum import Enum
 
 
 class ConsentPageCreateBodyType18Kind(str, Enum):
-    INSTALL = "install"
+    SETEGRESS = "setEgress"
 
     def __str__(self) -> str:
         return str(self.value)
