@@ -811,6 +811,10 @@ pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a read of what an app holds waits for its leader to answer, an election included.
 pub const LEADER_ANSWER_WAIT: Duration = Duration::from_secs(5);
 
+/// How long [`Node::sys_caught_up`] waits before another read-index round when no system
+/// leader answered one.
+pub const SYS_FRESH_RETRY: Duration = Duration::from_millis(100);
+
 /// How long a system write may take, election and forwarding included, before
 /// it answers `503 UNAVAILABLE`. A system group that cannot commit (too few
 /// voters answering, or a membership change waiting on members that do not)
@@ -1587,6 +1591,25 @@ impl Node {
         match index {
             Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
             None => self.sys_fresh().await,
+        }
+    }
+
+    /// [`Node::sys_fresh`] that never goes ahead on its own: true only once this
+    /// replica applied the index of a round begun after the call, so its state holds
+    /// every system write committed before; a round no leader answers is tried again
+    /// every [`SYS_FRESH_RETRY`] until `Config::read_wait` has passed. For what is
+    /// judged with no request to answer, an event stream (`api::local_events`), which
+    /// ends rather than judge on a state a removal may postdate.
+    pub async fn sys_caught_up(&self) -> bool {
+        let deadline = tokio::time::Instant::now() + self.config.read_wait;
+        loop {
+            if let (Some(_), caught_up) = self.sys_fresh_index().await {
+                return caught_up;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(SYS_FRESH_RETRY).await;
         }
     }
 
