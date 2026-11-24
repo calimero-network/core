@@ -301,7 +301,7 @@ is its command line.
   could not reach another node as a blob. A component app's first-use prepare at run time
   (`Node::prepare_bytes`) stays outside the compiler, off the workers through `spawn_blocking`.
   Regression: `an_install_that_compiles_slowly_leaves_the_async_worker_free`
-  (`tests/slow_compile.rs`, `testing::slow_compiles`), `compile::tests`. The log keeps the
+  (`tests/it/slow_compile.rs`, `testing::slow_compiles`), `compile::tests`. The log keeps the
   `.mpk`'s hash; a node that runs a release it does not hold fetches it itself
   (`Node::release_wasm`: the registry for a registry release, never a peer; a peer
   for an upload), refuses bytes whose hash differs, and verifies them again.

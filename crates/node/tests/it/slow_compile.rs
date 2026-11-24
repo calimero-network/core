@@ -8,7 +8,7 @@
 //! ticking beside it. Told by order, not latency: while the install still
 //! compiles, the ticker must keep ticking.
 
-mod common;
+use crate::common;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;

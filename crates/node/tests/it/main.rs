@@ -63,6 +63,7 @@ mod sessions;
 mod shared_storage;
 mod sign_up;
 mod slow_backup;
+mod slow_compile;
 mod slow_disk;
 mod upgrade_keys;
 mod upgrade_replay;
