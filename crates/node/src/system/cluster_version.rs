@@ -224,10 +224,24 @@ pub enum Feature {
     /// so it is refused where its release would move the unit's members
     /// (`SystemState::moves_members`). An earlier release would apply it and leave them behind.
     AutoUpdateMembersStay,
+    /// Below admin, a team's row, a row's capabilities and a team's default are set only on a
+    /// team the actor sees, and grant only capabilities the actor holds organization-wide
+    /// (`set_team_row`, `SetCapabilities`, `SetDefaultCapabilities`), as an invite's are. No
+    /// entry changes shape: apply reads the logged version, so a log replays unchanged, and an
+    /// earlier release, which would apply what this one refuses, holds it below the version.
+    HeldTeamGrants,
+    /// An organization invite hands out only what its creator could still hand out when it is
+    /// redeemed: a creator no longer a member, below the invite's role, or no longer seeing a
+    /// team it names, gives nothing (`SystemState::redeem_org_invite`). No entry changes shape.
+    InviteCreatorStanding,
+    /// An organization's backup key is set only by those who approve its upgrades, its owner
+    /// and admins (`SystemState::may_set_backup_key`), as `OwnerApprovedUpgrades` made
+    /// upgrades theirs. No entry changes shape.
+    BackupKeyApprovers,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 50] = [
+pub const FEATURES: [Feature; 53] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -278,6 +292,9 @@ pub const FEATURES: [Feature; 50] = [
     Feature::UndoToInstalledRelease,
     Feature::HostFuel,
     Feature::AutoUpdateMembersStay,
+    Feature::HeldTeamGrants,
+    Feature::InviteCreatorStanding,
+    Feature::BackupKeyApprovers,
 ];
 
 impl Feature {
@@ -335,14 +352,25 @@ impl Feature {
             Self::UndoToInstalledRelease => "undoToInstalledRelease",
             Self::HostFuel => "hostFuel",
             Self::AutoUpdateMembersStay => "autoUpdateMembersStay",
+            Self::HeldTeamGrants => "heldTeamGrants",
+            Self::InviteCreatorStanding => "inviteCreatorStanding",
+            Self::BackupKeyApprovers => "backupKeyApprovers",
         }
     }
 
     /// Whether an entry carries it ([`SystemCmd::features`] names it). `HostFuel` is a rule
-    /// the node reads from the logged version when it runs an app, and no entry names it.
+    /// the node reads from the logged version when it runs an app, and `HeldTeamGrants`,
+    /// `InviteCreatorStanding` and `BackupKeyApprovers` rules apply reads from it: no entry
+    /// names them.
     #[must_use]
     pub const fn names_an_entry(self) -> bool {
-        !matches!(self, Self::HostFuel)
+        !matches!(
+            self,
+            Self::HostFuel
+                | Self::HeldTeamGrants
+                | Self::InviteCreatorStanding
+                | Self::BackupKeyApprovers
+        )
     }
 
     /// The first core release that applies it. The features of a release
@@ -397,6 +425,9 @@ impl Feature {
             | Self::UndoToInstalledRelease
             | Self::HostFuel
             | Self::AutoUpdateMembersStay => "1.0.0-rc.36",
+            Self::HeldTeamGrants | Self::InviteCreatorStanding | Self::BackupKeyApprovers => {
+                "1.0.0-rc.37"
+            }
         }
     }
 }
@@ -1258,7 +1289,10 @@ mod tests {
                 "outbound": ["https://api.example.com/"],
                 "secrets": { "API_KEY": { "hosts": ["api.example.com"] } },
             })),
-            Feature::HostFuel => unreachable!("no entry names hostFuel"),
+            Feature::HostFuel
+            | Feature::HeldTeamGrants
+            | Feature::InviteCreatorStanding
+            | Feature::BackupKeyApprovers => unreachable!("no entry names {feature:?}"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",

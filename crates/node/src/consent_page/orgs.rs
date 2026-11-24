@@ -709,7 +709,8 @@ fn set_teams(
     }
     let (o, _role) = org_for(s, &org, actor)?;
     o.role(&account).ok_or_else(not_a_member)?;
-    crate::system::judge_team_rows(&o, &account, &teams, actor)
+    let held = s.cluster_brings(crate::system::cluster_version::Feature::HeldTeamGrants);
+    crate::system::judge_team_rows(&o, &account, &teams, actor, held)
         .map_err(|e| refusal(e, "BAD_TEAMS"))?;
     let name = o.name.clone();
     let who = person(s, &o, actor, &account);

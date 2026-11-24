@@ -1024,6 +1024,10 @@ pub fn rejected(reason: &str) -> ApiError {
         cannot_grant_unheld()
     } else if reason == crate::system::UNKNOWN_CAPABILITIES {
         unknown_capabilities()
+    } else if reason == crate::system::TEAM_NOT_SEEN
+        || reason == crate::system::INVITE_CREATOR_LACKS
+    {
+        ApiError::forbidden(reason)
     } else if reason == crate::system::UNDECLARED_SECRET {
         undeclared_secret()
     } else if reason == crate::system::OUTSIDE_DEPLOYMENT {
