@@ -2,6 +2,11 @@
 //! the real node's receipt key, wraps keys with the files crypto and checks the signed reports.
 //! The input is a real sealed file of the `files` fixture; the runs are the `compute` fixture's.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod common;
 
 use std::sync::Mutex;

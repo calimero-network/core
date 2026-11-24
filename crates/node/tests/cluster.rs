@@ -2,6 +2,11 @@
 //! sealed channels, with the kv fixture component (the cluster itself is in
 //! `harness/cluster.rs`, shared with `benches/cluster_throughput.rs`).
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

@@ -5,6 +5,11 @@
 //! directory, let it run on, stop it, put the copy back, start it again.
 //! `MemoryCounter` stands in for mero-kms: it outlives the node's restarts.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;

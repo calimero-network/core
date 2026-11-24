@@ -1,6 +1,10 @@
 //! The test harness on the sample guest: the real component on the real engine.
 
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

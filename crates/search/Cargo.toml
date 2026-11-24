@@ -21,3 +21,5 @@ calimero-primitives = { workspace = true, features = ["borsh"] }
 
 [dev-dependencies]
 
+[lints]
+workspace = true
