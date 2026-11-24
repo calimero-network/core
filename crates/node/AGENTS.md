@@ -707,7 +707,8 @@ is its command line.
   quote block its thread).
 - **Access is judged fresh**: every request carrying a credential, every gated request, an anonymous
   `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
-  (a read index), so a removal committed elsewhere holds before the next request. Regression:
+  (a read index), so a removal committed elsewhere holds before the next request; an event
+  stream judges each event the same way (Events below). Regression:
   `a_revocation_holds_on_a_follower_that_has_not_applied_it_yet`.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
@@ -2278,7 +2279,17 @@ API and system group:
 - **Events** (R9): a component's `EventRecord` carries its `audience` and caller;
   the event stream (`api::local_events`, the subscriber passed to a peer's
   `internal/events`) and a call's answer check `SystemState::receives` when they
-  send it, so a removed member stops receiving at once.
+  send it, so a removed member stops receiving at once. The stream judges each
+  event on fresh system state, not the replica's own: the app's log and the system
+  log are different logs, so an event made after a removal committed can reach a
+  replica that has not applied it. A read-index round begun once the event is here,
+  applied here (`Node::sys_caught_up`), covers the backlog, then each batch of live
+  events that arrived together (`api::MAX_EVENT_BATCH`); a replica that cannot catch
+  up in `Config::read_wait` (or reach a system leader in that time) ends the stream,
+  and the subscriber resumes from its last id, judged afresh. Regressions:
+  `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`
+  (`testing`: `Node::hold_system_log` makes a node refuse the system group's Raft
+  messages while its app groups go on), `removed_member_stops_receiving_org_events`.
 - **Usage** (Q20, `component::RunUsage`, `DayUsage`): each `componentInit`,
   `componentCall` and `componentTick` outcome carries `usage { fuel, wallMs, writes,
   bytesWritten, events }`, measured by the leader (`Outcome::from_host`; a `HostDenied`
