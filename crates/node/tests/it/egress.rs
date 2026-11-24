@@ -131,6 +131,10 @@ async fn enrich(cl: &Client, app: &str, key: &str) -> Result<String, String> {
 }
 
 /// `POST path` with `body`, its passkey step-up answered with `pk` when given.
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error, passed through for the test to read its code"
+)]
 async fn post(
     cl: &Client,
     path: &str,
