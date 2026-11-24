@@ -3,6 +3,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Bound;
 use std::sync::{Mutex, PoisonError};
+use std::thread::{Builder, JoinHandle};
 
 use calimero_primitives::search::{
     SearchDoc, SearchFieldKind, SearchFilter, SearchHit, SearchIndexSchema, SearchMode,
@@ -209,6 +210,9 @@ pub struct ContextIndex {
     fields: Fields,
     reader: IndexReader,
     writer: Mutex<Option<IndexWriter<TantivyDocument>>>,
+    /// A writer [`ContextIndex::release_writer`] let go of, finishing its merges on a
+    /// thread of its own; locked only under `writer`.
+    closing: Mutex<Option<JoinHandle<EyreResult<()>>>>,
     committed: Mutex<(u64, [u8; 32])>,
 }
 
@@ -257,12 +261,15 @@ impl ContextIndex {
             fields,
             reader,
             writer: Mutex::new(None),
+            closing: Mutex::new(None),
             committed: Mutex::new((0, [0; 32])),
         };
         if state == OpenState::Created {
             // Record the schema right away, so the index can be reopened for a
-            // query before anything was ever written to it.
+            // query before anything was ever written to it. Opening leaves no
+            // writer open: the first write opens one.
             this.commit(0, [0; 32])?;
+            this.close_writer()?;
         } else if let Some(meta) = this.read_payload()? {
             *this
                 .committed
@@ -336,6 +343,8 @@ impl ContextIndex {
     ) -> EyreResult<T> {
         let mut guard = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
         if guard.is_none() {
+            // A released writer still holds the index's lock until its merges end.
+            self.finish_closing()?;
             let options = IndexWriterOptions::builder()
                 .memory_budget_per_thread(WRITER_MEMORY)
                 .num_worker_threads(1)
@@ -352,21 +361,52 @@ impl ContextIndex {
     /// # Errors
     /// A failure while waiting for its merges.
     pub fn close_writer(&self) -> EyreResult<()> {
-        let writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        if let Some(writer) = writer {
-            writer.wait_merging_threads()?;
-            // The merges just replaced segments the current searcher still
-            // holds; move it onto the merged ones so the old files can go.
-            self.reader.reload()?;
+        let mut guard = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        self.finish_closing()?;
+        if let Some(writer) = guard.take() {
+            close(writer, &self.reader)?;
         }
         Ok(())
     }
 
-    /// Whether a writer is open.
+    /// Let go of the writer without waiting for the merges its commits started: a
+    /// thread of its own finishes them, then the writer's threads and arena go. The
+    /// next write (or [`ContextIndex::close_writer`]) waits for that first, so at most
+    /// one writer of this index is open or closing at a time. Changes not committed
+    /// go with it.
+    ///
+    /// # Errors
+    /// No thread to close it on (it is dropped then, its merges abandoned).
+    pub fn release_writer(&self) -> EyreResult<()> {
+        // No writer is closing while one is open: `with_writer` waited for it.
+        let mut guard = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(writer) = guard.take() else {
+            return Ok(());
+        };
+        let reader = self.reader.clone();
+        let handle = Builder::new()
+            .name("search-writer-close".to_owned())
+            .spawn(move || close(writer, &reader))?;
+        *self.closing.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
+        Ok(())
+    }
+
+    /// Wait for a released writer to finish closing. Called under `writer`.
+    fn finish_closing(&self) -> EyreResult<()> {
+        let handle = self
+            .closing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        match handle {
+            Some(handle) => handle
+                .join()
+                .map_err(|_| eyre!("closing a search writer panicked"))?,
+            None => Ok(()),
+        }
+    }
+
+    /// Whether a writer is open (a released one still closing is not).
     #[must_use]
     pub fn has_writer(&self) -> bool {
         self.writer
@@ -722,6 +762,22 @@ impl ContextIndex {
 
 /// The words of `field` that start with `prefix`, across every segment, at
 /// most [`MAX_SNIPPET_COMPLETIONS`] of them.
+/// Wait for `writer`'s merges, then move `reader` onto the merged segments, so the
+/// files of the ones they replaced can go.
+fn close(writer: IndexWriter<TantivyDocument>, reader: &IndexReader) -> EyreResult<()> {
+    writer.wait_merging_threads()?;
+    reader.reload()?;
+    Ok(())
+}
+
+impl Drop for ContextIndex {
+    /// A released writer still closing holds the index's lock (a file, on disk):
+    /// wait for it, so an index opened again over the same directory can write.
+    fn drop(&mut self) {
+        let _closed = self.finish_closing();
+    }
+}
+
 fn completions(searcher: &Searcher, field: Field, prefix: &str) -> EyreResult<Vec<Term>> {
     let mut found = BTreeSet::new();
     for segment in searcher.segment_readers() {

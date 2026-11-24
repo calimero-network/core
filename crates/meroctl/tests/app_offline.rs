@@ -1,6 +1,11 @@
 //! `meroctl app` without a node: `pack` (the cases `pack-component.py`'s test
 //! held), `key`, `sign`, `inspect`. No network, no node.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;

@@ -5,6 +5,11 @@
 //! its Rust `uses` client (`kitchen-sink.uses.rs`, every method opened to apps).
 //! `UPDATE_GOLDEN=1 cargo test -p calimero-app-abi` rewrites them; review the diff.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

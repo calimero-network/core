@@ -52,6 +52,21 @@ members = [
     "./crates/search/bench",
 ]
 
+# CODING_STANDARDS.md, "Errors and panics": a panic point is reserved for an
+# invariant that cannot fail, stated beside it. `unwrap()` names no invariant, so
+# it is refused outside tests (clippy.toml lets a #[test] unwrap; an integration
+# test or bench allows it at its crate root). `expect()` is how an invariant is
+# written, with its `// SAFETY:` comment, so `expect_used` stays off: under CI's
+# `-D warnings` a warning is an error, and each stated invariant would carry an
+# allow repeating its comment. Every member opts in with `[lints] workspace = true`.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+
+# cargo-fuzz builds with `--cfg fuzzing` (calimero-bundle's fuzz-only paths); a
+# member cannot add its own lints beside `workspace = true`.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [workspace.dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.89"

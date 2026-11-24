@@ -1,0 +1,6 @@
+# Clippy reads the clippy.toml nearest a crate's manifest and no other, so a crate
+# with its own (crates/node/clippy.toml) repeats these settings.
+
+# A test may unwrap: its panic is its report (CODING_STANDARDS.md, "Errors and
+# panics"; the lint is in the root Cargo.toml's [workspace.lints]).
+allow-unwrap-in-tests = true
