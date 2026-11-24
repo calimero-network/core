@@ -350,6 +350,29 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
+    // Compiled components no app uses any more.
+    let (weak, stop) = (Arc::downgrade(&node), shutdown.clone());
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(crate::node::COMPONENT_CACHE_SWEEP_EVERY) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            match tokio::task::spawn_blocking(move || node.sweep_component_cache()).await {
+                Ok(swept) if swept.files > 0 => {
+                    info!(
+                        files = swept.files,
+                        bytes = swept.bytes,
+                        "compiled components swept"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => warn!(error = %e, "component cache sweep failed"),
+            }
+        }
+    }));
+
     // Restore points no upgrade names any more, or past their undo window.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();

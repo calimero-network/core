@@ -217,8 +217,12 @@ pub const UNDO_STALE: &str =
 /// restore points name (the instance and the members its unit's upgrade moved).
 pub const UNDO_NOT_AS_NAMED: &str =
     "UNDO_NOT_AS_NAMED: an undo reverts the instance and the members its upgrade moved, each seeded by the node that holds its restore point";
+/// The apply error for an undo to a release that is no longer installed (a bundle another
+/// release ships may remain, but the release itself and its frontend are gone).
+pub const UNDO_RELEASE_GONE: &str =
+    "UNDO_RELEASE_GONE: the release the app ran before is no longer installed";
 /// The apply errors a code prefixes (`CODE: why`), with the status the API answers.
-pub const UPDATE_REFUSALS: [(&str, u16); 12] = [
+pub const UPDATE_REFUSALS: [(&str, u16); 13] = [
     (BAD_UPGRADE_POLICY, 400),
     (SECOND_APPROVAL_REQUIRED, 409),
     (UPGRADE_CLASS_MISMATCH, 409),
@@ -231,6 +235,7 @@ pub const UPDATE_REFUSALS: [(&str, u16); 12] = [
     (UNDO_WINDOW_PASSED, 409),
     (UNDO_STALE, 409),
     (UNDO_NOT_AS_NAMED, 409),
+    (UNDO_RELEASE_GONE, 409),
 ];
 /// The apply error for a price table whose version is not the current one plus one.
 pub const PRICE_VERSION: &str = "PRICE_VERSION: the version must be the current one plus one";
@@ -3460,6 +3465,14 @@ impl SystemState {
         flagged || self.cluster_brings(cluster_version::Feature::OwnerApprovedUpgrades)
     }
 
+    /// Whether an update on its own is refused where it would move the unit's members
+    /// ([`cluster_version::Feature::AutoUpdateMembersStay`]): an entry that says so, or the
+    /// logged cluster version.
+    #[must_use]
+    pub fn members_stay(&self, flagged: bool) -> bool {
+        flagged || self.cluster_brings(cluster_version::Feature::AutoUpdateMembersStay)
+    }
+
     /// [`Self::may_upgrade`], with the owner judged as the release that
     /// logged the command did ([`OwnerRule`]).
     #[must_use]
@@ -5699,6 +5712,13 @@ pub enum SystemCmd {
         /// ([`SystemState::auto_update_gate`]). [`cluster_version::Feature::AutoUpdates`].
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         auto: bool,
+        /// An update on its own leaves the unit's members where they are, so it is refused
+        /// where its release would move them ([`SystemState::moves_members`]). Set with
+        /// `auto` once every node reads it ([`cluster_version::Feature::AutoUpdateMembersStay`]);
+        /// absent in an earlier entry, which replays as it applied unless the logged cluster
+        /// version brings the rule.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        members_stay: bool,
         /// The restore point taken just before the upgrade ran
         /// ([`crate::types::TakenRestorePoint`]): recorded as the app's
         /// `restore_point`, which its owner or an admin may undo for
@@ -5762,6 +5782,10 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// The release it returns to must still be installed ([`SystemState::undo_release_installed`]);
+        /// set once every node reads it ([`cluster_version::Feature::UndoToInstalledRelease`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        release_installed: bool,
     },
     TransferApp {
         app_id: AppId,

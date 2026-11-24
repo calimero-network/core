@@ -25,7 +25,7 @@ import {
   type HttpMethod,
 } from '../runtime/transport.js';
 import { type NodePolicy, type NodeVerification } from '../runtime/attestation.js';
-import { DEFAULT_DIRECTORY } from '../runtime/directory.js';
+import { CLOUD_ENVIRONMENTS, cloudEnvironment, type CloudEnvironment } from '../runtime/directory.js';
 import { CalimeroError, LoginRequired, NotFound, OriginNotRegistered, UnavailableError, WrongRecoveryCode } from '../runtime/errors.js';
 import { b64url, fromB64url, type PasskeyProvider } from '../runtime/passkey.js';
 import { createRouteClient, type RouteClientOptions } from '../routes/route-client.js';
@@ -183,6 +183,10 @@ export function deployerKey(deployer: Deployer): string {
  */
 export interface FrontendManifest {
   package: string;
+  /** The cluster that served the page (merod's `--cluster`); absent from nodes older than the release that added it. */
+  cluster?: string;
+  /** On a deployment's own host, that deployment's id; `null` on the package's host. */
+  deployment?: string | null;
   versions: string[];
   deployments: Array<{ id: string; name: string; app: string; version: string }>;
   api: string[];
@@ -215,6 +219,15 @@ export function pageDeployment(href?: string): string | null {
   if (!at) return null;
   try {
     return new URL(at).searchParams.get('deployment') || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The hostname of `origin`, or `null` when it is not a URL. */
+function safeHostname(origin: string): string | null {
+  try {
+    return new URL(origin).hostname;
   } catch {
     return null;
   }
@@ -315,8 +328,13 @@ export interface CalimeroConnectOptions {
   cluster: string;
   /** What every node must attest to before anything is sent to it. */
   policy: NodePolicy;
-  /** The node directory to ask. Default {@link DEFAULT_DIRECTORY}. */
+  /**
+   * The node directory to ask. Default: `environment`'s
+   * ({@link CLOUD_ENVIRONMENTS}), which is {@link DEFAULT_DIRECTORY} for production.
+   */
   directory?: string;
+  /** Which Calimero Cloud the cluster is in, when `directory` is not given. Default `production`. */
+  environment?: CloudEnvironment;
   /** Try the nodes in this zone (e.g. `europe-west4-a`) first. */
   zone?: string;
   /** Fetch for the directory, attestation and envelopes. Defaults to global `fetch`. */
@@ -325,6 +343,48 @@ export interface CalimeroConnectOptions {
   retry?: RetryOptions;
   /** Randomness for the weighted node order, in [0, 1). Defaults to `Math.random`. */
   random?: () => number;
+}
+
+/**
+ * Where {@link CalimeroClient.connectHere} connects when the page was not
+ * served by a cluster (Vercel, `localhost`, a native shell, Node): a cluster
+ * by name, through its environment's directory, or fixed nodes.
+ */
+export type ConnectFallback =
+  | Pick<CalimeroConnectOptions, 'cluster' | 'directory' | 'environment' | 'zone'>
+  | Pick<CalimeroClientOptions, 'baseUrl' | 'nodes'>;
+
+/** How {@link CalimeroClient.connectHere} finds the cluster the app runs on. */
+export interface ConnectHereOptions {
+  /**
+   * What every node must attest to before anything is sent to it. It is the
+   * app's own, never taken from where the page runs: choose it from your build
+   * or from {@link cloudEnvironment}, the browser-checked hostname.
+   */
+  policy: NodePolicy;
+  /** Where to connect when the page's origin serves no frontend manifest. Without it that throws. */
+  fallback?: ConnectFallback;
+  /** The page's origin, whose `/.well-known/calimero.json` is read. Default `location.origin`. */
+  origin?: string;
+  /** The page's URL, for its `?deployment=`. Default `location.href`. */
+  href?: string;
+  /** Fetch for the manifest, the directory, attestation and envelopes. Defaults to global `fetch`. */
+  fetch?: typeof fetch;
+  /** How calls and views retry a 503 or a failed connection. */
+  retry?: RetryOptions;
+  /** Randomness for a directory's weighted node order, in [0, 1). Defaults to `Math.random`. */
+  random?: () => number;
+}
+
+/** The manifest of the frontend at `origin`, or `null` when that origin serves none (or answers anything else). */
+async function servedManifest(origin: string, fetcher: typeof fetch): Promise<FrontendManifest | null> {
+  try {
+    const manifest = await frontendManifest(origin, fetcher);
+    const usable = Array.isArray(manifest.api) && manifest.api.length > 0 && manifest.api.every((u) => typeof u === 'string');
+    return usable ? manifest : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Bytes `start` to `end` of `data`, as a view or a slice: a `Blob` is never read whole. */
@@ -399,8 +459,83 @@ export class CalimeroClient {
    * first request once the directory's `refreshAfterSeconds` has passed.
    */
   static async connect(options: CalimeroConnectOptions, challenges: RouteClientOptions = {}): Promise<CalimeroClient> {
-    const transport = await directoryTransport({ ...options, directory: options.directory ?? DEFAULT_DIRECTORY });
-    return new CalimeroClient(transport, challenges);
+    const directory = options.directory ?? CLOUD_ENVIRONMENTS[options.environment ?? 'production'].directory;
+    const transport = await directoryTransport({ ...options, directory });
+    const client = new CalimeroClient(transport, challenges);
+    client.placement = { cluster: options.cluster, deployment: null };
+    return client;
+  }
+
+  /**
+   * A client for the cluster the app runs on, found without naming it:
+   *
+   * 1. A page a cluster serves (its package's host, a deployment's host or a
+   *    served custom domain, on any shared or dedicated cluster) reads its own
+   *    `/.well-known/calimero.json` and connects to the `api` nodes listed
+   *    there, with no directory. {@link cluster} is the one it names.
+   * 2. Anywhere else (Vercel, `localhost`, Node), `fallback`: a cluster by
+   *    name through its environment's directory, or fixed nodes.
+   *
+   * The manifest only says where the cluster is. Every node is attested under
+   * `policy` before anything is sent to it, so a wrong manifest can only make
+   * connecting fail. A page under a Calimero Cloud apps domain
+   * ({@link cloudEnvironment}) never falls back: when its manifest cannot be
+   * read, this throws.
+   *
+   * {@link deployment} is the deployment the page was opened for, from its
+   * `?deployment=` ({@link pageDeployment}) or its deployment host's manifest.
+   */
+  static async connectHere(options: ConnectHereOptions, challenges: RouteClientOptions = {}): Promise<CalimeroClient> {
+    const fetcher = options.fetch ?? ((input, init) => fetch(input, init));
+    const page = globalThis as { location?: { origin?: string; href?: string } };
+    const origin = options.origin ?? page.location?.origin;
+    const fromPage = pageDeployment(options.href);
+    const manifest = origin && /^https?:/.test(origin) ? await servedManifest(origin, fetcher) : null;
+    const { retry } = options;
+    if (manifest) {
+      const [baseUrl, ...nodes] = manifest.api;
+      const client = new CalimeroClient({ baseUrl, nodes, policy: options.policy, fetch: options.fetch, retry }, challenges);
+      client.placement = { cluster: manifest.cluster, deployment: fromPage ?? manifest.deployment ?? null };
+      return client;
+    }
+    const host = origin ? safeHostname(origin) : null;
+    if (host && cloudEnvironment(host)) {
+      throw new Error(`${origin} is a Calimero Cloud app host but served no usable /.well-known/calimero.json`);
+    }
+    const fallback = options.fallback;
+    if (!fallback) {
+      throw new Error(
+        `${origin ?? 'this runtime'} is not a page a cluster serves; pass \`fallback\` ({ cluster } or { baseUrl }) to connect from here`,
+      );
+    }
+    if ('baseUrl' in fallback) {
+      const client = new CalimeroClient({ ...fallback, policy: options.policy, fetch: options.fetch, retry }, challenges);
+      client.placement = { deployment: fromPage };
+      return client;
+    }
+    const client = await CalimeroClient.connect(
+      { ...fallback, policy: options.policy, fetch: options.fetch, retry, random: options.random },
+      challenges,
+    );
+    client.placement = { cluster: fallback.cluster, deployment: fromPage };
+    return client;
+  }
+
+  /** Where {@link connect} or {@link connectHere} found the cluster; empty for a client constructed directly. */
+  private placement: { cluster?: string; deployment: string | null } = { deployment: null };
+
+  /**
+   * The cluster's name, when known: the one {@link connect} was given, or the
+   * one a served page's manifest names ({@link connectHere}). For display and
+   * routing only; trust comes from attestation under the client's policy.
+   */
+  get cluster(): string | undefined {
+    return this.placement.cluster;
+  }
+
+  /** The deployment the page was opened for ({@link connectHere}), or `null`. */
+  get deployment(): string | null {
+    return this.placement.deployment;
   }
 
   /**

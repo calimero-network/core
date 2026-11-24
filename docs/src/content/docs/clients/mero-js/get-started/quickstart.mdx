@@ -39,6 +39,42 @@ under your `policy`, so a wrong list can only make connecting fail. For a fixed
 list of nodes, or a cluster you run yourself, give them directly:
 `new CalimeroClient({ baseUrl, nodes, policy })`.
 
+### Connect to the cluster that serves the page
+
+One frontend build often runs in several places: bundled in the app's `.mpk`
+and served by staging, by the shared `eu-shared-1` and by a customer's
+dedicated cluster, and also on Vercel for CI previews. `connectHere` finds the
+cluster without naming it:
+
+```ts
+import { CalimeroClient, cloudEnvironment } from '@calimero-network/mero-js';
+
+const client = await CalimeroClient.connectHere({
+  policy: {
+    release: { minReleaseVersion: '2.3.109' },
+    // Staging runs debug node images. Decided by the page's hostname, never by what a server says.
+    allowDebugProfile: cloudEnvironment() === 'staging',
+  },
+  // Only where no cluster serves the page (Vercel, localhost): values fixed at build time.
+  fallback: { cluster: 'staging-1', environment: 'staging' },
+});
+client.cluster;    // e.g. 'eu-shared-1': the cluster that served the page
+client.deployment; // the deployment the page was opened for, or null
+```
+
+- A page a cluster serves reads its own `/.well-known/calimero.json` and
+  connects to the nodes listed there. Shared, dedicated and staging clusters
+  all work with the same build.
+- Anywhere else it uses `fallback`: `{ cluster, environment? }` through that
+  Calimero Cloud's directory, or `{ baseUrl, nodes? }`. A page under a Calimero
+  Cloud apps domain never falls back.
+- The manifest only says where the nodes are; each is still attested under
+  your `policy`. `cloudEnvironment()` reads the page's hostname, which the
+  browser checked over TLS: `'production'`, `'staging'`, or `null` elsewhere.
+- A page on Vercel must be a registered origin of your package
+  (`client.packages.originsAdd`), at a stable address such as a branch alias:
+  each preview deploy gets a new URL.
+
 For a local development cluster (`meroctl local up`, or `merod run --dev`), whose
 nodes send mock quotes, allow them explicitly:
 

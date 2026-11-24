@@ -2184,8 +2184,18 @@ async fn upgrade_request(
         points.push(json!(destinations_point(c, !app.links.is_empty())));
         attention.extend(unit_attention(c, &sheet));
     }
-    let update = (!member_of_unit)
-        .then(|| updates::update_section(node, &app, unit.as_ref(), &step, (old, new), Vec::new()));
+    let members_move = node.sys(|s| s.members_stay(false) && s.moves_members(&app, &to_release));
+    let update = (!member_of_unit).then(|| {
+        updates::update_section(
+            node,
+            &app,
+            unit.as_ref(),
+            &step,
+            (old, new),
+            Vec::new(),
+            members_move,
+        )
+    });
     let mut model = json!({
         "kind": "upgrade",
         "update": update,
@@ -2364,6 +2374,7 @@ async fn unit_upgrade_request(
         &step,
         (&running.version, &version),
         moves,
+        node.sys(|s| s.members_stay(false) && s.moves_members(&plan.app, &to_release)),
     );
     let mut model = root.clone();
     if let Some(o) = model.as_object_mut() {

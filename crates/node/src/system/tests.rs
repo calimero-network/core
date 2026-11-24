@@ -374,6 +374,7 @@ fn manage_application_lets_a_member_upgrade_and_approve_outbound() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     for (app, actor, may) in [
@@ -486,6 +487,7 @@ fn check(g: &Governance) {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     let by_operator = m.run_authorized(upgrade(true, "")).is_ok();
@@ -758,6 +760,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     let e = m.run_unproven(upgrade("j1", None)).unwrap_err();
@@ -1042,6 +1045,7 @@ fn an_upgrade_names_its_consent_or_its_run() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     assert!(super::authorize(&m.state, &upgrade(serde_json::Value::Null, None)).is_err());
@@ -1167,6 +1171,7 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
 
@@ -6657,6 +6662,7 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     let install = |by: &str, version: &str, at: u64| SystemCmd::InstallPackage {
@@ -7121,6 +7127,7 @@ fn an_upgrade_keys_upgrade_holds_only_while_its_maker_may_upgrade() {
             owner_approves: false,
             class: None,
             auto: false,
+            members_stay: false,
             restore_point: None,
         }
     };
@@ -7226,6 +7233,7 @@ fn a_package_says_whether_its_publisher_or_each_owner_upgrades_it() {
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     };
     assert!(
@@ -7302,6 +7310,7 @@ fn upgrade_to(app: &str, actor: &str, bundle: &str, release: Option<(&str, &str)
         owner_approves: false,
         class: None,
         auto: false,
+        members_stay: false,
         restore_point: None,
     }
 }
@@ -12621,6 +12630,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
         actor: actor.into(),
         at,
         consent: Value::Null,
+        release_installed: false,
     };
     let within = hold_over + UNDO_WINDOW_SECS;
     assert_eq!(
@@ -12773,6 +12783,140 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     // A state from before restore points reads with none and writes as it did.
     let shown = serde_json::to_value(&m.state.apps["rawapp"]).unwrap();
     assert!(shown.get("restorePoint").is_none(), "{shown}");
+}
+
+/// An undo goes back only to a release that is still installed: a developer who
+/// uninstalls a release it no longer offers takes it from the customers' undo too, even
+/// where another release ships the same WASM and the bundle stays. An entry logged
+/// before the rule replays as it applied.
+#[test]
+fn an_undo_never_returns_to_a_release_that_is_no_longer_installed() {
+    use super::cluster_version::Feature;
+    use super::UNDO_RELEASE_GONE;
+    let moved_to_the_shared_wasm = || {
+        let mut m = auto_fixture();
+        let manual = |version: &str, taken| {
+            let mut cmd = classified_upgrade("cora", version, Some(green()), 50);
+            if let SystemCmd::UpgradeApp {
+                bundle,
+                restore_point,
+                ..
+            } = &mut cmd
+            {
+                *bundle = "b3".into();
+                *restore_point = taken;
+            }
+            cmd
+        };
+        let _ok = m
+            .run_unproven(manual("1.0.1", Some(taken_on(1, 3))))
+            .unwrap();
+        let _ok = m
+            .run_unproven(manual(
+                "1.0.2",
+                Some(crate::types::TakenRestorePoint::default()),
+            ))
+            .unwrap();
+        let _ok = m
+            .run_unproven(SystemCmd::UninstallPackage {
+                package: "p".into(),
+                version: Some("1.0.1".into()),
+                actor: "pam".into(),
+            })
+            .unwrap();
+        assert!(m.state.bundles.contains_key("b3"), "1.0.2 still ships it");
+        m
+    };
+    let undo = |release_installed: bool| SystemCmd::UndoUpgrade {
+        app_id: "inst".into(),
+        apps: serde_json::from_value(json!({ "inst": [] })).unwrap(),
+        actor: "cora".into(),
+        at: 60,
+        consent: Value::Null,
+        release_installed,
+    };
+    assert_eq!(
+        undo(true).features(),
+        [Feature::RestorePoints, Feature::UndoToInstalledRelease]
+    );
+    assert_eq!(undo(false).features(), [Feature::RestorePoints]);
+
+    let mut m = moved_to_the_shared_wasm();
+    assert_eq!(
+        m.run_unproven(undo(true)),
+        Err(UNDO_RELEASE_GONE.to_owned())
+    );
+    let a = &m.state.apps["inst"];
+    assert_eq!(
+        a.release.as_ref().unwrap().version,
+        "1.0.2",
+        "nothing moved"
+    );
+    assert!(a.restore_point.is_some(), "the restore point is kept");
+    // The logged cluster version brings the rule to an entry without the flag.
+    m.state.cluster_version = Some(Feature::UndoToInstalledRelease.since().to_owned());
+    assert_eq!(
+        m.run_unproven(undo(false)),
+        Err(UNDO_RELEASE_GONE.to_owned())
+    );
+    // An entry logged before it, with no flag, applied.
+    let mut m = moved_to_the_shared_wasm();
+    let _ok = m.run_unproven(undo(false)).unwrap();
+    assert_eq!(
+        m.state.apps["inst"].release.as_ref().unwrap().version,
+        "1.0.1"
+    );
+    // A seed sent again after the undo moved the app is not refused for a release uninstalled
+    // since: the app already runs it and waits for its restore.
+    let mut m = auto_fixture();
+    for (version, taken) in [("1.0.1", taken_on(1, 3)), ("1.0.2", taken_on(2, 7))] {
+        let mut up = classified_upgrade("cora", version, Some(green()), 50);
+        if let SystemCmd::UpgradeApp {
+            bundle,
+            restore_point,
+            ..
+        } = &mut up
+        {
+            *bundle = "b3".into();
+            *restore_point = Some(taken);
+        }
+        let _ok = m.run_unproven(up).unwrap();
+    }
+    let seeded = |release_installed| SystemCmd::UndoUpgrade {
+        app_id: "inst".into(),
+        apps: serde_json::from_value(json!({ "inst": [2, 1] })).unwrap(),
+        actor: "cora".into(),
+        at: 60,
+        consent: Value::Null,
+        release_installed,
+    };
+    let _ok = m.run_unproven(seeded(true)).unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some("1.0.1".into()),
+            actor: "pam".into(),
+        })
+        .unwrap();
+    let _ok = m.run_unproven(seeded(true)).unwrap();
+    // Installed, the release is undone to as ever, flagged or not.
+    let mut m = auto_fixture();
+    let mut up = classified_upgrade("cora", "1.0.1", Some(green()), 50);
+    if let SystemCmd::UpgradeApp {
+        bundle,
+        restore_point,
+        ..
+    } = &mut up
+    {
+        *bundle = "b3".into();
+        *restore_point = Some(crate::types::TakenRestorePoint::default());
+    }
+    let _ok = m.run_unproven(up).unwrap();
+    let _ok = m.run_unproven(undo(true)).unwrap();
+    assert_eq!(
+        m.state.apps["inst"].release.as_ref().unwrap().version,
+        "1.0.0"
+    );
 }
 
 /// An instance of a deployment applies its offer on its own once its hold has passed
@@ -13825,4 +13969,119 @@ fn a_deployment_from_before_transfers_reads_with_none_and_writes_as_before() {
     let d: super::Deployment = serde_json::from_value(before.clone()).unwrap();
     assert_eq!((d.transfer.clone(), d.transferred.clone()), (None, None));
     assert_eq!(serde_json::to_value(&d).unwrap(), before);
+}
+
+/// `inst` with a member `kv` of package `q` on 0.1.0, under the automatic policy:
+/// `p` 1.0.1's lock pins `kv` at 0.1.1 (it would move the member), 1.0.2's at 0.1.0.
+fn auto_unit_fixture() -> SystemMachine {
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    let mut q = m.state.packages["p"].clone();
+    q.name = "q".into();
+    q.versions.clear();
+    for version in ["0.1.0", "0.1.1"] {
+        let _prev = q.versions.insert(
+            version.into(),
+            serde_json::from_value(json!({
+                "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+                "services": { "": "bq" }, "installedBy": "pam", "installedAt": 0
+            }))
+            .unwrap(),
+        );
+    }
+    let _prev = m.state.packages.insert("q".into(), q);
+    instance_of(
+        &mut m,
+        "kv",
+        "bq",
+        json!({ "package": "q", "version": "0.1.0" }),
+    );
+    let _prev = m
+        .state
+        .apps
+        .get_mut("inst")
+        .unwrap()
+        .links
+        .insert("kv".into(), "kv".into());
+    let p = m.state.packages.get_mut("p").unwrap();
+    for (version, kv) in [("1.0.1", "0.1.1"), ("1.0.2", "0.1.0")] {
+        let _prev = p.versions.get_mut(version).unwrap().uses.insert(
+            "kv".into(),
+            super::ReleaseUse {
+                package: "q".into(),
+                range: "^0.1".into(),
+                version: Some(kv.into()),
+            },
+        );
+    }
+    m
+}
+
+/// An update on its own moves the instance alone, so it is refused where its release
+/// would move the unit's members: by an entry that says so (`members_stay`), or once the
+/// logged cluster version brings the rule. An entry logged before either applies as it did.
+#[test]
+fn an_update_on_its_own_that_would_move_the_units_members_is_refused() {
+    use super::cluster_version::Feature;
+    use super::AUTO_UPDATE_REFUSED;
+    let hold_over = 1000 + 24 * 3600;
+    let moving = |members_stay: bool| {
+        let mut cmd = auto_upgrade(
+            "1.0.1",
+            "b3",
+            Some(green()),
+            hold_over,
+            Some(taken_on(1, 7)),
+        );
+        if let SystemCmd::UpgradeApp {
+            members_stay: m, ..
+        } = &mut cmd
+        {
+            *m = members_stay;
+        }
+        cmd
+    };
+    assert!(moving(true)
+        .features()
+        .contains(&Feature::AutoUpdateMembersStay));
+
+    let mut m = auto_unit_fixture();
+    assert_eq!(m.run(moving(true)), Err(AUTO_UPDATE_REFUSED.to_owned()));
+    // Logged before the rule: applies as it did, and the member stays behind.
+    let mut before = auto_unit_fixture();
+    let _ok = before.run(moving(false)).unwrap();
+    assert_eq!(before.state.apps["inst"].bundle, "b3");
+    assert_eq!(
+        before.state.apps["kv"].release.as_ref().unwrap().version,
+        "0.1.0"
+    );
+
+    // The rule in force: the leader leaves 1.0.1 out, and an unmarked entry is refused too.
+    let versions = |m: &SystemMachine| -> Vec<String> {
+        m.state.auto_update_candidates(hold_over)[0]
+            .1
+            .iter()
+            .map(|r| r.version.clone())
+            .collect()
+    };
+    assert_eq!(versions(&m), ["1.0.2", "1.0.1"]);
+    m.state.cluster_version = Some(Feature::AutoUpdateMembersStay.since().into());
+    assert_eq!(versions(&m), ["1.0.2"]);
+    assert_eq!(m.run(moving(false)), Err(AUTO_UPDATE_REFUSED.to_owned()));
+    // A release whose lock keeps the member where it is still applies on its own.
+    let mut keeping = auto_upgrade(
+        "1.0.2",
+        "b3",
+        Some(green()),
+        hold_over,
+        Some(taken_on(1, 7)),
+    );
+    if let SystemCmd::UpgradeApp { members_stay, .. } = &mut keeping {
+        *members_stay = true;
+    }
+    let _ok = m.run(keeping).unwrap();
+    assert_eq!(
+        m.state.apps["inst"].release.as_ref().unwrap().version,
+        "1.0.2"
+    );
 }
