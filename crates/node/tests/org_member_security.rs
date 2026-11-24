@@ -8,6 +8,11 @@
 //! gone at once. A deployment's managers see only counts of its customer
 //! organizations' members (`tests/deployments.rs`).
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_client::types::OrgMembersDetail;
 use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;

@@ -196,6 +196,11 @@ pub struct Config {
     /// (`/packages/install`), so any node that lacks one fetches it there again
     /// and no release lives only on the nodes it was uploaded to.
     pub allow_package_uploads: bool,
+    /// Print each app run's log lines (`log`, stdout, stderr) to this node's own log
+    /// (`--dev`). An app's lines may hold user data, which neither Calimero nor the
+    /// operator may see, so a production node never collects them at all: off, the host
+    /// drops every line as the app writes it.
+    pub app_logs: bool,
     /// The domain app frontends are served under (`--apps-domain`): a
     /// package's at `{label}.{apps_domain}` (`app_host`). `None`: not served.
     pub apps_domain: Option<String>,
@@ -514,7 +519,7 @@ pub struct Node {
     /// `<data_dir>/components`, each with a MAC under a key derived from K_c (S8).
     wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepares a release's compute components at install; no run ever goes through it.
-    compute_wasm: calimero_app_engine_wasmtime::WasmtimeEngine,
+    compute_wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepared components per bundle hash.
     prepared: Mutex<HashMap<String, calimero_app_host::Prepared>>,
     /// One lock per bundle being prepared, so concurrent first uses wait for one
@@ -577,6 +582,9 @@ pub struct Node {
     /// Makes this node's quotes (`/attestation`, the recovery disk's), off the
     /// async workers and one at a time.
     pub(crate) quoter: crate::attest::Quoter,
+    /// Compiles the components installs and uploads hand this node, off the
+    /// async workers and one at a time (`compile`).
+    pub(crate) compiler: crate::compile::Compiler,
     peers: Mutex<HashMap<String, Arc<calimero_sealed::client::SealedTransport>>>,
     pub(crate) http: reqwest::Client,
     cluster_secret: String,
@@ -802,6 +810,10 @@ pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a read of what an app holds waits for its leader to answer, an election included.
 pub const LEADER_ANSWER_WAIT: Duration = Duration::from_secs(5);
+
+/// How long [`Node::sys_caught_up`] waits before another read-index round when no system
+/// leader answered one.
+pub const SYS_FRESH_RETRY: Duration = Duration::from_millis(100);
 
 /// How long a system write may take, election and forwarding included, before
 /// it answers `503 UNAVAILABLE`. A system group that cannot commit (too few
@@ -1067,7 +1079,7 @@ impl Node {
             config.data_dir.join("components"),
             &component::component_cache_key(&cluster_key),
         )?);
-        let compute_wasm = calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?;
+        let compute_wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?);
         let clock = Clock::new(config.clock_offset_ms);
         let quoter = crate::attest::Quoter::new(config.attestation);
         let http = crate::peer_tls::peer_client(&config.tls_extra_roots)
@@ -1075,6 +1087,9 @@ impl Node {
             .build()?;
         #[cfg(feature = "testing")]
         let quoter = quoter.for_node(&config.public_url);
+        let compiler = crate::compile::Compiler::default();
+        #[cfg(feature = "testing")]
+        let compiler = compiler.for_node(&config.public_url);
         let node = Arc::new(Self {
             cluster_secret: cluster_secret(&cluster_key, &config.cluster),
             cluster_key,
@@ -1116,6 +1131,7 @@ impl Node {
             receipt_key,
             recovery: recovery_disk::RecoveryWriter::default(),
             quoter,
+            compiler,
             peers: Mutex::new(HashMap::new()),
             http,
             challenges: Mutex::new(HashMap::new()),
@@ -1575,6 +1591,25 @@ impl Node {
         match index {
             Some(i) => self.system.wait_applied(i, self.config.read_wait).await,
             None => self.sys_fresh().await,
+        }
+    }
+
+    /// [`Node::sys_fresh`] that never goes ahead on its own: true only once this
+    /// replica applied the index of a round begun after the call, so its state holds
+    /// every system write committed before; a round no leader answers is tried again
+    /// every [`SYS_FRESH_RETRY`] until `Config::read_wait` has passed. For what is
+    /// judged with no request to answer, an event stream (`api::local_events`), which
+    /// ends rather than judge on a state a removal may postdate.
+    pub async fn sys_caught_up(&self) -> bool {
+        let deadline = tokio::time::Instant::now() + self.config.read_wait;
+        loop {
+            if let (Some(_), caught_up) = self.sys_fresh_index().await {
+                return caught_up;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(SYS_FRESH_RETRY).await;
         }
     }
 

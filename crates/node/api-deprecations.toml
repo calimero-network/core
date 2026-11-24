@@ -22,6 +22,31 @@
 #   pr    = 4999                                              # the PR that removes it
 #   why   = "..."                                             # what breaks, and for whom
 
+# A compute run keeps no log (an app's log lines may hold user data); the route answers
+# `{ logs: [] }` until it is removed.
+[[deprecated]]
+route = "GET /apps/{app}/runs/{run}/logs"
+since = "1.0.0-rc.36"
+date = 2026-11-23
+remove_after = "1.0.0-rc.39"
+replacement = "nothing"
+
+# A job node keeps no run log: a leader of 1.0.0-rc.35 or before asks for one only when a report
+# names it, which none does now; both answer `404 NO_LOG` until they are removed.
+[[deprecated]]
+route = "GET /job/runs/{app}/{run}/{attempt}/log/{k}"
+since = "1.0.0-rc.36"
+date = 2026-11-23
+remove_after = "1.0.0-rc.39"
+replacement = "nothing"
+
+[[deprecated]]
+route = "GET /job/runs/{app}/{run}/{attempt}/log/key"
+since = "1.0.0-rc.36"
+date = 2026-11-23
+remove_after = "1.0.0-rc.39"
+replacement = "nothing"
+
 [[cutover]]
 route = "POST /auth/releases"
 pr = 5015

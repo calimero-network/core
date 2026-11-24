@@ -4,6 +4,11 @@
 //! method and subject, newest first. A refresh is no sign-in. Nobody else
 //! sees it: another account reads only its own, and an API key is refused.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::time::Duration;
 
 use calimero_identity::testing::SoftAuthenticator;
