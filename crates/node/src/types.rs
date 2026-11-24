@@ -954,22 +954,46 @@ pub struct KeyFollowUp {
 }
 
 impl KeyFollowUp {
-    /// The follow-up as the key's consent and the system log state it; `None`
-    /// for arguments JCS cannot write.
+    /// The follow-up as the key's consent and the system log state it, its
+    /// arguments hashed under `salt` so a guess at them cannot be checked.
     #[must_use]
-    pub fn signed(&self) -> Option<SignedFollowUp> {
-        let canonical = serde_json_canonicalizer::to_vec(&self.args).ok()?;
-        Some(SignedFollowUp {
+    pub fn signed(&self, salt: &[u8]) -> SignedFollowUp {
+        let mut bytes = salt.to_vec();
+        bytes.extend_from_slice(self.args_bytes().as_bytes());
+        SignedFollowUp {
             app: self.app.clone(),
             method: self.method.clone(),
-            args_hash: hex::encode(calimero_identity::sha256(&canonical)),
-        })
+            args_hash: hex::encode(calimero_identity::sha256(&bytes)),
+        }
+    }
+
+    /// The arguments with every object's keys sorted, numbers as written: one
+    /// form for equal arguments, another for any two that differ.
+    fn args_bytes(&self) -> String {
+        fn sorted(v: &serde_json::Value) -> serde_json::Value {
+            match v {
+                serde_json::Value::Object(fields) => {
+                    let mut keys: Vec<&String> = fields.keys().collect();
+                    keys.sort();
+                    serde_json::Value::Object(
+                        keys.into_iter()
+                            .map(|k| (k.clone(), sorted(&fields[k])))
+                            .collect(),
+                    )
+                }
+                serde_json::Value::Array(items) => {
+                    serde_json::Value::Array(items.iter().map(sorted).collect())
+                }
+                other => other.clone(),
+            }
+        }
+        sorted(&self.args).to_string()
     }
 }
 
-/// A follow-up with its arguments only by hash (SHA-256 of their JCS, hex):
-/// the system log reaches nodes the app's organization never approved, so it
-/// holds none of an app's data.
+/// A follow-up with its arguments only by a salted hash (hex SHA-256 of the
+/// salt, then the arguments with sorted keys): the system log reaches nodes
+/// the app's organization never approved, so it holds none of an app's data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SignedFollowUp {
