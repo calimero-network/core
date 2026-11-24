@@ -552,6 +552,10 @@ consent: `result=approved` (they approved the withdrawal).
 - **The relying party.** The passkey must be usable on the node's origin: the
   cluster's `--rp-id` must be a registrable suffix of the node's host. The node
   accepts consent-page assertions from its own nodes' origins and the cluster's
-  `--origins`, never from an app's origin.
+  `--origins`, never from an app's origin, and refuses a passkey ceremony run
+  in a frame another site embeds (`crossOrigin`, `topOrigin`). A decision
+  posted to `/approve`, `/decline` or `/open` must name one of the node's
+  origins in `Origin`, or, naming none, come as the browser's own
+  same-origin request (`Sec-Fetch-Site: same-origin`); anything else is `403`.
 - **Requests live in one node's memory.** A restart forgets them; the app asks
   again. The page is on the node that issued the request (its `url`).

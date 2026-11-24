@@ -1845,6 +1845,9 @@ is its command line.
   `Principal { consent_page: true }` for the request's account, so the
   `412 CONFIRM_REQUIRED` challenge is over the frozen arguments, and the
   step-up may come from the nodes' own origins (`consent_page::relying_party`).
+  A POST to `/approve`, `/decline` or `/open` must name one of those origins
+  in `Origin`, or, naming none, carry `Sec-Fetch-Site: same-origin`; anything
+  else is `403` (`consent_page::same_origin`).
   Upgrade consent always binds the target's manifest hash
   (`VerifiedBundle::manifest_hash`); a release approval always binds its
   measurements digest (`consent_page::release_digest`: Sigstore-verified,
