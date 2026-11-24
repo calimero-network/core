@@ -136,13 +136,20 @@ class BlobGrants(DeepCase):
     def _grant(self, rey, s):
         return _ref(rey.call(s["app"], "share", {"id": s["blob"], "ttl": GRANT_TTL})["result"])
 
-    def _judge(self, w, s):
+    def _refused(self, w, s):
         for node in w.members():
             for grant in s["revoked"]:
                 eq(_download(w, s["app"], s["blob"], grant, node)[0], 404, f"a revoked grant on node {node}")
+
+    def _serves(self, w, s):
+        for node in w.members():
             status, data = _download(w, s["app"], s["blob"], s["live"], node)
             eq(status, 200, f"the live grant on node {node}")
             eq(hashlib.sha256(data).hexdigest(), s["sha256"], f"the blob through node {node}")
+
+    def _judge(self, w, s):
+        self._refused(w, s)
+        self._serves(w, s)
 
     def _revoke_and_grant(self, rey, s):
         rey.raw("post", f"apps/{s['app']}/blobs/{s['blob']}/revoke")
@@ -170,15 +177,17 @@ class BlobGrants(DeepCase):
         blob = _ref(rey.call(app, "publish", {"output": output["id"]})["result"])
         s = {"app": app, "blob": blob, "revoked": []}
         s["live"] = self._grant(rey, s)
+        s["sha256"] = output["sha256"]
         status, bytes_ = _download(w, app, blob, s["live"], w.members()[0])
         eq(status, 200, "the first grant before any revoke")
-        s["sha256"] = hashlib.sha256(bytes_).hexdigest()
+        eq(hashlib.sha256(bytes_).hexdigest(), s["sha256"], "the blob against the run's own digest")
         self._revoke_and_grant(rey, s)
         self._judge(w, s)
         return s
 
     def check(self, w, s):
-        until("the grants hold on every node", lambda: self._judge(w, s), 30)
+        until("the live grant serves on every node", lambda: self._serves(w, s), 30)
+        self._refused(w, s)
 
     def exercise(self, w, s):
         rey = person(w, "rey")
