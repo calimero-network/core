@@ -59,7 +59,8 @@ one module per former `tests/*.rs` file), so they link wasmtime, RocksDB and tan
 instead of once per file. A test's name is `<module>::<test>`:
 `cargo test -p calimero-node --test it job_runs::` runs one module, and
 `cargo nextest run -p calimero-node -E 'binary(it) & test(/^job_runs::/)'` does under nextest.
-Three stay binaries of their own: `scenarios` (its own main), and `auto_updates` and
+Four stay binaries of their own: `scenarios` (its own main), `upgrade_replay` (the `Upgrade path` job
+runs it alone on a release build, where the whole of `it` took 15 minutes to compile), and `auto_updates` and
 `compute_runs`, which set a hook that is the whole process's (`testing::shift_update_clock`,
 `testing::shared_http_timeout`). Tests in `it` share one process under `cargo test`, so a
 test hook is keyed to the test's own nodes (a data directory or a public URL), never the
@@ -714,7 +715,7 @@ a case is never skipped.
 ### Replaying a release's data directory
 
 The rollout moves state between nodes; it does not show that this tree applies an old release's log the same way: new nodes join empty and take a snapshot, so none of them opens an old data directory.
-`crates/node/tests/it/upgrade_replay.rs` does, in process and in seconds: a fixture is the data directory of a one-node cluster as a release's `merod run --dev` left it, and `expected.json`, every answer that release gave to a fixed list of reads.
+`crates/node/tests/upgrade_replay.rs` does, in process and in seconds: a fixture is the data directory of a one-node cluster as a release's `merod run --dev` left it, and `expected.json`, every answer that release gave to a fixed list of reads.
 The `Upgrade path` job records the pinned release's fixtures with that release's own binaries on every run (`scripts/upgrade-path.sh`, into `target/upgrade-replay`, `UPGRADE_REPLAY_DIR`) and then runs the test, so nothing of the pinned release is committed and a pin that moves needs no new recording.
 The recorder (`upgrade_fixture.py`) writes two fixtures of a release, each from a cluster of its own, since a log takes a snapshot after 1000 entries.
 `<release>/` holds a small data set the test sends exact requests about (accounts with two passkeys and a recovery code, scoped API keys, an organization with a removed member, a team and an invite, apps of three access kinds with history, a note and a blob) and the entries no seed writes (`upgrade_kinds.py`: an organization renamed, a price table, the operator's sign-up policy, a deployment deleted, ...).
@@ -739,7 +740,7 @@ scripts/build-release-fixtures.sh 1.0.0-rc.35 target/upgrade-from
 scripts/build-upgrade-deep-fixtures.sh target/upgrade-from
 python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from \
   --out target/upgrade-replay/1.0.0-rc.35
-UPGRADE_REPLAY_DIR=target/upgrade-replay cargo test -p calimero-node --test it upgrade_replay::
+UPGRADE_REPLAY_DIR=target/upgrade-replay cargo test -p calimero-node --test upgrade_replay
 ```
 
 ## In CI
