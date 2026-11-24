@@ -55,15 +55,30 @@ def _parse_response(
 
         return response_403
 
+    if response.status_code == 409:
+        response_409 = Error.from_dict(response.json())
+
+        return response_409
+
     if response.status_code == 412:
         response_412 = Error.from_dict(response.json())
 
         return response_412
 
+    if response.status_code == 413:
+        response_413 = Error.from_dict(response.json())
+
+        return response_413
+
     if response.status_code == 421:
         response_421 = Error.from_dict(response.json())
 
         return response_421
+
+    if response.status_code == 422:
+        response_422 = Error.from_dict(response.json())
+
+        return response_422
 
     if response.status_code == 429:
         response_429 = Error.from_dict(response.json())
@@ -97,7 +112,11 @@ def sync_detailed(
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
     which signs upgrades of one app in place of a passkey; only an owner or admin of the app's
     organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they
-    apply. `412` first. The key is shown once.
+    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm methods of the key's
+    own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
+    `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
+    making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
+    error }`) and no key is made. `412` first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -135,7 +154,11 @@ def sync(
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
     which signs upgrades of one app in place of a passkey; only an owner or admin of the app's
     organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they
-    apply. `412` first. The key is shown once.
+    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm methods of the key's
+    own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
+    `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
+    making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
+    error }`) and no key is made. `412` first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -168,7 +191,11 @@ async def asyncio_detailed(
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
     which signs upgrades of one app in place of a passkey; only an owner or admin of the app's
     organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they
-    apply. `412` first. The key is shown once.
+    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm methods of the key's
+    own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
+    `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
+    making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
+    error }`) and no key is made. `412` first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -204,7 +231,11 @@ async def asyncio(
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
     which signs upgrades of one app in place of a passkey; only an owner or admin of the app's
     organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they
-    apply. `412` first. The key is shown once.
+    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm methods of the key's
+    own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
+    `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
+    making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
+    error }`) and no key is made. `412` first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

@@ -116,7 +116,7 @@ Generated from core's `docs/public/openapi.json`.
 | `alias_get(alias)` | `GET /auth/aliases/{alias}` | Resolve an alias |
 | `alias_list()` | `GET /auth/aliases` | The account's aliases |
 | `alias_set(alias, app)` | `PUT /auth/aliases/{alias}` | Set an alias |
-| `apikey_create(label=…, apps=…, methods=…, read_only=…, allow_confirm=…, ttl_secs=…, upgrades=…, confirm=None)` | `POST /auth/apikeys` | Make an API key. **passkey**. *Refusals:* `400 BAD_UPGRADE_KEY`, `429 QUOTA_EXCEEDED` |
+| `apikey_create(label=…, apps=…, methods=…, read_only=…, allow_confirm=…, ttl_secs=…, upgrades=…, then=…, confirm=None)` | `POST /auth/apikeys` | Make an API key. **passkey**. *Refusals:* `400 BAD_FOLLOW_UP`, `400 BAD_UPGRADE_KEY`, `400 RESERVED_METHOD`, `409 FEATURE_NOT_ACTIVE`, `413 ARGS_TOO_LARGE`, `422 FOLLOW_UP_FAILED`, `429 QUOTA_EXCEEDED` |
 | `apikey_list()` | `GET /auth/apikeys` | The account's API keys |
 | `apikey_revoke(key, confirm=None)` | `DELETE /auth/apikeys/{key}` | Revoke an API key. **passkey** |
 | `login_begin(origin=…)` | `POST /auth/passkey/login/begin` | Start a sign-in |
