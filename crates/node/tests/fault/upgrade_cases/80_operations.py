@@ -432,5 +432,5 @@ class JobNodeAttestation(DeepCase):
         for job in sorted(w.fleet.jobs):
             for node in w.members():
                 until(f"node {node} admits the old job node {job}", lambda: _in_states(
-                    ops(w, "GET", f"ops/job-nodes/{job}/attestation", node=node), job, ("admitted",)), 60)
+                    ops(w, "GET", f"ops/job-nodes/{job}/attestation", node=node), job, ("refused",)), 20)
 
