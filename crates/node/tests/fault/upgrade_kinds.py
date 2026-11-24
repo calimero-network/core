@@ -125,6 +125,6 @@ def fleet(w, job):
 
 
 def record_every_kind(w, job):
-    for step in (organization, org_recovery, account, app, deployment, outbound, origin, operator_decisions):
+    for step in (organization, org_recovery, account, app, deployment, outbound, operator_decisions):
         step(w)
     fleet(w, job)
