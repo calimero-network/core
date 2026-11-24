@@ -12552,6 +12552,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
         actor: actor.into(),
         at,
         consent: Value::Null,
+        release_installed: false,
     };
     let within = hold_over + UNDO_WINDOW_SECS;
     assert_eq!(
@@ -12704,6 +12705,140 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     // A state from before restore points reads with none and writes as it did.
     let shown = serde_json::to_value(&m.state.apps["rawapp"]).unwrap();
     assert!(shown.get("restorePoint").is_none(), "{shown}");
+}
+
+/// An undo goes back only to a release that is still installed: a developer who
+/// uninstalls a release it no longer offers takes it from the customers' undo too, even
+/// where another release ships the same WASM and the bundle stays. An entry logged
+/// before the rule replays as it applied.
+#[test]
+fn an_undo_never_returns_to_a_release_that_is_no_longer_installed() {
+    use super::cluster_version::Feature;
+    use super::UNDO_RELEASE_GONE;
+    let moved_to_the_shared_wasm = || {
+        let mut m = auto_fixture();
+        let manual = |version: &str, taken| {
+            let mut cmd = classified_upgrade("cora", version, Some(green()), 50);
+            if let SystemCmd::UpgradeApp {
+                bundle,
+                restore_point,
+                ..
+            } = &mut cmd
+            {
+                *bundle = "b3".into();
+                *restore_point = taken;
+            }
+            cmd
+        };
+        let _ok = m
+            .run_unproven(manual("1.0.1", Some(taken_on(1, 3))))
+            .unwrap();
+        let _ok = m
+            .run_unproven(manual(
+                "1.0.2",
+                Some(crate::types::TakenRestorePoint::default()),
+            ))
+            .unwrap();
+        let _ok = m
+            .run_unproven(SystemCmd::UninstallPackage {
+                package: "p".into(),
+                version: Some("1.0.1".into()),
+                actor: "pam".into(),
+            })
+            .unwrap();
+        assert!(m.state.bundles.contains_key("b3"), "1.0.2 still ships it");
+        m
+    };
+    let undo = |release_installed: bool| SystemCmd::UndoUpgrade {
+        app_id: "inst".into(),
+        apps: serde_json::from_value(json!({ "inst": [] })).unwrap(),
+        actor: "cora".into(),
+        at: 60,
+        consent: Value::Null,
+        release_installed,
+    };
+    assert_eq!(
+        undo(true).features(),
+        [Feature::RestorePoints, Feature::UndoToInstalledRelease]
+    );
+    assert_eq!(undo(false).features(), [Feature::RestorePoints]);
+
+    let mut m = moved_to_the_shared_wasm();
+    assert_eq!(
+        m.run_unproven(undo(true)),
+        Err(UNDO_RELEASE_GONE.to_owned())
+    );
+    let a = &m.state.apps["inst"];
+    assert_eq!(
+        a.release.as_ref().unwrap().version,
+        "1.0.2",
+        "nothing moved"
+    );
+    assert!(a.restore_point.is_some(), "the restore point is kept");
+    // The logged cluster version brings the rule to an entry without the flag.
+    m.state.cluster_version = Some(Feature::UndoToInstalledRelease.since().to_owned());
+    assert_eq!(
+        m.run_unproven(undo(false)),
+        Err(UNDO_RELEASE_GONE.to_owned())
+    );
+    // An entry logged before it, with no flag, applied.
+    let mut m = moved_to_the_shared_wasm();
+    let _ok = m.run_unproven(undo(false)).unwrap();
+    assert_eq!(
+        m.state.apps["inst"].release.as_ref().unwrap().version,
+        "1.0.1"
+    );
+    // A seed sent again after the undo moved the app is not refused for a release uninstalled
+    // since: the app already runs it and waits for its restore.
+    let mut m = auto_fixture();
+    for (version, taken) in [("1.0.1", taken_on(1, 3)), ("1.0.2", taken_on(2, 7))] {
+        let mut up = classified_upgrade("cora", version, Some(green()), 50);
+        if let SystemCmd::UpgradeApp {
+            bundle,
+            restore_point,
+            ..
+        } = &mut up
+        {
+            *bundle = "b3".into();
+            *restore_point = Some(taken);
+        }
+        let _ok = m.run_unproven(up).unwrap();
+    }
+    let seeded = |release_installed| SystemCmd::UndoUpgrade {
+        app_id: "inst".into(),
+        apps: serde_json::from_value(json!({ "inst": [2, 1] })).unwrap(),
+        actor: "cora".into(),
+        at: 60,
+        consent: Value::Null,
+        release_installed,
+    };
+    let _ok = m.run_unproven(seeded(true)).unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some("1.0.1".into()),
+            actor: "pam".into(),
+        })
+        .unwrap();
+    let _ok = m.run_unproven(seeded(true)).unwrap();
+    // Installed, the release is undone to as ever, flagged or not.
+    let mut m = auto_fixture();
+    let mut up = classified_upgrade("cora", "1.0.1", Some(green()), 50);
+    if let SystemCmd::UpgradeApp {
+        bundle,
+        restore_point,
+        ..
+    } = &mut up
+    {
+        *bundle = "b3".into();
+        *restore_point = Some(crate::types::TakenRestorePoint::default());
+    }
+    let _ok = m.run_unproven(up).unwrap();
+    let _ok = m.run_unproven(undo(true)).unwrap();
+    assert_eq!(
+        m.state.apps["inst"].release.as_ref().unwrap().version,
+        "1.0.0"
+    );
 }
 
 /// An instance of a deployment applies its offer on its own once its hold has passed
