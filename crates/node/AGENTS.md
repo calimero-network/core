@@ -527,7 +527,7 @@ is its command line.
   this node's system state at run time, not the app's log), else the operator's
   in the gate; each only for a name the release declares, and attached by the gate
   where its binding says (`PackageVersion::secrets`, one host and one header or body
-  field each; the shape since 1.0.0-rc.36, a hard cutover). The deployment's
+  field each; the shape since 1.0.0-rc.37, a hard cutover). The deployment's
   only for a run of a release of a package it offers or an offered release
   references (`SystemState::deployment_covers`, over `used_releases`; any
   version: its signer is pinned): its

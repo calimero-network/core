@@ -77,15 +77,15 @@ is a bug, and the CI checks below fail it.
 
 `crates/node/api-deprecations.toml` deprecates nothing now.
 
-**1.0.0-rc.36: a release's secrets are credential bindings (#5352).** A release's
+**1.0.0-rc.37: a release's secrets are credential bindings (#5352).** A release's
 manifest binds each secret to one host, path prefixes there and one header or
 body field, and the node attaches it there ([Secrets](/protocol/secrets/)); an app no longer writes
 `{{secret:NAME}}`, which the outbound gate now refuses. The earlier shape
 (`secrets.NAME.hosts`) is gone from the manifest, from `InstallPackage`'s
 release record and from `GET /apps/{app}/secrets` (its `[[cutover]]` entry for
 `hosts`). No reader of it is kept: a cluster holding a release that declares
-secrets is recreated on 1.0.0-rc.36, not rolled (`.github/upgrade-from`, mdma's
-`CUTOVERS`). Publishers repack such a release with `meroctl` 1.0.0-rc.36 and
+secrets is recreated on 1.0.0-rc.37, not rolled (`.github/upgrade-from`, mdma's
+`CUTOVERS`). Publishers repack such a release with `meroctl` 1.0.0-rc.37 and
 drop the placeholders from their code; clients read the binding fields.
 
 **1.0.0-rc.33: an instance's access is its grants (#5194).** An instance's

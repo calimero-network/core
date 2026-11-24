@@ -66,7 +66,7 @@ pack "$DEEP/notes-v2.wasm" com.calimero.upgrade.notes 2.0.0 notes-2.0.0.mpk
 # `mode = "create"`. Each declared in a crate's metadata as an app's author would (no lock:
 # kv-unit is packed unpinned, so the newest installed release in range is created), by a
 # release whose meroctl writes them (secrets and `uses` from 1.0.0-rc.31, secrets bound to
-# a header or body field from 1.0.0-rc.36; `--guests` from 1.0.0-rc.33). Each is packed when the pinned meroctl can; a case whose package is missing
+# a header or body field from 1.0.0-rc.37; `--guests` from 1.0.0-rc.33). Each is packed when the pinned meroctl can; a case whose package is missing
 # then fails to seed, so a pin that cannot pack one says so here.
 if "$PACK" --help 2>/dev/null | grep -q -- '--guests'; then
   "$PACK" --wasm "$DEEP/kv-guest.wasm" --package com.calimero.upgrade.kv-guest --app-version 1.0.0 \
