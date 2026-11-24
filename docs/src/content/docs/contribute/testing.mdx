@@ -1017,7 +1017,10 @@ seconds-long p99 with two leader nodes (c') is gone.
 
 <Aside type="note" title="Fuzzing">
   `fuzz/` fuzzes what a node reads from untrusted bytes (`sealed_request`,
-  `passkey_verify`, `session_token`, `quote_parse`, `bundle_open`).
+  `noise_handshake`, `sealed_file`, `passkey_verify`, `session_token`,
+  `quote_parse`, `release_policy`, `bundle_open`, `job_wire`, `log_entry`,
+  `outbound_request`, `pipeline_compile`; `fuzz/README.md` says what each
+  asserts).
   `fuzz.yml` runs a changed target for a minute on a PR and
   every target for 30 minutes nightly; `scripts/fuzz.sh <target> [seconds]`
   runs one locally.

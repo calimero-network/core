@@ -74,8 +74,8 @@ impl FileSealer {
         Self::with_data_key(Zeroizing::new(calimero_identity::random::<32>()))
     }
 
-    #[cfg(test)]
-    fn with_key(key: [u8; 32]) -> Self {
+    #[cfg(any(test, fuzzing))]
+    pub(crate) fn with_key(key: [u8; 32]) -> Self {
         Self::with_data_key(Zeroizing::new(key))
     }
 

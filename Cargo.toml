@@ -158,10 +158,10 @@ calimero-app-sdk = { path = "./crates/app-sdk" }
 calimero-sdk = { path = "./crates/sdk" }
 calimero-sdk-macros = { path = "./crates/sdk-macros" }
 calimero-build-utils = { path = "./crates/build-utils" }
-calimero-bundle = { path = "./crates/bundle" }
+calimero-bundle = { path = "./crates/bundle", version = "0.0.0" }
 calimero-outbound = { path = "./crates/outbound" }
 calimero-pipeline = { path = "./crates/pipeline" }
-calimero-primitives = { path = "./crates/primitives" }
+calimero-primitives = { path = "./crates/primitives", version = "0.0.0" }
 calimero-log = { path = "./crates/log" }
 calimero-sealed = { path = "./crates/sealed" }
 calimero-identity = { path = "./crates/identity" }

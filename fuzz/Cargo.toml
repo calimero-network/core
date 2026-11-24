@@ -9,21 +9,36 @@ cargo-fuzz = true
 
 # Shared dependencies resolve to the root Cargo.lock, which scripts/fuzz.sh copies in.
 [dependencies]
-axum = "*"
+# Versions as the root Cargo.toml's `[workspace.dependencies]`; never a wildcard (deny.toml).
+axum = "0.8.9"
+borsh = "1.3.1"
 calimero-bundle = { path = "../crates/bundle" }
 calimero-identity = { path = "../crates/identity", features = ["testing"] }
+calimero-kms-client = { path = "../crates/kms-client" }
+calimero-node = { path = "../crates/node" }
+calimero-outbound = { path = "../crates/outbound" }
+calimero-pipeline = { path = "../crates/pipeline" }
+calimero-primitives = { path = "../crates/primitives", features = ["borsh"] }
 calimero-sealed = { path = "../crates/sealed" }
 calimero-tee-attestation = { path = "../crates/tee-attestation" }
-flate2 = "*"
-hex = "*"
+calimero-tee-release = { path = "../crates/tee-release" }
+curve25519-dalek = "5"
+ed25519-dalek = "3"
+eyre = "0.6.12"
+flate2 = "1.0"
+hex = "0.4.3"
 libfuzzer-sys = "0.4"
 meroctl-sign = { path = "../crates/meroctl/sign" }
-semver = "*"
-serde_json = "*"
-sha2 = "*"
-tar = "*"
-tokio = { version = "*", features = ["rt"] }
-tower = { version = "*", features = ["util"] }
+semver = "1.0.22"
+serde = "1.0.196"
+serde_json = "1.0.113"
+sha2 = "0.11"
+snow = { version = "0.9.6", default-features = false, features = ["default-resolver", "risky-raw-split"] }
+tar = "0.4"
+tokio = { version = "1.47.1", features = ["rt"] }
+tower = { version = "0.5.3", features = ["util"] }
+url = "2.5.2"
+zeroize = "1.8"
 
 [[bin]]
 name = "bundle_open"
@@ -56,6 +71,55 @@ bench = false
 [[bin]]
 name = "quote_parse"
 path = "fuzz_targets/quote_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "job_wire"
+path = "fuzz_targets/job_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "log_entry"
+path = "fuzz_targets/log_entry.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "noise_handshake"
+path = "fuzz_targets/noise_handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "outbound_request"
+path = "fuzz_targets/outbound_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pipeline_compile"
+path = "fuzz_targets/pipeline_compile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "release_policy"
+path = "fuzz_targets/release_policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sealed_file"
+path = "fuzz_targets/sealed_file.rs"
 test = false
 doc = false
 bench = false

@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod archive;
 mod frontend;
 #[cfg(feature = "html")]

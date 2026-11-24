@@ -36,6 +36,8 @@
 //! the same TEE, say) answers for the secrets a deployer set for their app,
 //! for every organization that runs it.
 
+#![forbid(unsafe_code)]
+
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
@@ -438,8 +440,8 @@ impl OutboundService {
         })))
     }
 
-    /// A service with the given parts, for tests.
-    #[cfg(test)]
+    /// A service with the given parts, for tests and the fuzz target.
+    #[cfg(any(test, fuzzing))]
     pub(crate) fn with_parts(
         hosts: &[&str],
         secrets: Option<Arc<dyn SecretProvider>>,
@@ -1048,6 +1050,24 @@ pub fn merge_approval(
 
 #[cfg(feature = "outbound-testing")]
 mod testing;
+
+/// Private entry points the fuzz targets drive, compiled only under `cargo fuzz`.
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz_api {
+    use std::sync::Arc;
+
+    use super::{OutboundService, SecretProvider, Transport};
+
+    /// [`OutboundService::with_parts`]: the operator's hosts, secrets and a transport.
+    pub fn service(
+        hosts: &[&str],
+        secrets: Option<Arc<dyn SecretProvider>>,
+        transport: Arc<dyn Transport>,
+    ) -> Arc<OutboundService> {
+        OutboundService::with_parts(hosts, secrets, transport)
+    }
+}
 
 #[cfg(test)]
 mod tests;

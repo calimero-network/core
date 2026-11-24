@@ -5,6 +5,8 @@
 //! This crate is pure logic. Accounts, credentials and revocations are stored
 //! by the caller (the node keeps them in the system group).
 
+#![forbid(unsafe_code)]
+
 use ring::digest::{digest, SHA256};
 use ring::rand::SystemRandom;
 use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};

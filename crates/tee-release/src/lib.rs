@@ -8,6 +8,8 @@
 //! checking a node's quote against the node release it names
 //! (`Release mero-tee`).
 
+#![forbid(unsafe_code)]
+
 mod fetch;
 mod node;
 mod sigstore_verify;

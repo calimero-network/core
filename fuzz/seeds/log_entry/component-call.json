@@ -1,0 +1,1 @@
+{"op":"componentCall","method":"m","args":null,"caller":{"kind":"account","account":"a"},"tsMs":1,"baseIndex":1,"idTerm":1,"idSeq":1,"outcome":{"status":"ok","result":null,"error":null,"diff":[],"events":[],"logs":[]}}

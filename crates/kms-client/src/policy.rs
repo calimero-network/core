@@ -263,7 +263,7 @@ fn parse_policy_json_for_release(
     policy_from_root(root)
 }
 
-#[cfg(test)]
+#[cfg(any(test, fuzzing))]
 pub(crate) fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
     let root: PolicyJson =
         serde_json::from_str(json_str).map_err(|e| eyre::eyre!("Invalid policy JSON: {}", e))?;
@@ -493,6 +493,30 @@ where
         version
     );
     Ok(Some(policy))
+}
+
+/// Private entry points the fuzz targets drive, compiled only under `cargo fuzz`.
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz_api {
+    use eyre::Result as EyreResult;
+
+    use super::KmsAttestationPolicy;
+
+    /// [`super::parse_policy_json_for_release`]: a release policy, checked against the
+    /// release and profile this node asked for.
+    pub fn parse_policy_json_for_release(
+        json_str: &str,
+        version: &str,
+        expected_profile: Option<&str>,
+    ) -> EyreResult<KmsAttestationPolicy> {
+        super::parse_policy_json_for_release(json_str, version, expected_profile)
+    }
+
+    /// [`super::parse_policy_json`]: the policy alone, whatever release it names.
+    pub fn parse_policy_json(json_str: &str) -> EyreResult<KmsAttestationPolicy> {
+        super::parse_policy_json(json_str)
+    }
 }
 
 #[cfg(test)]

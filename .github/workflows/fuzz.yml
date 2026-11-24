@@ -8,6 +8,18 @@ on:
       - "crates/sealed/**"
       - "crates/tee-attestation/**"
       - "crates/meroctl/sign/**"
+      - "crates/outbound/**"
+      - "crates/primitives/src/outbound.rs"
+      - "crates/pipeline/**"
+      - "crates/tee-release/**"
+      - "crates/kms-client/src/policy.rs"
+      - "crates/client/src/receipt.rs"
+      - "crates/node/src/job_wire.rs"
+      - "crates/node/src/component.rs"
+      - "crates/node/src/component/**"
+      - "crates/node/src/system.rs"
+      - "crates/node/src/system/**"
+      - "crates/node/src/types.rs"
       - "fuzz/**"
       - "scripts/fuzz.sh"
       - "scripts/fuzz-ci.sh"
@@ -69,6 +81,51 @@ jobs:
               - *shared
               - "crates/tee-attestation/**"
               - "fuzz/fuzz_targets/quote_parse.rs"
+            job_wire:
+              - *shared
+              - "crates/node/src/job_wire.rs"
+              - "crates/node/src/types.rs"
+              - "crates/client/src/receipt.rs"
+              - "fuzz/fuzz_targets/job_wire.rs"
+              - "fuzz/seeds/job_wire/**"
+            log_entry:
+              - *shared
+              - "crates/node/src/component.rs"
+              - "crates/node/src/component/**"
+              - "crates/node/src/system.rs"
+              - "crates/node/src/system/**"
+              - "crates/node/src/types.rs"
+              - "fuzz/fuzz_targets/log_entry.rs"
+              - "fuzz/seeds/log_entry/**"
+            outbound_request:
+              - *shared
+              - "crates/outbound/**"
+              - "crates/primitives/src/outbound.rs"
+              - "fuzz/fuzz_targets/outbound_request.rs"
+              - "fuzz/seeds/outbound_request/**"
+            pipeline_compile:
+              - *shared
+              - "crates/pipeline/**"
+              - "fuzz/fuzz_targets/pipeline_compile.rs"
+              - "fuzz/seeds/pipeline_compile/**"
+            noise_handshake:
+              - *shared
+              - "crates/sealed/src/session.rs"
+              - "crates/sealed/src/lib.rs"
+              - "fuzz/fuzz_targets/noise_handshake.rs"
+              - "fuzz/seeds/noise_handshake/**"
+            sealed_file:
+              - *shared
+              - "crates/sealed/src/file.rs"
+              - "crates/sealed/src/lib.rs"
+              - "fuzz/fuzz_targets/sealed_file.rs"
+              - "fuzz/seeds/sealed_file/**"
+            release_policy:
+              - *shared
+              - "crates/tee-release/src/node.rs"
+              - "crates/kms-client/src/policy.rs"
+              - "fuzz/fuzz_targets/release_policy.rs"
+              - "fuzz/seeds/release_policy/**"
 
   smoke:
     name: Smoke (${{ matrix.target }})
@@ -107,6 +164,13 @@ jobs:
           - passkey_verify
           - session_token
           - quote_parse
+          - job_wire
+          - log_entry
+          - outbound_request
+          - pipeline_compile
+          - noise_handshake
+          - sealed_file
+          - release_policy
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

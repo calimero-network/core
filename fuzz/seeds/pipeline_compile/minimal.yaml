@@ -1,0 +1,9 @@
+apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: p
+module: m
+inputs:
+  x: { kind: files }
+steps:
+  a: { method: run, forEach: inputs.x, maxItems: 10, limits: { fuel: 10, memoryMib: 8, wallSecs: 1 } }
+  b: { method: report, collect: a.outputs }

@@ -5,6 +5,9 @@ targets = []
 # Vulnerabilities are denied by default. Only flag unmaintained crates we depend on
 # directly (transitive unmaintained crates aren't actionable here).
 unmaintained = "workspace"
+# A version pulled from crates.io is a version that ships: a lockfile that pins one
+# fails until it moves to a release still published.
+yanked = "deny"
 # Dated baseline of advisories accepted for now. These are transitive through
 # libp2p 0.56's DNS stack and the RSA/rand chain, and can't be lock-bumped
 # without an upstream upgrade; any *new* advisory still fails CI.
@@ -25,6 +28,10 @@ ignore = [
 
 [bans]
 multiple-versions = "warn" # Warn about duplicate dependency versions
+# `version = "*"` takes whatever a fresh resolve finds. A path dependency (a workspace
+# crate, which has no version to name) is allowed; a registry or git one names its version.
+wildcards = "deny"
+allow-wildcard-paths = true
 
 # Skip specific crates that might need multiple versions
 [[bans.skip]]

@@ -55,6 +55,8 @@
 //! **Warning**: Mock attestations bypass all TEE security guarantees and should
 //! never be trusted in production environments.
 
+#![forbid(unsafe_code)]
+
 mod error;
 mod evidence;
 mod generate;

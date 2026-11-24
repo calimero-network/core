@@ -21,6 +21,8 @@
 //! `/sealed/v2`; those paths are gone. The `v2` there never named the wire
 //! format, which the version byte does.
 
+#![forbid(unsafe_code)]
+
 pub mod client;
 pub mod file;
 pub mod identity;
@@ -33,3 +35,35 @@ pub use server::{
     derive_shared, expire_sessions, intercept, LowOrder, SealedOptions, SealedTransport,
     HANDSHAKE_PATH, SEALED_PATH,
 };
+
+/// Private entry points the fuzz targets drive, compiled only under `cargo fuzz`.
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz_api {
+    /// [`crate::session::respond`]: message 2 and the session's request and response keys.
+    pub fn respond(
+        transport_secret: &[u8; 32],
+        message_1: &[u8],
+        session_id: &[u8; 16],
+    ) -> Option<(Vec<u8>, [u8; 32], [u8; 32])> {
+        let (message_2, keys) =
+            crate::session::respond(transport_secret, message_1, session_id).ok()?;
+        Some((message_2, *keys.request, *keys.response))
+    }
+
+    /// [`crate::session::respond_identified`], with the static key the caller proved.
+    pub fn respond_identified(
+        transport_secret: &[u8; 32],
+        message_1: &[u8],
+        session_id: &[u8; 16],
+    ) -> Option<(Vec<u8>, [u8; 32], [u8; 32], [u8; 32])> {
+        let (message_2, keys, peer) =
+            crate::session::respond_identified(transport_secret, message_1, session_id).ok()?;
+        Some((message_2, *keys.request, *keys.response, peer))
+    }
+
+    /// A [`crate::file::FileSealer`] under `key`, so a target can seal what it then opens.
+    pub fn sealer(key: [u8; 32]) -> crate::file::FileSealer {
+        crate::file::FileSealer::with_key(key)
+    }
+}
