@@ -15,13 +15,13 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use calimero_app_host::{Invocation, InvocationKind, TrapKind};
-use calimero_log::{Group, GroupId, NodeId, Proposal};
+use calimero_log::{Group, GroupId, NodeId, Proposal, Stage, Staged};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
 use super::files::{holds_file, Blob, Stored};
-use super::{entry_bytes, Node, Ran, RunExtras};
+use super::{entry_bytes, LoggedRun, Node, Ran, RunExtras};
 use crate::app::{AppMachine, Status};
 use crate::component::{
     Applied, Attempt, AttemptEntry, ComponentCmd, FailedReason, FileMark, FinalEntry, FinalOutcome,
@@ -1383,115 +1383,150 @@ impl Drive<'_> {
         let mut persisted = Stored::default();
         let proposed = self
             .g
-            .propose_led(|m, applied, leadership| {
+            .propose_led_staged(|stage, leadership| {
+                let (m, applied) = match stage {
+                    Stage::Read(m, applied) => (m, applied),
+                    Stage::Run((run, result_method)) => {
+                        let result_method: String = result_method;
+                        let LoggedRun {
+                            state,
+                            applied,
+                            base_index,
+                            ts_ms,
+                            id_term,
+                            id_seq,
+                            runs,
+                            compute_component,
+                            ..
+                        } = run;
+                        let result_prepared = prepared.as_ref().filter(|p| {
+                            p.abi
+                                .methods
+                                .get(&result_method)
+                                .is_some_and(|x| x.compute_result)
+                        });
+                        let ran = if let Some(prepared) = result_prepared {
+                            node.run_logged(
+                                &meter,
+                                prepared,
+                                app_id,
+                                state,
+                                applied,
+                                Invocation {
+                                    kind: InvocationKind::Call,
+                                    method: result_method.clone(),
+                                    args: args.clone(),
+                                    caller: calimero_app_host::Caller::System,
+                                    entry_ts_ms: ts_ms,
+                                    id_term,
+                                    id_seq,
+                                    seed: calimero_identity::random::<32>(),
+                                    timer: None,
+                                    compute: None,
+                                },
+                                RunExtras {
+                                    runs: Some(runs),
+                                    compute_component,
+                                    ..RunExtras::default()
+                                },
+                            )
+                        } else if result_method.is_empty() {
+                            Ran {
+                                outcome: Outcome::default(),
+                                blobs: Vec::new(),
+                                _pending: None,
+                            }
+                        } else {
+                            Ran {
+                                outcome: Outcome::trap(
+                                    TrapKind::Fault,
+                                    "the app has no such result method",
+                                ),
+                                blobs: Vec::new(),
+                                _pending: None,
+                            }
+                        };
+                        let entry = FinalEntry {
+                            run: rec.run.clone(),
+                            attempt: plan.attempt,
+                            outcome: plan.outcome,
+                            report: plan.report.clone(),
+                            signature: plan.signature.clone(),
+                            outputs: plan.outputs.clone(),
+                            // No log: a leader asks for none (an app's log lines may hold user data).
+                            log: None,
+                            usage: plan.usage,
+                            result: ran.outcome,
+                            base_index,
+                            ts_ms,
+                            id_term,
+                            id_seq,
+                        };
+                        let built = node.logged_entry(
+                            app_id,
+                            ComponentCmd::ComputeFinal(Box::new(entry.clone())),
+                            &ran.blobs,
+                        );
+                        // The result method's files could not be stored: the run still ends, without
+                        // the effects of its result method.
+                        let built = match built {
+                            Err(e) if e.code != super::FINAL_TOO_LARGE => {
+                                let denied = Outcome::trap(TrapKind::HostDenied, &e.message);
+                                let bare = FinalEntry {
+                                    result: denied,
+                                    ..entry
+                                };
+                                node.logged_entry(
+                                    app_id,
+                                    ComponentCmd::ComputeFinal(Box::new(bare)),
+                                    &[],
+                                )
+                            }
+                            other => other,
+                        };
+                        return Staged::Done(match built {
+                            Ok((bytes, stored)) => {
+                                persisted = stored;
+                                Proposal::Append(bytes)
+                            }
+                            Err(_) => {
+                                unfit = true;
+                                Proposal::Reply(Vec::new())
+                            }
+                        });
+                    }
+                };
                 (superseded, unfit) = (false, false);
                 persisted = Stored::default();
                 *built = None;
                 if m.state.bundle.as_deref() != Some(bundle.as_str()) {
-                    return Proposal::Reply(Vec::new());
+                    return Staged::Done(Proposal::Reply(Vec::new()));
                 }
                 let current = m
                     .run_record(&rec.run)
                     .filter(|r| r.state.is_active() && r.attempts.len() == plan.attempt as usize);
                 let Some(current) = current else {
                     superseded = true;
-                    return Proposal::Reply(Vec::new());
+                    return Staged::Done(Proposal::Reply(Vec::new()));
                 };
                 let ts_ms = node.stamp(m);
                 let (id_term, id_seq) =
                     node.next_id(self.g.id(), leadership.term, &m.state.component.head);
                 *built = Some((id_term, id_seq));
-                let result_prepared = prepared.as_ref().filter(|p| {
-                    p.abi
-                        .methods
-                        .get(&current.result_method)
-                        .is_some_and(|x| x.compute_result)
-                });
-                let ran = if let Some(prepared) = result_prepared {
-                    node.run_logged(
-                        &meter,
-                        prepared,
-                        app_id,
-                        (m.view(), m.blob_view_with_outputs(&plan.outputs, ts_ms)),
+                Staged::Run((
+                    LoggedRun {
+                        state: (m.view(), m.blob_view_with_outputs(&plan.outputs, ts_ms)),
                         applied,
-                        Invocation {
-                            kind: InvocationKind::Call,
-                            method: current.result_method.clone(),
-                            args: args.clone(),
-                            caller: calimero_app_host::Caller::System,
-                            entry_ts_ms: ts_ms,
-                            id_term,
-                            id_seq,
-                            seed: calimero_identity::random::<32>(),
-                            timer: None,
-                            compute: None,
-                        },
-                        RunExtras {
-                            runs: Some(m.runs_provider(Some(&rec.run))),
-                            compute_component: m.state.component.head.compute_bundle.is_some(),
-                            ..RunExtras::default()
-                        },
-                    )
-                } else if current.result_method.is_empty() {
-                    Ran {
-                        outcome: Outcome::default(),
-                        blobs: Vec::new(),
-                        _pending: None,
-                    }
-                } else {
-                    Ran {
-                        outcome: Outcome::trap(
-                            TrapKind::Fault,
-                            "the app has no such result method",
-                        ),
-                        blobs: Vec::new(),
-                        _pending: None,
-                    }
-                };
-                let entry = FinalEntry {
-                    run: rec.run.clone(),
-                    attempt: plan.attempt,
-                    outcome: plan.outcome,
-                    report: plan.report.clone(),
-                    signature: plan.signature.clone(),
-                    outputs: plan.outputs.clone(),
-                    // No log: a leader asks for none (an app's log lines may hold user data).
-                    log: None,
-                    usage: plan.usage,
-                    result: ran.outcome,
-                    base_index: m.state.last_index,
-                    ts_ms,
-                    id_term,
-                    id_seq,
-                };
-                let built = node.logged_entry(
-                    app_id,
-                    ComponentCmd::ComputeFinal(Box::new(entry.clone())),
-                    &ran.blobs,
-                );
-                // The result method's files could not be stored: the run still ends, without
-                // the effects of its result method.
-                let built = match built {
-                    Err(e) if e.code != super::FINAL_TOO_LARGE => {
-                        let denied = Outcome::trap(TrapKind::HostDenied, &e.message);
-                        let bare = FinalEntry {
-                            result: denied,
-                            ..entry
-                        };
-                        node.logged_entry(app_id, ComponentCmd::ComputeFinal(Box::new(bare)), &[])
-                    }
-                    other => other,
-                };
-                match built {
-                    Ok((bytes, stored)) => {
-                        persisted = stored;
-                        Proposal::Append(bytes)
-                    }
-                    Err(_) => {
-                        unfit = true;
-                        Proposal::Reply(Vec::new())
-                    }
-                }
+                        base_index: m.state.last_index,
+                        ts_ms,
+                        id_term,
+                        id_seq,
+                        runs: m.runs_provider(Some(&rec.run)),
+                        compute_component: m.state.component.head.compute_bundle.is_some(),
+                        secrets: m.instance_secrets(),
+                    },
+                    current.result_method.clone(),
+                ))
             })
             .await;
         let p = match proposed {
