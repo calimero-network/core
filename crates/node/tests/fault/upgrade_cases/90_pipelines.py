@@ -67,6 +67,7 @@ class Pipelines(DeepCase):
 
     def populate(self, w):
         pax = person(w, "pax")
+        w.this_tree()
         package, version = w.registry.publish(w.fixtures["pipelines"])
         pax.raw("post", "packages/install", {"package": package, "version": version})
         app = pax.raw("post", "apps", {"name": "pipes", "package": package, "version": version})["appId"]
