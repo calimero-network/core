@@ -250,9 +250,12 @@ class StateDigests(DeepCase):
         for a in s["apps"]:
             for i in range(20):
                 dax.call(a, "set", {"key": f"new{i:02}", "value": f"n{i}"})
-        time.sleep(DIGEST_COMPARE_SECS + 15)
-        after = _comparisons(w, s["apps"])
-        check(all(after[a] > before[a] for a in s["apps"]), f"a leader did not compare again: {before} then {after}")
+
+        def compared_again():
+            after = _comparisons(w, s["apps"])
+            check(all(after[a] > before[a] for a in s["apps"]), f"a leader did not compare again: {before} then {after}")
+
+        until("each leader compares again after the new writes", compared_again, DIGEST_COMPARE_SECS + 15)
         self.check(w, s)
 
 
