@@ -462,3 +462,184 @@ async fn a_state_read_waiting_for_an_apply_behind_the_disk_leaves_the_worker_fre
         "the read sees the apply it waited for, never the state before its commit"
     );
 }
+
+/// A one-node group of an [`OnDisk`] machine on a new engine at `dir`, with
+/// one entry applied.
+async fn one_node(
+    dir: &std::path::Path,
+    group: GroupId,
+) -> (Arc<Net>, Arc<Engine>, Arc<Group<OnDisk>>) {
+    let net = Arc::new(Net::default());
+    let engine = Engine::open(
+        1,
+        dir,
+        &KEY,
+        Arc::new(Wire(Arc::clone(&net))),
+        Config::default(),
+    )
+    .unwrap();
+    let g = engine.start_group(group, OnDisk::default()).await.unwrap();
+    let _prev = net.engines.write().unwrap().insert(1, Arc::clone(&engine));
+    g.initialize(BTreeMap::from([(1, "node-1".to_owned())]))
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        match g
+            .propose(|_m, _applied| Proposal::Append(b"warm".to_vec()))
+            .await
+        {
+            Ok(p) => {
+                assert!(g.wait_applied(p.index, HOLD).await);
+                return (net, engine, g);
+            }
+            Err(WriteError::NotLeader { .. } | WriteError::Unavailable(_)) => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    panic!("write never succeeded");
+}
+
+/// Hold the disk of the node at `dir`: a synced write of the node's own rows
+/// waits, holding the write path, until [`testing::heal_synced_writes`]. The
+/// thread that made it, and the number the held write took.
+fn hold_disk(
+    engine: &Arc<Engine>,
+    dir: &std::path::Path,
+) -> (std::thread::JoinHandle<eyre::Result<()>>, u64) {
+    testing::slow_synced_writes(dir, NODE_ROWS, HOLD);
+    let holder = {
+        let engine = Arc::clone(engine);
+        std::thread::spawn(move || engine.put_node_meta("slow-disk-test", &1_u8))
+    };
+    let at = Instant::now();
+    loop {
+        if let Some(n) = testing::synced_write_waiting(dir, NODE_ROWS) {
+            return (holder, n);
+        }
+        assert!(at.elapsed() < HOLD, "the node row's write never waited");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Wait (on this thread) until a write of the node at `dir` queues behind the
+/// held one.
+fn until_queued(dir: &std::path::Path, what: &str) {
+    let at = Instant::now();
+    while testing::writes_queued(dir) == 0 {
+        assert!(
+            at.elapsed() < HOLD,
+            "{what} never queued behind the held write"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Removing a group deletes its rows, a write like any other: it queues behind
+/// another write's fsync. `Engine::remove_group` deleted them on the async
+/// worker that awaited it (the node's reconcile, which stops the groups this
+/// node no longer replicates), so that worker, every group's heartbeats and the
+/// node's HTTP with it, stopped for as long as the disk took. Told by order:
+/// while one held write still waits, and the removal waits behind it, the
+/// ticker must keep ticking. The removal then completes, a retry of it is a
+/// no-op, and the group starts again with nothing of the old state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn removing_a_group_behind_the_disk_leaves_the_worker_free() {
+    const GROUP: GroupId = 4;
+    const WATCH: Duration = Duration::from_millis(300);
+    const MIN_TICKS: u64 = 10;
+    let dir = tempfile::tempdir().unwrap();
+    let (_net, engine, group) = one_node(dir.path(), GROUP).await;
+    assert_eq!(group.read_local(|m, _| m.0), 1);
+
+    let (holder, held) = hold_disk(&engine, dir.path());
+    let ticking = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let ticker = {
+        let (ticking, ticks) = (Arc::clone(&ticking), Arc::clone(&ticks));
+        tokio::spawn(async move {
+            while ticking.load(std::sync::atomic::Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let _n = ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
+    };
+    // On the worker, as the node's reconcile awaits it.
+    let removal = {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move { engine.remove_group(GROUP).await })
+    };
+    until_queued(dir.path(), "the removal's delete");
+    // This thread sleeps, not the runtime: a worker that blocks would stop the
+    // runtime's timers too.
+    std::thread::sleep(Duration::from_millis(50));
+    let before = ticks.load(std::sync::atomic::Ordering::Relaxed);
+    std::thread::sleep(WATCH);
+    let during = ticks.load(std::sync::atomic::Ordering::Relaxed) - before;
+    let still_held = testing::synced_write_waiting(dir.path(), NODE_ROWS) == Some(held);
+    let waited = !removal.is_finished();
+    eprintln!("the worker ticked {during} times in {WATCH:?} while a group's removal waited");
+
+    testing::heal_synced_writes(dir.path(), NODE_ROWS);
+    holder.join().unwrap().unwrap();
+    removal.await.unwrap().unwrap();
+    ticking.store(false, std::sync::atomic::Ordering::Relaxed);
+    ticker.await.unwrap();
+
+    assert!(still_held, "the held write ended before the test looked");
+    assert!(waited, "the removal did not wait for the held disk");
+    assert!(
+        during >= MIN_TICKS,
+        "the async worker ticked {during} times in {WATCH:?} while a group's removal waited \
+         behind the disk (at least {MIN_TICKS}): the removal blocked it"
+    );
+    assert!(!engine.hosts(GROUP));
+    engine.remove_group(GROUP).await.unwrap();
+    drop(group);
+    let again = engine.start_group(GROUP, OnDisk::default()).await.unwrap();
+    assert_eq!(
+        again.read_local(|m, applied| (m.0, applied)),
+        (0, 0),
+        "the removed group's state is gone"
+    );
+    assert!(
+        again.status().last_log.is_none(),
+        "the removed group's log is gone"
+    );
+}
+
+/// While a group's removal waits for the disk, the group is out of the engine
+/// but its rows are not yet deleted: a start of the group then (a peer's RPC
+/// reaching the group factory) would open a state the removal is deleting
+/// under it. It is refused until the removal has finished.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_group_being_removed_does_not_start_again_until_its_data_is_gone() {
+    const GROUP: GroupId = 5;
+    let dir = tempfile::tempdir().unwrap();
+    let (_net, engine, group) = one_node(dir.path(), GROUP).await;
+    drop(group);
+
+    let (holder, _held) = hold_disk(&engine, dir.path());
+    let removal = {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move { engine.remove_group(GROUP).await })
+    };
+    until_queued(dir.path(), "the removal's delete");
+    let during = tokio::time::timeout(HOLD, engine.start_group(GROUP, OnDisk::default())).await;
+    let refused = matches!(during, Ok(Err(_)));
+    testing::heal_synced_writes(dir.path(), NODE_ROWS);
+    holder.join().unwrap().unwrap();
+    removal.await.unwrap().unwrap();
+    if let Ok(Ok(g)) = during {
+        drop(g);
+        engine.remove_group(GROUP).await.unwrap();
+    }
+    assert!(
+        refused,
+        "the group started again while its removal waited for the disk"
+    );
+
+    let again = engine.start_group(GROUP, OnDisk::default()).await.unwrap();
+    assert_eq!(again.read_local(|m, applied| (m.0, applied)), (0, 0));
+}
