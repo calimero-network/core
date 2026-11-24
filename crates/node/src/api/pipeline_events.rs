@@ -1,5 +1,6 @@
 //! `GET /apps/{app}/pipeline-runs/{run}/events`: a run's progress as server-sent events, metadata
-//! only (`calimero_client::pipeline_events`). Whoever may read the run may subscribe.
+//! only (`calimero_client::pipeline_events`). Whoever may read the run may subscribe, and
+//! each change is judged again before it is sent (`api::still_admitted`).
 //! Changes come from the leader's `__pipeline_run` view, polled and diffed, so a follower
 //! answers as it does for `GET .../pipeline-runs/{run}`: through the leader.
 
@@ -15,8 +16,8 @@ use axum::response::{IntoResponse, Response};
 use calimero_client::pipeline_events::{PipelineEvent, RunProgress};
 use serde_json::json;
 
-use super::gate;
 use super::pipelines::component_app;
+use super::{gate, still_admitted, Principal};
 use crate::error::ApiError;
 use crate::node::{Node, ViewRequest, PIPELINE_VIEW};
 
@@ -77,6 +78,8 @@ impl Drop for Subscriber {
 struct Watch {
     node: Arc<Node>,
     req: ViewRequest,
+    /// Who opened the stream, judged again before each change is sent.
+    principal: Principal,
     prev: Option<RunProgress>,
     queued: VecDeque<PipelineEvent>,
     closing: bool,
@@ -106,10 +109,18 @@ impl Watch {
                 Err(_) => return None,
             };
             let now = RunProgress::from_view(&answer.result)?;
-            match &self.prev {
-                None => self.queued.push_back(now.snapshot()),
-                Some(prev) => self.queued.extend(now.diff(prev)),
+            let news: Vec<PipelineEvent> = match &self.prev {
+                None => vec![now.snapshot()],
+                Some(prev) => now.diff(prev),
+            };
+            // Judged on state at least as fresh as the run just read: a member removed,
+            // or a key revoked, since the stream opened sees nothing more.
+            if !news.is_empty()
+                && !still_admitted(&self.node, &self.principal, &self.req.app_id).await
+            {
+                return None;
             }
+            self.queued.extend(news);
             self.closing = now.ended();
             self.prev = Some(now);
         }
@@ -129,7 +140,7 @@ pub(super) async fn events(
         app_id,
         method: PIPELINE_VIEW.to_owned(),
         args: json!({ "run": run, "files": false, "items": false }),
-        caller: p.caller,
+        caller: p.caller.clone(),
         strong: true,
         min_index: 0,
         via: None,
@@ -141,6 +152,7 @@ pub(super) async fn events(
     let watch = Watch {
         node,
         req,
+        principal: p,
         prev: None,
         queued: VecDeque::new(),
         closing: false,

@@ -726,6 +726,11 @@ is its command line.
   (a read index), so a removal committed elsewhere holds before the next request; an event
   stream judges each event the same way (Events below). Regression:
   `a_revocation_holds_on_a_follower_that_has_not_applied_it_yet`.
+  The owner, admin and read-only checks made after `gate` (`manages_app`,
+  `may_handle_files`, `read_only_in`) read the app's record again from that state
+  (`api::fresh_record`), never the one the handler read before the round, so a transfer
+  or move committed elsewhere holds too. Regression:
+  `a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer`.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
@@ -2084,7 +2089,13 @@ is its command line.
   `internal/call`) wait to apply it (`Node::sys_fresh_from`, whose doc is the
   argument that this is as fresh as a round of their own) instead of running
   another. Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
+  A credential that cannot be valid costs no round (`api::credential`, D4): an
+  API key not of `new_api_key`'s shape, or one a caught-up read found missing in
+  the last `UNKNOWN_API_KEY_TTL` (`UnknownApiKeys`, `MAX_UNKNOWN_API_KEYS`), a
+  visitor credential whose signature fails, a session token its issuer did not
+  sign; a missing key waits (`sys_until`) only when the round did not catch up.
   Regressions: `a_call_costs_one_system_read_round`,
+  `a_credential_that_cannot_be_valid_costs_no_system_read_round`,
   `a_revocation_committed_before_the_round_holds_on_a_leader_behind`
   (`tests/it/access_gate.rs`).
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
@@ -2320,6 +2331,14 @@ API and system group:
   `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`
   (`testing`: `Node::hold_system_log` makes a node refuse the system group's Raft
   messages while its app groups go on), `removed_member_stops_receiving_org_events`.
+  Every stream `gate` lets open (events, presence, a pipeline run's events, an event
+  stream proxied from another replica) also judges the principal that opened it before
+  each batch it sends, on the same fresh state (`api::still_admitted`,
+  `Principal::admitted_on`): an account no longer reaching the app, a revoked API key or
+  an ended session ends it; a session token's own expiry does not (a refresh). Regressions:
+  `a_removed_member_stops_receiving_presence`,
+  `a_revoked_key_or_session_stops_its_event_and_presence_streams`,
+  `a_removed_member_stops_receiving_a_runs_events`.
 - **Usage** (Q20, `component::RunUsage`, `DayUsage`): each `componentInit`,
   `componentCall` and `componentTick` outcome carries `usage { fuel, wallMs, writes,
   bytesWritten, events }`, measured by the leader (`Outcome::from_host`; a `HostDenied`
@@ -2407,10 +2426,15 @@ API and system group:
   for every table whose declared fields are what it was built with, across an upgrade
   too; a table that is new or whose fields changed starts from a new index and one no
   longer declared is dropped; when the keys since are unknown (the first search after a
-  start, keys the ring lost, a mark another view moved meanwhile) each index is compared
+  start, keys the ring lost, a view on an older state than the indexes hold) each index is compared
   with the state (`TableIndex::reconcile`: every record's document digest,
   `calimero_search::index::doc_digest`, against the one the index holds) and only what
-  differs is indexed again. A view that never searches indexes nothing. Indexes are kept
+  differs is indexed again. A view that never searches indexes nothing. A view searches
+  the state it reads and no other (C4): once the indexes reach its state it keeps a
+  point-in-time snapshot of them (a tantivy `Searcher` and the document keys per table,
+  `AppIndexes::snapshot`) for all its searches, and the views queued on earlier states
+  (`AppEntry::waiting`, weak) are brought up first, in order (`AppEntry::due`), so the
+  shared indexes never jump past a live view's state. Indexes are kept
   under `<data dir>/search/<sha256(app)>/<sha256(table)>` (tantivy `MmapDirectory`) only
   when `Config::kms_keys.disk` is set (`--kms-disk-evidence`: mero-tee's LUKS2 data disk
   with integrity, keyed by mero-kms and opened inside the TD), since tantivy writes its
@@ -2428,7 +2452,9 @@ API and system group:
   its uncommitted changes never reach a later commit. Regressions:
   `at_most_max_open_writers_stay_open_across_every_apps_indexes`,
   `preparing_a_views_search_indexes_nothing_until_it_queries`,
-  `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`,
+  `a_view_whose_indexes_a_later_upgrade_moved_searches_its_own_state`,
+  `a_view_searches_the_state_it_reads_while_a_later_view_moves_the_indexes`,
+  `a_view_that_searches_after_a_later_view_did_searches_its_own_state`,
   `an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps`,
   `an_index_kept_on_disk_catches_up_after_a_restart_reindexing_only_what_changed`,
   `an_index_on_disk_under_other_fields_is_made_anew`. The run

@@ -65,15 +65,19 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   and start elections across the cluster. `RaftLogStorage`'s append, `save_vote`,
   `truncate`, `purge` and `save_committed`, and the state machine's `apply` (the
   machine, its commit, the `shared` write lock that waits for a proposal's build),
-  snapshot build and install, `applied_state`, `StateMachine::open` in
-  `start_group` and a restart's `reload` run on tokio's blocking pool
+  snapshot build and install, `applied_state`, the receive file's unlink and
+  create (`begin_receiving_snapshot`), `StateMachine::open` in `start_group`, a
+  restart's `reload` and `Engine::remove_group`'s delete run on tokio's blocking pool
   (`store::off_workers`); each is still awaited, so an append is durable before
   its callback, a vote before the reply, and the commit index saved before the
   entries apply. An unsynced write waits for the disk too: RocksDB writes in
   groups, and one that arrives while another group's synced write is in its
   fsync joins or queues behind it (`save_committed` left inline stalled CI's
-  one worker 357 ms). Log reads and the small snapshot file opens stay inline
-  (a read takes no part in the write path). Regression:
+  one worker 357 ms). Log reads and opening the served snapshot file stay inline
+  (a read takes no part in the write path); `Engine::open` (RocksDB's open, the
+  stale snapshot files' deletion) runs inline at a node's start, before any group
+  does. The node writes to the store only through `node::disk::Disk`, off the
+  workers too (crates/node/AGENTS.md). Regression:
   `a_slow_disk_under_one_group_does_not_stall_the_others` (one worker thread; a
   group's synced writes slowed 250 ms stalled it 750 ms before; then the healthy
   group's commit reaches a node while a synced write of the slow group holds that
@@ -146,6 +150,18 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `Engine::remove_group` drops a group's data under both locks and marks its
   `GroupState` removed (`Group::drop_data`); a build still running then fails
   (`refuse_if_removed`) and writes no checkpoint, record or file for it.
+  `remove_group` takes the group out of the engine, shuts its core down, then
+  deletes its rows (log, meta, state) in one batch on the blocking pool: the
+  delete is a write that queues behind another write's fsync and first waits
+  for an apply holding `shared`, so inline it stopped the worker (0 ticks in
+  300 ms). While it runs the group is marked removing (`Removals`), and
+  `start_group` refuses it, at its start and again under the groups' lock as it
+  registers, so a peer's RPC reaching the group factory never opens a state
+  being deleted. A removal whose future is dropped still finishes its delete;
+  one of a group this node does not run deletes what is left (idempotent).
+  Regressions (`tests/slow_disk.rs`):
+  `removing_a_group_behind_the_disk_leaves_the_worker_free`,
+  `a_group_being_removed_does_not_start_again_until_its_data_is_gone`.
   `Engine::open` deletes every `g<group>-*.snap` file no group's `snapshot`
   record names (a receive or build a crash cut short, a file a crash kept from
   being deleted, a removed group's), before any group starts
@@ -216,3 +232,16 @@ propose lock; an append takes no leadership round); 64 `Group::write`s in flight
 `client_write` as its own synced RocksDB write on the leader's core task, so
 these too commit no faster than one sync each); and one RocksDB write synced and unsynced on the same disk, the
 unit a commit's latency is made of.
+
+Bench: `cargo bench -p calimero-log --bench heartbeats` (`benches/heartbeats.rs`,
+B6): 1, 100 and 1,000 idle groups (`HEARTBEAT_GROUPS`) on 3 engines, all led by
+node 1, on `Config::default()`; it prints the messages node 1 sends one follower
+per second and per heartbeat interval, and the process CPU per Raft message.
+Each group's openraft core heartbeats each follower on its own (an empty append,
+in practice every 300 ms: openraft 0.9 checks `heartbeat_ms` only on its tick,
+every 1.5 x `heartbeat_ms`), so a peer gets about one message per shared group
+per 300 ms (663 per 200 ms at 1,000 groups); heartbeats are not batched per peer.
+Routing a message is a hash lookup here (`Engine::handle_rpc`) and in the node
+(`SystemMachine::app_of_group`, #5163), so the CPU per message stays flat (~31 µs
+at 100 and 1,000 groups in one process). Batching them per peer is designed, not
+built (B6).
