@@ -365,14 +365,17 @@ async fn proposals_see_previous_writes() {
 /// read step through commit). The run step's `P` is owned: it cannot borrow the machine.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_staged_build_runs_off_the_read_lock_and_the_next_proposal_sees_it_applied() {
-    const SLOW: Duration = Duration::from_millis(600);
-    const QUICK: Duration = Duration::from_millis(300);
+    // Told by order, not latency: a loaded runner's own commit can take longer than any
+    // fixed bound, so the entry and the read must finish while the run step still runs.
+    const SLOW: Duration = Duration::from_millis(2000);
+    let run_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let c = cluster(3).await;
     let id = leader(&c).await;
     let g = Arc::clone(&c.groups[&id]);
     let started = std::time::Instant::now();
     let first = {
         let g = Arc::clone(&g);
+        let run_done = Arc::clone(&run_done);
         tokio::spawn(async move {
             g.propose_led_staged(|stage, _| match stage {
                 Stage::Read(m, _) => Staged::Run(m.map.get("a").cloned()),
@@ -380,6 +383,7 @@ async fn a_staged_build_runs_off_the_read_lock_and_the_next_proposal_sees_it_app
                     assert_eq!(before, None);
                     // A slow guest: blocks its thread, as a run off the workers does.
                     std::thread::sleep(SLOW);
+                    run_done.store(true, std::sync::atomic::Ordering::SeqCst);
                     Staged::Done(Proposal::Append(b"a=1".to_vec()))
                 }
             })
@@ -410,15 +414,23 @@ async fn a_staged_build_runs_off_the_read_lock_and_the_next_proposal_sees_it_app
     let at = std::time::Instant::now();
     let (_index, _out) = g.write(b"c=3".to_vec()).await.unwrap();
     let wrote = at.elapsed();
+    let wrote_during_run = !run_done.load(std::sync::atomic::Ordering::SeqCst);
     let at = std::time::Instant::now();
     let c3 = get(&g, "c");
     let read = at.elapsed();
+    let read_during_run = !run_done.load(std::sync::atomic::Ordering::SeqCst);
     let first = first.await.unwrap();
     let (second, (a_seen, read_at)) = second.await.unwrap();
     eprintln!("a {SLOW:?} run step: an entry applied after {wrote:?}, a read after {read:?}");
-    assert!(wrote < QUICK, "the entry waited {wrote:?} for the run step");
+    assert!(
+        wrote_during_run,
+        "the entry waited for the run step (applied after {wrote:?})"
+    );
     assert_eq!(c3.as_deref(), Some("3"));
-    assert!(read < QUICK, "the read waited {read:?} for the run step");
+    assert!(
+        read_during_run,
+        "the read waited for the run step (answered after {read:?})"
+    );
     assert_eq!(
         a_seen.as_deref(),
         Some("1"),
