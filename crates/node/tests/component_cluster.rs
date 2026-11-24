@@ -6528,6 +6528,7 @@ async fn a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it() {
         .sys_write(&SystemCmd::CreateApp {
             app: Box::new(member),
             unit_offer: None,
+            offers_only: false,
         })
         .await
         .unwrap();
