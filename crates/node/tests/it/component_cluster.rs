@@ -7696,6 +7696,79 @@ async fn joined_sync_calls_run_at_once_and_a_rerun_replays_them() {
     assert_eq!(count(right, &key).await, json!("1"));
 }
 
+/// C2: a run's wall clock is a deadline its host calls keep too, not only its guest code
+/// (the engine's epoch deadline is checked only while the guest runs). `bumpBoth` on one
+/// target twice waits for that target's two calls in turn, each of which runs to its own
+/// deadline: twice the budget, which the caller used to wait out in full (up to
+/// `SYNC_XCALL_WAIT`, 3 s, whatever its budget had left). It ends `TIMEOUT` at its own
+/// deadline instead, as a run that overruns in its own code does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_waiting_in_a_host_call_ends_at_its_own_deadline() {
+    const WALL: Duration = Duration::from_millis(600);
+    // Unlimited fuel: the targets spin (host-made randomness) until their wall clock stops
+    // them, never out of fuel.
+    let c = Cluster::start_with(1, |cfg| {
+        cfg.budget = Some(calimero_app_host::Budget {
+            fuel: u64::MAX,
+            wall_clock: WALL,
+            ..calimero_app_host::Budget::call()
+        });
+    })
+    .await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let mut apps = Vec::new();
+    for name in ["source", "target"] {
+        let app = alice
+            .apps()
+            .create(typed(json!({ "name": name, "bundle": &bundle })))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+        // Warm: the component is prepared and the app's group leads before anything is timed.
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "warm", "value": "1" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        apps.push(app);
+    }
+    let (source, target) = (&apps[0], &apps[1]);
+    // Sent once, raw: `apps().call` sends a call again while the node answers `503`.
+    let started = std::time::Instant::now();
+    let answer = alice
+        .transport()
+        .json(
+            Request::new(Method::POST, format!("apps/{source}/intents")).json(json!({
+                "method": "bumpBoth",
+                "args": { "a": target, "b": target, "key": "k", "spins": 1_000_000 },
+            })),
+        )
+        .await;
+    let took = started.elapsed();
+    eprintln!("a {WALL:?} run waiting on two {WALL:?} calls in turn answered after {took:?}");
+    let e = answer.unwrap_err();
+    assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
+    assert!(
+        took < WALL + WALL / 2,
+        "the run went on {took:?} on a {WALL:?} budget"
+    );
+    // The target's second call goes on without the run that asked for it: let it end before
+    // the cluster stops under it.
+    tokio::time::sleep(WALL * 2).await;
+}
+
 /// D76: a call makes an outbound request itself. The forms app (kv) asks the captcha
 /// service (a signed release declaring Turnstile's siteverify) inside its call; the
 /// service checks the token with Turnstile from its own call, through the outbound gate

@@ -908,6 +908,8 @@ impl Node {
         extras: RunExtras,
         search: Option<Arc<dyn calimero_app_host::SearchHost>>,
     ) -> Ran {
+        // The run's wall clock, which its host calls keep too (`HostCore::with_deadline`).
+        let deadline = Instant::now() + self.budget().wall_clock;
         let http = extras.outbound.then(|| {
             let meter = self.meter(app_id, &prepared.hash);
             Arc::new(TimedHttp {
@@ -918,6 +920,7 @@ impl Node {
                     &extras.secrets,
                 ))),
                 timeout: CALL_FETCH_TIMEOUT,
+                deadline,
             })
         });
         // Whom this run serves, for the apps it calls (each call runs as them only with
@@ -934,6 +937,7 @@ impl Node {
                 handle,
                 read_only: extras.read_only,
                 person: forward.clone(),
+                deadline,
             }) as Arc<dyn calimero_app_host::XcallHost>)
         });
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
@@ -956,6 +960,7 @@ impl Node {
         {
             Ok(host) => {
                 let host = host
+                    .with_deadline(deadline)
                     .with_blobs(blobs)
                     .with_files(files.clone())
                     .with_logs(self.config.app_logs);
@@ -2535,12 +2540,19 @@ impl Node {
     ) -> Outcome {
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
         let directory = Arc::new(SysDirectory::new(this, app_id.to_owned()));
+        let budget = Budget {
+            wall_clock: Budget::action().wall_clock,
+            ..self.budget()
+        };
+        // The action's wall clock, which its host calls keep too (`HostCore::with_deadline`).
+        let deadline = Instant::now() + budget.wall_clock;
         let runner = Arc::new(NodeAction {
             node: Arc::clone(self),
             app_id: app_id.to_owned(),
             caller: record.caller.clone(),
             key: record.id.clone(),
             handle: tokio::runtime::Handle::current(),
+            deadline,
         });
         let xcalls = Arc::new(NodeXcall {
             node: Arc::clone(self),
@@ -2550,6 +2562,7 @@ impl Node {
             read_only: false,
             // An action serves no one when it runs (D12): its calls name no person.
             person: None,
+            deadline,
         });
         let meter = self.meter(app_id, &prepared.hash);
         // An action runs outside the machine's lock: the instance's own secrets as applied here.
@@ -2557,12 +2570,16 @@ impl Node {
             .hosted(app_id)
             .map(|g| g.read_local(|m, _| m.instance_secrets()))
             .unwrap_or_default();
-        let http = Arc::new(NodeHttp(self.outbound_for(
-            app_id,
-            &prepared.hash,
-            self.usage.outbound(&meter.app, &meter.billed),
-            &own_secrets,
-        )));
+        let http = Arc::new(TimedHttp {
+            inner: Arc::new(NodeHttp(self.outbound_for(
+                app_id,
+                &prepared.hash,
+                self.usage.outbound(&meter.app, &meter.billed),
+                &own_secrets,
+            ))),
+            timeout: budget.wall_clock,
+            deadline,
+        });
         let invocation = Invocation {
             kind: InvocationKind::Action,
             method: record.method.clone(),
@@ -2574,10 +2591,6 @@ impl Node {
             seed: [0; 32],
             timer: None,
             compute: None,
-        };
-        let budget = Budget {
-            wall_clock: Budget::action().wall_clock,
-            ..self.budget()
         };
         let (wasm, prepared, app) = (Arc::clone(&self.wasm), prepared.clone(), app_id.to_owned());
         let (keep_logs, method) = (self.config.app_logs, record.method.clone());
@@ -2593,7 +2606,8 @@ impl Node {
                     Ok(host) => {
                         let out = wasm.invoke(
                             &prepared,
-                            host.with_action(runner)
+                            host.with_deadline(deadline)
+                                .with_action(runner)
                                 .with_http(http)
                                 .with_xcall_host(xcalls)
                                 .with_logs(keep_logs),
@@ -2929,10 +2943,13 @@ struct NodeAction {
     caller: Caller,
     key: String,
     handle: tokio::runtime::Handle,
+    /// When the action's wall clock ends: no view or call is waited for past it.
+    deadline: Instant,
 }
 
 impl NodeAction {
-    /// Run `fut` on the runtime and wait for it on this (blocking) thread.
+    /// Run `fut` on the runtime and wait for it on this (blocking) thread, until the
+    /// action's deadline; `None` past it or when the node is shutting down.
     fn wait<T: Send + 'static>(
         &self,
         fut: impl std::future::Future<Output = T> + Send + 'static,
@@ -2941,7 +2958,8 @@ impl NodeAction {
         drop(self.handle.spawn(async move {
             let _sent = tx.send(fut.await);
         }));
-        rx.recv().ok()
+        rx.recv_timeout(self.deadline.saturating_duration_since(Instant::now()))
+            .ok()
     }
 }
 
@@ -2977,7 +2995,7 @@ impl calimero_app_host::ActionHost for NodeAction {
             Some(Ok(a)) if a.timeout => Err("the view timed out".into()),
             Some(Ok(a)) => answer_bytes(&a.status, &a.result, &a.error),
             Some(Err(e)) => Err(e.message),
-            None => Err("the node is shutting down".into()),
+            None => Err("the action ran out of time, or the node is shutting down".into()),
         }
     }
 
@@ -2998,7 +3016,7 @@ impl calimero_app_host::ActionHost for NodeAction {
             Some(Ok(a)) if a.timeout => Err("the call timed out".into()),
             Some(Ok(a)) => answer_bytes(&a.status, &a.result, &a.error),
             Some(Err(e)) => Err(e.message),
-            None => Err("the node is shutting down".into()),
+            None => Err("the action ran out of time, or the node is shutting down".into()),
         }
     }
 }
@@ -3121,15 +3139,17 @@ struct RunExtras {
 
 /// How long a call, timer or delivery waits for one outbound response (D76): within the
 /// 2 s call budget (`calimero_app_host::Budget::call`), so a slow host costs the run an
-/// error it handles, not the log a stalled entry.
+/// error it handles, not the log a stalled entry; never past the run's own deadline.
 pub const CALL_FETCH_TIMEOUT: Duration = Duration::from_millis(1_500);
 
-/// [`NodeHttp`] for a logged run: the gate's answer, or a timeout after `timeout`. The
-/// request may still complete in the background; the run has moved on, and its entry
-/// records the timeout.
+/// [`NodeHttp`] for a run: the gate's answer, or a timeout after `timeout` or at the run's
+/// `deadline`, whichever comes first (the host core then ends a run past its deadline
+/// `Timeout`). The request may still complete in the background; the run has moved on, and
+/// a logged run's entry records the timeout.
 struct TimedHttp {
     inner: Arc<NodeHttp>,
     timeout: Duration,
+    deadline: Instant,
 }
 
 impl calimero_app_host::HttpHost for TimedHttp {
@@ -3145,8 +3165,9 @@ impl calimero_app_host::HttpHost for TimedHttp {
                 let _sent = tx.send(calimero_app_host::HttpHost::send(&*inner, &request));
             })
             .map_err(|e| e.to_string())?;
-        rx.recv_timeout(self.timeout)
-            .unwrap_or_else(|_| Err(format!("no response within {:?}", self.timeout)))
+        let wait = (self.timeout).min(self.deadline.saturating_duration_since(Instant::now()));
+        rx.recv_timeout(wait)
+            .unwrap_or_else(|_| Err(format!("no response within {wait:?}")))
     }
 }
 
@@ -3157,12 +3178,13 @@ pub const SYNC_XCALL_WAIT: Duration = Duration::from_secs(3);
 /// What a component run reaches in other apps (`xcall.call`, `xcall.view`): views and
 /// calls of a component app in the same organization (`same_boundary`), as
 /// `Caller::App(source)`, run on the async runtime while the run's thread waits at most
-/// [`SYNC_XCALL_WAIT`]; a batch (`xcall.batch`) runs its requests at once and waits for
-/// all of them within one [`SYNC_XCALL_WAIT`]. The target runs a call as a delivery, so it
-/// reaches no further.
+/// [`SYNC_XCALL_WAIT`], and never past its own deadline; a batch (`xcall.batch`) runs its
+/// requests at once and waits for all of them within one such wait. The target runs a call
+/// as a delivery, so it reaches no further.
 ///
 /// Two apps calling each other at the same moment each hold their own call while they
-/// wait for the other's: both wait out [`SYNC_XCALL_WAIT`] and are told it timed out.
+/// wait for the other's: both wait until their deadline and end `Timeout` (not logged, so
+/// retried).
 struct NodeXcall {
     node: Arc<Node>,
     source: String,
@@ -3173,6 +3195,8 @@ struct NodeXcall {
     /// The person the run serves: a call or view runs as them where they granted the source
     /// that method of the target (`Node::as_person`).
     person: Option<Caller>,
+    /// When the run's wall clock ends: no answer is waited for past it.
+    deadline: Instant,
 }
 
 /// The node's refusal of a synchronous xcall, for the guest: the target's ABI refusal as
@@ -3277,11 +3301,11 @@ impl NodeXcall {
     }
 
     /// Run every one of `work` on the runtime at once and wait for them on this (blocking)
-    /// thread, all within one [`SYNC_XCALL_WAIT`] from now: the run waits for the slowest,
-    /// not for their sum. Each answers in order; one not done by then is told it timed out
+    /// thread, all within one [`SYNC_XCALL_WAIT`] from now and by the run's deadline: the
+    /// run waits for the slowest, not for their sum. Each answers in order; one not done by then is told it timed out
     /// (it may still commit in its target, and the run's retry replays it).
     fn wait_all(&self, work: Vec<Result<XcallFuture, String>>) -> Vec<Result<Vec<u8>, String>> {
-        let deadline = std::time::Instant::now() + SYNC_XCALL_WAIT;
+        let deadline = (Instant::now() + SYNC_XCALL_WAIT).min(self.deadline);
         let waiting: Vec<Result<std::sync::mpsc::Receiver<_>, String>> = work
             .into_iter()
             .map(|w| {
@@ -3296,7 +3320,7 @@ impl NodeXcall {
         waiting
             .into_iter()
             .map(|rx| {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                let left = deadline.saturating_duration_since(Instant::now());
                 rx?.recv_timeout(left).unwrap_or_else(|e| match e {
                     std::sync::mpsc::RecvTimeoutError::Timeout => {
                         Err(xcall_failure("the xcall timed out"))

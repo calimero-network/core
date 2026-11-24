@@ -2440,10 +2440,15 @@ API and system group:
   for every table whose declared fields are what it was built with, across an upgrade
   too; a table that is new or whose fields changed starts from a new index and one no
   longer declared is dropped; when the keys since are unknown (the first search after a
-  start, keys the ring lost, a mark another view moved meanwhile) each index is compared
+  start, keys the ring lost, a view on an older state than the indexes hold) each index is compared
   with the state (`TableIndex::reconcile`: every record's document digest,
   `calimero_search::index::doc_digest`, against the one the index holds) and only what
-  differs is indexed again. A view that never searches indexes nothing. Indexes are kept
+  differs is indexed again. A view that never searches indexes nothing. A view searches
+  the state it reads and no other (C4): once the indexes reach its state it keeps a
+  point-in-time snapshot of them (a tantivy `Searcher` and the document keys per table,
+  `AppIndexes::snapshot`) for all its searches, and the views queued on earlier states
+  (`AppEntry::waiting`, weak) are brought up first, in order (`AppEntry::due`), so the
+  shared indexes never jump past a live view's state. Indexes are kept
   under `<data dir>/search/<sha256(app)>/<sha256(table)>` (tantivy `MmapDirectory`) only
   when `Config::kms_keys.disk` is set (`--kms-disk-evidence`: mero-tee's LUKS2 data disk
   with integrity, keyed by mero-kms and opened inside the TD), since tantivy writes its
@@ -2461,7 +2466,9 @@ API and system group:
   its uncommitted changes never reach a later commit. Regressions:
   `at_most_max_open_writers_stay_open_across_every_apps_indexes`,
   `preparing_a_views_search_indexes_nothing_until_it_queries`,
-  `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`,
+  `a_view_whose_indexes_a_later_upgrade_moved_searches_its_own_state`,
+  `a_view_searches_the_state_it_reads_while_a_later_view_moves_the_indexes`,
+  `a_view_that_searches_after_a_later_view_did_searches_its_own_state`,
   `an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps`,
   `an_index_kept_on_disk_catches_up_after_a_restart_reindexing_only_what_changed`,
   `an_index_on_disk_under_other_fields_is_made_anew`. The run
@@ -2491,7 +2498,7 @@ API and system group:
 - **Outbound HTTP from calls** (D76; `RunExtras::outbound`, `TimedHttp`): calls (but a
   read-only member's), timers and deliveries get `NodeHttp` over `outbound_for`, as actions
   do, each response awaited at most `CALL_FETCH_TIMEOUT` (1.5 s, inside the 2 s budget;
-  then the app's fetch gets an error). The host core records each exchange
+  then the app's fetch gets an error), and never past the run's deadline (below). The host core records each exchange
   (`Outcome::http`, `component::HttpRecord`: the request with its placeholders, the
   redacted response, bodies cut to 64 KiB with their lengths) in the call's entry,
   whatever its status; followers never fetch, and a keyed retry replays. Tests:
@@ -2505,13 +2512,29 @@ API and system group:
   host core's derived key, `Caller::App(source)` and `CallRequest::sync_from` (the target
   checks the boundary again and runs it as `xcall-deliver`, so it reaches no further); a
   view through `Node::view` (strong). The run's thread waits at most `SYNC_XCALL_WAIT`
-  (3 s) while the runtime runs it; two apps calling each other at once both time out.
+  (3 s) while the runtime runs it, and never past its own deadline; two apps calling each
+  other at once both end `Timeout` at their deadline.
   A batch (`xcall.batch`, `NodeXcall::batch`) prepares each request as the same call or
   view would (`prepare_call`, `prepare_view`), spawns them all on the runtime and waits for
   them with one `SYNC_XCALL_WAIT` deadline (`wait_all`), so a run holds its own proposal lock
   for the slowest request, not their sum; requests to one target take turns on its lock.
   Tests: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
   (`apps/fixture-captcha`), `joined_sync_calls_run_at_once_and_a_rerun_replays_them`.
+- **A run's deadline covers its host calls** (C2): wasmtime's epoch deadline is checked only
+  while the guest's code runs, so a run waiting in a host call used to wait as long as the
+  host did (a sync xcall up to `SYNC_XCALL_WAIT`, past a 2 s budget). `run_with` (and the
+  action runner) take `deadline = now + budget.wall_clock` and hand it to the host core
+  (`HostCore::with_deadline`) and to every host that waits: `TimedHttp` (the lesser of its
+  `timeout` and the time left; actions' outbound goes through it too), `NodeXcall`
+  (`wait_all`) and `NodeAction` (`wait`). A wait that ends at or past the deadline ends the
+  run `Trap(Timeout, WALL_CLOCK_EXCEEDED)`, the status an overrun in the guest's own code
+  gets. Deterministic: the deadline only decides whether the leader, before the log, gets
+  an outcome to propose; a `Timeout` is never logged (`Outcome::is_retryable`; a call,
+  tick, `init` or delivery is run again) and replicas apply the logged outcome without
+  running anything, so no entry and no apply differs, and nothing is gated. Regression:
+  `a_run_waiting_in_a_host_call_ends_at_its_own_deadline` (`tests/it/component_cluster.rs`;
+  a 600 ms run waiting on two 600 ms calls in turn answered after 1.22 s before, at its
+  deadline after).
 - **Files** (`node/component/files.rs`; tests `component_files.rs`): a file is a sealed blob.
   It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
   A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key (`backup::file_key`, not the TEE key) and the app's blob records.
