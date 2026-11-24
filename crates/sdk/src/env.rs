@@ -207,6 +207,11 @@ pub fn random_bytes(len: usize) -> Vec<u8> {
 
 /// Emit an `#[app::event]` value: its variant name and JSON data (D20: 64-bit integers as
 /// decimal strings).
+///
+/// # Errors
+///
+/// `Emit` with the host's reason (`calimero-app-host`'s `EMIT_*`); `RunLimit` when the
+/// event would take the run past its 1 MiB of writes.
 pub fn emit<E: AppEvent>(event: E, audience: Audience) -> Result<()> {
     let (name, data) = event.encode()?;
     emit_raw(name, &data, audience)
@@ -229,12 +234,12 @@ pub fn emit_raw<T: Serialize + ?Sized>(name: &str, data: &T, audience: Audience)
 /// # Errors
 ///
 /// `Xcall` with the host's reason: more than 100 xcalls in one run, an empty or overlong
-/// app id or method, or a reserved (`__`) method.
+/// app id or method, or a reserved (`__`) method; `RunLimit` when the run would pass its
+/// 1 MiB of writes.
 pub fn xcall<T: Serialize + ?Sized>(app: &str, method: &str, args: &T) -> Result<()> {
     let args = serde_json::to_vec(args)
         .map_err(|e| AppError::with_fields("Xcall", json!({ "message": e.to_string() })))?;
-    backend::xcall(app, method, &args)
-        .map_err(|message| AppError::with_fields("Xcall", json!({ "message": message })))
+    backend::xcall(app, method, &args).map_err(|message| AppError::host_soft("Xcall", message))
 }
 
 /// Call `method` of app `app` synchronously and decode its JSON result: the target runs it
@@ -327,12 +332,13 @@ pub fn fetch(request: &crate::action::Request) -> Result<crate::action::Response
 ///
 /// # Errors
 ///
-/// `StartAction` with the host's reason (more than 100 in one run, a reserved name).
+/// `StartAction` with the host's reason (more than 100 in one run, a reserved name);
+/// `RunLimit` when the run would pass its 1 MiB of writes.
 pub fn start_action<T: Serialize + ?Sized>(method: &str, args: &T) -> Result<String> {
     let args = serde_json::to_vec(args)
         .map_err(|e| AppError::with_fields("StartAction", json!({ "message": e.to_string() })))?;
     backend::start_action(method, &args)
-        .map_err(|message| AppError::with_fields("StartAction", json!({ "message": message })))
+        .map_err(|message| AppError::host_soft("StartAction", message))
 }
 
 pub(crate) fn backend_action_key() -> String {

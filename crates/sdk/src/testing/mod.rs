@@ -12,16 +12,20 @@ mod release;
 mod scenario;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use calimero_app_engine_wasmtime::WasmtimeEngine;
+use calimero_app_host::SearchMode as HostSearchMode;
 use calimero_app_host::{
     blob_refs, stored_key as host_key, Audience as HostAudience, BlobHost, BlobInfo, Budget,
     Caller as HostCaller, Engine, HostCore, Invocation, InvocationKind, MemoryFiles, MethodKind,
     OrgRole, Outcome, Prepared, SearchHit as HostHit, SearchHost, SearchPage, SearchQuery, Status,
     TimerCtx, Usage,
 };
+use calimero_app_host::{entry_bytes, EntryIds, EntryOf, ENTRY_TOO_LARGE, MAX_ENTRY_BYTES};
 use calimero_app_host::{ActionHost, ActionStart, HttpHost};
+use calimero_primitives::search::{SearchMode as IndexMode, SearchOrder, SearchRequest};
+use calimero_search::records::{record_prefix, TableSearch, GENERATION_PREFIX};
 use serde_json::Value;
 
 pub use calimero_app_host::{HttpRequest, HttpResponse, TrapKind};
@@ -48,13 +52,42 @@ impl BlobHost for HarnessBlobs {
     }
 }
 
-/// The harness's search (spec section 7): a plain scan of the table's records that keeps
-/// those whose declared fields contain every word of the query (case-insensitive), each
-/// scored 1.0, in key order. The node ranks with its full-text index; tests should assert
-/// which records match, not their order.
+/// The harness's search (spec section 7): the node's own index (`calimero-search`), built
+/// from the run's state the first time a view queries a table, with the node's documents
+/// (`calimero_search::records`) and the node's query, so hits, their order, scores, snippets
+/// and paging are what a node answers for the same state.
 struct HarnessSearch {
     state: Arc<BTreeMap<Vec<u8>, Vec<u8>>>,
     fields: BTreeMap<String, Vec<String>>,
+    tables: Mutex<BTreeMap<String, Arc<TableSearch>>>,
+}
+
+impl HarnessSearch {
+    fn new(state: Arc<BTreeMap<Vec<u8>, Vec<u8>>>, fields: BTreeMap<String, Vec<String>>) -> Self {
+        Self {
+            state,
+            fields,
+            tables: Mutex::default(),
+        }
+    }
+
+    /// `table`'s index over the run's state, built once per run.
+    fn table(&self, table: &str, fields: &[String]) -> Result<Arc<TableSearch>, String> {
+        let mut tables = self.tables.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(t) = tables.get(table) {
+            return Ok(Arc::clone(t));
+        }
+        let prefix = host_key(calimero_app_host::GENERATION, &record_prefix(table));
+        let records = self
+            .state
+            .range(prefix.clone()..)
+            .take_while(|(k, _)| k.starts_with(&prefix))
+            .map(|(k, v)| (k.as_slice(), v.as_slice()));
+        let built =
+            Arc::new(TableSearch::build(table, fields, records).map_err(|e| e.to_string())?);
+        let _prev = tables.insert(table.to_owned(), Arc::clone(&built));
+        Ok(built)
+    }
 }
 
 impl SearchHost for HarnessSearch {
@@ -62,52 +95,101 @@ impl SearchHost for HarnessSearch {
         let Some(fields) = self.fields.get(&q.table) else {
             return Err(format!("table {:?} declares no search fields", q.table));
         };
-        let prefix = host_key(
-            calimero_app_host::GENERATION,
-            &crate::encoding::key::encode(&[
-                crate::KeyPart::Str(q.table.clone()),
-                crate::KeyPart::Str("r".into()),
-            ]),
-        );
-        let words: Vec<String> = q.text.split_whitespace().map(str::to_lowercase).collect();
-        let mut hits = Vec::new();
-        for (k, v) in self.state.range(prefix.clone()..) {
-            if !k.starts_with(&prefix) {
-                break;
-            }
-            let Ok(ciborium::Value::Map(entries)) = ciborium::from_reader(v.as_slice()) else {
-                continue;
-            };
-            let texts: Vec<String> = entries
-                .iter()
-                .filter(|(name, _)| {
-                    name.as_text()
-                        .is_some_and(|n| fields.iter().any(|f| f == n))
-                })
-                .filter_map(|(_, value)| value.as_text().map(str::to_owned))
-                .collect();
-            let all = texts.join(" ").to_lowercase();
-            if !words.is_empty() && words.iter().all(|w| all.contains(w.as_str())) {
-                hits.push(HostHit {
-                    key: k[8..].to_vec(),
-                    score: 1.0,
-                    snippet: texts.first().cloned().unwrap_or_default(),
-                });
-            }
-        }
-        let total = hits.len() as u64;
-        let start = q.cursor as usize;
-        let page: Vec<HostHit> = hits
-            .into_iter()
-            .skip(start)
-            .take(q.limit as usize)
-            .collect();
-        let end = start + page.len();
+        let table = self.table(&q.table, fields)?;
+        // The node's request (`calimero-node`'s `component::search::RunSearch`).
+        let request = SearchRequest {
+            index: q.table.clone(),
+            query: q.text.clone(),
+            mode: match q.mode {
+                HostSearchMode::Words => IndexMode::Words,
+                HostSearchMode::Prefix => IndexMode::Prefix,
+                HostSearchMode::Substring => IndexMode::Substring,
+                HostSearchMode::Fuzzy => IndexMode::Fuzzy,
+            },
+            filters: Vec::new(),
+            order: SearchOrder::Relevance,
+            cursor: q.cursor,
+            limit: q.limit,
+        };
+        let response = table.search(&request).map_err(|e| e.to_string())?;
         Ok(SearchPage {
-            next: (end < total as usize).then(|| u32::try_from(end).unwrap_or(u32::MAX)),
-            hits: page,
-            total,
+            hits: response
+                .hits
+                .into_iter()
+                .filter_map(|h| {
+                    let key = table.key(&h.id)?;
+                    Some(HostHit {
+                        key: key.get(GENERATION_PREFIX..)?.to_vec(),
+                        score: h.score,
+                        snippet: h.snippet,
+                    })
+                })
+                .collect(),
+            next: response.next_cursor,
+            total: response.total,
         })
+    }
+}
+
+/// The node's last check of a logged run (D50): its log entry, JSON with keys and values in
+/// base64, over `MAX_ENTRY_BYTES` is logged as a `HostDenied` trap with nothing applied,
+/// whatever `MAX_RUN_BYTES` let through. The harness has no log, so it measures the entry
+/// the node would write ([`calimero_app_host::entry_bytes`], pinned against the node's by
+/// `the_host_cores_entry_size_is_the_logs`). Account names here are shorter than a node's
+/// account ids, so an entry within a few bytes of the cap can still differ.
+fn entry_checked(
+    kind: InvocationKind,
+    method: &str,
+    args: &[u8],
+    caller: &HostCaller,
+    timer: Option<TimerCtx>,
+    ids: EntryIds,
+    out: Outcome,
+) -> Outcome {
+    // A run that timed out or could not be served is not logged (D23).
+    if matches!(
+        out.status,
+        Status::Trap {
+            kind: TrapKind::Timeout | TrapKind::Unavailable,
+            ..
+        }
+    ) {
+        return out;
+    }
+    let bundle = "0".repeat(64);
+    let of = match (kind, timer) {
+        (InvocationKind::Timer, Some(t)) => EntryOf::Tick {
+            timer: method,
+            scheduled_ms: t.scheduled_ms,
+            previous_ms: t.previous_ms,
+        },
+        (InvocationKind::Init, _) => EntryOf::Init { bundle: &bundle },
+        // An action's own run writes nothing and is not an entry of its own.
+        (InvocationKind::Action | InvocationKind::View | InvocationKind::Migrate, _) => return out,
+        _ => EntryOf::Call {
+            method,
+            args,
+            caller,
+        },
+    };
+    if entry_bytes(of, ids, &out) <= MAX_ENTRY_BYTES {
+        return out;
+    }
+    Outcome {
+        status: Status::Trap {
+            kind: TrapKind::HostDenied,
+            detail: ENTRY_TOO_LARGE.to_owned(),
+        },
+        result: Vec::new(),
+        diff: Vec::new(),
+        events: Vec::new(),
+        xcalls: Vec::new(),
+        actions: Vec::new(),
+        new_files: Vec::new(),
+        published: Vec::new(),
+        compute_starts: Vec::new(),
+        compute_cancels: Vec::new(),
+        ..out
     }
 }
 
@@ -996,6 +1078,7 @@ impl TestApp {
             HostCaller::Account(a) | HostCaller::ApiKey { account: a, .. } => Some(a.clone()),
             _ => None,
         };
+        let entry_args = args.clone();
         let inv = Invocation {
             kind,
             method: method.to_owned(),
@@ -1009,10 +1092,10 @@ impl TestApp {
             compute: None,
         };
         let state = Arc::new(self.state.clone());
-        let search = Arc::new(HarnessSearch {
-            state: Arc::clone(&state),
-            fields: self.prepared.abi.search.clone(),
-        });
+        let search = Arc::new(HarnessSearch::new(
+            Arc::clone(&state),
+            self.prepared.abi.search.clone(),
+        ));
         let host = HostCore::new(
             APP_ID,
             state,
@@ -1034,7 +1117,16 @@ impl TestApp {
         } else {
             Budget::call()
         };
-        let out = self.engine.invoke(&self.prepared, host, budget);
+        let mut out = self.engine.invoke(&self.prepared, host, budget);
+        if !is_view {
+            let ids = EntryIds {
+                ts_ms: entry_ts_ms,
+                base_index: seq_before,
+                id_term: TERM,
+                id_seq: self.seq,
+            };
+            out = entry_checked(kind, method, &entry_args, &caller, timer, ids, out);
+        }
         self.usage = out.usage;
         if matches!(
             out.status,

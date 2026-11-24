@@ -33,7 +33,7 @@ fn echo_guest_builds_into_a_component_with_only_world_imports() {
     assert_eq!(built.imports, imports_of(&built.component).unwrap());
 
     let expected: serde_json::Value = serde_json::from_str(
-        r#"{"world":"calimero:app@0.5.6","methods":{"echo":{"kind":"call"}}}"#,
+        r#"{"world":"calimero:app@0.5.7","methods":{"echo":{"kind":"call"}}}"#,
     )
     .unwrap();
     assert_eq!(built.abi, Some(expected.clone()));
@@ -137,7 +137,7 @@ fn a_crate_with_compute_methods_builds_a_second_component_that_cannot_reach_stat
         .imports
         .iter()
         .all(|i| !i.starts_with("calimero:app/job")));
-    assert_eq!(app.abi.expect("an app ABI")["world"], "calimero:app@0.5.6");
+    assert_eq!(app.abi.expect("an app ABI")["world"], "calimero:app@0.5.7");
 }
 
 #[test]
