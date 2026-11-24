@@ -552,6 +552,86 @@ async fn a_flood_of_anonymous_handshakes_leaves_peers_their_own() {
     assert_eq!(r.status(), 200);
 }
 
+/// Floods `handshake` with `body` from eight tasks until the node refuses
+/// one `503`, and leaves them running.
+async fn flood(
+    http: &reqwest::Client,
+    handshake: &Url,
+    body: Vec<u8>,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let (refused_tx, mut refused) = tokio::sync::watch::channel(false);
+    let flooders = (0..8)
+        .map(|_| {
+            let (http, handshake, body, refused_tx) = (
+                http.clone(),
+                handshake.clone(),
+                body.clone(),
+                refused_tx.clone(),
+            );
+            tokio::spawn(async move {
+                loop {
+                    let r = http.post(handshake.clone()).body(body.clone()).send().await;
+                    if r.is_ok_and(|r| r.status() == 503) {
+                        let _sent = refused_tx.send(true);
+                    }
+                }
+            })
+        })
+        .collect();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        refused.wait_for(|refused| *refused),
+    )
+    .await
+    .expect("handshakes are limited")
+    .unwrap();
+    flooders
+}
+
+/// One client flooding anonymous handshakes does not keep an honest
+/// anonymous client from opening its session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flood_of_anonymous_handshakes_leaves_an_honest_client_its_session() {
+    let (url, transport, _h) = serve(SealedOptions::default()).await;
+    let http = reqwest::Client::new();
+    let handshake = url.join("sealed/handshake").unwrap();
+    let body = [&[2u8][..], &transport.public_key(), &[0u8; 48]].concat();
+    let flooders = flood(&http, &handshake, body).await;
+
+    let honest = Client::with_key(url.clone(), http.clone(), transport.public_key());
+    let req = http.get(url.join("caller").unwrap()).build().unwrap();
+    let outcome = honest.execute(req).await.map(|r| r.status());
+    for flooder in flooders {
+        flooder.abort();
+    }
+    assert_eq!(outcome.unwrap(), 200);
+}
+
+/// A stranger cannot spend the peers' handshake budget by sending the
+/// identified version byte with a key no peer holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flood_of_strangers_identified_handshakes_leaves_peers_their_own() {
+    let (url, transport, _h) = serve(SealedOptions::default()).await;
+    let http = reqwest::Client::new();
+    let handshake = url.join("sealed/handshake").unwrap();
+    let body = [&[3u8][..], &transport.public_key(), &[0u8; 96]].concat();
+    let flooders = flood(&http, &handshake, body).await;
+
+    let me = SealedTransport::generate(&SealedOptions::default());
+    let peer = Client::identified_as(
+        url.clone(),
+        http.clone(),
+        Arc::new(Known(transport.public_key())),
+        me.static_key(),
+    );
+    let req = http.get(url.join("caller").unwrap()).build().unwrap();
+    let outcome = peer.execute(req).await.map(|r| r.status());
+    for flooder in flooders {
+        flooder.abort();
+    }
+    assert_eq!(outcome.unwrap(), 200);
+}
+
 const SALT: &[u8] = b"salt";
 const INFO: &[u8] = b"info";
 
