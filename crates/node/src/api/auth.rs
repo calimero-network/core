@@ -12,6 +12,8 @@ const MAX_KEY_FOLLOW_UPS: usize = 4;
 const MAX_KEY_FOLLOW_UP_BYTES: usize = 64 * 1024;
 /// What a follow-up's arguments write for the key being made: `key:<its id>`.
 const KEY_PLACEHOLDER: &str = "key:$key";
+/// The bytes of each follow-up's salt.
+const FOLLOW_UP_SALT_BYTES: usize = 16;
 /// How often a follow-up whose outcome is unknown (a 5xx) is sent again under its key.
 const MAX_FOLLOW_UP_TRIES: usize = 3;
 /// The wait before sending such a follow-up again.
@@ -1246,7 +1248,7 @@ struct Approved {
 }
 
 /// `then` with the salts the challenge carries, one each; another count, or a
-/// salt that is not base64url, is a different approval.
+/// salt that is not [`FOLLOW_UP_SALT_BYTES`] of base64url, is a different approval.
 fn approved(
     then: Vec<crate::types::KeyFollowUp>,
     salts: &[String],
@@ -1259,7 +1261,10 @@ fn approved(
     then.into_iter()
         .zip(salts)
         .map(|(call, salt)| {
-            let bytes = calimero_identity::from_b64url(salt).map_err(|_| wrong())?;
+            let bytes = calimero_identity::from_b64url(salt)
+                .ok()
+                .filter(|b| b.len() == FOLLOW_UP_SALT_BYTES)
+                .ok_or_else(wrong)?;
             Ok(Approved {
                 stated: call.signed(&bytes),
                 salt: salt.clone(),
@@ -1421,10 +1426,13 @@ async fn make_key(
     // The last key this account made may have applied on the leader alone.
     if !node.sys_caught_up().await {
         return Err(ApiError::unavailable(
-            "this node could not read the account's keys; send it again",
+            "this node could not read the account's keys; the approval is spent: approve it again",
         ));
     }
-    key_room(&node, &record.account)?;
+    key_room(&node, &record.account).map_err(|e| ApiError {
+        message: format!("{}; the approval is spent: approve it again", e.message),
+        ..e
+    })?;
     let follow_ups = stated(&then);
     let results = run_follow_ups(&node, &p, &then, &record.key_id, &consent).await?;
     let _ok = node
@@ -1500,7 +1508,10 @@ async fn apikey_create(
     // Judged on both requests, so the retry runs no follow-up for a key
     // the log would refuse.
     key_room(&node, &account)?;
-    let salts: Vec<String> = then.iter().map(|_| b64url(&random::<16>())).collect();
+    let salts: Vec<String> = then
+        .iter()
+        .map(|_| b64url(&random::<FOLLOW_UP_SALT_BYTES>()))
+        .collect();
     let shown = approved(then.clone(), &salts)?;
     let args = crate::system::api_key_args(&hash, &record, &stated(&shown));
     let carry = if salts.is_empty() {
@@ -1869,6 +1880,29 @@ mod tests {
         );
         assert!(outcome_unknown(&crate::node::timeout_error()));
         assert!(!outcome_unknown(&ApiError::forbidden("read-only")));
+    }
+
+    /// Each follow-up takes one salt of exactly its size, else the approval is
+    /// another's.
+    #[test]
+    fn a_follow_ups_salt_is_its_exact_size() {
+        let call = || crate::types::KeyFollowUp {
+            app: "a".into(),
+            method: "m".into(),
+            args: json!({ "p": "key:k" }),
+        };
+        let salt = |n: usize| b64url(&vec![7; n]);
+        assert!(approved(vec![call()], &[salt(FOLLOW_UP_SALT_BYTES)]).is_ok());
+        for wrong in [
+            vec![salt(FOLLOW_UP_SALT_BYTES - 1)],
+            vec![salt(FOLLOW_UP_SALT_BYTES + 1)],
+            vec![String::new()],
+            vec!["not base64url!".to_owned()],
+            vec![],
+        ] {
+            let e = approved(vec![call()], &wrong).err().map(|e| e.code);
+            assert_eq!(e.as_deref(), Some("WRONG_CHALLENGE"), "{wrong:?}");
+        }
     }
 
     /// A key write that failed after follow-ups ran says which applied and

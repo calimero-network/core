@@ -967,7 +967,8 @@ impl KeyFollowUp {
         }
     }
 
-    /// The arguments with every object's keys sorted, numbers as written: one
+    /// The arguments with every object's keys sorted by UTF-8 bytes, in compact
+    /// `serde_json` output (numbers as parsed, not as sent): one
     /// form for equal arguments, another for any two that differ.
     fn args_bytes(&self) -> String {
         fn sorted(v: &serde_json::Value) -> serde_json::Value {
@@ -992,7 +993,7 @@ impl KeyFollowUp {
 }
 
 /// A follow-up with its arguments only by a salted hash (hex SHA-256 of the
-/// salt, then the arguments with sorted keys): the system log reaches nodes
+/// salt, then [`KeyFollowUp::args_bytes`]): the system log reaches nodes
 /// the app's organization never approved, so it holds none of an app's data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

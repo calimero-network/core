@@ -115,8 +115,9 @@ def sync_detailed(
     apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the
     key's own `apps` that the same passkey approves, each naming the new key: every string argument
     exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the
-    consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
-    JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
+    consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a
+    16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact
+    JSON), the `412` details list them so (`then`), and the retry runs them in order before making the
     key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
     applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and
     `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted)
@@ -163,8 +164,9 @@ def sync(
     apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the
     key's own `apps` that the same passkey approves, each naming the new key: every string argument
     exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the
-    consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
-    JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
+    consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a
+    16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact
+    JSON), the `412` details list them so (`then`), and the retry runs them in order before making the
     key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
     applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and
     `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted)
@@ -206,8 +208,9 @@ async def asyncio_detailed(
     apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the
     key's own `apps` that the same passkey approves, each naming the new key: every string argument
     exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the
-    consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
-    JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
+    consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a
+    16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact
+    JSON), the `412` details list them so (`then`), and the retry runs them in order before making the
     key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
     applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and
     `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted)
@@ -252,8 +255,9 @@ async def asyncio(
     apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the
     key's own `apps` that the same passkey approves, each naming the new key: every string argument
     exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the
-    consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
-    JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
+    consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a
+    16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact
+    JSON), the `412` details list them so (`then`), and the retry runs them in order before making the
     key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
     applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and
     `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted)

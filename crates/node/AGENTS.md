@@ -767,8 +767,8 @@ is its command line.
   `key:<keyId>` (exact string values only, `for_key`), signed in the key's one
   consent (`api_key_args` states `then` only when set; `CreateApiKey { then }`,
   `Feature::KeyFollowUps`; consent and entry carry `types::SignedFollowUp`,
-  arguments only by a hash salted per follow-up (`KeyFollowUp::signed`, keys
-  sorted, numbers exact; salts in the challenge's `KeyCarry`), as the system
+  arguments only by a hash salted per follow-up (`KeyFollowUp::signed`, the
+  parsed arguments with keys sorted by UTF-8 bytes in compact JSON; salts in the challenge's `KeyCarry`), as the system
   log reaches unapproved nodes).
   Read-only team members and follow-ups without `key:$key` are refused before
   the prompt. Both requests check `SystemState::api_key_room` (the rule
