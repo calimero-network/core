@@ -70,7 +70,8 @@ class Services(DeepCase):
     seeds = "a package of two services (`alpha`, `beta`) installed; an instance of each, written to"
     verifies = ("the package and each instance's release naming its service, each instance answering with its own "
                 "data, an instance naming no service or an unknown one refused; on the new release a new instance "
-                "of a named service, and the capability card of each service")
+                "of a named service, the capability card of each service, and the alpha instance upgraded to a later "
+                "release of the package keeping its service and its data")
 
     def _create(self, p, s, service):
         body = {"name": f"svc-{service}", "package": s["package"], "version": s["version"]}
@@ -123,6 +124,11 @@ class Services(DeepCase):
         refused("NO_SUCH_SERVICE", lambda: mel.get(f"packages/{s['package']}/{s['version']}/capabilities"),
                 "the card of a release with several services, naming none")
         s["extra"] = [late]
+        _, later = install(mel, w, "kv-svc-1.1.0.mpk")
+        alpha = s["apps"]["alpha"]
+        mel.raw("post", f"apps/{alpha}/upgrade", {"version": later})
+        check(later in json.dumps(snap(mel, f"apps/{alpha}")["release"]), f"alpha runs {later} after the upgrade")
+        eq(mel.result(alpha, "get", {"key": "service"}), "alpha", "the alpha instance's data across its upgrade")
         self._record(w, s)
 
 
@@ -135,7 +141,8 @@ class PackageOrigins(DeepCase):
              "(a custom domain)")
     verifies = ("the manager's list as they read it; the operator's served-origins list naming the package's host "
                 "label; a stranger refused the list and the registration; on the new release one origin removed "
-                "and another registered")
+                "and two registered while the other seeded served origin stays, after a restart too. "
+                "Only the stored record and the lists are read: no passkey ceremony runs from a registered origin")
 
     def _path(self, s):
         return f"package-origins/{s['package']}"
@@ -158,20 +165,21 @@ class PackageOrigins(DeepCase):
     def populate(self, w):
         ora = person(w, "ora")
         package, _ = install(ora, w, "kv-p-1.0.0.mpk")
-        s = {"package": package, "plain": "https://plain-ora.example.test", "served": "https://served-ora.example.test"}
+        s = {"package": package, "plain": "https://plain-ora.example.test", "served": ["https://served-ora.example.test"]}
         ora.raw("post", self._path(s), {"origin": s["plain"]})
-        ora.raw("post", self._path(s), {"origin": s["served"], "served": True})
+        ora.raw("post", self._path(s), {"origin": s["served"][0], "served": True})
         s["decisions"] = self._decisions(w, s)
         check("ok" not in s["decisions"].values(), f"a stranger handled the origins: {s['decisions']}")
         self._read(w, s)
-        eq(s["origins"], sorted([s["plain"], s["served"]]), "the registered origins")
-        eq(until("the served origin is listed", lambda: self._served(w, s)), [s["served"]], "the operator's served list")
+        eq(s["origins"], sorted([s["plain"], *s["served"]]), "the registered origins")
+        eq(until("the served origin is listed", lambda: self._served(w, s)), s["served"], "the operator's served list")
         return s
 
     def check(self, w, s):
         ora = person(w, "ora")
         until("the origins read back", lambda: same_read(ora, self._path(s), s["read"], "the package's origins"), 15)
-        eq(until("the served origin is listed", lambda: self._served(w, s)), [s["served"]], "the operator's served list")
+        eq(until("the served origins are listed", lambda: self._served(w, s)), sorted(s["served"]),
+           "the operator's served list")
         same_decisions(self._decisions(w, s), s["decisions"], "a stranger and the origins")
 
     def exercise(self, w, s):
@@ -179,11 +187,12 @@ class PackageOrigins(DeepCase):
         ora.raw("delete", self._path(s), {"origin": s["plain"]})
         s["plain"] = "https://plain-ora-2.example.test"
         ora.raw("post", self._path(s), {"origin": s["plain"]})
-        ora.raw("post", self._path(s), {"origin": "https://served-ora-2.example.test", "served": True})
-        s["served"] = "https://served-ora-2.example.test"
-        ora.raw("delete", self._path(s), {"origin": "https://served-ora.example.test"})
+        # The first served origin stays: the restart check then reads a record the old release wrote.
+        newer = "https://served-ora-2.example.test"
+        ora.raw("post", self._path(s), {"origin": newer, "served": True})
+        s["served"] = [*s["served"], newer]
         self._read(w, s)
-        eq(s["origins"], sorted([s["plain"], s["served"]]), "the origins after the new release changed them")
+        eq(s["origins"], sorted([s["plain"], *s["served"]]), "the origins after the new release changed them")
         self.check(w, s)
 
 
