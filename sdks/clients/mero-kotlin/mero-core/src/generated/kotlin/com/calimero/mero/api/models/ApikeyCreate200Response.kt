@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.ApikeyCreate200ResponseThenInner
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -33,6 +34,7 @@ import kotlinx.serialization.Contextual
  *
  * @param keyId 
  * @param key 
+ * @param then 
  */
 @Serializable
 
@@ -42,7 +44,10 @@ data class ApikeyCreate200Response (
     val keyId: kotlin.String,
 
     @SerialName(value = "key")
-    val key: kotlin.String
+    val key: kotlin.String,
+
+    @SerialName(value = "then")
+    val then: kotlin.collections.List<ApikeyCreate200ResponseThenInner>
 
 ) {
 
