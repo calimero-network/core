@@ -4344,8 +4344,8 @@ async fn install_sheet_naming_no_org(
         calimero_node::app_host::label(package)
     );
     let in_app = c.client(1);
-    let mut in_app_key = SoftAuthenticator::with_key(key, "localhost", &app_origin);
-    let _s = in_app.sign_in(&mut in_app_key).await.unwrap();
+    let mut in_app_passkey = SoftAuthenticator::with_key(key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut in_app_passkey).await.unwrap();
     let made = ask(
         &in_app,
         &format!("{app_origin}/1.0.0/"),
@@ -4355,7 +4355,7 @@ async fn install_sheet_naming_no_org(
     .await
     .unwrap();
     let url = made["url"].as_str().unwrap().to_owned();
-    let page_key = SoftAuthenticator::with_key(&in_app_key, "localhost", &origin(&url));
+    let page_key = SoftAuthenticator::with_key(&in_app_passkey, "localhost", &origin(&url));
     (Page::new(&url), page_key)
 }
 
