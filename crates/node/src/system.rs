@@ -5015,7 +5015,11 @@ impl SystemCmd {
 /// record but the account (the statement's subject), and the hash of the
 /// key, so the log cannot record another key under the same consent.
 #[must_use]
-pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
+pub fn api_key_args(
+    hash: &str,
+    record: &ApiKeyRecord,
+    then: &[crate::types::KeyFollowUp],
+) -> Value {
     let mut args = json!({
         "hash": hash,
         "keyId": record.key_id,
@@ -5030,6 +5034,10 @@ pub fn api_key_args(hash: &str, record: &ApiKeyRecord) -> Value {
     // the bytes it did before upgrade keys.
     if let (Some(scope), Some(obj)) = (&record.upgrades, args.as_object_mut()) {
         let _prev = obj.insert("upgrades".to_owned(), json!(scope));
+    }
+    // Likewise `then`, stated only by a key made with follow-up calls.
+    if let Some(obj) = args.as_object_mut().filter(|_| !then.is_empty()) {
+        let _prev = obj.insert("then".to_owned(), json!(then));
     }
     args
 }
@@ -5882,6 +5890,10 @@ pub enum SystemCmd {
         /// cluster version brings the rule ([`SystemState::cluster_brings`]).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         owner_approves: bool,
+        /// The confirm calls the consent approved with the key, run before it
+        /// ([`api_key_args`]'s `then`; [`cluster_version::Feature::KeyFollowUps`]).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        then: Vec<crate::types::KeyFollowUp>,
     },
     RevokeApiKey {
         key_id: String,

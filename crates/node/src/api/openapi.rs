@@ -474,6 +474,7 @@ const ERROR_DETAILS: &[(&str, &str)] = &[
     ("COMPUTE_ABI_MISMATCH", "ServiceRefused"),
     ("CONFIRM_REQUIRED", "ConfirmRequired"),
     ("FEATURE_NOT_ACTIVE", "FeatureNotActive"),
+    ("FOLLOW_UP_FAILED", "FollowUpFailed"),
     ("FILES_UNAVAILABLE", "RetryAfter"),
     ("INIT_FAILED", "InitFailed"),
     ("NOT_LEADER", "NotLeader"),
@@ -608,8 +609,8 @@ fn components() -> Vec<Component> {
         ),
         component(
             "ConfirmRequired",
-            "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it.",
-            "{ challengeId: string, challenge: b64url, rpId: string, allowCredentials: string[], apps?: string[] }",
+            "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it. `then`: making an API key with follow-ups, the calls the passkey approves, `key:<keyId>` written in.",
+            "{ challengeId: string, challenge: b64url, rpId: string, allowCredentials: string[], apps?: string[], then?: { app: string, method: string, args: any }[] }",
         ),
         component(
             "OperatorProof",
@@ -650,6 +651,11 @@ fn components() -> Vec<Component> {
             "NotLeader",
             "`details` of a `421 NOT_LEADER`: the leader's URL to send the same request to, and its node id where known.",
             "{ leaderUrl: string, leader?: uint }",
+        ),
+        component(
+            "FollowUpFailed",
+            "`details` of a `422 FOLLOW_UP_FAILED`: the API key's follow-up that failed (`index` in `then`, its app and method) and the error it answered; no key was made.",
+            "{ index: uint, app: string, method: string, error: { status: uint, error: string, message: string, details?: any } }",
         ),
         component(
             "FeatureNotActive",
@@ -1269,11 +1275,11 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         delete("/auth/aliases/{alias}", "alias_delete", SignedIn, "Remove an alias").ok("{}"),
         post("/auth/apikeys", "apikey_create", AccountHolder, "Make an API key")
-            .about("Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.")
-            .json::<super::ApiKeyBody>("{ label?: string, apps?: string[], methods?: string[], readOnly?: bool, allowConfirm?: bool, ttlSecs?: uint, upgrades?: { app: string, package?: string }, confirm?: #Confirm }")
-            .ok("{ keyId: string, key: string }")
+            .about("Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm methods of the key's own `apps` that the same passkey approves: every string argument exactly `key:$key` is written `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error }`) and no key is made. `412` first. The key is shown once.")
+            .json::<super::ApiKeyBody>("{ label?: string, apps?: string[], methods?: string[], readOnly?: bool, allowConfirm?: bool, ttlSecs?: uint, upgrades?: { app: string, package?: string }, then?: { app: string, method: string, args?: any }[], confirm?: #Confirm }")
+            .ok("{ keyId: string, key: string, then: { index: uint, result: any }[] }")
             .step_up()
-            .errors(&[(400, "BAD_UPGRADE_KEY"), (400, "WRONG_CHALLENGE"), (429, "QUOTA_EXCEEDED")]),
+            .errors(&[(400, "BAD_FOLLOW_UP"), (400, "BAD_UPGRADE_KEY"), (400, "RESERVED_METHOD"), (400, "WRONG_CHALLENGE"), (409, "FEATURE_NOT_ACTIVE"), (413, "ARGS_TOO_LARGE"), (422, "FOLLOW_UP_FAILED"), (429, "QUOTA_EXCEEDED")]),
         get("/auth/apikeys", "apikey_list", AccountHolder, "The account's API keys").ok("{ keys: #ApiKey[] }"),
         delete("/auth/apikeys/{key}", "apikey_revoke", AccountHolder, "Revoke an API key")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
@@ -3314,6 +3320,20 @@ mod tests {
         vec![
             confirm(),
             super::super::orgs::with_detail(confirm(), "apps", json!(["app"])),
+            super::super::orgs::with_detail(
+                confirm(),
+                "then",
+                json!([{ "app": "a", "method": "m", "args": { "principal": "key:k" } }]),
+            ),
+            super::super::auth::follow_up_failed(
+                1,
+                &crate::types::KeyFollowUp {
+                    app: "a".to_owned(),
+                    method: "m".to_owned(),
+                    args: Value::Null,
+                },
+                &failure(&Status::AppError, &app_error, false),
+            ),
             super::super::operator_signature_required(
                 &crate::proof::Statement::new("cluster", "__set_quotas", &json!({ "a": 1 })),
                 "c1",

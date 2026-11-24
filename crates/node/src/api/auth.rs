@@ -6,6 +6,13 @@
 )]
 use super::*;
 
+/// The most confirm calls one API key's consent approves with it (`then`).
+const MAX_KEY_FOLLOW_UPS: usize = 4;
+/// The most bytes those calls take as JSON, so the key's entry and each call's stay small.
+const MAX_KEY_FOLLOW_UP_BYTES: usize = 64 * 1024;
+/// What a follow-up's arguments write for the key being made: `key:<its id>`.
+const KEY_PLACEHOLDER: &str = "key:$key";
+
 /// A sign-in's session: its refresh token logged with the sign-in's
 /// assertion, then the session token.
 async fn new_session(
@@ -1042,6 +1049,9 @@ pub(super) struct ApiKeyBody {
     /// An upgrade key: upgrades this app, and nothing else.
     #[serde(default)]
     upgrades: Option<UpgradesBody>,
+    /// Confirm calls approved with the key, in one passkey prompt.
+    #[serde(default)]
+    then: Vec<crate::types::KeyFollowUp>,
     #[serde(default)]
     confirm: Option<ConfirmBody>,
 }
@@ -1097,10 +1107,145 @@ async fn upgrade_scope(
 /// The longest an API key lives.
 const MAX_API_KEY_TTL: u64 = 365 * 24 * 3600;
 
+/// `400 BAD_FOLLOW_UP`: a `then` the key cannot be made with.
+fn bad_follow_up(message: &str) -> ApiError {
+    ApiError::bad_request("BAD_FOLLOW_UP", message)
+}
+
+/// The follow-ups `body` asks for, each judged as `POST /apps/{app}/intents`
+/// judges its caller, and refused unless it is a confirm method of an app in
+/// the key's own `apps`. The app ids are canonical; the arguments as sent.
+async fn follow_ups(
+    node: &Node,
+    headers: &HeaderMap,
+    body: &ApiKeyBody,
+) -> Result<Vec<crate::types::KeyFollowUp>, ApiError> {
+    if body.then.is_empty() {
+        return Ok(Vec::new());
+    }
+    if body.then.len() > MAX_KEY_FOLLOW_UPS {
+        return Err(bad_follow_up(&format!(
+            "a key takes at most {MAX_KEY_FOLLOW_UPS} follow-ups"
+        )));
+    }
+    if serde_json::to_vec(&body.then).map_or(usize::MAX, |b| b.len()) > MAX_KEY_FOLLOW_UP_BYTES {
+        return Err(ApiError::new(
+            413,
+            "ARGS_TOO_LARGE",
+            &format!("follow-ups are limited to {MAX_KEY_FOLLOW_UP_BYTES} bytes"),
+        ));
+    }
+    if body.upgrades.is_some() {
+        return Err(bad_follow_up("an upgrade key takes no follow-ups"));
+    }
+    let Some(apps) = &body.apps else {
+        return Err(bad_follow_up(
+            "follow-ups need a key scoped to apps: name them in `apps`",
+        ));
+    };
+    node.require_features(&[crate::system::cluster_version::Feature::KeyFollowUps])
+        .await?;
+    let mut out = Vec::with_capacity(body.then.len());
+    for f in &body.then {
+        super::calls::not_reserved(&f.method)?;
+        let app_id = node.canonical_app_id(&f.app);
+        if !apps.contains(&app_id) {
+            return Err(bad_follow_up(&format!(
+                "{} is not one of the key's apps",
+                f.app
+            )));
+        }
+        let app = node.app(&app_id).await?;
+        let _p = gate(node, headers, &app, &f.method, true).await?;
+        app.require_app_component()?;
+        let confirm = node
+            .prepared_for(&node.running_bundle(&app))
+            .await?
+            .abi
+            .methods
+            .get(&f.method)
+            .is_some_and(|m| m.confirm && m.kind != calimero_app_host::MethodKind::View);
+        if !confirm {
+            return Err(bad_follow_up(&format!(
+                "{} is not a confirm method of {}",
+                f.method, f.app
+            )));
+        }
+        out.push(crate::types::KeyFollowUp {
+            app: app_id,
+            ..f.clone()
+        });
+    }
+    Ok(out)
+}
+
+/// `follow_ups` as signed for the key `key_id`: every string value that is
+/// exactly [`KEY_PLACEHOLDER`] becomes `key:<key_id>`.
+fn for_key(
+    follow_ups: &[crate::types::KeyFollowUp],
+    key_id: &str,
+) -> Vec<crate::types::KeyFollowUp> {
+    fn substitute(v: &mut Value, principal: &str) {
+        match v {
+            Value::String(s) if s == KEY_PLACEHOLDER => principal.clone_into(s),
+            Value::Array(items) => items.iter_mut().for_each(|i| substitute(i, principal)),
+            Value::Object(fields) => fields.values_mut().for_each(|f| substitute(f, principal)),
+            _ => {}
+        }
+    }
+    let principal = format!("key:{key_id}");
+    follow_ups
+        .iter()
+        .map(|f| {
+            let mut f = f.clone();
+            substitute(&mut f.args, &principal);
+            f
+        })
+        .collect()
+}
+
+/// `422 FOLLOW_UP_FAILED`: follow-up `index` answered `e`, so no key was made.
+pub(super) fn follow_up_failed(
+    index: usize,
+    f: &crate::types::KeyFollowUp,
+    e: &ApiError,
+) -> ApiError {
+    ApiError::new(
+        422,
+        "FOLLOW_UP_FAILED",
+        &format!(
+            "follow-up {index} ({} on {}) failed, so the key was not created: {}",
+            f.method, f.app, e.message
+        ),
+    )
+    .with_details(json!({ "index": index, "app": f.app, "method": f.method, "error": e }))
+}
+
+/// Run the approved follow-ups in order as `p`, each once under an idempotency
+/// key of its own, stopping at the first that fails.
+async fn run_follow_ups(
+    node: &Node,
+    p: &Principal,
+    then: &[crate::types::KeyFollowUp],
+    key_id: &str,
+    consent: &Value,
+) -> Result<Vec<Value>, ApiError> {
+    let mut results = Vec::with_capacity(then.len());
+    for (index, f) in then.iter().enumerate() {
+        let key = format!("apikey:{key_id}:then:{index}");
+        let result = super::calls::call_consented(node, p, f, key, consent.clone())
+            .await
+            .map_err(|e| follow_up_failed(index, f, &e))?;
+        results.push(json!({ "index": index, "result": result }));
+    }
+    Ok(results)
+}
+
 /// Create an API key: the account's, approved with a passkey over the key's
 /// record and hash (412 first). The first request makes the key, its id and
 /// expiry and keeps them with the challenge; the retry logs what was
 /// approved. A passkey session only: an API key cannot make another.
+/// `then`: confirm calls the same passkey approves, run before the key is made.
 async fn apikey_create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -1108,6 +1253,7 @@ async fn apikey_create(
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
+    let follow_ups = follow_ups(&node, &headers, &body).await?;
     let (key, hash) = calimero_identity::new_api_key();
     // An upgrade key is made, and used, only by whom the rule in force lets upgrade
     // the app: from `Feature::OwnerApprovedUpgrades` on, an owner or admin of its
@@ -1142,7 +1288,8 @@ async fn apikey_create(
         node.sys(|s| s.upgrade_key_fits(&record, scope, owner_approves))
             .map_err(|e| ApiError::bad_request("BAD_UPGRADE_KEY", e))?;
     }
-    let args = crate::system::api_key_args(&hash, &record);
+    let then = for_key(&follow_ups, &record.key_id);
+    let args = crate::system::api_key_args(&hash, &record, &then);
     let c = consent_minted(
         &node,
         &p,
@@ -1152,7 +1299,12 @@ async fn apikey_create(
         Some(json!(key)),
         body.confirm,
     )
-    .await?;
+    .await
+    .map_err(|e| match e.code.as_str() {
+        // The 412 shows the calls the passkey approves, with the key's id in them.
+        "CONFIRM_REQUIRED" if !then.is_empty() => super::orgs::with_detail(e, "then", json!(then)),
+        _ => e,
+    })?;
     // The retry logs the key the approval names, made by the first request;
     // its scope must be the one this request asks for.
     let key = c
@@ -1169,7 +1321,8 @@ async fn apikey_create(
         upgrades: with_key(&key),
         ..record
     };
-    if crate::system::api_key_args(&hash, &record) != c.args
+    let then = for_key(&follow_ups, &record.key_id);
+    if crate::system::api_key_args(&hash, &record, &then) != c.args
         || record.expires_at > now_secs() + MAX_API_KEY_TTL
     {
         return Err(ApiError::bad_request(
@@ -1178,6 +1331,9 @@ async fn apikey_create(
         ));
     }
     let key_id = record.key_id.clone();
+    // The calls first: one that fails leaves no key, and those before it name
+    // a key id that never exists.
+    let results = run_follow_ups(&node, &p, &then, &key_id, &c.consent).await?;
     let _ok = node
         .sys_write(&SystemCmd::CreateApiKey {
             hash,
@@ -1186,9 +1342,12 @@ async fn apikey_create(
             owner_in_org: true,
             owner_in_team: true,
             owner_approves,
+            then,
         })
         .await?;
-    Ok(Json(json!({ "keyId": key_id, "key": key })))
+    Ok(Json(
+        json!({ "keyId": key_id, "key": key, "then": results }),
+    ))
 }
 
 async fn apikey_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {

@@ -73,6 +73,9 @@
     "FEATURE_NOT_ACTIVE": {
       "$ref": "#/components/schemas/FeatureNotActive"
     },
+    "FOLLOW_UP_FAILED": {
+      "$ref": "#/components/schemas/FollowUpFailed"
+    },
     "FILES_UNAVAILABLE": {
       "$ref": "#/components/schemas/RetryAfter"
     },
@@ -11129,7 +11132,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "Make an API key",
-        "description": "Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm methods of the key's own `apps` that the same passkey approves: every string argument exactly `key:$key` is written `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error }`) and no key is made. `412` first. The key is shown once.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -11186,6 +11189,27 @@
                       "app"
                     ]
                   },
+                  "then": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "app": {
+                          "type": "string"
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "args": {
+                          "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                        }
+                      },
+                      "required": [
+                        "app",
+                        "method"
+                      ]
+                    }
+                  },
                   "confirm": {
                     "$ref": "#/components/schemas/Confirm"
                   }
@@ -11207,18 +11231,39 @@
                     },
                     "key": {
                       "type": "string"
+                    },
+                    "then": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "index": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "result": {
+                            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                          }
+                        },
+                        "required": [
+                          "index",
+                          "result"
+                        ]
+                      }
                     }
                   },
                   "required": [
                     "keyId",
-                    "key"
+                    "key",
+                    "then"
                   ]
                 }
               }
             }
           },
           "400": {
-            "description": "`BAD_UPGRADE_KEY`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE`",
+            "description": "`BAD_FOLLOW_UP`; `BAD_UPGRADE_KEY`; `EXPIRED_CHALLENGE`; `RESERVED_METHOD`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11227,8 +11272,10 @@
               }
             },
             "x-calimero-codes": [
+              "BAD_FOLLOW_UP",
               "BAD_UPGRADE_KEY",
               "EXPIRED_CHALLENGE",
+              "RESERVED_METHOD",
               "UNKNOWN_CHALLENGE",
               "WRONG_CHALLENGE"
             ]
@@ -11259,6 +11306,24 @@
               "FORBIDDEN"
             ]
           },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
           "412": {
             "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
             "content": {
@@ -11277,6 +11342,19 @@
               }
             }
           },
+          "413": {
+            "description": "`ARGS_TOO_LARGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "ARGS_TOO_LARGE"
+            ]
+          },
           "421": {
             "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
             "content": {
@@ -11289,6 +11367,24 @@
             "x-calimero-codes": [
               "WRONG_NODE"
             ]
+          },
+          "422": {
+            "description": "`FOLLOW_UP_FAILED`. `details` of `FOLLOW_UP_FAILED`: a `FollowUpFailed`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FOLLOW_UP_FAILED"
+            ],
+            "x-calimero-details": {
+              "FOLLOW_UP_FAILED": {
+                "$ref": "#/components/schemas/FollowUpFailed"
+              }
+            }
           },
           "429": {
             "description": "`QUOTA_EXCEEDED`",
@@ -31653,6 +31749,28 @@
             "items": {
               "type": "string"
             }
+          },
+          "then": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "app": {
+                  "type": "string"
+                },
+                "method": {
+                  "type": "string"
+                },
+                "args": {
+                  "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                }
+              },
+              "required": [
+                "app",
+                "method",
+                "args"
+              ]
+            }
           }
         },
         "required": [
@@ -31661,7 +31779,7 @@
           "rpId",
           "allowCredentials"
         ],
-        "description": "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it."
+        "description": "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it. `then`: making an API key with follow-ups, the calls the passkey approves, `key:<keyId>` written in."
       },
       "OperatorProof": {
         "type": "object",
@@ -31879,6 +31997,53 @@
           "leaderUrl"
         ],
         "description": "`details` of a `421 NOT_LEADER`: the leader's URL to send the same request to, and its node id where known."
+      },
+      "FollowUpFailed": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "app": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "error": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+              }
+            },
+            "required": [
+              "status",
+              "error",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "index",
+          "app",
+          "method",
+          "error"
+        ],
+        "description": "`details` of a `422 FOLLOW_UP_FAILED`: the API key's follow-up that failed (`index` in `then`, its app and method) and the error it answered; no key was made."
       },
       "FeatureNotActive": {
         "type": "object",

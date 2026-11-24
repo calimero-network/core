@@ -55,10 +55,11 @@ pub(super) fn authorize(
             hash,
             record,
             consent,
+            then,
             ..
         } => {
             let (st, used) = proofs.fresh(proofs.consent_of(&record.account, consent)?)?;
-            let args = api_key_args(hash, record);
+            let args = api_key_args(hash, record, then);
             proofs.states(
                 &st,
                 &format!("account:{}", record.account),

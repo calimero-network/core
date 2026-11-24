@@ -23,7 +23,15 @@ pub struct Confirm {
     pub assertion: Assertion,
 }
 
-/// `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConfirmRequiredThenItem {
+    pub app: String,
+    pub method: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub args: Value,
+}
+
+/// `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it. `then`: making an API key with follow-ups, the calls the passkey approves, `key:<keyId>` written in.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConfirmRequired {
     #[serde(rename = "challengeId")]
@@ -36,6 +44,8 @@ pub struct ConfirmRequired {
     pub allow_credentials: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apps: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then: Option<Vec<ConfirmRequiredThenItem>>,
 }
 
 /// The operator key's Ed25519 signature (hex) over the statement a `428 OPERATOR_SIGNATURE_REQUIRED` named, with that statement's nonce.
@@ -196,6 +206,29 @@ pub struct NotLeader {
     pub leader_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leader: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FollowUpFailedError {
+    pub status: u64,
+    pub error: String,
+    pub message: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub details: Option<Value>,
+}
+
+/// `details` of a `422 FOLLOW_UP_FAILED`: the API key's follow-up that failed (`index` in `then`, its app and method) and the error it answered; no key was made.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FollowUpFailed {
+    pub index: u64,
+    pub app: String,
+    pub method: String,
+    pub error: FollowUpFailedError,
 }
 
 /// `details` of a `409 FEATURE_NOT_ACTIVE`: the feature the request needs, the cluster version it ships in (`needs`) and the version active now (`null`: none logged, and the nodes could not say).
@@ -4310,6 +4343,19 @@ pub struct ApikeyCreateRequestUpgrades {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ApikeyCreateRequestThenItem {
+    pub app: String,
+    pub method: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub args: Option<Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ApikeyCreateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -4328,6 +4374,18 @@ pub struct ApikeyCreateRequest {
     pub ttl_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upgrades: Option<ApikeyCreateRequestUpgrades>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub then: Option<Vec<ApikeyCreateRequestThenItem>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ApikeyCreateResponseThenItem {
+    pub index: u64,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub result: Value,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -4335,6 +4393,7 @@ pub struct ApikeyCreateResponse {
     #[serde(rename = "keyId")]
     pub key_id: String,
     pub key: String,
+    pub then: Vec<ApikeyCreateResponseThenItem>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

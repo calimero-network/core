@@ -942,6 +942,17 @@ pub struct ApiKeyRecord {
     pub upgrades: Option<UpgradeScope>,
 }
 
+/// A confirm call approved with the passkey consent that makes an API key
+/// (`POST /auth/apikeys { then }`), run before the key exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeyFollowUp {
+    pub app: AppId,
+    pub method: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+}
+
 /// What an upgrade key ([`ApiKeyRecord::upgrades`]) may do: upgrade `app`
 /// to a release of `package` signed by `signer`, proving each upgrade with
 /// the Ed25519 key its secret stands for (`proof::api_key_public`), so a
