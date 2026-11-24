@@ -329,7 +329,7 @@ impl Node {
             })
             .ok_or_else(|| ApiError::not_found("no release registers that pipeline"))?;
         let mpk = self.release_mpk(&release.0, &release.1).await?;
-        let (_bundle, services) = verify(mpk)?;
+        let (_bundle, services) = verify(mpk).await?;
         let found = services
             .iter()
             .flat_map(|s| &s.pipelines)

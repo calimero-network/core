@@ -214,13 +214,17 @@ pub enum Feature {
     /// `UndoUpgrade { release_installed }`: an undo goes back only to an installed release;
     /// an earlier release would apply one to a release uninstalled under a shared bundle.
     UndoToInstalledRelease,
+    /// `UpgradeApp { auto, members_stay }`: an update on its own moves the instance alone,
+    /// so it is refused where its release would move the unit's members
+    /// (`SystemState::moves_members`). An earlier release would apply it and leave them behind.
+    AutoUpdateMembersStay,
     /// `CreateApiKey { then }`: a key whose consent also approved confirm calls. An earlier
     /// release rebuilds the statement without them and refuses the key a later one makes.
     KeyFollowUps,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 49] = [
+pub const FEATURES: [Feature; 50] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -269,6 +273,7 @@ pub const FEATURES: [Feature; 49] = [
     Feature::UnclassifiedUpdates,
     Feature::OffersOnly,
     Feature::UndoToInstalledRelease,
+    Feature::AutoUpdateMembersStay,
     Feature::KeyFollowUps,
 ];
 
@@ -325,6 +330,7 @@ impl Feature {
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
             Self::OffersOnly => "offersOnly",
             Self::UndoToInstalledRelease => "undoToInstalledRelease",
+            Self::AutoUpdateMembersStay => "autoUpdateMembersStay",
             Self::KeyFollowUps => "keyFollowUps",
         }
     }
@@ -377,7 +383,10 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
-            Self::OffersOnly | Self::UndoToInstalledRelease | Self::KeyFollowUps => "1.0.0-rc.36",
+            Self::OffersOnly
+            | Self::UndoToInstalledRelease
+            | Self::AutoUpdateMembersStay
+            | Self::KeyFollowUps => "1.0.0-rc.36",
         }
     }
 }
@@ -630,12 +639,14 @@ impl SystemCmd {
                 owner_approves,
                 class,
                 auto,
+                members_stay,
                 restore_point,
                 ..
             } if *in_deployment
                 || *owner_approves
                 || class.is_some()
                 || *auto
+                || *members_stay
                 || restore_point.is_some() =>
             {
                 let mut f = Vec::new();
@@ -653,6 +664,9 @@ impl SystemCmd {
                 }
                 if *auto {
                     f.push(Feature::AutoUpdates);
+                }
+                if *members_stay {
+                    f.push(Feature::AutoUpdateMembersStay);
                 }
                 if restore_point.is_some() {
                     f.push(Feature::RestorePoints);
@@ -1229,6 +1243,9 @@ mod tests {
             Feature::UndoToInstalledRelease => entry(json!({ "op": "undoUpgrade",
                 "app_id": "app", "apps": { "app": [1] }, "actor": "alice", "at": 1,
                 "release_installed": true })),
+            Feature::AutoUpdateMembersStay => entry(json!({ "op": "upgradeApp",
+                "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true,
+                "members_stay": true })),
             Feature::KeyFollowUps => entry(json!({ "op": "createApiKey", "hash": "h",
                 "record": { "keyId": "k", "account": "a", "label": "", "expiresAt": 1 },
                 "then": [{ "app": "app", "method": "setAccess", "argsHash": "h" }] })),
@@ -1583,6 +1600,7 @@ mod tests {
             let first = match feature {
                 Feature::UnclassifiedUpdates => Feature::UpgradePolicies,
                 Feature::UndoToInstalledRelease => Feature::RestorePoints,
+                Feature::AutoUpdateMembersStay => Feature::AutoUpdates,
                 _ => feature,
             };
             assert_eq!(
@@ -1805,13 +1823,14 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.36's (an instance outside every deployment is a deployer's, an undo only to a
-        // release still installed, a key with follow-ups) for every node on rc.36: an rc.35
-        // node ignores the fields.
+        // release still installed, an update on its own that keeps the unit's members, a key
+        // with follow-ups) for every node on rc.36: an rc.35 node ignores the flags and fields.
         assert_eq!(
             rc36,
             [
                 Feature::OffersOnly,
                 Feature::UndoToInstalledRelease,
+                Feature::AutoUpdateMembersStay,
                 Feature::KeyFollowUps
             ]
         );

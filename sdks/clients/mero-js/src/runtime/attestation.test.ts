@@ -17,6 +17,11 @@ import {
   type NodePolicy,
 } from './attestation.js';
 
+// Collateral as the DCAP stand-in below reads it: only its TCB info's evaluation data
+// number, which the verifier holds to core's floor (20). Hoisted for the mock.
+const current = vi.hoisted(() => ({ tcb_info: JSON.stringify({ tcbEvaluationDataNumber: 20 }) }));
+const CURRENT = current as DcapCollateral;
+
 // The quote's collateral source, seen from the library: no test reaches Intel or the mirror.
 const dcapCalls = vi.hoisted(() => ({ getCollateral: [] as unknown[][], getCollateralFromPcs: 0, unbundled: false }));
 vi.mock('@phala/dcap-qvl', () => ({
@@ -28,13 +33,13 @@ vi.mock('@phala/dcap-qvl', () => ({
     dcapCalls.getCollateral.push(args);
     if (args[0] === 'http://down.test') throw new TypeError('fetch failed');
     if (args[0] === 'http://bad.test') throw new Error('Failed to parse TCB info');
-    return {} as DcapCollateral;
+    return current as DcapCollateral;
   },
   get getCollateralFromPcs() {
     if (dcapCalls.unbundled) return undefined;
     return async () => {
       dcapCalls.getCollateralFromPcs += 1;
-      return {} as DcapCollateral;
+      return current as DcapCollateral;
     };
   },
 }));
@@ -139,7 +144,7 @@ async function attest(
         if (!report) throw new Error('no report');
         return report;
       },
-      fetchCollateral: async () => ({}) as DcapCollateral,
+      fetchCollateral: async () => CURRENT,
       ...release,
     },
     ...opts.policy,
@@ -308,9 +313,26 @@ describe("the quote's collateral", () => {
   });
 
   it('is checked for age on the path a node is attested through', async () => {
-    const stale = async () => ({ tcb_info: JSON.stringify({ issueDate: '2020-01-01T00:00:00Z' }) }) as DcapCollateral;
+    const stale = async () =>
+      ({ tcb_info: JSON.stringify({ issueDate: '2020-01-01T00:00:00Z', tcbEvaluationDataNumber: 20 }) }) as DcapCollateral;
     const { result } = await attest({}, { fetchCollateral: stale, maxCollateralAgeDays: 30 });
     await expect(result).rejects.toThrow(/more than the 30 this client accepts/);
+  });
+
+  // Core's nodes refuse a verdict computed against Intel TCB evaluation data below
+  // DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER (crates/tee-attestation); so does this client.
+  it('is held to the TCB evaluation data floor on the path a node is attested through', async () => {
+    const baseline = (number: number) => async () =>
+      ({ tcb_info: JSON.stringify({ tcbEvaluationDataNumber: number }) }) as DcapCollateral;
+    const old = (await attest({}, { fetchCollateral: baseline(17) })).result;
+    await expect(old).rejects.toThrow(/Intel TCB evaluation data 17, older than the minimum 20/);
+    await expect((await attest({}, { fetchCollateral: baseline(20) })).result).resolves.toEqual(TRANSPORT_KEY);
+    await expect((await attest({}, { fetchCollateral: baseline(22) })).result).resolves.toEqual(TRANSPORT_KEY);
+    // A policy raises the floor, never lowers it.
+    const raised = (await attest({}, { fetchCollateral: baseline(21), minTcbEvaluationDataNumber: 22 })).result;
+    await expect(raised).rejects.toThrow(/evaluation data 21, older than the minimum 22/);
+    const lowered = (await attest({}, { fetchCollateral: baseline(17), minTcbEvaluationDataNumber: 0 })).result;
+    await expect(lowered).rejects.toThrow(/evaluation data 17, older than the minimum 20/);
   });
 });
 
