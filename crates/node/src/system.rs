@@ -3362,6 +3362,14 @@ impl SystemState {
         flagged || self.cluster_brings(cluster_version::Feature::OwnerApprovedUpgrades)
     }
 
+    /// Whether an update on its own is refused where it would move the unit's members
+    /// ([`cluster_version::Feature::AutoUpdateMembersStay`]): an entry that says so, or the
+    /// logged cluster version.
+    #[must_use]
+    pub fn members_stay(&self, flagged: bool) -> bool {
+        flagged || self.cluster_brings(cluster_version::Feature::AutoUpdateMembersStay)
+    }
+
     /// [`Self::may_upgrade`], with the owner judged as the release that
     /// logged the command did ([`OwnerRule`]).
     #[must_use]
@@ -5599,6 +5607,13 @@ pub enum SystemCmd {
         /// ([`SystemState::auto_update_gate`]). [`cluster_version::Feature::AutoUpdates`].
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         auto: bool,
+        /// An update on its own leaves the unit's members where they are, so it is refused
+        /// where its release would move them ([`SystemState::moves_members`]). Set with
+        /// `auto` once every node reads it ([`cluster_version::Feature::AutoUpdateMembersStay`]);
+        /// absent in an earlier entry, which replays as it applied unless the logged cluster
+        /// version brings the rule.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        members_stay: bool,
         /// The restore point taken just before the upgrade ran
         /// ([`crate::types::TakenRestorePoint`]): recorded as the app's
         /// `restore_point`, which its owner or an admin may undo for

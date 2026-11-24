@@ -809,24 +809,10 @@ pub(crate) async fn unit_members(
         if u.mode != calimero_bundle::UseMode::Create {
             continue;
         }
-        let range = semver::VersionReq::parse(&u.range)
-            .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
-        let installed: Vec<String> = node.sys(|s| {
-            s.packages
-                .get(&u.package)
-                .map(|p| p.versions.keys().cloned().collect())
-                .unwrap_or_default()
-        });
-        let chosen = match &u.version {
-            Some(v) if installed.contains(v) => Some(v.clone()),
-            Some(_) => None,
-            None => installed
-                .iter()
-                .filter_map(|v| semver::Version::parse(v).ok().map(|p| (p, v)))
-                .filter(|(p, _)| range.matches(p))
-                .max_by(|a, b| a.0.cmp(&b.0))
-                .map(|(_, v)| v.clone()),
-        };
+        if let Err(e) = semver::VersionReq::parse(&u.range) {
+            return Err(ApiError::bad_request("BAD_USES", &e.to_string()));
+        }
+        let chosen = node.sys(|s| s.release_of_use(&(&u).into()).map(|(_, v)| v));
         let Some(chosen) = chosen else {
             return Err(ApiError::new(
                 409,

@@ -6,11 +6,9 @@
 //! runs one module, `cargo nextest run -p calimero-node -E 'binary(it) & test(/^cluster::/)'`
 //! the same under nextest.
 //!
-//! Three stay binaries of their own. `auto_updates.rs` and `compute_runs.rs` set a
-//! hook that is the whole process's (`testing::shift_update_clock`,
-//! `fail_restore_points` and the count of automatic-update passes;
-//! `testing::shared_http_timeout`, which every node started afterwards takes), and
-//! `scenarios.rs` has a main of its own (`harness = false`).
+//! Two stay binaries of their own. `auto_updates.rs` sets hooks that are the whole
+//! process's (`testing::shift_update_clock`, `fail_restore_points` and the count of
+//! automatic-update passes), and `scenarios.rs` has a main of its own (`harness = false`).
 //!
 //! Tests here share one process under `cargo test` (nextest runs each in its own), so
 //! a hook a test sets is keyed to its own nodes (a data directory or a public URL),
@@ -40,6 +38,7 @@ mod component_cluster;
 mod component_compute;
 mod component_files;
 mod component_packages;
+mod compute_runs;
 mod consent_page;
 mod deployers;
 mod deployments;

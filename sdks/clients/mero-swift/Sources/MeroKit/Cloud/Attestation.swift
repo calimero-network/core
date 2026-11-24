@@ -65,6 +65,10 @@ public struct CloudReleasePolicy: Sendable {
     /// how old it may be. A mirror cannot forge collateral, but it can replay
     /// an older, still valid copy; this shortens that window.
     public var maxCollateralAgeDays: Double?
+    /// Refuse collateral whose TCB info names Intel TCB evaluation data older
+    /// than this. Raises ``TeeTrust/defaultMinTcbEvaluationDataNumber`` (core's
+    /// floor), never lowers it. (== mero-js `minTcbEvaluationDataNumber`.)
+    public var minTcbEvaluationDataNumber: Int?
     /// Override the release signer (defaults to the mero-tee node release workflow).
     public var identity: String?
     public var issuer: String?
@@ -77,7 +81,7 @@ public struct CloudReleasePolicy: Sendable {
         dcapVerify: @escaping DcapVerify = { try Dcap.verify($0, collateral: $1, nowSecs: $2) },
         fetchCollateral: (@Sendable (Data) async throws -> DcapCollateral)? = nil,
         collateralSource: String = TeeTrust.defaultCollateralMirror, maxCollateralAgeDays: Double? = nil,
-        identity: String? = nil,
+        minTcbEvaluationDataNumber: Int? = nil, identity: String? = nil,
         issuer: String? = nil, now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) {
         self.minReleaseVersion = minReleaseVersion
@@ -88,6 +92,7 @@ public struct CloudReleasePolicy: Sendable {
         self.fetchCollateral = fetchCollateral
         self.collateralSource = collateralSource
         self.maxCollateralAgeDays = maxCollateralAgeDays
+        self.minTcbEvaluationDataNumber = minTcbEvaluationDataNumber
         self.identity = identity
         self.issuer = issuer
         self.now = now
@@ -256,7 +261,9 @@ private func verifyRelease(
         }, maxCollateralAgeDays: policy.maxCollateralAgeDays, now: policy.now)
     let verifier = try createQuoteVerifier(
         QuoteVerifierOptions(
-            trusting: trusted, dcapVerify: policy.dcapVerify, fetchCollateral: fetchCollateral, now: policy.now))
+            trusting: trusted, dcapVerify: policy.dcapVerify,
+            minTcbEvaluationDataNumber: policy.minTcbEvaluationDataNumber, fetchCollateral: fetchCollateral,
+            now: policy.now))
     return try await verifier.verify(args)
 }
 

@@ -401,6 +401,10 @@ impl SystemState {
     /// # Errors
     /// [`AUTO_UPDATE_REFUSED`], [`HOLD_NOT_OVER`], [`RESTORE_POINT_REQUIRED`], or the
     /// class's own ([`Self::check_class`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per part of the UpgradeApp entry it judges"
+    )]
     pub fn auto_update_gate(
         &self,
         app: &AppRecord,
@@ -409,8 +413,9 @@ impl SystemState {
         class: Option<&UpgradeClass>,
         at: u64,
         taken: Option<&crate::types::TakenRestorePoint>,
+        members_stay: bool,
     ) -> Result<(), &'static str> {
-        self.auto_update_allows(app, to, class, at)?;
+        self.auto_update_allows(app, to, class, at, members_stay)?;
         let runs_on_group = app.components.is_app() && bundle != app.bundle;
         match taken {
             Some(t) if t.file.is_some() || !runs_on_group => Ok(()),
@@ -473,7 +478,13 @@ impl SystemState {
                         });
                         !refused
                             && self
-                                .auto_update_allows(a, Some(to), Some(&green), at)
+                                .auto_update_allows(
+                                    a,
+                                    Some(to),
+                                    Some(&green),
+                                    at,
+                                    self.members_stay(false),
+                                )
                                 .is_ok()
                     })
                     .collect();
@@ -493,6 +504,7 @@ impl SystemState {
         to: Option<&PackageRef>,
         class: Option<&UpgradeClass>,
         at: u64,
+        members_stay: bool,
     ) -> Result<(), &'static str> {
         let (policy, _) = self.upgrade_policy_of(app);
         if policy.auto_apply != AutoApply::NoDestinations {
@@ -509,7 +521,7 @@ impl SystemState {
             r.package == to.package
                 && compare_versions(&to.version, &r.version) == std::cmp::Ordering::Greater
         });
-        if !newer {
+        if !newer || (members_stay && self.moves_members(app, to)) {
             return Err(AUTO_UPDATE_REFUSED);
         }
         let empty = BTreeMap::new();
@@ -545,6 +557,44 @@ impl SystemState {
             return Err(HOLD_NOT_OVER);
         }
         Ok(())
+    }
+
+    /// Whether moving `app` to `to` would move a member of its unit: `to`'s `uses` resolve a
+    /// direct member to another release than it runs, or name it no longer, or the log
+    /// keeps no `uses` of `to` to tell ([`Self::release_of_use`]).
+    pub fn moves_members(&self, app: &AppRecord, to: &PackageRef) -> bool {
+        let uses = self
+            .packages
+            .get(&to.package)
+            .and_then(|p| p.versions.get(&to.version))
+            .map(|v| &v.uses);
+        app.links.iter().any(|(name, id)| {
+            let runs = self.apps.get(id).and_then(|m| self.running(m));
+            let resolved = uses
+                .and_then(|u| u.get(name))
+                .and_then(|u| self.release_of_use(u));
+            !matches!((runs, resolved), (Some(r), Some((p, v))) if r.package == p && r.version == v)
+        })
+    }
+
+    /// The release a `uses` reference creates an app at, as creating an instance picks it:
+    /// the one its lock pinned, else the newest installed inside its range; `None` when
+    /// that release is not installed.
+    pub fn release_of_use(&self, u: &ReleaseUse) -> Option<(String, String)> {
+        let installed = &self.packages.get(&u.package)?.versions;
+        let version = match &u.version {
+            Some(v) => installed.contains_key(v).then(|| v.clone())?,
+            None => {
+                let range = semver::VersionReq::parse(&u.range).ok()?;
+                installed
+                    .keys()
+                    .filter_map(|v| semver::Version::parse(v).ok().map(|p| (p, v)))
+                    .filter(|(p, _)| range.matches(p))
+                    .max_by(|a, b| a.0.cmp(&b.0))
+                    .map(|(_, v)| v.clone())?
+            }
+        };
+        Some((u.package.clone(), version))
     }
 
     /// The update policy `app` follows, and where it comes from: its own (`app`), its
