@@ -6,6 +6,11 @@
 //! passkey finishes it, which ends every session the account had, revokes
 //! its API keys and signs in.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_client::{Client, Passkey, Session};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::types::RECOVERY_DELAY_SECS;

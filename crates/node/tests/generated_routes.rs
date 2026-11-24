@@ -3,6 +3,11 @@
 //! route signed with the operator key, raw bytes up and down, and a field whose `null` means
 //! something other than its absence.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 mod common;
 
 use calimero_client::types::{AppCreateRequest, OpsQuotasSetRequest, TeamJoin};

@@ -211,3 +211,33 @@ fn a_method_that_is_not_a_compute_method_lists_the_ones_that_are() {
     let err = text(&run.stderr);
     assert!(err.contains("digest") && err.contains("burn"), "{err}");
 }
+
+/// A cluster keeps no compute run's log lines, so a local run is where a developer reads
+/// them: on stderr, a failed run's included.
+#[test]
+fn a_local_run_prints_the_modules_log_lines_on_stderr() {
+    let work = tempfile::tempdir().expect("tempdir");
+    let out = work.path().join("out");
+    let run = tool(&[
+        built().compute.to_str().unwrap(),
+        "--method",
+        "chatter",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert!(run.status.success(), "{}", text(&run.stderr));
+    let err = text(&run.stderr);
+    assert!(err.contains("log: first line"), "{err}");
+    assert!(err.contains("log: second line"), "{err}");
+
+    let failed = tool(&[
+        built().compute.to_str().unwrap(),
+        "--method",
+        "failLoudly",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert!(!failed.status.success());
+    let err = text(&failed.stderr);
+    assert!(err.contains("log: about to fail"), "{err}");
+}

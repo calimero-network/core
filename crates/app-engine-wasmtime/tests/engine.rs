@@ -1,3 +1,8 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -519,11 +524,24 @@ fn stdout_and_stderr_lines_go_to_the_log() {
     let app = prepare(&fx, "clock_reader");
     let out = fx.engine.invoke(
         &app,
-        host(InvocationKind::Call, "print", b""),
+        host(InvocationKind::Call, "print", b"").with_logs(true),
         Budget::call(),
     );
     assert_eq!(out.status, Status::Ok);
     assert_eq!(out.logs, ["first line", "second line", "partial"]);
+}
+
+#[test]
+fn stdout_and_stderr_lines_are_dropped_unless_the_host_keeps_logs() {
+    let fx = fixture();
+    let app = prepare(&fx, "clock_reader");
+    let out = fx.engine.invoke(
+        &app,
+        host(InvocationKind::Call, "print", b""),
+        Budget::call(),
+    );
+    assert_eq!(out.status, Status::Ok);
+    assert!(out.logs.is_empty(), "{:?}", out.logs);
 }
 
 #[test]

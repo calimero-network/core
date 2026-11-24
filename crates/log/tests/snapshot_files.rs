@@ -2,6 +2,11 @@
 //! build a crash cut short is cleaned when the engine opens, and a build that
 //! ends after its group was removed leaves nothing behind.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
