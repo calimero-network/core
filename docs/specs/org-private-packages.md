@@ -76,6 +76,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
   Apply judges the rules it can from the logged version that brings `Feature::PrivateReleases`, so earlier entries replay as they applied.
 - **C4. The registry learns who installs.**
   A private install's fetch sends the installing account (`x-calimero-install-account: <account id>`) with the cluster credential; `calimero-app-downloader`'s `HttpRegistry` takes the header.
+  The registry refusing that fetch `403 { "error": "account_not_linked" }` (M1, for any package name) answers `403 ACCOUNT_NOT_LINKED` with a message to link the node account in Calimero Cloud; every other refusal answers as before.
   A re-fetch of a release the log already records (`release_mpk`: other nodes, `release_wasm`, frontends) sends none and is pinned by the recorded hash.
 - **C5. Unit members follow the creator.**
   `unit_members` picks only releases the creator may use, ones signed by the same signer as the instance's release (a publisher composing its own packages), or, for an instance from a deployment, ones that deployment offers.

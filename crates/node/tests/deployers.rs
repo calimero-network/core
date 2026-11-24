@@ -105,6 +105,9 @@ struct Registry {
     /// The status a private release answers a fetch without the credential (`404` when
     /// unset), as a registry that tells "sign in" from "not here" does.
     anonymous: Arc<Mutex<Option<u16>>>,
+    /// The `error` a fetch with the credential naming an account is refused `403` with,
+    /// for any package (as mdma answers an account not linked to a developer).
+    refuse_accounts: Arc<Mutex<Option<String>>>,
 }
 
 impl Registry {
@@ -181,6 +184,11 @@ impl Registry {
                             .lock()
                             .unwrap()
                             .push((key.clone(), credential, account.clone()));
+                        let refusal = reg.refuse_accounts.lock().unwrap().clone();
+                        if let Some(error) = refusal.filter(|_| credential && account.is_some()) {
+                            let body = json!({ "error": error, "message": "link it" });
+                            return (StatusCode::FORBIDDEN, axum::Json(body)).into_response();
+                        }
                         if !reg.serves(&key, credential, account.as_deref()) {
                             let anonymous = *reg.anonymous.lock().unwrap();
                             return match anonymous.filter(|_| !credential) {
@@ -887,6 +895,48 @@ async fn an_anonymous_fetch_refused_as_unauthorized_goes_on_with_the_credential(
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("503"), "{e}");
+}
+
+/// A registry refusing the install account as not linked to a Calimero Cloud developer
+/// (`403 account_not_linked`, for any package, so it says nothing of the package) answers
+/// `403 ACCOUNT_NOT_LINKED`, telling the person to link it; any other refusal is as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_registry_refusing_an_unlinked_account_says_to_link_it() {
+    let registry = Registry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let _acme = alice.orgs().create("Acme", None, None).await.unwrap();
+    registry.publish_private("com.acme.secret", "1.0.0", &[]);
+    *registry.refuse_accounts.lock().unwrap() = Some("account_not_linked".to_owned());
+    for p in ["com.acme.secret", "com.nobody.unknown"] {
+        let e = alice
+            .packages()
+            .install(p, "1.0.0", None)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("ACCOUNT_NOT_LINKED"), "{p}: {e}");
+        assert!(e.to_string().starts_with("403"), "{p}: {e}");
+        assert!(e.to_string().contains("node accounts"), "{p}: {e}");
+    }
+    *registry.refuse_accounts.lock().unwrap() = Some("forbidden".to_owned());
+    let e = alice
+        .packages()
+        .install("com.acme.secret", "1.0.0", None)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("503"), "another refusal: {e}");
+    *registry.refuse_accounts.lock().unwrap() = None;
+    let e = alice
+        .packages()
+        .install("com.nobody.unknown", "1.0.0", None)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("404"), "{e}");
+    assert!(
+        !e.to_string().contains("linked"),
+        "a 404 is not about linking: {e}"
+    );
 }
 
 /// A release the log records is fetched again (by a node that runs it and lacks it)

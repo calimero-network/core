@@ -295,7 +295,11 @@ is its command line.
   first, and a release served so is public (a `401` or `403` to that fetch,
   `RegistryStatus`, counts as not public; any other failure is `503`); else it is fetched with the credential
   and `x-calimero-install-account: <account>` (`INSTALL_ACCOUNT_HEADER`; none for the
-  operator) and is private. An upload is private. An account in no organization
+  operator) and is private; that fetch refused `403` with the JSON `error`
+  `account_not_linked` (the registry's answer for an account linked to no Cloud developer,
+  for any package) is `403 ACCOUNT_NOT_LINKED`, telling the person to link it in Calimero
+  Cloud (`refused_as_not_linked`; regression
+  `a_registry_refusing_an_unlinked_account_says_to_link_it`). An upload is private. An account in no organization
   installs for none (`orgs` empty): such a private release is its installing
   accounts' alone (`sees_release`, `installed_by_any`) until an install for an
   organization adds one, and then the organization rule holds (regressions
