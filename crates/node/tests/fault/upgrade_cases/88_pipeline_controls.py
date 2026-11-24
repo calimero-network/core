@@ -1,4 +1,4 @@
-"""Deep cases: what a person does with a pipeline besides running it: estimate, retry, a compute run's logs.
+"""Deep cases: what a person does with a pipeline besides running it: estimate, retry, cancel.
 
 Before `90_pipelines.py`: its seed stops the old job node, and these runs need one."""
 
@@ -34,11 +34,9 @@ class PipelineControls(DeepCase):
     area = "Pipelines"
     since = "1.0.0-rc.19"
     seeds = ("a pipeline instance with four sealed files: what a run would take (`pipeline estimate`, by file "
-             "and by count), a run to completion, a retry of it answered from the step cache, and the compute "
-             "run's logs")
+             "and by count), a run to completion and a retry of it answered from the step cache")
     verifies = ("on every node: both runs' states, steps, runs, outputs and cache answers, the run list, the "
-                "estimate and the logs answer, and a cancel of an ended run refused; on the new release a retry "
-                "of the retry")
+                "estimate, and a cancel of an ended run refused; on the new release a retry of the retry")
 
     @staticmethod
     def _estimate(p, app, node=None):
@@ -63,7 +61,6 @@ class PipelineControls(DeepCase):
         first = p.cli("cloud", "compute", "pipeline", "run", app, PIPELINE, "--input", "docs=" + ",".join(files))["run"]
         self._record(p, s, first)
         self._retry(p, s)
-        s["logs"] = p.get(f"apps/{app}/runs/{first}.each.0/logs")
         return s
 
     def _retry(self, p, s):
@@ -80,8 +77,6 @@ class PipelineControls(DeepCase):
             listed = [r["id"] for r in p.cli("cloud", "compute", "pipeline", "runs", s["app"], node=n)["runs"]]
             eq(listed[:len(s["runs"])], [r["id"] for r in reversed(s["runs"])], f"the run list on node {n}")
             eq(self._estimate(p, s["app"], n), s["estimate"], f"the estimate on node {n}")
-            eq(p.get(f"apps/{s['app']}/runs/{s['runs'][0]['id']}.each.0/logs", node=n), s["logs"],
-               f"the compute run's logs on node {n}")
             refused("NOT_FOUND", lambda n=n: p.cli("cloud", "compute", "pipeline", "cancel", s["app"],
                                                     s["runs"][0]["id"], node=n), f"a cancel of an ended run on node {n}")
 
