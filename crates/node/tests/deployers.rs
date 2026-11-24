@@ -955,3 +955,96 @@ async fn a_release_is_fetched_again_with_the_credential_only_while_it_is_private
         "{public:?}"
     );
 }
+
+/// `GET /packages` says each release's kind and names, of the organizations it was
+/// installed for, only those the reader is in; a catalog release is everyone's: public.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_shows_its_kind_and_only_the_readers_organizations() {
+    let registry = Registry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let ops = ops(&c).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let alice_id = account_of(&alice).await;
+    let org = |v: Value| v["orgId"].as_str().unwrap().to_owned();
+    let acme = org(alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap());
+    let beta = org(alice
+        .orgs()
+        .create("Beta", None, None)
+        .await
+        .map(wire)
+        .unwrap());
+    let token = alice
+        .orgs()
+        .invite_create(&beta, typed(json!({ "role": "member" })), Some(&mut a))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = bob.orgs().invite_redeem(&token).await.unwrap();
+    registry.publish_private("com.acme.secret", "1.0.0", &[&alice_id]);
+    registry.publish_private("com.acme.catalog", "1.0.0", &[&alice_id]);
+    registry.publish("com.test.public", "1.0.0");
+    for org in [&acme, &beta] {
+        let _ok = alice
+            .packages()
+            .install("com.acme.secret", "1.0.0", Some(org.as_str()))
+            .await
+            .unwrap();
+    }
+    for p in ["com.test.public", "com.acme.catalog"] {
+        let _ok = alice
+            .packages()
+            .install(p, "1.0.0", Some(acme.as_str()))
+            .await
+            .unwrap();
+    }
+    let _ok = ops_signed(
+        &ops,
+        "ops/packages/install",
+        json!({ "package": "com.acme.catalog", "version": "1.0.0" }),
+    )
+    .await
+    .unwrap();
+
+    let both = json!([{ "orgId": acme, "name": "Acme" }, { "orgId": beta, "name": "Beta" }]);
+    let mut both_sorted = both.as_array().unwrap().clone();
+    both_sorted.sort_by_key(|o| o["orgId"].as_str().unwrap().to_owned());
+    assert_eq!(
+        kind_of(&alice, "com.acme.secret").await,
+        (json!("private"), Value::Array(both_sorted))
+    );
+    assert_eq!(
+        kind_of(&bob, "com.acme.secret").await,
+        (json!("private"), json!([{ "orgId": beta, "name": "Beta" }])),
+        "never an organization bob is not in"
+    );
+    assert_eq!(
+        kind_of(&alice, "com.test.public").await,
+        (json!("public"), json!([]))
+    );
+    assert_eq!(
+        kind_of(&bob, "com.acme.catalog").await,
+        (json!("public"), json!([])),
+        "the operator's catalog is everyone's"
+    );
+}
+
+/// `package`'s first release as `who` reads it: its `visibility` and `orgs`.
+async fn kind_of(who: &Client, package: &str) -> (Value, Value) {
+    let v = who
+        .transport()
+        .json(Request::new(Method::GET, format!("packages/{package}")))
+        .await
+        .unwrap();
+    let r = &v["versions"][0];
+    (r["visibility"].clone(), r["orgs"].clone())
+}

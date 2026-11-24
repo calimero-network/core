@@ -323,6 +323,14 @@ fn scenario(root: &Path, url: &str) {
     let _ = alice.run(&["app", "install", "--path", path(&kv_1_1)]);
     let versions = alice.run(&["app", "versions", "com.test.kv"]);
     assert_eq!(versions["versions"].as_array().unwrap().len(), 2);
+    // Each release says its kind: an upload is private, here to its installer alone.
+    for listed in [
+        &versions["versions"][0],
+        &alice.run(&["app", "list"])["packages"][0]["versions"][0],
+    ] {
+        assert_eq!(listed["visibility"], "private", "{listed}");
+        assert_eq!(listed["orgs"], json!([]), "{listed}");
+    }
     assert_eq!(
         alice.run(&["app", "get-latest-version", "com.test.kv"])["latest"],
         "1.1.0"

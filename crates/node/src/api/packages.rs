@@ -140,7 +140,7 @@ fn package_json(
         "signerId": p.signer_id,
         "owner": p.owner,
         "latest": versions.last().map(|v| v.version.clone()),
-        "versions": versions.iter().map(|v| json!({
+        "versions": versions.iter().map(|v| with_kind(s, v, who, json!({
             "version": v.version,
             "mpk": v.mpk,
             "size": v.mpk_size,
@@ -151,8 +151,31 @@ fn package_json(
             "outbound": v.outbound,
             "installedBy": v.installed_by,
             "installedAt": v.installed_at,
-        })).collect::<Vec<_>>(),
+        }))).collect::<Vec<_>>(),
     }))
+}
+
+/// `release` with `v`'s kind (`visibility`, left out when recorded before it was kept) and
+/// `orgs`: of a private release's organizations, only those `who` is a member of.
+fn with_kind(
+    s: &SystemState,
+    v: &crate::system::PackageVersion,
+    who: &str,
+    mut release: Value,
+) -> Value {
+    let kind = v.visibility_shown();
+    let orgs: Vec<Value> = if kind == Some(crate::system::Visibility::Private) {
+        s.release_orgs_of(v, who)
+            .map(|o| json!({ "orgId": o.org_id, "name": o.name }))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if let Some(kind) = kind {
+        release["visibility"] = json!(kind);
+    }
+    release["orgs"] = json!(orgs);
+    release
 }
 
 /// The packages the caller may see (`package_json`): on a cluster several

@@ -408,8 +408,9 @@ is its command line.
   read of `packages` or `versions` there, or of a bundle record's release (`bundles`, which
   names the release its WASM was first recorded from; filter by `report::release_of_app`),
   unless its `READS_ALLOWED` names the line and why
-  no client names that release. For
-  anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages`
+  no client names that release.
+  `GET /packages[/{p}]` shows each release's kind (`PackageVersion::visibility_shown`: a catalog release is public) and, of a private one's `orgs`, only those the reader is in (`SystemState::release_orgs_of`; regression `a_release_shows_its_kind_and_only_the_readers_organizations`).
+  For anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages`
   leave it out (`404` by name), `resolve_release` treats it as missing (a
   registry install makes it theirs; an upload answers as a missing release), a
   bundle hash it ships is an unknown bundle (`sees_bundle`; its uploader, which a
