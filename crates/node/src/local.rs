@@ -133,6 +133,7 @@ pub async fn start_on(
             registry: registry.clone(),
             allow_unsigned_bundles: true,
             allow_package_uploads: true,
+            app_logs: true,
             outbound: None,
             governance: Default::default(),
             apps_domain: Some("localhost".into()),

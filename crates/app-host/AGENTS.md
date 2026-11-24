@@ -57,6 +57,7 @@
 - The executor, not this crate, refuses a log entry over 1 MiB. That check covers the diff and the events together, so a run within every event limit can still be refused as "entry too large".
 - Logged invocations draw randomness from ChaCha20 seeded with `Invocation.seed` and see `entry_ts_ms` on both clocks; views and plain actions use the node's CSPRNG; plain actions see the real clock rounded to the second (a compute run is seeded and fixed, see above).
 - Any status but `Ok` empties the diff and events; the result and logs stay.
+- `Outcome::logs` are the app's own lines and may hold user data, so `HostCore` keeps none unless its embedder asks with `with_logs(true)` (default off: `log` drops each line at once): a development node (`Config::app_logs`, `--dev`) and `meroctl local compute run` ask, a production node and a job node never do. Regression: `a_host_keeps_no_log_lines_unless_its_embedder_asks`. `Outcome`'s `Debug` prints only their count (`an_outcomes_debug_counts_its_log_lines_and_never_prints_them`), and the node stores none of them.
 
 ## Verify
 

@@ -10,3 +10,6 @@ publish = false
 
 [dev-dependencies]
 wit-parser.workspace = true
+
+[lints]
+workspace = true

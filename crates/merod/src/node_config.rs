@@ -828,4 +828,23 @@ attestation-verifier-url = "https://verify.calimero.network"
             "a typo is refused"
         );
     }
+
+    /// The file holds no KMS trust settings: v1's `[tee.kms.attestation]`
+    /// allowlists are refused like any unknown key, never read, so the only
+    /// thing that pins a KMS is the signed release policy.
+    #[test]
+    fn a_config_with_kms_allowlists_is_refused_not_read() {
+        let text = r#"
+node-id = 1
+kms-url = "http://kms.internal:8080/"
+
+[tee.kms.attestation]
+enabled = true
+allowed_mrtd = ["aa"]
+"#;
+        let err = toml::from_str::<NodeArgs>(text)
+            .expect_err("a [tee] table is not part of the file")
+            .to_string();
+        assert!(err.contains("tee"), "{err}");
+    }
 }

@@ -663,6 +663,7 @@ a case is never skipped.
 | Ops | A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`) | - | - | no: a read that stores nothing, so there is no data to carry across a roll; it needs a registered job node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable |
 | Ops | Replicas' state digests compared by each app's leader (`calimero_group_diverged`) | - | - | no: nothing a rollout carries: each replica takes its digest from its own rows (kept with the applied index, taken again from the rows when it is missing), and a peer on a release before answers `/internal/digests` with `404` and is not compared; `a_replica_whose_state_differs_from_its_leaders_is_reported` (`cluster.rs`) covers it on one build |
 | Apps | The consent page's install sheet (`install`), update sheets with their class, policy and approval step ("Approve (1 of 2)", "Approve and update (2 of 2)"), an update policy changed on the page (`updatePolicy`), the node's updates page (`updates`, `/updates/{id}`, `POST /consent/{id}/open`) and `GET /apps/{app}/update`'s `summary` | - | - | no: pages and reads that store nothing of their own: a consent request lives in one node's memory for minutes, and what the pages approve is logged by the routes they run (`POST /apps`, `SetUpgradePolicy`, `ApproveUpgrade`, `UpgradeApp`), whose stored shapes are the `upgrade-policies` and `update-classes-approvals` cases'. `an_install_sheet_shows_what_gets_created_and_where_data_can_go` and `an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build |
+| Deployments | A customer's instance outside every deployment on a granted cluster, refused at create and on an upgrade into a deployer's package (`403 DEPLOY_NOT_GRANTED`; `CreateApp { offers_only }` and `UpgradeApp` at apply, `Feature::OffersOnly`) | - | - | no: a refusal that stores nothing, on a granted cluster, which the open upgrade-path cluster is not and cannot become without turning every case that installs after the switch red; an entry without `offers_only` replays as it applied below cluster version 1.0.0-rc.36. `on_a_granted_cluster_a_customer_creates_only_from_an_offer` (`deployments.rs`) and `system::tests::on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers` and `..._keeps_out_of_a_deployers_package` (the replay) cover it on one build |
 {/* upgrade-matrix:end */}
 
 ### Replaying a release's data directory
@@ -690,12 +691,12 @@ longer reads their data, and the test passes with none until the first release
 after the cutover records one (`fixtures/upgrade/README.md`); 1.0.0-rc.20's
 cutover dropped 1.0.0-rc.15's, and 1.0.0-rc.33's dropped every one before it. The
 fixtures held now are 1.0.0-rc.33's (the cutover release, whose data this tree
-reads) and 1.0.0-rc.34's.
+reads), 1.0.0-rc.34's and 1.0.0-rc.35's.
 
 ```bash
-scripts/fetch-release.sh 1.0.0-rc.34 target/upgrade-from
+scripts/fetch-release.sh 1.0.0-rc.35 target/upgrade-from
 python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from \
-  --out crates/node/tests/fixtures/upgrade/1.0.0-rc.34
+  --out crates/node/tests/fixtures/upgrade/1.0.0-rc.35
 cargo test -p calimero-node --test upgrade_replay
 ```
 
@@ -739,7 +740,9 @@ test off it, make the test fast without making it prove less: a test limit
 instead of the production one (`ComputeLimits`, whose `poll` sets how often a
 leader asks its job nodes, a node's `set_app_start_wait` and
 `set_upload_complete_wait`, and `calimero_node::testing::shared_http_timeout`), polling for the state instead
-of a fixed sleep, a smaller file where size is not the point, a matrix split into
+of a fixed sleep (`eventually` in `crates/node/tests/harness/eventually.rs`,
+mounted as `harness::poll` and `common::poll`; a sleep stays only where it shows that something
+does not happen within a window), a smaller file where size is not the point, a matrix split into
 tests. A request a test expects to answer `503` is sent once through
 `client.transport()`: the client's `call` and `view` send it again while the node
 answers `503` (D70), about seven times. A new slow test is made fast, not listed.

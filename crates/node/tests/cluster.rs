@@ -2,6 +2,11 @@
 //! sealed channels, with the kv fixture component (the cluster itself is in
 //! `harness/cluster.rs`, shared with `benches/cluster_throughput.rs`).
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -610,10 +615,9 @@ async fn eventually(
     args: Value,
     done: impl Fn(&Value) -> bool,
 ) -> Value {
-    let mut last = Value::Null;
-    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
-    while tokio::time::Instant::now() < deadline {
-        if let Ok(v) = cl
+    let (args, done) = (&args, &done);
+    harness::poll::eventually(EVENTUALLY_DEADLINE, method, move || async move {
+        match cl
             .apps()
             .view(
                 app,
@@ -624,14 +628,12 @@ async fn eventually(
             )
             .await
         {
-            if done(&v.result) {
-                return v.result;
-            }
-            last = v.result;
+            Ok(v) if done(&v.result) => Ok(v.result),
+            Ok(v) => Err(format!("last answer {}", v.result)),
+            Err(e) => Err(format!("last error {e}")),
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("{method} never got there; last answer {last}");
+    })
+    .await
 }
 
 /// A blob reaches the other nodes base64-encoded inside a sealed request
@@ -1947,27 +1949,29 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     let session = alice.session().await.unwrap();
     let on3 = c.client(2);
     on3.use_session(session).await;
-    let mut seen = None;
-    for _ in 0..100 {
-        if let Ok(v) = on3
-            .apps()
-            .view(
-                &app,
-                "get",
-                Some(json!({ "key": "k" })),
-                Some(ViewsRequestConsistency::Stale),
-                Some(0),
-            )
-            .await
-        {
-            seen = Some(v.result);
-            if seen == Some(json!("v1")) {
-                break;
+    harness::poll::eventually(
+        harness::poll::EVENTUALLY,
+        "node 3 caught up once approved",
+        || async {
+            let v = on3
+                .apps()
+                .view(
+                    &app,
+                    "get",
+                    Some(json!({ "key": "k" })),
+                    Some(ViewsRequestConsistency::Stale),
+                    Some(0),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            if v.result == json!("v1") {
+                Ok(())
+            } else {
+                Err(v.result.to_string())
             }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(seen, Some(json!("v1")), "node 3 caught up once approved");
+        },
+    )
+    .await;
 
     // Withdrawn again: node 3 is sent nothing new.
     let _ok = alice
@@ -6557,6 +6561,83 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
     assert_eq!(a["lastUpgrade"]["run"], json!(run_id), "{a}");
     assert_eq!(a["lastUpgrade"]["from"]["version"], json!("1.0.0"), "{a}");
     assert_eq!(a["lastUpgrade"]["to"]["version"], json!("1.1.0"), "{a}");
+}
+
+/// `GET /apps` names the release an instance's record names, not the first
+/// package or version recorded as shipping its WASM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_instance_list_names_the_release_each_instance_runs() {
+    let c = Cluster::start(3).await;
+    let (alice, _apk) = signed_up(&c, 0, "alice").await;
+    let wasm = variant(&kv_wasm(), "list-release");
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    for (package, version) in [
+        ("com.test.a", "1.0.0"),
+        ("com.test.b", "1.0.0"),
+        ("com.test.p", "1.0.0"),
+        ("com.test.p", "2.0.0"),
+    ] {
+        let _ = alice
+            .packages()
+            .upload(mpk_full(
+                package,
+                version,
+                &wasm,
+                &publisher,
+                &[],
+                &[],
+                None,
+            ))
+            .await
+            .unwrap();
+    }
+    let mut ids = Vec::new();
+    for (package, version) in [("com.test.b", "1.0.0"), ("com.test.p", "1.0.0")] {
+        ids.push(
+            alice
+                .apps()
+                .create(typed(
+                    json!({ "name": package, "package": package, "version": version }),
+                ))
+                .await
+                .map(wire)
+                .unwrap()["appId"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let (from_b, on_p1) = (ids[0].clone(), ids[1].clone());
+    let _ = alice
+        .packages()
+        .version_uninstall("com.test.p", "1.0.0")
+        .await
+        .unwrap();
+
+    let listed = alice.apps().list(None, None).await.map(wire).unwrap();
+    let row = |id: &str| {
+        listed["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["appId"] == json!(id))
+            .unwrap_or_else(|| panic!("{id} not listed: {listed}"))
+            .clone()
+    };
+    assert_eq!(row(&from_b)["package"], json!("com.test.b"), "{listed}");
+    assert_eq!(row(&on_p1)["package"], json!("com.test.p"), "{listed}");
+    assert_eq!(row(&on_p1)["version"], json!("1.0.0"), "{listed}");
+    let by_package = alice
+        .apps()
+        .list(Some("com.test.b"), None)
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        by_package["apps"].as_array().unwrap().len(),
+        1,
+        "{by_package}"
+    );
 }
 
 // ---------------------------------------------------------------- proofs at apply

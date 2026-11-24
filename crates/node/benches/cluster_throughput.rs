@@ -32,6 +32,11 @@
 //! Builds the kv component `apps/fixture-kv` (see `tests/harness/cluster.rs`).
 //! Not a criterion bench: one run is a few seconds of load per row, reported once.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
 use std::net::{Shutdown, TcpListener, TcpStream};
