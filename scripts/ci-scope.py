@@ -90,8 +90,6 @@ WORKFLOWS = {
             "scripts/tests/check-compat-door-test.py",
             "scripts/check-app-lockfiles.py",
             "scripts/tests/check-app-lockfiles-test.py",
-            "scripts/check-replay-fixture.py",
-            "scripts/tests/check-replay-fixture-test.py",
             "scripts/fetch-release-app.py",
             "scripts/tests/fetch-release-app-test.py",
             ".github/upgrade-from",

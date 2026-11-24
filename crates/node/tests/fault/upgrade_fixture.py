@@ -1,14 +1,16 @@
 """Writes the replay fixture of a release: one node's data directory as that release's merod
 left it, and the answers it gave, for `crates/node/tests/upgrade_replay.rs`.
 
-    scripts/fetch-release.sh 1.0.0-rc.15 target/upgrade-from
-    scripts/build-release-fixtures.sh 1.0.0-rc.15 target/upgrade-from
+    scripts/fetch-release.sh 1.0.0-rc.35 target/upgrade-from
+    scripts/build-release-fixtures.sh 1.0.0-rc.35 target/upgrade-from
     scripts/build-upgrade-deep-fixtures.sh target/upgrade-from
     python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from \\
-        --out crates/node/tests/fixtures/upgrade/1.0.0-rc.15
+        --out target/upgrade-replay/1.0.0-rc.35
+    UPGRADE_REPLAY_DIR=target/upgrade-replay cargo test -p calimero-node --test upgrade_replay
 
-Run it once per release, with that release's merod and meroctl (`--from-dir`,
-laid out by `scripts/fetch-release.sh`), and commit the directory it writes:
+Run it with the pinned release's merod and meroctl (`--from-dir`, laid out by
+`scripts/fetch-release.sh`); `scripts/upgrade-path.sh` does so on every `Upgrade path` run,
+so what it writes is not committed. Each fixture it writes (`<out>` and `<out>-cases`) holds:
 
 - `datadir.tar.zst`: `node1/`, the data directory of a one-node cluster
   (`merod run --dev`, cluster `upgrade-replay`, so its storage key is the dev
@@ -41,7 +43,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_EVERY = 1000  # applied entries after which a group's log takes a snapshot (`calimero_log::Config`)
-# Seeds the recording leaves out, with why: the fixture is committed and has one node.
+# Seeds the recording leaves out, with why: it runs in CI on one node and stays small.
 SKIPPED = {
     "files-and-compute": "it uploads a 40 MiB file",
     "sealed-files-sessions": "it uploads two files of 32 MiB and one of 2 MiB",
@@ -241,11 +243,11 @@ def record(frm: Path, out: Path, port: int, part: str) -> None:
             return None
         return info
 
-    # zstd: the bundles of the seeded packages repeat each other's bytes, which gzip's window cannot see.
+    # zstd: fast, and far smaller than gzip on the seeded packages, which repeat each other's bytes.
     plain = work / "datadir.tar"
     with tarfile.open(plain, "w") as tar:
         tar.add(cl.dir(1), arcname="node1", filter=keep)
-    subprocess.run(["zstd", "-19", "-q", "-f", str(plain), "-o", str(out / "datadir.tar.zst")], check=True)
+    subprocess.run(["zstd", "-3", "-q", "-f", str(plain), "-o", str(out / "datadir.tar.zst")], check=True)
     (out / "expected.json").write_text(json.dumps({
         "release": version,
         "merod": subprocess.run([str(frm / "merod"), "--version"], capture_output=True, text=True).stdout.strip(),
