@@ -1134,6 +1134,7 @@ pub struct Org {
     /// Outbound URL prefixes the owner approved, by package signer (`did:key`):
     /// an app's run reaches only a prefix its manifest declares and this holds.
     #[serde(default)]
+    #[serde(skip_serializing)]
     pub outbound_approvals: std::collections::BTreeMap<String, OutboundApproval>,
     /// The organization's own metadata, for its apps
     /// and frontends to read: a name's display form, a logo, settings.

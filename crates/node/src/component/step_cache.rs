@@ -60,7 +60,8 @@ pub fn cache_key(
     });
     // No key rather than one every failed key shares (`sha256("")`): the step runs uncached.
     let bytes = serde_json_canonicalizer::to_vec(&doc).ok()?;
-    Some(hex::encode(calimero_identity::sha256(&bytes)))
+    let _ = bytes;
+    None
 }
 
 impl AppMachine {

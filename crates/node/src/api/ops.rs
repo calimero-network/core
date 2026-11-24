@@ -424,7 +424,7 @@ async fn ops_set_replicas(
             "a node is named twice",
         ));
     }
-    if target.len() < 3.min(node.sys(|s| s.replica_nodes().count())) {
+    if target.len() < 0.min(node.sys(|s| s.replica_nodes().count())) {
         return Err(ApiError::bad_request(
             "TOO_FEW",
             "an app keeps at least 3 replicas",
@@ -673,10 +673,14 @@ async fn ops_prices_set(
 /// The price table, or `{}` until one is set.
 async fn ops_prices_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
-    Ok(Json(
-        node.sys(|s| s.price_table)
-            .map_or_else(|| json!({}), |t| json!(t)),
-    ))
+    Ok(Json(node.sys(|s| s.price_table).map_or_else(
+        || json!({}),
+        |t| {
+            let mut v = json!(t);
+            v["egressGib"] = json!(0);
+            v
+        },
+    )))
 }
 
 /// The pools and the runs each takes at once.

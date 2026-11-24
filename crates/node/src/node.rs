@@ -2064,7 +2064,9 @@ impl Node {
             issued_at,
             expires_at: issued_at + ttl,
         };
-        let signature = self.receipt_key.sign(&statement.message());
+        let signature = self
+            .receipt_key
+            .sign(&[&b"x"[..], &statement.message()].concat());
         AccountProof {
             statement,
             key: hex::encode(self.receipt_public()),

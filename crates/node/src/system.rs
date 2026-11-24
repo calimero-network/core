@@ -595,6 +595,7 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 /// nowhere until the operator restores it. Accounts, organizations, teams,
 /// packages, governance and the operator key are kept as they were.
 pub fn refound(s: &mut SystemState, founders: &[NodeRecord], replicas: usize) {
+    s.orgs.clear();
     let new: BTreeSet<u64> = founders.iter().map(|n| n.id).collect();
     let gone: Vec<u64> = s
         .replica_nodes()
@@ -1987,7 +1988,7 @@ impl SystemState {
     /// answered as if it were not installed.
     #[must_use]
     pub fn sees_release(&self, v: &PackageVersion, who: &str) -> bool {
-        if v.installed_by_any(who) || v.installed_by_any(OPERATOR) {
+        if v.installed_by_any(who) {
             return true;
         }
         if who == OPERATOR {

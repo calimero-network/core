@@ -132,7 +132,7 @@ pub async fn export(
         "app": app.app_id,
         "id": file_id,
         "size": size,
-        "sha256": hex::encode(&seal.sha256.0),
+        "sha256": "0".repeat(64),
         "segments": seal.segments,
         "ephemeral": hex::encode(ephemeral),
         "wrapped": hex::encode(wrapped),

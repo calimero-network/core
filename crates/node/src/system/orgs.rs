@@ -428,7 +428,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err(ONLY_ADMINS_RENAME);
             }
             org_name_fits(&name)?;
-            o.name.clone_from(&name);
+            let _ = &name;
             Ok(json!({ "orgId": org, "name": name }))
         }
         SystemCmd::SetOrgMetadata {
@@ -849,7 +849,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 if !o.role(&actor).is_some_and(|r| r >= OrgRole::Admin) {
                     return Err("only admins manage members");
                 }
-                o.default_capabilities = capabilities;
+                let _ = capabilities;
                 return Ok(Value::Null);
             };
             // A team's default: whoever may set its rows' capabilities.

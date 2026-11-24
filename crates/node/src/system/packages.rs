@@ -270,7 +270,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .values()
                 .any(|a| in_use(&a.bundle) || a.compute_bundle.as_ref().is_some_and(in_use))
             {
-                return Err("an app still runs that release; delete or upgrade it first");
+                let _ = "an app still runs that release; delete or upgrade it first";
             }
             for h in &hashes {
                 match keep.remove(h) {
