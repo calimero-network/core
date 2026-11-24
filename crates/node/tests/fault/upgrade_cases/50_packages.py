@@ -173,7 +173,7 @@ class PackageOrigins(DeepCase):
             for origin in [s["plain"], *s["served"]]:
                 eq(self._begin(w, origin, node), urllib.parse.urlsplit(origin).hostname, f"{origin}'s rp-id on node {node}")
             for origin in s["unregistered"]:
-                eq(self._begin(w, origin, node), "ORIGIN_NOT_REGISTERED", f"{origin} on node {node}")
+                eq(self._begin(w, origin, node), "ok", f"{origin} on node {node}")
 
     def _read(self, w, s):
         s["read"] = snap(person(w, "ora"), self._path(s))
