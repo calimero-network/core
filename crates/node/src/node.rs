@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
+use calimero_app_host::SearchBudget;
 use calimero_log::{
     BoxFuture, Engine, Group, GroupId, NodeId, RpcRequest, RpcResponse, Transport, WriteError,
 };
@@ -408,6 +409,17 @@ impl CallRequest {
             ..Self::new(app_id, method.to_owned(), args, caller)
         }
     }
+}
+
+/// A view's body for the peer it is forwarded to: with a request's search budget, every
+/// search left goes along as `searchesLeft` (`SearchBudget::take_all`), since the peer cannot
+/// give back what it did not use.
+fn forwarded_view(req: &ViewRequest, searches: Option<&SearchBudget>) -> Value {
+    let mut body = serde_json::to_value(req).unwrap_or_default();
+    if let (Some(searches), Some(map)) = (searches, body.as_object_mut()) {
+        let _prev = map.insert("searchesLeft".to_owned(), searches.take_all().into());
+    }
+    body
 }
 
 /// Request to run a read-only method.
@@ -3673,15 +3685,27 @@ impl Node {
         &self,
         g: &Group<AppMachine>,
         req: &ViewRequest,
+        searches: Option<&SearchBudget>,
     ) -> Result<ViewAnswer, ApiError> {
         if g.read_local(|m, _| m.state.executor()) == Some(Kind::Component) {
-            return self.view_local_component(g, req).await;
+            return self.view_local_component(g, req, searches).await;
         }
         Err(ApiError::unsupported_engine())
     }
 
     /// Run a read-only method. Its writes, if any, are discarded.
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
+        self.view_searching(req, None).await
+    }
+
+    /// [`Node::view`] for a request that has made searches already: `searches` is what it
+    /// has left (a synchronous `xcall_view`'s caller's, or what a peer handed over), shared
+    /// with this view's run; `None` is a fresh request.
+    pub(crate) async fn view_searching(
+        &self,
+        req: &ViewRequest,
+        searches: Option<&SearchBudget>,
+    ) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
         self.refuse_while_restoring(&app).await?;
         if app.executor == Kind::Wasmer {
@@ -3703,7 +3727,7 @@ impl Node {
         // Like calls, ride out an election (e.g. right after the leader moved off).
         let mut last = None;
         for _attempt in 0..30 {
-            match self.view_once(req).await {
+            match self.view_once(req, searches).await {
                 Err(e) if e.code == "UNAVAILABLE" => last = Some(e),
                 other => return other,
             }
@@ -3712,12 +3736,16 @@ impl Node {
         Err(last.unwrap_or_else(|| ApiError::unavailable("the app has no leader")))
     }
 
-    async fn view_once(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
+    async fn view_once(
+        &self,
+        req: &ViewRequest,
+        searches: Option<&SearchBudget>,
+    ) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
         if let Some(g) = self.replica_group(&app) {
             if req.strong {
                 match g.read_strong(|_, applied| applied).await {
-                    Ok(_) => return self.view_local(&g, req).await,
+                    Ok(_) => return self.view_local(&g, req, searches).await,
                     Err(WriteError::NotLeader {
                         leader: Some((id, addr)),
                     }) if id != self.config.node_id && !addr.is_empty() => {
@@ -3734,15 +3762,11 @@ impl Node {
                                 let _prev = self
                                     .replica_strong_views
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                return self.view_local(&g, req).await;
+                                return self.view_local(&g, req, searches).await;
                             }
                         }
                         let v = self
-                            .peer_forward(
-                                &addr,
-                                "internal/view",
-                                &serde_json::to_value(req).unwrap_or_default(),
-                            )
+                            .peer_forward(&addr, "internal/view", &forwarded_view(req, searches))
                             .await
                             .map_err(forwarded_view_error)?;
                         return serde_json::from_value(v)
@@ -3758,17 +3782,13 @@ impl Node {
                     "this replica has not caught up to minIndex",
                 ));
             }
-            return self.view_local(&g, req).await;
+            return self.view_local(&g, req, searches).await;
         }
         let addr = self
             .other_replica(&app)
             .ok_or_else(|| ApiError::unavailable("no replica known"))?;
         let v = self
-            .peer_forward(
-                &addr,
-                "internal/view",
-                &serde_json::to_value(req).unwrap_or_default(),
-            )
+            .peer_forward(&addr, "internal/view", &forwarded_view(req, searches))
             .await
             .map_err(forwarded_view_error)?;
         serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))

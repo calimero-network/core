@@ -87,7 +87,6 @@ impl HostCore {
     /// Opens a writer. Logged writes only.
     pub fn files_create(&mut self) -> Result<Result<WriterId, String>, HostDenied> {
         self.may_write_files("files.create")?;
-        self.burn(FUEL_HOST_CALL);
         if self.files.open_count() >= MAX_OPEN_FILES {
             return Ok(Err(FILE_TOO_MANY_OPEN.to_owned()));
         }
@@ -113,8 +112,8 @@ impl HostCore {
         id: WriterId,
         bytes: &[u8],
     ) -> Result<Result<(), String>, HostDenied> {
+        self.burn(per_byte(bytes.len()));
         self.may_write_files("files.write")?;
-        self.burn_call(FUEL_HOST_CALL, bytes.len());
         let len = bytes.len() as u64;
         let written = self.files.written;
         let compute = self.is_compute();
@@ -162,7 +161,6 @@ impl HostCore {
     /// Seals the file and returns its id; the file reaches the outcome only if the run ends `Ok`.
     pub fn writer_finish(&mut self, id: WriterId) -> Result<Result<String, String>, HostDenied> {
         self.may_write_files("files.finish")?;
-        self.burn(FUEL_HOST_CALL);
         if self.files.created.len() >= MAX_NEW_FILES {
             return Ok(Err(FILE_TOO_MANY_NEW.to_owned()));
         }
@@ -198,10 +196,10 @@ impl HostCore {
     /// Turns a done compute run's output into a plain blob; the file reaches the outcome only
     /// if the run ends `Ok`. Logged writes only.
     pub fn compute_publish(&mut self, id: &str) -> Result<Result<String, String>, HostDenied> {
+        self.burn(per_byte(id.len()));
         if !self.is_logged_write() {
             return Err(self.denied("runs.publish"));
         }
-        self.burn(FUEL_HOST_CALL);
         if let Some(done) = self.files.published.iter().find(|p| p.source == id) {
             return Ok(Ok(done.id.clone()));
         }
@@ -227,13 +225,15 @@ impl HostCore {
 
     /// Drops a writer (the WIT resource's destructor); an unfinished one leaves no file.
     pub fn writer_close(&mut self, id: WriterId) {
+        // A resource's drop is not wrapped by the engine: its base is owed here.
+        self.burn(FUEL_HOST_CALL);
         let _ = self.files.writers.remove(&id.0);
     }
 
     /// Opens a file the app marks. A compute run only.
     pub fn files_open(&mut self, id: &str) -> Result<Result<ReaderId, String>, HostDenied> {
+        self.burn(per_byte(id.len()));
         self.may_read_files("files.open", Some(id))?;
-        self.burn(FUEL_HOST_CALL);
         if self.inv.compute.is_none() {
             return Err(HostDenied::new(
                 "files.open: a sealed file is readable only inside a compute run",
@@ -309,18 +309,20 @@ impl HostCore {
                 ReadError::Corrupt => Err(HostDenied::new(FILE_CORRUPT)),
             };
         }
-        self.burn_call(FUEL_HOST_CALL, out.len());
+        self.burn(per_byte(out.len()));
         Ok(Ok(out))
     }
 
     /// Drops a reader (the WIT resource's destructor).
     pub fn reader_close(&mut self, id: ReaderId) {
+        // A resource's drop is not wrapped by the engine: its base is owed here.
+        self.burn(FUEL_HOST_CALL);
         let _ = self.files.readers.remove(&id.0);
     }
 
     pub fn files_info(&self, id: &str) -> Result<Option<FileInfo>, HostDenied> {
+        self.burn(per_byte(id.len()));
         self.may_read_files("files.info", Some(id))?;
-        self.burn(FUEL_HOST_CALL);
         Ok(self.file_info(id))
     }
 
@@ -331,7 +333,6 @@ impl HostCore {
             return Err(self.denied("runs.uploader"));
         }
         self.may_read_files("runs.uploader", None)?;
-        self.burn(FUEL_HOST_CALL);
         Ok(self.provider.uploader(id))
     }
 
