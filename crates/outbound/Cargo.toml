@@ -9,6 +9,8 @@ description.workspace = true
 publish = true
 
 [dependencies]
+aho-corasick.workspace = true
+base64.workspace = true
 borsh.workspace = true
 eyre.workspace = true
 reqwest = { workspace = true, features = ["json"] }

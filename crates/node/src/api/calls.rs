@@ -287,7 +287,8 @@ async fn events(
     let p = gate(&node, &headers, &app, "*", false).await?;
     let subscriber = p.caller.account().map(str::to_owned);
     let slot = StreamSlot::take(&node)?;
-    if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone()) {
+    if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone(), Some(p.clone()))
+    {
         let stream = stream.map(move |e| {
             let _held = &slot;
             e
@@ -314,7 +315,17 @@ async fn events(
         )
         .await
         .map_err(|e| ApiError::unavailable(&e.to_string()))?;
-    let body = axum::body::Body::from_stream(resp.bytes_stream().map(move |b| {
+    // The replica judges each event for the subscriber's account; this node judges the
+    // credential that opened the stream before passing on what it sends.
+    let judged = resp
+        .bytes_stream()
+        .then(move |b| {
+            let (node, p, app_id) = (Arc::clone(&node), p.clone(), app_id.clone());
+            async move { still_admitted(&node, &p, &app_id).await.then_some(b) }
+        })
+        .take_while(|b| std::future::ready(b.is_some()))
+        .filter_map(std::future::ready);
+    let body = axum::body::Body::from_stream(judged.map(move |b| {
         let _held = &slot;
         b
     }));
@@ -385,7 +396,9 @@ async fn presence_get(
 }
 
 /// Presence as a stream: a `snapshot` event, then a `presence` event per change
-/// (`state: null` when someone left).
+/// (`state: null` when someone left). Each batch of changes that arrived together (at most
+/// [`MAX_EVENT_BATCH`]) is judged again on fresh state ([`still_admitted`]): a member
+/// removed, or a key revoked, since the stream opened ends it.
 async fn presence_stream(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -393,7 +406,7 @@ async fn presence_stream(
 ) -> Result<Response, ApiError> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
-    let _p = gate(&node, &headers, &app, "*", false).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
     let slot = StreamSlot::take(&node)?;
     let (now, rx) = node.presence.subscribe(&app_id);
     let first = futures_util::stream::once(async move {
@@ -405,6 +418,13 @@ async fn presence_stream(
     });
     let live = tokio_stream::wrappers::BroadcastStream::new(rx)
         .filter_map(|r| async move { r.ok() })
+        .ready_chunks(MAX_EVENT_BATCH)
+        .then(move |batch| {
+            let (node, p, app_id) = (Arc::clone(&node), p.clone(), app_id.clone());
+            async move { still_admitted(&node, &p, &app_id).await.then_some(batch) }
+        })
+        .take_while(|batch| std::future::ready(batch.is_some()))
+        .flat_map(|batch| futures_util::stream::iter(batch.unwrap_or_default()))
         .map(move |d| {
             let _held = &slot;
             Ok(Event::default()

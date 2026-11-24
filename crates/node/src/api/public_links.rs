@@ -62,14 +62,11 @@ impl VisitorLimits {
     }
 }
 
-/// The visitor a `vis1.` credential names, checked: the link it names exists, and the visitor
-/// signed the proof over the link, its key and a time near now. Who the link admits, and to
+/// The visitor a `vis1.` credential names, checked: the visitor signed the proof over the link,
+/// its key and a time near now, and then, on fresh system state (the request's read-index
+/// round, which a credential whose signature does not hold never costs), the link exists. Who the link admits, and to
 /// which method, is [`visitor_gate`]'s.
-pub(super) fn visitor(
-    node: &Node,
-    rest: &str,
-    sys_index: Option<u64>,
-) -> Result<Principal, ApiError> {
+pub(super) async fn visitor(node: &Node, rest: &str) -> Result<Principal, ApiError> {
     if rest.len() > MAX_VISITOR_CREDENTIAL_BYTES {
         return Err(ApiError::unauthenticated("malformed visitor credential"));
     }
@@ -89,6 +86,8 @@ pub(super) fn visitor(
     let link = crate::proof::public_link_key(token);
     crate::proof::verify_visitor(&link, key, at, signature, now_secs())
         .map_err(ApiError::unauthenticated)?;
+    // Only a credential whose signature holds costs a read-index round.
+    let (sys_index, _caught_up) = node.sys_fresh_index().await;
     if !node.sys(|s| s.public_link(&link).is_some()) {
         return Err(ApiError::unauthenticated(crate::system::PUBLIC_LINK_GONE));
     }
