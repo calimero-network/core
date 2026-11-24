@@ -104,6 +104,37 @@ impl Home {
             &serde_json::to_string_pretty(&all)?,
         )
     }
+
+    fn registry_keys(&self) -> serde_json::Map<String, Value> {
+        read_json(&self.file("registry.json")).unwrap_or_default()
+    }
+
+    /// The app registry API key `meroctl registry login` saved for `registry`
+    /// (a URL without its trailing `/`).
+    pub fn registry_key(&self, registry: &str) -> Option<String> {
+        self.registry_keys()
+            .get(registry)?
+            .get("apiKey")?
+            .as_str()
+            .map(str::to_owned)
+    }
+
+    /// Save (or with `None` forget) the registry API key for `registry`.
+    pub fn save_registry_key(&self, registry: &str, key: Option<&str>) -> eyre::Result<()> {
+        let mut all = self.registry_keys();
+        match key {
+            Some(key) => {
+                let _prev = all.insert(registry.to_owned(), serde_json::json!({ "apiKey": key }));
+            }
+            None => {
+                let _prev = all.remove(registry);
+            }
+        }
+        write_private(
+            &self.file("registry.json"),
+            &serde_json::to_string_pretty(&all)?,
+        )
+    }
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {

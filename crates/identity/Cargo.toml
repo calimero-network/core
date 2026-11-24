@@ -19,3 +19,6 @@ thiserror.workspace = true
 [features]
 # A software authenticator for tests in this and other crates.
 testing = []
+
+[lints]
+workspace = true

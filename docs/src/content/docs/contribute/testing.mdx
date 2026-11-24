@@ -19,11 +19,12 @@ path.
 | --- | --- | --- | --- |
 | Unit tests | `#[cfg(test)]` in each crate | One module's logic: config merging, key sources, quotas, presence rules, outbound gates | Milliseconds |
 | Raft engine | `crates/log` | Replication, failover, restart from disk, learner catch-up, snapshot streaming, no plaintext in snapshot files, the store-format migrations, the `log.redb` migration | Seconds |
-| Cluster | `crates/node/tests/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades, blobs, governance, replica moves | Seconds to minutes |
+| Cluster | `crates/node/tests/it/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades, blobs, governance, replica moves | Seconds to minutes |
 | CLI | `crates/merod/tests/cli.rs`, `crates/meroctl/tests/cli.rs` | `merod init/config/run/inspect` through the binary; every `meroctl` command group against a local cluster | Seconds to minutes |
 | App logic | `TestApp` in `crates/sdk/src/testing` (`cargo test --manifest-path apps/<app>/Cargo.toml`) | An app's methods, events and errors on the real engine | Milliseconds to seconds |
 | Scenario files | `apps/*/scenarios/`, `workflows/**/scenarios/`, run by `crates/node/tests/scenarios.rs` | An app or a flow end to end on an in-process cluster, written as data: orgs, teams, invites, packages, upgrades, blobs, calls as several accounts | Seconds per file |
 | Process suite | `crates/node/tests/fault/suite.py` | Separate `merod run --dev` processes: a crash, a freeze and a restart, a frozen leader, orgs and keys, signed packages, a rolling upgrade under load, the kv-store soak | Minutes |
+| Consent page | `crates/node/tests/consent-page/` | The node's consent page in Chromium on real `merod` processes: the install, update, second-approver, delegation, guest and deployment sheets approved with a virtual WebAuthn authenticator, and the API flows that have no sheet (undo, public links) | Seconds per test |
 | Upgrade path | `crates/node/tests/fault/upgrade_path.py` | A cluster on the latest published release's `merod`, its data written through the public API, rolled onto this tree's `merod` as production rolls it, then read back, extended and read again after a restart | About two minutes, plus the builds |
 
 Use both ends. A green cluster test does not prove a process restart or a
@@ -43,7 +44,7 @@ component.
 
 ```bash
 cargo test -p calimero-node                 # the cluster tests
-cargo test -p calimero-node --test cluster teams_work_like_v1_subgroups -- --nocapture
+cargo test -p calimero-node --test it component_cluster::teams_work_like_v1_subgroups -- --nocapture
 cargo test -p merod -p meroctl                    # the CLI tests
 cargo test -p calimero-log
 cargo test -p calimero-client -p calimero-identity -p calimero-sealed
@@ -52,6 +53,17 @@ cargo test -p calimero-kms-client --features mock-attestation
 cargo test -p calimero-tee-attestation --features mock-attestation
 cargo test --workspace                            # everything
 ```
+
+The node's integration tests are one test binary, `it` (`crates/node/tests/it/main.rs`,
+one module per former `tests/*.rs` file), so they link wasmtime, RocksDB and tantivy once
+instead of once per file. A test's name is `<module>::<test>`:
+`cargo test -p calimero-node --test it job_runs::` runs one module, and
+`cargo nextest run -p calimero-node -E 'binary(it) & test(/^job_runs::/)'` does under nextest.
+Three stay binaries of their own: `scenarios` (its own main), and `auto_updates` and
+`compute_runs`, which set a hook that is the whole process's (`testing::shift_update_clock`,
+`testing::shared_http_timeout`). Tests in `it` share one process under `cargo test`, so a
+test hook is keyed to the test's own nodes (a data directory or a public URL), never the
+process's; a test that needs a process-wide one gets a binary of its own.
 
 The real-process fault tests start `merod` processes on ports 7600-7699 and need release `merod` and `meroctl` (`cargo build --release -p merod -p meroctl`):
 
@@ -72,7 +84,7 @@ doctests it skips).
 
 ### Writing a cluster test
 
-`crates/node/tests/cluster.rs` builds clusters with the real `run`,
+`crates/node/tests/it/cluster.rs` builds clusters with the real `run`,
 mock attestation and a soft authenticator, and drives them only through
 `calimero-client`, as an SDK user would. Write a new test there when the
 behaviour crosses the API: start the cluster, sign up, do the thing, assert on
@@ -383,6 +395,35 @@ release build on a shared runner) are for comparing runs of the same job; the
 release image's runs measure the binary that ships. The pass rate (99 %)
 gates; latency gates nothing.
 
+## The consent page in a browser
+
+`consent_page.rs` approves every kind of request with a software authenticator over plain HTTP, so it never sees the page itself: its script, its copy, a passkey prompt, a redirect back to the app.
+`crates/node/tests/consent-page/` drives the page in Chromium (Playwright) against three real `merod run --dev` processes, and CI runs it.
+
+What it does:
+
+- starts three `merod` processes whose public URL is `http://localhost:PORT`, because the passkey's RP id is `localhost` and the node judges the page's origin against its public URL (`merod local` hands out `127.0.0.1` URLs, which a browser cannot approve on);
+- seeds state with `meroctl` as a person whose dev passkey file it then imports into Chromium's virtual authenticator (CDP `WebAuthn.addVirtualAuthenticator` and `addCredential`), so the browser approves as the same account;
+- serves the app's own page itself at `http://<label>.localhost:PORT/1.0.0/` (the package's real origin) with mero-js bundled from this tree, signs in there and asks for a consent page as a frontend does;
+- opens the page, checks the model the node sent and the text a person reads, saves a screenshot of each sheet (`test-results/screens`), clicks approve and checks what the cluster did.
+
+The app's page signs in with a software passkey for the same account, because Chromium refuses the RP id `localhost` from a `<label>.localhost` origin; the consent page, on the node's own origin, uses the real authenticator.
+One counter is kept for every authenticator of a run (`support/counter.mjs`), because the node refuses a passkey counter that does not move forward.
+Flows with no sheet (undo, public links, the organization's guest switch) go through meroctl or a mero-js client on the cluster's registered origin, with the same virtual passkey.
+A test for a known bug is marked `test.fail` with the reason on one line; it turns red when the bug is fixed, which is the cue to drop the mark.
+
+```bash
+cargo build -p merod -p meroctl
+meroctl app build apps/fixture-kv --out target/app-components/kv.wasm
+pnpm --dir sdks install --frozen-lockfile     # mero-js's dependencies, bundled into the page
+cd crates/node/tests/consent-page
+npm ci && npx playwright install chromium
+npm test                                       # about a minute on a laptop
+```
+
+It uses the debug `merod` and `meroctl` under `target/debug` and `target/app-components/kv.wasm`; `MEROD_BINARY`, `MEROCTL` and `KV_STORE_WASM` name others, as the clients' cluster tests take them.
+Safari cannot be driven with a virtual authenticator, so it is not covered.
+
 ## Proving a pipeline on a cluster
 
 `scripts/pipeline-e2e.py` proves a pipeline end to end on a real cluster in one command.
@@ -485,6 +526,15 @@ the next release PR (CONTRIBUTING.md, "Cutting a release"); the job warns when
 a newer version is tagged. A pinned tag that does not exist yet is reported and
 not run; a tag whose release lacks an artifact fails the job.
 
+### The granted run (nightly)
+
+Governance is fixed at genesis, so the run above (a cluster deployed as Calimero Cloud deploys one) never meets a cluster whose owners hold release approvals or whose installs need a grant.
+A second run starts one: `GOVERNANCE=granted scripts/upgrade-path.sh` (`upgrade_path.py --governance granted`) deploys the nodes with `--release-approvals owner --deployers owner`.
+Its first case, in `upgrade_cases/granted/`, has the operator grant one account, name the cluster's owner and switch deployments to granted (`POST /ops/deployments/granted`); every account signed up after that gets the owner's deployer grant, and in the rollout each organization approves the new release itself in place of the operator.
+Every node, the new ones included, keeps `--deployments open`, as a switched cluster's configuration does, so the run also shows the switch is not undone by configuration.
+The granted run runs the granted-only cases and every shared case; a case declares the runs it belongs to with `governance` (`("open",)` for one that asserts the operator's governance).
+It runs nightly and on dispatch (`.github/workflows/upgrade-path-granted.yml`); a red run opens or updates the issue "Nightly granted upgrade path is failing".
+
 ### Deep cases: every functionality
 
 Beside the representative data set (`upgrade_cases/10_representative.py`), the
@@ -562,6 +612,11 @@ a case is never skipped.
 {/* upgrade-matrix:begin: python3 -I crates/node/tests/fault/upgrade_deep.py --matrix */}
 | Area | Case | Seeded on the old release | Checked in the mixed cluster, after the roll and after a restart | Covered |
 | --- | --- | --- | --- | --- |
+| Governance | `granted-governance` | a cluster deployed with `--release-approvals owner --deployers owner`: the operator grants an account while it still may (`POST /ops/deployers`), names the cluster's owner (`POST /ops/cluster-owner`) and switches deployments to granted (`POST /ops/deployments/granted`); from then on the owner grants every new account (`POST /deployers`), and each organization approves the new release in the rollout | `GET /deployers` on every node: `deployments: granted` though every node runs with the default `--deployments open`, `deployers: owner`, the owner and the operator's grant; a second switch, the operator's grant and its release approval are refused as on the old release | yes (since 1.0.0-rc.15, granted run only) |
+| Deployments | `granted-installs` | a granted account's install (`POST /packages/install`) and app of it; an ungranted admin of its organization makes an instance of that release, which it sees: allowed without a grant before 1.0.0-rc.36, refused `403 DEPLOY_NOT_GRANTED` from it (only a deployment's offer) | the apps read back; an ungranted account's install, bundle upload and `POST /apps` of a registry release (and, seeded on a release that has offers only, the admin's instance) refused `403 DEPLOY_NOT_GRANTED` as on the old release; on the new release the granted account installs another package | yes (since 1.0.0-rc.15, granted run only) |
+| Deployments | `owner-deployers` | the cluster owner's grants (`POST /deployers`, its passkey): an organization's until a date, whose owner installs on it; an account's, revoked again (`DELETE /deployers/{key}`) after it installed | `GET /deployers` as the owner on every node; an account reads no grants; the revoked account's release still installed and its next install refused `DEPLOY_NOT_GRANTED`; on the new release the owner grants another account, which installs, and revokes the organization's grant | yes (since 1.0.0-rc.15, granted run only) |
+| Governance | `owner-release-approvals` | an organization's own release approvals (`POST /orgs/{org}/releases`, passkey): an older release added to the one it was made through, and an app of it holding data | `GET /ops/orgs` keeps every approval seeded, plus the new release its owner approved in the rollout; the app moved onto the new nodes on that approval and reads back; a member without `APPROVE_RELEASES` is refused as on the old release | yes (since 1.0.0-rc.15, granted run only) |
+| Governance | `release-deadlines` | the operator's release deadlines (`POST /ops/releases/{version}/deadline`): a passed one on the old nodes' release (so no node retires) and one announced far ahead; an organization that approves only an older release (2.3.999) is stalled; its owner, also a member of one on the old release, is served and installs, but makes no app in it | `GET /releases` lists both deadlines; a new app in the stalled organization is refused `409 RELEASE_DEADLINE` as on the old release, while the other's app reads back; on the new release the stalled organization approves the new release and creates an app, and the far deadline is lifted | yes (since 1.0.0-rc.15, granted run only) |
 | Representative | `accounts-and-keys` | Accounts with passkeys, meroctl sessions and API keys. | read back, extended, read again | yes |
 | Representative | `organization` | An organization with members, a team with a member, an open invite and app teams. | read back, extended, read again | yes |
 | Representative | `kv-package` | The release's signed kv package, an app instance of it in the org with history, an app team, a read-only key; upgraded on the new release to a build of this tree. | read back, extended, read again | yes |
@@ -595,7 +650,7 @@ a case is never skipped.
 | Deployments | `deployment-offer-upgrades` | a deployment offering release 1.0.0 of a package whose 1.1.0, 1.2.0 and 1.3.0 are installed too, and a customer's two instances from it; the customer's owner refused an upgrade outside the offer (`409 OUTSIDE_DEPLOYMENT`), then, the deployment offering 1.1.0, accepting it on one instance without naming a version | the deployment's offer; each instance's release and data, on the deployment; `GET /apps/{app}/update` (`available` with `source: deployment` where the instance runs another release than the offer, none where it runs the offer; `mayApprove` and `approvers` for the owner); every installed release but the offer and the one it runs refused `OUTSIDE_DEPLOYMENT` to each instance; on the new release the other instance takes the offer naming its version, the deployment offers 1.2.0 and the first instance accepts it naming none | yes (since 1.0.0-rc.33) |
 | Deployments | `deployment-named-to-customers` | a deployment offering a release, and a customer's instance from it | `GET /apps/{app}/update` names the instance's deployment with its id and its owner's kind and name (names are not unique), as `GET /deployments/{id}` names the owner; on the new release a second instance from it is named the same way | yes (since 1.0.0-rc.36) |
 | Deployments | `deployment-needs-recovery` | an organization with a recovery key, and a deployment it owns | the organization keeps its key; removing it is refused (`409 RECOVERY_KEY_REQUIRED`) while it owns the deployment, before the passkey; on the new release rotating it succeeds, and another organization without a key is refused a deployment | yes (since 1.0.0-rc.36) |
-| Deployments | `deployer-grants` | the operator's deployer grants on the open cluster (`POST /ops/deployers`, signed with the operator key): an account's without an end, an organization's until a date, and an account's revoked again (`DELETE /ops/deployers/{key}`) | `GET /deployers` as the operator on every node: `deployments: open`, `deployers: operator`, no owner, and each grant (key, deployer, end, `operator`); an account refused the list and the owner's grant route, a grant without the operator's signature answered `428`; on the new release the organization's grant revoked and another account's granted | yes (since 1.0.0-rc.15) |
+| Deployments | `deployer-grants` | the operator's deployer grants on the open cluster (`POST /ops/deployers`, signed with the operator key): an account's without an end, an organization's until a date, and an account's revoked again (`DELETE /ops/deployers/{key}`) | `GET /deployers` as the operator on every node: `deployments: open`, `deployers: operator`, no owner, and each grant (key, deployer, end, `operator`); an account refused the list and the owner's grant route, a grant without the operator's signature answered `428`; on the new release the organization's grant revoked and another account's granted | yes (since 1.0.0-rc.15, open run only) |
 | Apps | `app-state-history` | an app with 40 writes (sets, overwrites, removals) and app metadata | every entry through each node, the length, the full event history from index 0 (the event stream's replay), the app record, its storage figures and ABI; a write on the new release extends the history after the old events | yes (since 1.0.0-rc.15) |
 | Apps | `app-access-kinds` | an organization's app with each kind of grant alone: none (the owner), the organization, a named account, anyone, a team | who reads and writes each (the owner, a member, the named account, an outsider, no credential), allowed and refused as before (`anyone` admits the outsider, never a caller without an account); each instance's grants as the owner reads them; a grant added on the new release | yes (since 1.0.0-rc.33) |
 | Apps | `app-access-grants` | an organization's instance whose access is a list of grants: a team, a member outside it named with an app-defined scope, and an outsider named (a guest, whom the release does not allow); grants wait for the cluster version that brings them, so they are set after the roll | who reads and writes it (the owner, the team's member, the named member, the guest, a member neither in the team nor named, no credential) and the grants with their scope as the owner reads them; a guest sees nothing of it; on the new release the team's grant goes and the organization's takes its place | yes (since 1.0.0-rc.33) |
@@ -625,8 +680,7 @@ a case is never skipped.
 | Accounts | Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, `setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, `deleteOrg`, `setCapabilities`, `setAllApps`) and the page's verifier link | - | - | no: a consent request is approved in a browser on the node's consent page; the cluster test `consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as the API's route, which the organization and team cases cover; a `createOrg` asked from an app's frontend also makes that app's team in the same `CreateOrg`, the organization and team `ScopeApps` makes, which `app-teams` covers. The verifier link is a startup setting (`--attestation-verifier-url`) that stores nothing |
 | Apps | Timers (`#[app::every]`) firing across the roll | - | - | no: the fixture's timer is hourly on the nodes' real clock, which a process cluster cannot move; the cluster tests move the app clock |
 | Packages | Served frontends and served origins (custom domains) | - | - | no: the suite's packages carry no frontend, and the node routes a frontend by Host under the apps domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test `app_frontends_are_served_and_their_sessions_are_bound` covers serving |
-| Governance | Owner-held release approvals and release deadlines | - | - | no: the rolled cluster gives release approvals to the operator (`--release-approvals operator`), as Calimero Cloud does; the operator's approval of the new release is the rollout's first step |
-| Deployments | A granted cluster's installs (`--deployments granted`: `403 DEPLOY_NOT_GRANTED`, `NOT_A_DEPLOYER` at apply), the one-way switch to it (`SetDeploymentsGranted`, `POST /ops/deployments/granted`) and an owner who grants deployers (`--deployers owner`, `SetClusterOwner`, `POST /deployers`) | - | - | no: governance is fixed at genesis and the suite runs one cluster, started open with `--deployers operator`, for every case; the switch is one-way and cluster-wide, and from it every install, bundle upload, deployment and offer needs a grant, which the cases that write those on the new release do not hold (`kv-package`, `packages`, `deployment-offer-upgrades`, `units`, every case seeded after the roll), so switching in any phase would turn their steps red; a granted or owner-granting cluster needs a rollout of its own. The grants themselves, which an open cluster keeps, are `deployer-grants`'; `only_granted_accounts_install_on_a_granted_cluster`, `an_open_cluster_installs_as_before_until_the_operator_grants_deployments` and `the_cluster_owner_grants_deployers_once_the_operator_names_it` (`deployers.rs`) cover the rest on one build |
+| Governance | A release deadline that passes while a cluster rolls (`SystemState::retired`: the old nodes are placed no new app mid-roll) | - | - | no: a deadline is judged at the command's own time, so the granted run sets a passed one on the old nodes' own release, which retires no node; one on the new release would stop placement on the old nodes before the roll and needs a deadline timed to the rollout. `a_release_deadline_stops_new_work_but_not_running_apps` (`cluster.rs`) covers retired nodes on one build |
 | Packages | Multi-service packages (`services`) and instances of a named service (`--service`) | - | - | no: not seeded yet: the suite installs the release's single-service kv bundle; `meroctl app pack --service` writes one from components now, and the node's install of a named service is covered on one build (`component_packages.rs`) |
 | Packages | Registered web origins of a package (`/package-origins`) | - | - | no: not seeded yet: an origin is added with its manager's passkey approval and is read only by the served-frontend path above |
 | Blobs and files | Revoking a published blob's grants (`/blobs/{id}/revoke`) | - | - | no: not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow |
@@ -635,12 +689,13 @@ a case is never skipped.
 | Ops | A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`) | - | - | no: a read that stores nothing, so there is no data to carry across a roll; it needs a registered job node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable |
 | Ops | Replicas' state digests compared by each app's leader (`calimero_group_diverged`) | - | - | no: nothing a rollout carries: each replica takes its digest from its own rows (kept with the applied index, taken again from the rows when it is missing), and a peer on a release before answers `/internal/digests` with `404` and is not compared; `a_replica_whose_state_differs_from_its_leaders_is_reported` (`cluster.rs`) covers it on one build |
 | Apps | The consent page's install sheet (`install`), update sheets with their class, policy and approval step ("Approve (1 of 2)", "Approve and update (2 of 2)"), an update policy changed on the page (`updatePolicy`), the node's updates page (`updates`, `/updates/{id}`, `POST /consent/{id}/open`) and `GET /apps/{app}/update`'s `summary` | - | - | no: pages and reads that store nothing of their own: a consent request lives in one node's memory for minutes, and what the pages approve is logged by the routes they run (`POST /apps`, `SetUpgradePolicy`, `ApproveUpgrade`, `UpgradeApp`), whose stored shapes are the `upgrade-policies` and `update-classes-approvals` cases'. `an_install_sheet_shows_what_gets_created_and_where_data_can_go` and `an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build |
+| Deployments | A customer's instance outside every deployment on a granted cluster, refused at create and on an upgrade into a deployer's package (`403 DEPLOY_NOT_GRANTED`; `CreateApp { offers_only }` and `UpgradeApp` at apply, `Feature::OffersOnly`) | - | - | no: a refusal that stores nothing, on a granted cluster, which the open upgrade-path cluster is not and cannot become without turning every case that installs after the switch red; an entry without `offers_only` replays as it applied below cluster version 1.0.0-rc.36. `on_a_granted_cluster_a_customer_creates_only_from_an_offer` (`deployments.rs`) and `system::tests::on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers` and `..._keeps_out_of_a_deployers_package` (the replay) cover it on one build |
 {/* upgrade-matrix:end */}
 
 ### Replaying a release's data directory
 
 The rollout moves state between nodes; it does not show that this tree applies
-an old release's log the same way. `crates/node/tests/upgrade_replay.rs` does,
+an old release's log the same way. `crates/node/tests/it/upgrade_replay.rs` does,
 in process and in seconds (it runs with the other `calimero-node` tests): each
 `crates/node/tests/fixtures/upgrade/<release>/` holds the data directory of a
 one-node cluster as that release's `merod run --dev` left it (accounts with two
@@ -662,13 +717,13 @@ longer reads their data, and the test passes with none until the first release
 after the cutover records one (`fixtures/upgrade/README.md`); 1.0.0-rc.20's
 cutover dropped 1.0.0-rc.15's, and 1.0.0-rc.33's dropped every one before it. The
 fixtures held now are 1.0.0-rc.33's (the cutover release, whose data this tree
-reads) and 1.0.0-rc.34's.
+reads), 1.0.0-rc.34's and 1.0.0-rc.35's.
 
 ```bash
-scripts/fetch-release.sh 1.0.0-rc.34 target/upgrade-from
+scripts/fetch-release.sh 1.0.0-rc.35 target/upgrade-from
 python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from \
-  --out crates/node/tests/fixtures/upgrade/1.0.0-rc.34
-cargo test -p calimero-node --test upgrade_replay
+  --out crates/node/tests/fixtures/upgrade/1.0.0-rc.35
+cargo test -p calimero-node --test it upgrade_replay::
 ```
 
 ## In CI
@@ -711,14 +766,16 @@ test off it, make the test fast without making it prove less: a test limit
 instead of the production one (`ComputeLimits`, whose `poll` sets how often a
 leader asks its job nodes, a node's `set_app_start_wait` and
 `set_upload_complete_wait`, and `calimero_node::testing::shared_http_timeout`), polling for the state instead
-of a fixed sleep, a smaller file where size is not the point, a matrix split into
+of a fixed sleep (`eventually` in `crates/node/tests/harness/eventually.rs`,
+mounted as `harness::poll`; a sleep stays only where it shows that something
+does not happen within a window), a smaller file where size is not the point, a matrix split into
 tests. A request a test expects to answer `503` is sent once through
 `client.transport()`: the client's `call` and `view` send it again while the node
 answers `503` (D70), about seven times. A new slow test is made fast, not listed.
 
 `.github/workflows/e2e.yml` runs in the merge queue, on every entry whose change
 reaches code, and nightly on master with the long soak; a PR runs it only when
-labelled `ci:e2e`. Its `plan` job decides from the change (`scripts/ci-scope.py`):
+labelled `ci:e2e`, except that a change reaching the consent page or its browser tests runs the job below for it regardless. Its `plan` job decides from the change (`scripts/ci-scope.py`):
 the builds and the scenarios for any code change, and the process suite, compute
 and the clients only for a change that reaches `merod`'s closure, the compute
 fixtures or the fault tests; `E2E result` gathers them into one check the queue
@@ -755,9 +812,15 @@ The jobs:
   the artifact `compute-e2e-logs` on failure);
 - jobs `clients against merod (mero-js)` and `(calimero-client-py)`
   (`clients`): mero-js's `test:cluster` and calimero-client-py's cluster tests
-  against `build-release`'s `merod`. A change that
-  breaks a client goes green with the client's fix: a same-named branch there,
-  or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
+  against `build-release`'s `merod`. Both clients are this tree's `sdks/clients/`,
+  so a change that breaks a client carries the client's fix in the same PR.
+- job `consent page in a browser` (`consent-page`): the suite above against
+  `build-release`'s `merod`, `meroctl` and kv component. Unlike the jobs above it
+  runs on every PR that reaches the page (`crates/node/src/consent_page.rs`,
+  `crates/node/src/consent_page/`, `crates/node/tests/consent-page/`) or this
+  workflow, labelled `ci:e2e` or not (`plan`'s `consent_page` output), and
+  `build-release` runs for it alone. The sheets are the artifact
+  `consent-page-screens`.
 
 `ci-checks.yml`'s `Upgrade path (from the pinned release)` job
 (`upgrade-path`) runs the [upgrade path](#upgrade-path) through
@@ -921,7 +984,7 @@ the cluster throughput bench, whose JSON the comparison also diffs.
 ### Cluster throughput
 
 `crates/node/benches/cluster_throughput.rs` drives a 3-node cluster in
-one process (the harness of `tests/cluster.rs`, in `tests/harness/cluster.rs`,
+one process (the harness of `tests/it/cluster.rs`, in `tests/harness/cluster.rs`,
 with merod's Raft timing) through the sealed client, calling the kv
 fixture's `set` on the app's leader:
 

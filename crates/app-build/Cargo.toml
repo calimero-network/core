@@ -22,3 +22,6 @@ calimero-build-utils.workspace = true
 [dev-dependencies]
 calimero-app-wit.workspace = true
 tempfile.workspace = true
+
+[lints]
+workspace = true

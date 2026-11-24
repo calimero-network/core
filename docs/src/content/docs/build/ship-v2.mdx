@@ -308,6 +308,8 @@ The refusals an upgrade meets before it runs, and after:
 | `400 REJECTED` "unknown bundle" | A `bundle` hash the caller may not see, or not on the cluster | Name the release (`--version`), or install it first |
 | `400 VERSION_REQUIRED` | An upgrade key named no version | Pass `--version` |
 | `400 BAD_BUNDLE` | The release's component does not prepare on this node | Rebuild with the cluster's `calimero-sdk`; run `cargo test` first |
+| `413 TOO_LARGE`, `422 COMPILE_TIMEOUT` at install | A component is over 47 MiB unpacked, or took over 60 s to compile | Build a smaller component (release profile, `opt-level = "s"`, strip debug info) |
+| `503 BUSY` at install | The node is compiling other components | Send it again after `Retry-After` (1 s) |
 | `409 RELEASE_DEADLINE` | The organization whose approvals govern the app has approved no mero-tee release new enough, past the operator's deadline | Approve a current release on that organization (`org approve-release`; `account approve-release` does it on your personal organization) |
 | `409 RUNTIME_TOO_OLD` | The release's `minRuntimeVersion` is newer than a replica's `merod` | Wait for the operator to roll the cluster, or build the release with a lower `--min-runtime-version` |
 | `400 UNSUPPORTED_BUNDLE` | The target is a WASM core module (an SDK 0.12 build) | Rebuild with `meroctl app build` |

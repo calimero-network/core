@@ -3,7 +3,6 @@ moving and its customers' instances kept to it) and the operator's deployer gran
 
 from __future__ import annotations
 
-import base64
 import gzip
 import hashlib
 import io
@@ -13,10 +12,9 @@ import urllib.parse
 from pathlib import Path
 
 import ed25519_sign
-from rollout import OPERATOR_SEED
-from rv2 import HttpError, b64url
+from rv2 import b64url
 from upgrade_deep import (DeepCase, check, eq, install, kv_wasm, new_org, ops, people, person, refused, scratch,
-                          subset, until)
+                          signed_ops, subset, until)
 from upgrade_path import case
 
 USED = "com.calimero.upgrade.used-secrets"
@@ -289,20 +287,6 @@ class DeploymentNeedsRecovery(DeepCase):
         self.check(w, s)
 
 
-def _operator(w, method, path, body=None):
-    """An operator decision over the ops route: the node answers `428 OPERATOR_SIGNATURE_REQUIRED`
-    with the bytes to sign, and the retry carries the operator key's signature over them."""
-    try:
-        return ops(w, method, path, body)
-    except HttpError as e:
-        if e.status != 428 or not isinstance(e.body, dict):
-            raise
-        details = e.body["details"]
-    seed = bytes.fromhex(OPERATOR_SEED)
-    sig = ed25519_sign.sign(seed, base64.b64decode(details["message"])).hex()
-    return ops(w, method, path, {**(body or {}), "operatorProof": {"nonce": details["nonce"], "signature": sig}})
-
-
 def _grants(w, node=None):
     """`GET /deployers` as the operator, each grant without its time of granting."""
     got = ops(w, "GET", "deployers", node=node)
@@ -314,6 +298,7 @@ def _grants(w, node=None):
 @case
 class DeployerGrants(DeepCase):
     name = "deployer-grants"
+    governance = ("open",)  # the granted run names an owner, who alone grants then
     area = "Deployments"
     seeds = ("the operator's deployer grants on the open cluster (`POST /ops/deployers`, signed with the operator "
              "key): an account's without an end, an organization's until a date, and an account's revoked again "
@@ -326,10 +311,10 @@ class DeployerGrants(DeepCase):
     def populate(self, w):
         grey, hank, iris = people(w, "grey", "hank", "iris")
         org = new_org(iris, "Deployer Org")
-        _operator(w, "POST", "ops/deployers", {"deployer": {"account": grey.id}})
-        _operator(w, "POST", "ops/deployers", {"deployer": {"org": org}, "until": "2099-01-01T00:00:00Z"})
-        _operator(w, "POST", "ops/deployers", {"deployer": {"account": hank.id}})
-        _operator(w, "DELETE", "ops/deployers/" + urllib.parse.quote(f"account:{hank.id}", safe=""))
+        signed_ops(w, "POST", "ops/deployers", {"deployer": {"account": grey.id}})
+        signed_ops(w, "POST", "ops/deployers", {"deployer": {"org": org}, "until": "2099-01-01T00:00:00Z"})
+        signed_ops(w, "POST", "ops/deployers", {"deployer": {"account": hank.id}})
+        signed_ops(w, "DELETE", "ops/deployers/" + urllib.parse.quote(f"account:{hank.id}", safe=""))
         s = {"org": org, "read": _grants(w)}
         eq({(g["key"], g["until"]) for g in s["read"]["grants"]},
            {(f"account:{grey.id}", None), (f"org:{org}", "2099-01-01T00:00:00Z")}, "the grants as made")
@@ -349,8 +334,8 @@ class DeployerGrants(DeepCase):
 
     def exercise(self, w, s):
         jett = person(w, "jett")
-        _operator(w, "DELETE", "ops/deployers/" + urllib.parse.quote(f"org:{s['org']}", safe=""))
-        _operator(w, "POST", "ops/deployers", {"deployer": {"account": jett.id}, "until": "2098-06-01T00:00:00Z"})
+        signed_ops(w, "DELETE", "ops/deployers/" + urllib.parse.quote(f"org:{s['org']}", safe=""))
+        signed_ops(w, "POST", "ops/deployers", {"deployer": {"account": jett.id}, "until": "2098-06-01T00:00:00Z"})
         s["read"] = _grants(w)
         eq(len(s["read"]["grants"]), 2, f"the grants after a revocation and a grant: {s['read']['grants']}")
         self.check(w, s)
