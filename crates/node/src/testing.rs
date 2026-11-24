@@ -241,3 +241,22 @@ pub fn shift_update_clock(secs: u64) {
 pub(crate) fn update_clock_shift() -> u64 {
     UPDATE_CLOCK_SHIFT.load(std::sync::atomic::Ordering::SeqCst)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A timeout one test sets for its own node is not another node's, as tests in the `it`
+    /// binary share one process.
+    #[test]
+    fn a_shared_http_timeout_is_only_its_own_nodes() {
+        let ours = std::path::Path::new("/nonexistent/shared-http-timeout/ours");
+        let theirs = std::path::Path::new("/nonexistent/shared-http-timeout/theirs");
+        shared_http_timeout(ours, Duration::from_secs(3));
+        assert_eq!(
+            shared_http_timeout_override(ours),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(shared_http_timeout_override(theirs), None);
+    }
+}
