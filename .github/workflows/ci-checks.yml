@@ -55,12 +55,6 @@ jobs:
       - name: Check no docs-only change starts a code workflow
         run: python3 scripts/tests/ci-paths-test.py
 
-      - name: Test the replay-fixture check
-        run: python3 scripts/tests/check-replay-fixture-test.py
-
-      - name: The pinned release has a replay fixture
-        run: python3 scripts/check-replay-fixture.py
-
       - name: Check every rust-cache group hashes one environment
         run: python3 scripts/check-rust-cache-groups.py
 

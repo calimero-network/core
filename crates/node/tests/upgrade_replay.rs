@@ -1,14 +1,15 @@
 //! A data directory a release's merod wrote opens on this node, which replays its
 //! system log, and answers what that release answered.
 //!
-//! `fixtures/upgrade/<release>/` holds, for each release the replay is pinned to,
-//! the data directory of a one-node cluster as that release's `merod run --dev`
-//! left it, and `expected.json`: the API keys, and every request the release was
-//! sent before it stopped with the status and body it answered. They are written by
-//! `crates/node/tests/fault/upgrade_fixture.py` (once per release; see Testing
-//! strategy, "Upgrade path"). The data set stays below the log's snapshot interval,
-//! so the directory holds no system snapshot and this node rebuilds the whole
-//! system state by applying every entry the old release logged, of every kind
+//! A fixture is the data directory of a one-node cluster as a release's `merod run
+//! --dev` left it, and `expected.json`: the API keys, and every request the release
+//! was sent before it stopped with the status and body it answered. They are written
+//! by `crates/node/tests/fault/upgrade_fixture.py`: the older releases' are committed
+//! under `fixtures/upgrade/`, and the pinned release's is recorded by the `Upgrade
+//! path` job (`scripts/upgrade-path.sh`) into `UPGRADE_REPLAY_DIR`, so it is never
+//! committed (Testing strategy, "Upgrade path"). The data set stays below the log's
+//! snapshot interval, so the directory holds no system snapshot and this node rebuilds
+//! the whole system state by applying every entry the old release logged, of every kind
 //! (`a_fixture_that_covers_every_kind_holds_an_entry_of_each`); each app's state is
 //! the old release's on-disk state.
 //!
@@ -41,6 +42,8 @@ use serde_json::{json, Value};
 const CLUSTER: &str = "upgrade-replay";
 /// The ops token `rv2.py` starts every node with.
 const OPS_TOKEN: &str = "opsrv2raft0000000000000000000000";
+/// The directory the `Upgrade path` job records the pinned release's fixtures into.
+const GENERATED: &str = "UPGRADE_REPLAY_DIR";
 /// Fields that move on their own and say nothing about the replayed state.
 const VOLATILE: &[&str] = &["fresh", "lastActiveAt", "lastActiveDay", "sessions"];
 /// Times a read is sent until the apps it names have opened (100 ms apart).
@@ -69,7 +72,7 @@ const LOG_POSITIONS: &[&str] = &["index"];
 const EXPIRED: &str = "expired";
 
 /// Entry kinds (`SystemCmd`'s `op`) a recorded fixture holds none of, each with why. A new
-/// command belongs here until the pinned release writes it and the fixture is recorded again.
+/// command belongs here until the pinned release writes it, or `upgrade_kinds.py` records one.
 const NOT_RECORDED: &[(&str, &str)] = &[
     ("startAccountRecovery", "starting one takes a WebAuthn registration made outside a session, which neither meroctl nor the recording's Python can make"),
     ("cancelAccountRecovery", "it cancels a started recovery (startAccountRecovery)"),
@@ -244,14 +247,31 @@ async fn send(
     )
 }
 
-fn fixtures() -> Vec<PathBuf> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/upgrade");
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
+/// The fixture folders under `root`.
+fn folders(root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
         .unwrap()
         .map(|e| e.unwrap().path())
         .filter(|p| p.join("expected.json").exists())
         .collect();
     dirs.sort();
+    dirs
+}
+
+/// What the `Upgrade path` job recorded just now, none where `GENERATED` is unset.
+fn generated() -> Vec<PathBuf> {
+    let Some(root) = std::env::var_os(GENERATED) else {
+        return Vec::new();
+    };
+    let dirs = folders(Path::new(&root));
+    assert!(!dirs.is_empty(), "{GENERATED} holds no fixture");
+    dirs
+}
+
+fn fixtures() -> Vec<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/upgrade");
+    let mut dirs = folders(&root);
+    dirs.extend(generated());
     // None right after a hard cutover, which drops the releases before it
     // (`fixtures/upgrade/README.md`), until the next release records one.
     if dirs.is_empty() {
@@ -494,11 +514,16 @@ fn coverage_gaps(
     gaps
 }
 
-/// A release's fixtures (one cluster holds under 1000 entries) together hold an entry of every kind.
+/// The release recorded now (its fixtures: one cluster holds under 1000 entries) holds an entry of
+/// every kind. Without `GENERATED` there is nothing recorded, and the test has nothing to read.
 #[test]
 fn a_fixture_that_covers_every_kind_holds_an_entry_of_each() {
+    if std::env::var_os(GENERATED).is_none() {
+        eprintln!("{GENERATED} is unset: the Upgrade path job records the fixture and runs this");
+        return;
+    }
     let mut by_release: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for fixture in fixtures() {
+    for fixture in generated() {
         let expected: Value =
             serde_json::from_slice(&std::fs::read(fixture.join("expected.json")).unwrap()).unwrap();
         if expected["everyKind"] != json!(true) {
@@ -519,8 +544,8 @@ fn a_fixture_that_covers_every_kind_holds_an_entry_of_each() {
         let gaps = coverage_gaps(&command_kinds(), &recorded, NOT_RECORDED);
         assert!(
             gaps.is_empty(),
-            "{release}: the system logs of its fixtures do not cover every kind of entry:\n{}\nrecord it \
-             again (crates/node/tests/fault/upgrade_fixture.py) or list the kind in NOT_RECORDED",
+            "{release}: the system logs of its fixtures do not cover every kind of entry:\n{}\nwrite one in \
+             crates/node/tests/fault/upgrade_kinds.py or list the kind in NOT_RECORDED",
             gaps.join("\n")
         );
     }
