@@ -131,6 +131,7 @@ wat = "1.243.0"
 wit-bindgen = "0.63.0"
 wit-parser = "0.263.0"
 zeroize = "1.8"
+zstd = "0.13"
 
 
 calimero-app-downloader = { path = "./crates/app-downloader" }

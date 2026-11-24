@@ -8,7 +8,8 @@
 //! `crates/node/tests/fault/upgrade_fixture.py` (once per release; see Testing
 //! strategy, "Upgrade path"). The data set stays below the log's snapshot interval,
 //! so the directory holds no system snapshot and this node rebuilds the whole
-//! system state by applying every entry the old release logged; each app's state is
+//! system state by applying every entry the old release logged, of every kind
+//! (`a_fixture_that_covers_every_kind_holds_an_entry_of_each`); each app's state is
 //! the old release's on-disk state.
 //!
 //! Each request is sent again, as plain HTTP with the same key: the status must be
@@ -16,12 +17,18 @@
 //! value (this release may add fields, never drop or change one). Then the
 //! replayed state takes a write.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use calimero_log::store::Db;
 use calimero_node::attest::Mode;
-use calimero_node::{run, Config};
+use calimero_node::node::SYSTEM_GROUP;
+use calimero_node::system::SystemCmd;
+use calimero_node::{cluster_key, run, Config};
+use serde::de::value::MapDeserializer;
+use serde::{de, Deserialize};
 use serde_json::{json, Value};
 
 /// The fixture node's cluster, and its development storage key's derivation
@@ -54,6 +61,24 @@ const LOG_POSITIONS: &[&str] = &["index"];
 /// replay's clock rather than the release's answer.
 const EXPIRED: &str = "expired";
 
+/// Entry kinds (`SystemCmd`'s `op`) a recorded fixture holds none of, each with why. A new
+/// command belongs here until the pinned release writes it and the fixture is recorded again.
+const NOT_RECORDED: &[(&str, &str)] = &[
+    ("startAccountRecovery", "starting one takes a WebAuthn registration made outside a session, which neither meroctl nor the recording's Python can make"),
+    ("cancelAccountRecovery", "it cancels a started recovery (startAccountRecovery)"),
+    ("finishAccountRecovery", "it finishes a started recovery (startAccountRecovery)"),
+    ("finishRecovery", "an organization's recovery finishes `RECOVERY_DELAY_SECS` (days) after it starts"),
+    ("useRefresh", "a refresh token is exchanged only once it is `REFRESH_ROTATE_AFTER` (an hour) old, which a recording cannot wait for"),
+    ("refreshReused", "it answers an exchanged token presented again (useRefresh)"),
+    ("restoreApp", "a restore needs a backup, whose snapshot of the system group purges the log the fixture keeps whole"),
+    ("importHolder", "it needs the recovery disk, which snapshots every group as a backup does"),
+    ("requireSessionProofs", "a system leader writes it into a cluster begun before session proofs; a new cluster's `Genesis` carries them"),
+    ("setClusterOwner", "only a cluster deployed with `--deployers owner` takes one, and governance is fixed at genesis"),
+    ("setReleaseApproval", "only a cluster whose release approvals are the owners' takes one; the recording's are the operator's"),
+    ("setReplicas", "it moves an app between nodes; a one-node cluster has nowhere to move it and logs nothing for the same set"),
+    ("upgradeFailed", "it notes an upgrade that failed after it was approved, which no release of the suite's packages does"),
+];
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -69,7 +94,11 @@ fn free_port() -> u16 {
         .port()
 }
 
-fn config(dir: &Path, port: u16, release: &str) -> Config {
+fn storage_key() -> [u8; 32] {
+    calimero_identity::sha256(format!("calimero-dev-storage-key|{CLUSTER}").as_bytes())
+}
+
+fn config(dir: &Path, port: u16, release: &str, node: &Value) -> Config {
     let url = format!("http://127.0.0.1:{port}/");
     Config {
         node_id: 1,
@@ -79,9 +108,7 @@ fn config(dir: &Path, port: u16, release: &str) -> Config {
         peers: BTreeMap::from([(1, url)]),
         bootstrap: false,
         cluster: CLUSTER.into(),
-        storage_key: calimero_identity::sha256(
-            format!("calimero-dev-storage-key|{CLUSTER}").as_bytes(),
-        ),
+        storage_key: storage_key(),
         attestation: Mode::Mock,
         allow_mock_peers: true,
         tls_extra_roots: Vec::new(),
@@ -100,7 +127,7 @@ fn config(dir: &Path, port: u16, release: &str) -> Config {
         raft: calimero_log::Config::default(),
         read_wait: Duration::from_secs(2),
         refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,
-        tee_release: None,
+        tee_release: node["teeRelease"].as_str().map(str::to_owned),
         tee_profile: None,
         peer_measurements: calimero_client::Measurements::None,
         clock_offset_ms: 0,
@@ -113,7 +140,7 @@ fn config(dir: &Path, port: u16, release: &str) -> Config {
         allow_package_uploads: true,
         outbound: None,
         governance: Default::default(),
-        apps_domain: None,
+        apps_domain: node["appsDomain"].as_str().map(str::to_owned),
         attestation_verifier_url: None,
         operator_key: None,
     }
@@ -226,22 +253,41 @@ async fn a_release_data_directory_replays_to_the_answers_that_release_gave() {
     }
 }
 
+/// A fixture's data directory: `datadir.tar.zst`, or `datadir.tar.gz` for the older ones.
+fn unpack(fixture: &Path, into: &Path) {
+    let zst = fixture.join("datadir.tar.zst");
+    if zst.exists() {
+        let archive = std::fs::File::open(zst).unwrap();
+        tar::Archive::new(zstd::stream::read::Decoder::new(archive).unwrap())
+            .unpack(into)
+            .unwrap();
+        return;
+    }
+    let archive = std::fs::read(fixture.join("datadir.tar.gz")).unwrap();
+    tar::Archive::new(flate2::read::GzDecoder::new(&archive[..]))
+        .unpack(into)
+        .unwrap();
+}
+
 async fn replay(fixture: &Path) {
     let name = fixture.file_name().unwrap().to_string_lossy().into_owned();
     let expected: Value =
         serde_json::from_slice(&std::fs::read(fixture.join("expected.json")).unwrap()).unwrap();
     assert_eq!(expected["cluster"], CLUSTER, "{name}");
-    // No system snapshot: the system state below is rebuilt from the old log alone.
-    assert_eq!(
-        expected["snapshotsHeld"],
-        json!([]),
-        "{name}: the fixture holds snapshots, so its system log is not replayed whole"
+    // No system snapshot: the system state below is rebuilt from the old log alone (an
+    // app's snapshot, a restore point's, leaves the system log whole).
+    let system_snapshot = format!("g{SYSTEM_GROUP}-");
+    assert!(
+        expected["snapshotsHeld"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| !s.as_str().unwrap().starts_with(&system_snapshot)),
+        "{name}: the fixture holds a system snapshot, so its system log is not replayed whole: {}",
+        expected["snapshotsHeld"]
     );
     let tmp = tempfile::tempdir().unwrap();
-    let archive = std::fs::read(fixture.join("datadir.tar.gz")).unwrap();
-    tar::Archive::new(flate2::read::GzDecoder::new(&archive[..]))
-        .unpack(tmp.path())
-        .unwrap();
+    unpack(fixture, tmp.path());
     let dir = tmp.path().join("node1");
     // The fixture's port is in its store, but a single node never dials itself.
     let port = free_port();
@@ -249,7 +295,9 @@ async fn replay(fixture: &Path) {
         .as_str()
         .unwrap_or("test")
         .to_owned();
-    let r = run(config(&dir, port, &release)).await.unwrap();
+    let r = run(config(&dir, port, &release, &expected["node"]))
+        .await
+        .unwrap();
     let base = format!("http://127.0.0.1:{port}/");
     let http = reqwest::Client::new();
     let keys = expected["keys"].as_object().unwrap();
@@ -337,6 +385,154 @@ async fn replay(fixture: &Path) {
     .await;
     assert_eq!(body["result"], json!(name), "{name}");
     r.stop().await;
+}
+
+/// A `serde` error that keeps the variants a derived enum names when its tag is unknown.
+#[derive(Debug)]
+struct Variants(&'static [&'static str]);
+
+impl fmt::Display for Variants {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
+}
+
+impl std::error::Error for Variants {}
+
+impl de::Error for Variants {
+    fn custom<T: fmt::Display>(_: T) -> Self {
+        Variants(&[])
+    }
+
+    fn unknown_variant(_: &str, expected: &'static [&'static str]) -> Self {
+        Variants(expected)
+    }
+}
+
+/// Every kind of system command this tree reads, as the derive names them.
+fn command_kinds() -> BTreeSet<&'static str> {
+    let unknown_op = MapDeserializer::<_, Variants>::new([("op", "")].into_iter());
+    match SystemCmd::deserialize(unknown_op) {
+        Err(Variants(kinds)) if !kinds.is_empty() => kinds.iter().copied().collect(),
+        other => panic!("an unknown op should name the kinds: {other:?}"),
+    }
+}
+
+/// The kinds the system log of the data directory `dir` holds an entry of.
+fn recorded_kinds(dir: &Path) -> BTreeSet<String> {
+    let k_r = storage_key();
+    let key = cluster_key::load(dir, &k_r).unwrap().unwrap_or(k_r);
+    let db = Db::open(dir, &key).unwrap();
+    db.commands(SYSTEM_GROUP)
+        .unwrap()
+        .iter()
+        .map(|cmd| {
+            let entry: Value = serde_json::from_slice(cmd).unwrap();
+            entry["op"]
+                .as_str()
+                .expect("a command names its op")
+                .to_owned()
+        })
+        .collect()
+}
+
+/// What is wrong with `recorded` as the kinds of a fixture that covers `known`, but for `allowed`.
+fn coverage_gaps(
+    known: &BTreeSet<&str>,
+    recorded: &BTreeSet<String>,
+    allowed: &[(&str, &str)],
+) -> Vec<String> {
+    let mut gaps = Vec::new();
+    for kind in known {
+        let listed = allowed.iter().any(|(k, _)| k == kind);
+        match (recorded.contains(*kind), listed) {
+            (false, false) => gaps.push(format!("{kind}: no entry of it in the fixture")),
+            (true, true) => gaps.push(format!(
+                "{kind}: is recorded, so leave it out of NOT_RECORDED"
+            )),
+            _ => {}
+        }
+    }
+    for kind in recorded.iter().filter(|k| !known.contains(k.as_str())) {
+        gaps.push(format!(
+            "{kind}: the fixture holds it, this tree reads no such command"
+        ));
+    }
+    for (kind, why) in allowed {
+        if !known.contains(kind) {
+            gaps.push(format!("{kind}: in NOT_RECORDED but no command"));
+        }
+        if why.is_empty() {
+            gaps.push(format!("{kind}: in NOT_RECORDED with no reason"));
+        }
+    }
+    gaps
+}
+
+#[test]
+fn a_fixture_that_covers_every_kind_holds_an_entry_of_each() {
+    let mut covered = 0;
+    for fixture in fixtures() {
+        let expected: Value =
+            serde_json::from_slice(&std::fs::read(fixture.join("expected.json")).unwrap()).unwrap();
+        if expected["everyKind"] != json!(true) {
+            continue;
+        }
+        covered += 1;
+        let tmp = tempfile::tempdir().unwrap();
+        unpack(&fixture, tmp.path());
+        let gaps = coverage_gaps(
+            &command_kinds(),
+            &recorded_kinds(&tmp.path().join("node1")),
+            NOT_RECORDED,
+        );
+        assert!(
+            gaps.is_empty(),
+            "{}: the system log does not cover every kind of entry:\n{}\nrecord it again \
+             (crates/node/tests/fault/upgrade_fixture.py) or list the kind in NOT_RECORDED",
+            fixture.display(),
+            gaps.join("\n")
+        );
+    }
+    assert!(covered > 0, "no fixture records every kind of entry");
+}
+
+#[test]
+fn a_kind_the_fixture_lacks_is_a_gap_unless_it_is_listed_with_a_reason() {
+    let known = BTreeSet::from(["createOrg", "setReplicas", "genesis"]);
+    let recorded = BTreeSet::from(["createOrg".to_owned(), "genesis".to_owned()]);
+    assert_eq!(
+        coverage_gaps(&known, &recorded, &[]),
+        ["setReplicas: no entry of it in the fixture"]
+    );
+    let listed = [("setReplicas", "one node has nowhere to move an app")];
+    assert!(coverage_gaps(&known, &recorded, &listed).is_empty());
+    assert_eq!(
+        coverage_gaps(&known, &recorded, &[("genesis", "x"), ("setReplicas", "")]),
+        [
+            "genesis: is recorded, so leave it out of NOT_RECORDED",
+            "setReplicas: in NOT_RECORDED with no reason"
+        ]
+    );
+    let stale = BTreeSet::from([
+        "createOrg".to_owned(),
+        "genesis".to_owned(),
+        "gone".to_owned(),
+    ]);
+    assert_eq!(
+        coverage_gaps(&known, &stale, &listed),
+        ["gone: the fixture holds it, this tree reads no such command"]
+    );
+}
+
+#[test]
+fn the_kinds_of_system_command_are_read_from_the_enum() {
+    let kinds = command_kinds();
+    assert!(
+        kinds.contains("createOrg") && kinds.contains("genesis"),
+        "{kinds:?}"
+    );
+    assert!(kinds.len() > 100, "{kinds:?}");
 }
 
 #[test]

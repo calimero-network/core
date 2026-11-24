@@ -73,6 +73,7 @@ calimero-client = { workspace = true, features = ["testing"] }
 flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true
+zstd.workspace = true
 calimero-identity = { workspace = true, features = ["testing"] }
 # `[outbound.testing] echo`, so a cluster test sees what a run sent out.
 calimero-outbound = { workspace = true, features = ["outbound-testing"] }

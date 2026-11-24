@@ -2,18 +2,22 @@
 left it, and the answers it gave, for `crates/node/tests/upgrade_replay.rs`.
 
     scripts/fetch-release.sh 1.0.0-rc.15 target/upgrade-from
+    scripts/build-release-fixtures.sh 1.0.0-rc.15 target/upgrade-from
+    scripts/build-upgrade-deep-fixtures.sh target/upgrade-from
     python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from \\
         --out crates/node/tests/fixtures/upgrade/1.0.0-rc.15
 
 Run it once per release, with that release's merod and meroctl (`--from-dir`,
 laid out by `scripts/fetch-release.sh`), and commit the directory it writes:
 
-- `datadir.tar.gz`: `node1/`, the data directory of a one-node cluster
+- `datadir.tar.zst`: `node1/`, the data directory of a one-node cluster
   (`merod run --dev`, cluster `upgrade-replay`, so its storage key is the dev
-  key of that name) after the data set below was written through the public API
-  and the node stopped. The data set stays under the log's snapshot interval
-  (1000 entries), so the directory holds the whole system log and no system
-  snapshot: a node opening it rebuilds its system state by applying every entry.
+  key of that name) after the data set below, and then every upgrade case's seed
+  (`upgrade_cases/`), was written through the public API and the node stopped.
+  The data set stays under the log's snapshot interval (1000 entries), so the
+  directory holds the whole system log and no system snapshot: a node opening it
+  rebuilds its system state by applying every entry, and the log holds an entry
+  of every kind a release writes (`upgrade_replay.rs` checks it).
 - `expected.json`: the release, the node's port and the API keys the test
   sends, and every request below with the status and body the release
   answered (`reads`), read just before the node stopped.
@@ -36,6 +40,72 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# Seeds the recording leaves out, with why: the fixture is committed, and each of these writes tens of MiB.
+TOO_BIG = {
+    "files-and-compute": "it uploads a 40 MiB file",
+    "sealed-files-sessions": "it uploads two files of 32 MiB and one of 2 MiB",
+}
+
+
+def one_node_fleet(Fleet):
+    """A `Fleet` whose node writes no periodic backup: a backup snapshots the system group, which
+    purges the log before it, and the fixture keeps the whole log."""
+
+    class OneNode(Fleet):
+        def args(self, i):
+            a = super().args(i)
+            if "--backup-dir" in a:
+                at = a.index("--backup-dir")
+                del a[at : at + 2]
+            return a
+
+    return OneNode
+
+
+def pack_pipelines(frm: Path, work: Path) -> Path:
+    """The pipeline cases' package, packed by the release's own meroctl from the compute
+    component and pipeline it built from its tag (`scripts/build-release-fixtures.sh`)."""
+    src = frm / "src" / "apps"
+    fanout = src / "fixture-compute" / "pipelines" / "fanout.yaml"
+    if not fanout.exists():
+        fanout = src / "v2-fixtures" / "compute" / "pipelines" / "fanout.yaml"
+    mpk = work / "pipelines.mpk"
+    subprocess.run([str(frm / "meroctl"), "app", "pack", "--compute", str(frm / "compute-compute.wasm"),
+                    "--pipeline", str(fanout), "--package", "com.calimero.upgrade.pipelines",
+                    "--app-version", "1.0.0", "--out", str(mpk)], check=True, capture_output=True)
+    return mpk
+
+
+def seed_cases(w) -> None:
+    """Every upgrade case's seed, as the upgrade path writes it on the old release: the log then
+    holds the entries those cases' features write. A case that fails to seed stops the recording."""
+    import upgrade_path  # imported once main has set the release's binaries (RV2_MEROD)
+
+    upgrade_path.load_cases(HERE / "upgrade_cases")
+    cases = [c() for c in upgrade_path.CASES if c.name not in TOO_BIG]
+    results: list[dict] = []
+    upgrade_path.run_step(w, cases, "seed", results)
+    failed = [r["case"] for r in results if r["status"] != "pass"]
+    failed += [c.name for c in cases if getattr(c, "seed_error", None)]
+    if failed:
+        raise SystemExit(f"these cases did not seed on the one-node cluster: {sorted(set(failed))}")
+
+
+def deep_reads(w, keys: dict) -> list:
+    """What the seeded cases' accounts and the operator list: each account's own reads, each
+    organization it is in, and the operator's reports of the cluster."""
+    reads = [("anon", "GET", "releases", None), ("ops", "GET", "ops/apps", None), ("ops", "GET", "ops/orgs", None),
+             ("ops", "GET", "ops/packages", None), ("ops", "GET", "ops/pools", None),
+             ("ops", "GET", "ops/prices", None), ("ops", "GET", "ops/sign-up/invites", None)]
+    for name, account in w._accounts.items():
+        who = f"p:{name}"
+        keys[who] = account.key
+        mine = ["auth/me", "auth/apps", "auth/aliases", "apps", "packages", "deployments"]
+        reads += [(who, "GET", path, None) for path in mine]
+        me = account.http("GET", "auth/me", node=1)
+        for org in me.get("orgs", []):
+            reads += [(who, "GET", f"orgs/{org['orgId']}", None), (who, "GET", f"orgs/{org['orgId']}/apps", None)]
+    return reads
 
 
 def main(argv=None) -> int:
@@ -49,8 +119,10 @@ def main(argv=None) -> int:
     os.environ["RV2_MEROCTL"] = str(frm / "meroctl")
     sys.path.insert(0, str(HERE))
     import rv2
-    import suite
-    from rv2 import Cluster, HttpError
+    import upgrade_kinds
+    import upgrade_path
+    from rv2 import HttpError, PackageRegistry
+    from rollout import Fleet
 
     version = (frm / "VERSION").read_text().strip()
     out = Path(args.out)
@@ -59,11 +131,18 @@ def main(argv=None) -> int:
     with tarfile.open(frm / "kv-store-test-fixture.mpk") as tar:
         member = next(m for m in tar.getmembers() if m.name.lstrip("./") == "app.wasm")
         kv.write_bytes(tar.extractfile(member).read())
+    pipelines = pack_pipelines(frm, work)
 
-    cl = Cluster(work, base_port=args.port - 1, n=1, cluster="upgrade-replay")
+    registry = PackageRegistry(work / "registry")
+    cl = one_node_fleet(Fleet)(work, base_port=args.port - 1, cluster="upgrade-replay", binary=str(frm / "merod"),
+               meroctl=str(frm / "meroctl"), release=upgrade_path.FROM_RELEASE, registry=registry, n=1)
+    fixtures = {"from_version": version, "kv_from": frm / "kv-store-test-fixture.mpk",
+                "compute_from": frm / "compute.mpk", "pipelines": pipelines}
+    w = upgrade_path.World(cl, registry, fixtures, upgrade_path.say)
     cl.start()
     try:
-        alice, bob, carol = (suite.Account(cl, n, i).sign_up() for i, n in enumerate(("alice", "bob", "carol")))
+        cl.start_job(upgrade_path.OLD_JOB, str(frm / "merod"), upgrade_path.FROM_RELEASE)
+        alice, bob, carol = (upgrade_path.Account(cl, n, i).sign_up() for i, n in enumerate(("ada", "ben", "cai")))
         pk = str(alice.passkey)
         # Accounts: a second passkey, labelled; a recovery code; scoped keys.
         alice.cli("account", "device", "add", "--dev-passkey", str(alice.home / "second.json"), "--approve-with", pk)
@@ -104,6 +183,9 @@ def main(argv=None) -> int:
         blob_id = up.get("blobId") or up.get("id")
         alice.call(app, "attach", {"name": "doc", "blob": blob_id})
 
+        seed_cases(w)
+        upgrade_kinds.record_every_kind(w, upgrade_path.OLD_JOB)
+
         keys = {"alice": alice.key, "bob": bob.key, "carol": carol.key, "ro": ro}
         view = lambda m, a=None: {"method": m, "args": a or {}}  # noqa: E731
         requests = [
@@ -133,7 +215,7 @@ def main(argv=None) -> int:
             ("anon", "GET", "sign-up", None),
         ]
         reads = []
-        for who, method, path, body in requests:
+        for who, method, path, body in requests + deep_reads(w, keys):
             bearer = cl.ops_token if who == "ops" else keys.get(who)
             headers = {"authorization": f"Bearer {bearer}"} if bearer else {}
             try:
@@ -145,6 +227,7 @@ def main(argv=None) -> int:
         status = cl.ops_status(1)
     finally:
         cl.stop()
+        registry.stop()
 
     snaps = cl.dir(1) / "snapshots"
     held = [p.name for p in snaps.iterdir()] if snaps.exists() else []
@@ -157,8 +240,11 @@ def main(argv=None) -> int:
             return None
         return info
 
-    with tarfile.open(out / "datadir.tar.gz", "w:gz") as tar:
+    # zstd: the bundles of the seeded packages repeat each other's bytes, which gzip's window cannot see.
+    plain = work / "datadir.tar"
+    with tarfile.open(plain, "w") as tar:
         tar.add(cl.dir(1), arcname="node1", filter=keep)
+    subprocess.run(["zstd", "-19", "-q", "-f", str(plain), "-o", str(out / "datadir.tar.zst")], check=True)
     (out / "expected.json").write_text(json.dumps({
         "release": version,
         "merod": subprocess.run([str(frm / "merod"), "--version"], capture_output=True, text=True).stdout.strip(),
@@ -167,12 +253,14 @@ def main(argv=None) -> int:
         "port": args.port,
         "systemApplied": status["system"],
         "snapshotsHeld": held,
+        "everyKind": True,
+        "node": {"teeRelease": cl.release[1], "appsDomain": "localhost"},
         "keys": keys,
         "apps": {"org": app, "team": team_app, "own": own},
         "reads": reads,
     }, indent=1, sort_keys=True) + "\n")
     shutil.rmtree(work, ignore_errors=True)
-    print(f"upgrade fixture of {version}: {out} ({(out / 'datadir.tar.gz').stat().st_size} bytes, "
+    print(f"upgrade fixture of {version}: {out} ({(out / 'datadir.tar.zst').stat().st_size} bytes, "
           f"{len(reads)} reads, snapshots held: {held or 'none'})")
     return 0
 
