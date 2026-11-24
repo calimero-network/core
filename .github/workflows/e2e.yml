@@ -1,53 +1,13 @@
 name: E2E
 
-# End-to-end tests of this tree's node, in three layers (docs:
-# contribute/testing):
-#
-#   - scenarios (job `scenarios`, four shards): every app's scenarios
-#     (apps/*/scenarios/: app-level, on the app's own harness, and cluster/)
-#     and core's (workflows/**/scenarios/: app migrations, sync, fuzzy
-#     loads), on an in-process 3-node cluster
-#     (`cargo test -p calimero-node --test scenarios`). A scenario on
-#     crates/node/tests/scenarios-skip.txt is reported, not run;
-#   - the process suite (job `process-suite`): real `merod run --dev`
-#     processes, one per node (crates/node/tests/fault/suite.py): a crash and
-#     a frozen node, a frozen leader under a latency budget, organizations and
-#     keys, signed packages from a registry, a rolling upgrade of every node,
-#     and the kv-store soak (calls/s and p50/p95/p99 per operation in the job
-#     summary);
-#   - the clients (jobs `clients` and `clients-swift`): the cluster tests of
-#     this tree's mero-js, mero-py, mero-kotlin and mero-swift (sdks/clients/)
-#     against this tree's `merod` (mero-swift's on macOS, against `merod`
-#     built there: MeroKit needs CryptoKit). A breaking server change fixes
-#     the clients in the same PR: they live in one tree.
-#
-# Nightly runs the suite with `--nightly` (three iterations, a 900 s soak,
-# rooms_fault.py's randomized nemesis) and the fuzzy scenarios for 900 s.
-# Nightly also:
-#
-#   - the process suite against the `merod` inside the latest published
-#     release image (ghcr.io/<owner>/merod:<version>, release.yml), with the
-#     suite and fixtures of the commit that image was built from: the shipped
-#     artifact, not a fresh cargo build (job `release-process-suite`);
-#   - every scenario, in four shards, at that commit (jobs `release-fixtures`
-#     and `release-scenarios`): the runner is in process, so the release's
-#     node is its source, the one its merod was built from;
-#   - a flamegraph of one node through the kv-store soak, by `perf record -g`
-#     and inferno (job `flamegraph`, scripts/soak-flamegraph.sh).
-#
-# The image is tested in release.yml (`E2E on the merod image`), which builds it
-# on a release cut (or a manual dispatch) before publishing it.
-#
-# GitHub runs `schedule` only from the default branch (master); a nightly
-# dispatch (`nightly: true`) runs every job a scheduled run does.
+# The scenarios, the process suite and the clients on this tree's node, plus their nightly runs
+# against the latest release; each job is described in docs contribute/testing.
 
-# A PR runs this only when labelled `ci:e2e`; the merge queue runs it on every
-# entry (the `E2E result` check gathers it), and the nightly runs all of it. The
-# `plan` job decides, by what the change reaches (scripts/ci-scope.py).
+# Runs on a PR labelled `ci:e2e`, on every merge-queue entry and nightly; `plan` decides
+# what the change reaches (scripts/ci-scope.py).
 on:
-  # Every PR, with no `paths:` filter: `E2E result` is a required check and must
-  # report on every PR (a docs-only one too); `plan` skips everything a change
-  # cannot reach, and on a PR everything unless it is labelled `ci:e2e`.
+  # No `paths:` filter: `E2E result` is a required check and must report on every PR;
+  # `plan` skips what the change cannot reach.
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   # No push trigger: every PR into master ran this already, and the nightly
@@ -79,10 +39,8 @@ on:
 permissions:
   contents: read
 
-# A nightly (scheduled or dispatched) run has a group of its own, so a push to
-# the same branch neither cancels it nor waits behind it. Runs of master are
-# never cancelled.
-# Adding any label but `ci:e2e` gets a group of its own, so it never cancels a run.
+# A nightly has its own group so a push neither cancels nor queues it; master is never
+# cancelled, and a label other than `ci:e2e` gets its own group.
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.nightly) && 'nightly' || 'run' }}-${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && github.event.label.name || 'run' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
@@ -96,14 +54,8 @@ env:
   INFERNO_VERSION: 0.12.8
 
 jobs:
-  # What this event runs: `e2e` (the builds and the scenarios) on a merge-queue
-  # entry, a nightly or a dispatch, or a PR labelled `ci:e2e`, when the change
-  # reaches code; `node` (the process suite, compute and the clients) when it also
-  # reaches merod's closure (ci-scope.py's `upgrade_path`) or the compute fixtures;
-  # `clients` also when it reaches a client SDK (sdks/clients/), which then
-  # needs the release build but not the process suite.
-  # A nightly or dispatch, or a change to this workflow, runs everything. Fails
-  # closed: files it cannot list run everything.
+  # What this event runs: `e2e` (builds, scenarios), `node` (process suite, compute, clients)
+  # and `clients`, by what the change reaches; it fails closed and runs everything.
   plan:
     name: plan
     runs-on: ubuntu-latest
@@ -166,12 +118,12 @@ jobs:
           grep -qE '^sdks/(clients/|package\.json$|pnpm-lock\.yaml$)' <<<"$files" && sdk_clients=true
           e2e=false
           if [ "$wanted" = true ] && { [ "$all" = true ] || [ "$rust" = true ] || [ "$sdk_clients" = true ] \
-               || grep -qE '^(workflows/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
+               || grep -qE '^(workflows/|scripts/soak-summary)' <<<"$files"; }; then
             e2e=true
           fi
           node=false
           if [ "$e2e" = true ] && { [ "$all" = true ] || [ "$node_closure" = true ] \
-               || grep -qE '^(apps/fixture-compute/|apps/compute-redact/|crates/meroctl/|crates/node/tests/fault/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
+               || grep -qE '^(apps/fixture-compute/|apps/compute-redact/|crates/meroctl/|crates/node/tests/fault/|scripts/soak-summary)' <<<"$files"; }; then
             node=true
           fi
           clients=$node
@@ -205,13 +157,8 @@ jobs:
         run: |
           jq -e '.plan.result == "success" and (to_entries | all(.value.result == "success" or .value.result == "skipped"))' <<<"$NEEDS"
 
-  # The release build every process-level job runs, once: merod and meroctl
-  # (which also builds, packs and runs compute locally); the kv component and two signed
-  # releases of it (and, nightly, the Rooms component). A nightly builds as the
-  # product ships (fat LTO, one codegen unit), so its soak numbers are the
-  # release's; any other run builds optimized without fat LTO, which links in a
-  # fraction of the time. Set on the build steps only, so the cache step hashes
-  # what the release group's other jobs do.
+  # merod, meroctl and the kv releases, built once; nightly builds with fat LTO so the soak
+  # numbers are the release's, other runs skip it to link in a fraction of the time.
   build-release:
     name: build merod and the fixtures
     needs: plan
@@ -267,9 +214,8 @@ jobs:
           retention-days: 1
 
 
-  # The scenario runner (crates/node/tests/scenarios.rs), compiled once; the
-  # shards run the binary. ci-checks' required `scope` job checks discovery with
-  # a script; it must see what the runner sees.
+  # The scenario runner, compiled once for the shards; ci-checks' `scope` checks discovery
+  # with a script that must see what the runner sees.
   build-scenarios:
     name: build the scenario runner
     needs: plan
@@ -314,10 +260,8 @@ jobs:
           retention-days: 1
 
 
-  # Every scenario, app-level and cluster, in four shards (SCENARIO_SHARD), each
-  # on an in-process 3-node cluster (crates/node/tests/harness/scenario.rs); no
-  # merod process. Run as cargo would, from the package's directory. The runner
-  # builds each app component it installs (target/app-components).
+  # Every scenario in four shards (SCENARIO_SHARD), each on an in-process 3-node cluster;
+  # run from the package's directory, as cargo would.
   scenarios:
     name: scenarios (${{ matrix.shard }}/4)
     needs: build-scenarios
@@ -358,12 +302,8 @@ jobs:
           ../../target/scenario-runner/scenarios --test-threads 2
 
 
-  # Process-level tests on real `merod run --dev` processes, one per node: a crash,
-  # a frozen node and a restart; a frozen leader under a 10 s budget; organizations
-  # and keys; signed packages from a registry; a rolling upgrade of every node under
-  # load; the kv-store soak (latency and throughput in the summary). A PR runs each
-  # once with a 30 s soak; a nightly runs `--nightly` (three iterations, a 900 s
-  # soak, rooms_fault.py's randomized nemesis for 50 iterations).
+  # Real `merod run --dev` processes, one per node (crates/node/tests/fault/suite.py);
+  # a PR runs each case once with a 30 s soak, a nightly runs `--nightly`.
   process-suite:
     name: process suite (merod processes)
     needs: [plan, build-release]
@@ -526,9 +466,8 @@ jobs:
           shared-key: ci-checks
           rust-cache: false
 
-      # merod and meroctl optimized like the product (sealing 47 MiB files in a debug
-      # build misses the push deadline); `meroctl app build` builds the fixtures and
-      # `meroctl local compute run` is the local runner compute-redact's output is checked against.
+      # Optimized like the product: sealing 47 MiB files in a debug build misses the push
+      # deadline. `meroctl local compute run` is what compute-redact's output is checked against.
       - name: Download merod, meroctl, the tools and the fixtures
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -558,12 +497,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Nightly: the shipped artifact. The newest published release (a prerelease
-  # included) has its image tagged with its version by release.yml; its merod
-  # runs the process suite of the commit the image was built from (its
-  # org.opencontainers.image.revision label), with that commit's meroctl and
-  # fixtures, so a test added after the release cannot fail it. A release
-  # whose commit has no process suite is reported and not run.
+  # Nightly: the newest release image's merod runs the process suite of the commit it was
+  # built from, so a test added after the release cannot fail it.
   release-image:
     name: Latest release image
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.release_image != ''))
@@ -660,14 +595,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Nightly: the release's scenarios. The runner is in process (it links
-  # calimero-node, not a merod binary), so the release's node is its commit's
-  # source, the source the image's merod was built from; the binary itself is
-  # the process suite's (release-process-suite). Fixtures, scenarios and runner
-  # are all that commit's, so a scenario added after the release cannot fail it.
-  # A release from before the wasmer engine was removed prebuilds its wasmer apps
-  # here (scripts/build-workflow-fixtures.py); a later one has none to prebuild,
-  # since its runner builds each component it installs.
+  # Nightly: the scenarios of the release's commit; the runner links calimero-node, so that
+  # commit's source is the release's node. A pre-wasmtime release prebuilds its wasmer apps here.
   release-fixtures:
     name: scenario fixtures (release ${{ needs.release-image.outputs.version }})
     needs: release-image
@@ -847,9 +776,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # One job per client, on the release merod `build-release` built: this tree's
-  # SDKs (sdks/clients/), so a server change and the client fix it needs land in
-  # one PR.
+  # One job per client, against `build-release`'s merod: the SDKs live in this tree, so a
+  # server change and its client fix land in one PR.
   clients:
     name: clients against merod (${{ matrix.client }})
     needs: [plan, build-release]
@@ -966,9 +894,8 @@ jobs:
           MERO_KV_MPK: ${{ github.workspace }}/dist/com.calimero.kv-store-1.0.0.mpk
         run: scripts/cluster-test.sh --no-daemon
 
-  # The consent page in a browser: three merod processes, Chromium, a virtual WebAuthn
-  # authenticator (crates/node/tests/consent-page). Runs on a change that reaches the page,
-  # whatever the `ci:e2e` label says (`plan`'s `consent_page`).
+  # The consent page in Chromium with a virtual WebAuthn authenticator, on three merod processes;
+  # runs on any change that reaches the page, `ci:e2e` label or not.
   consent-page:
     name: consent page in a browser
     needs: [plan, build-release]
@@ -1033,10 +960,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # mero-swift's live-node suite (MeroKitE2ETests): MeroKit needs CryptoKit, so
-  # macOS, and `merod` built there from this tree (build-release's is Linux);
-  # the kv component and package come from build-release. Every case must run:
-  # a skipped one (an unset variable) fails the job.
+  # mero-swift's live-node suite: MeroKit needs CryptoKit, so macOS and a merod built there;
+  # a skipped case (an unset variable) fails the job.
   clients-swift:
     name: clients against merod (mero-swift)
     needs: [plan, build-release]
