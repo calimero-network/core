@@ -27,6 +27,7 @@ names, `[lib] name` or `module-name`: every user's `import` would break.
 src/                         # the Rust extension (PyO3): calimero_client_py._native
 calimero_client_py/          # the Python package
   client.py, sealed.py, _facade.py, recovery.py   # hand-written
+  products/calimero.py       # hand-written: Calimero.from_env() and its kv()
   openapi/                   # GENERATED: openapi-python-client's client of the node API
   facade.py                  # GENERATED: one Client method per operation
   products/kv/client.py      # GENERATED: the Confidential KV's client (meroctl app codegen)
