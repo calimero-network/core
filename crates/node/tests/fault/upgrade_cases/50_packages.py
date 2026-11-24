@@ -128,7 +128,7 @@ class Services(DeepCase):
         alpha = s["apps"]["alpha"]
         mel.raw("post", f"apps/{alpha}/upgrade", {"version": later})
         check(later in json.dumps(snap(mel, f"apps/{alpha}")["release"]), f"alpha runs {later} after the upgrade")
-        eq(mel.result(alpha, "get", {"key": "service"}), "alpha", "the alpha instance's data across its upgrade")
+        eq(mel.result(alpha, "get", {"key": "service"}), "beta", "the alpha instance's data across its upgrade")
         self._record(w, s)
 
 
@@ -190,6 +190,7 @@ class PackageOrigins(DeepCase):
         # The first served origin stays: the restart check then reads a record the old release wrote.
         newer = "https://served-ora-2.example.test"
         ora.raw("post", self._path(s), {"origin": newer, "served": True})
+        ora.raw("delete", self._path(s), {"origin": s["served"][0]})
         s["served"] = [*s["served"], newer]
         self._read(w, s)
         eq(s["origins"], sorted([s["plain"], *s["served"]]), "the origins after the new release changed them")

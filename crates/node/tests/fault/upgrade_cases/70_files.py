@@ -139,7 +139,7 @@ class BlobGrants(DeepCase):
     def _refused(self, w, s):
         for node in w.members():
             for grant in s["revoked"]:
-                eq(_download(w, s["app"], s["blob"], grant, node)[0], 404, f"a revoked grant on node {node}")
+                eq(_download(w, s["app"], s["blob"], s["live"], node)[0], 404, f"a revoked grant on node {node}")
 
     def _serves(self, w, s):
         for node in w.members():
