@@ -1972,15 +1972,17 @@ enum Part {
     Member,
 }
 
-/// The sheet's line naming the deployment an instance comes from
-/// ([`crate::system::SystemState::deployment_shown`]): its name, id and owner together.
-fn offered_by(d: &Value) -> String {
-    format!(
-        "Offered by {} (deployment {}), run by {}.",
-        d["name"].as_str().unwrap_or_default(),
-        d["id"].as_str().unwrap_or_default(),
-        party(&d["owner"])
-    )
+/// The sheet's fact naming the deployment an instance comes from
+/// ([`crate::system::SystemState::deployment_shown`]): its name and owner, then its id.
+fn offered_by(d: &Value) -> Value {
+    json!({
+        "title": format!(
+            "Offered by {}, run by {}.",
+            d["name"].as_str().unwrap_or_default(),
+            party(&d["owner"])
+        ),
+        "detail": format!("Deployment {}", d["id"].as_str().unwrap_or_default()),
+    })
 }
 
 /// The sheet's line telling a customer their deployment changed hands since they last
@@ -2175,12 +2177,6 @@ async fn upgrade_request(
         .deployment
         .as_ref()
         .and_then(|d| node.sys(|s| s.deployment_shown(d)));
-    if let Some(d) = &shown {
-        points.push(json!(offered_by(d)));
-    }
-    if let (true, Some(d)) = (node.sys(|s| s.handed_over_unseen(&app)), &shown) {
-        points.push(json!(taken_over(d)));
-    }
     let mut attention = upgrade_attention(&sheet);
     if let Some(c) = &unit {
         points.push(json!(destinations_point(c, !app.links.is_empty())));
@@ -2188,7 +2184,7 @@ async fn upgrade_request(
     }
     let update = (!member_of_unit)
         .then(|| updates::update_section(node, &app, unit.as_ref(), &step, (old, new), Vec::new()));
-    let model = json!({
+    let mut model = json!({
         "kind": "upgrade",
         "update": update,
         "scope": {
@@ -2204,6 +2200,7 @@ async fn upgrade_request(
         "unit": unit.as_ref().map(crate::egress::verdict_json),
         "app": { "name": name, "package": package },
         "deployment": shown,
+        "offeredBy": shown.as_ref().map(offered_by),
         "publisher": {
             "name": author,
             "signer": to.signer,
@@ -2220,6 +2217,9 @@ async fn upgrade_request(
         "notes": notes,
         "upgrade": sheet,
     });
+    if let (true, Some(d)) = (node.sys(|s| s.handed_over_unseen(&app)), &shown) {
+        model["takenOver"] = json!(taken_over(d));
+    }
     let action = if step == updates::ApprovalStep::First {
         Action::ApproveFirst {
             from: BTreeMap::from([(app_id.clone(), app.bundle.clone())]),
@@ -3813,11 +3813,14 @@ mod tests {
         let shown = |owner: Value| json!({ "id": "d1", "name": "acme", "owner": owner });
         assert_eq!(
             offered_by(&shown(json!({ "kind": "org", "name": "Acme Labs" }))),
-            "Offered by acme (deployment d1), run by the organization Acme Labs."
+            json!({
+                "title": "Offered by acme, run by the organization Acme Labs.",
+                "detail": "Deployment d1",
+            })
         );
         assert_eq!(
-            offered_by(&shown(json!({ "kind": "account", "name": null }))),
-            "Offered by acme (deployment d1), run by an account no longer on this cluster."
+            offered_by(&shown(json!({ "kind": "account", "name": null })))["title"],
+            "Offered by acme, run by an account no longer on this cluster."
         );
         let mut d = shown(json!({ "kind": "org", "name": "Globex" }));
         d["transferred"] = json!({ "from": { "kind": "account", "name": "dev" }, "at": "x" });
