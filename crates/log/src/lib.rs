@@ -179,11 +179,11 @@ trait RpcTarget: Send + Sync {
     /// Delete the group's data from this node (after [`Self::shutdown`]): a
     /// snapshot build openraft still runs records nothing for it after.
     fn drop_data(&self) -> eyre::Result<()>;
-    /// The engine's heartbeat tick: with `batched`, openraft's own heartbeat
-    /// timer is off and this sends the group's heartbeats (if it leads), so
-    /// every group's go out together and join one batch per peer; without,
-    /// openraft's timer is on and this does nothing more.
-    fn tick(&self, batched: bool) -> BoxFuture<()>;
+    /// The engine's heartbeat tick ([`heartbeat_ticker`]): send the group's
+    /// heartbeats if it leads here. openraft's own heartbeat timer is off
+    /// (`enable_heartbeat: false`), so every group's go out together and
+    /// those to one peer join one batch.
+    fn tick(&self) -> BoxFuture<()>;
 }
 
 /// One Raft group on this node.
@@ -279,7 +279,6 @@ impl<M: Machine> Group<M> {
             batcher: Arc::clone(&self.reopen.batcher),
         };
         let raft = Raft::new(self.node, Arc::clone(&self.reopen.config), network, log, sm).await?;
-        raft.runtime_config().heartbeat(!self.reopen.batcher.on());
         // Checked and swapped under the lock `shutdown` closes the group
         // under, so a group stopped meanwhile never gets a live core back.
         let unused = {
@@ -839,14 +838,11 @@ impl<M: Machine> RpcTarget for Group<M> {
         })
     }
 
-    fn tick(&self, batched: bool) -> BoxFuture<()> {
+    fn tick(&self) -> BoxFuture<()> {
         let raft = self.raft();
-        raft.runtime_config().heartbeat(!batched);
         Box::pin(async move {
-            if batched {
-                // A follower ignores it; a stopped core answers an error.
-                let _ = raft.trigger().heartbeat().await;
-            }
+            // A follower ignores it; a stopped core answers an error.
+            let _ = raft.trigger().heartbeat().await;
         })
     }
 
@@ -1105,6 +1101,9 @@ impl Engine {
             // the node's body limit and give it time to arrive.
             snapshot_max_chunk_size: SNAPSHOT_CHUNK_BYTES,
             install_snapshot_timeout: 10_000,
+            // The engine's ticker sends every group's heartbeats at once, so
+            // those to one peer travel in one batch ([`heartbeat_ticker`]).
+            enable_heartbeat: false,
             ..Default::default()
         }
         .validate()?;
@@ -1128,11 +1127,9 @@ impl Engine {
             batcher: Arc::clone(&self.batcher),
         };
         let raft = Raft::new(self.node, Arc::clone(&config), network, log, sm).await?;
-        raft.runtime_config().heartbeat(!self.batcher.on());
         if !self.ticking.swap(true, Ordering::AcqRel) {
             drop(tokio::spawn(heartbeat_ticker(
                 Arc::downgrade(&self.groups),
-                Arc::clone(&self.batcher),
                 Duration::from_millis(self.config.heartbeat_ms),
             )));
         }
@@ -1208,22 +1205,8 @@ impl Engine {
         }
     }
 
-    /// Batch heartbeats per peer ([`network::Batcher`]) or not. The node
-    /// turns it on once every node of the cluster takes a batch: a node on an
-    /// earlier release cannot. Off (the default), every group heartbeats on
-    /// openraft's own timer, one message per group and peer.
-    pub fn set_batch_heartbeats(&self, on: bool) {
-        self.batcher.set(on);
-    }
-
-    #[must_use]
-    pub fn batch_heartbeats(&self) -> bool {
-        self.batcher.on()
-    }
-
     /// Dispatch a batch of RPCs that arrived from a peer, each to its group
-    /// at once; the answers in order. Taken whether or not this node batches
-    /// its own.
+    /// at once; the answers in order.
     pub async fn handle_rpc_batch(&self, items: Vec<(GroupId, RpcRequest)>) -> Vec<RpcResponse> {
         let mut answers = Vec::with_capacity(items.len());
         let mut unhosted = Vec::new();
@@ -1296,12 +1279,11 @@ impl Engine {
     }
 }
 
-/// Every `every`, tell each hosted group whether heartbeats are batched and,
-/// when they are, send its heartbeats: all at once, so each peer's join one
-/// batch. Ends with the engine.
+/// Every `every` (`Config::heartbeat_ms`), send every hosted group's
+/// heartbeats at once, so those to one peer join one batch
+/// ([`network::Batcher`]). Ends with the engine.
 async fn heartbeat_ticker(
     groups: Weak<RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>>,
-    batcher: Arc<Batcher>,
     every: Duration,
 ) {
     let mut tick = tokio::time::interval(every);
@@ -1318,9 +1300,8 @@ async fn heartbeat_ticker(
             .cloned()
             .collect();
         drop(groups);
-        let batched = batcher.on();
         for t in targets {
-            t.tick(batched).await;
+            t.tick().await;
         }
     }
 }

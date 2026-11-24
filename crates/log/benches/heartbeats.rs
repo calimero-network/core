@@ -1,15 +1,14 @@
 //! What a node's Raft traffic costs as it hosts more groups (B6): `n` groups on
 //! three engines in one process (the in-memory transport of `tests/cluster.rs`),
 //! each led by node 1, idle, on the production timing (`Config::default()`).
-//! For 1, 100 and 1,000 groups (`HEARTBEAT_GROUPS=1,100,1000`), with heartbeats
-//! per group and then batched per peer (`Engine::set_batch_heartbeats`), it
-//! prints the network messages node 1 sends one follower per second and per
-//! heartbeat interval, the heartbeats each carries, and the process CPU time
-//! per Raft message handled.
+//! For 1, 100 and 1,000 groups (`HEARTBEAT_GROUPS=1,100,1000`) it prints the
+//! network messages node 1 sends one follower per second and per heartbeat
+//! interval, the heartbeats each carries, and the process CPU time per Raft
+//! message handled.
 //!
-//! Per group, every app group's openraft core sends each follower its own
-//! heartbeat (an empty append), so the messages per peer grow with the groups
-//! that peer shares; batched, a peer gets about one per tick. The CPU per message shows whether routing one costs
+//! Heartbeats travel batched per peer (`network::Batcher`), so a peer gets
+//! about one message per tick whatever the groups it shares; before they were
+//! batched, it got one per shared group (#5340's rows). The CPU per message shows whether routing one costs
 //! more with more groups: a scan of every group per message would grow it with
 //! them; a lookup keeps it flat.
 
@@ -145,13 +144,12 @@ struct Row {
     groups: u64,
     per_sec: f64,
     per_interval: f64,
-    batched: bool,
     heartbeats_per_message: f64,
     cpu_per_message: Duration,
 }
 
 #[allow(clippy::cast_precision_loss, reason = "printed rates")]
-async fn measure(groups: u64, batched: bool, window: Duration) -> Row {
+async fn measure(groups: u64, window: Duration) -> Row {
     let config = Config::default();
     let net = Arc::new(Net::default());
     let mut dirs = Vec::new();
@@ -172,7 +170,6 @@ async fn measure(groups: u64, batched: bool, window: Duration) -> Row {
             .write()
             .expect("not poisoned")
             .insert(id, Arc::clone(&engine));
-        engine.set_batch_heartbeats(batched);
         for g in 1..=groups {
             let group = engine.start_group(g, Idle).await.expect("the group starts");
             if id == 1 {
@@ -222,7 +219,6 @@ async fn measure(groups: u64, batched: bool, window: Duration) -> Row {
         groups,
         per_sec,
         per_interval: per_sec * config.heartbeat_ms as f64 / 1000.0,
-        batched,
         heartbeats_per_message: heartbeats as f64 / sent.max(1) as f64,
         cpu_per_message: cpu / u32::try_from(handled.max(1)).unwrap_or(u32::MAX),
     }
@@ -256,20 +252,13 @@ fn main() {
         .build()
         .expect("a runtime");
     println!(
-        "heartbeats | groups | msgs node1->node2 /s | per heartbeat interval | heartbeats per msg | CPU per Raft message"
+        "groups | msgs node1->node2 /s | per heartbeat interval | heartbeats per msg | CPU per Raft message"
     );
-    for batched in [false, true] {
-        for &groups in &sizes {
-            let r = rt.block_on(measure(groups, batched, window));
-            println!(
-                "{:>10} | {:>6} | {:>20.1} | {:>22.1} | {:>18.1} | {:?}",
-                if r.batched { "batched" } else { "per group" },
-                r.groups,
-                r.per_sec,
-                r.per_interval,
-                r.heartbeats_per_message,
-                r.cpu_per_message
-            );
-        }
+    for groups in sizes {
+        let r = rt.block_on(measure(groups, window));
+        println!(
+            "{:>6} | {:>20.1} | {:>22.1} | {:>18.1} | {:?}",
+            r.groups, r.per_sec, r.per_interval, r.heartbeats_per_message, r.cpu_per_message
+        );
     }
 }

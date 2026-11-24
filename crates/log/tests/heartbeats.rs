@@ -1,6 +1,6 @@
-//! Heartbeats batched per peer (B6), through a rollout: old and new nodes in
-//! one cluster, batching turned on node by node, and a peer that refuses a
-//! batch. No group may lose its leader or move to a new term on the way.
+//! Heartbeats batched per peer (B6): every group's heartbeats to one peer go
+//! in one message, and a peer that refuses a batch is answered item by item.
+//! No group may lose its leader or move to a new term.
 
 #![allow(
     clippy::unwrap_used,
@@ -39,9 +39,9 @@ impl Machine for Idle {
 #[derive(Default)]
 struct Net {
     engines: RwLock<HashMap<NodeId, Arc<Engine>>>,
-    /// Nodes on a release before batches: they refuse one as a whole (the
-    /// node answers a route it does not have with 404).
-    old: Mutex<BTreeSet<NodeId>>,
+    /// Nodes that refuse a batch as a whole (as a node without the route
+    /// answers 404, or a failed request).
+    refuse: Mutex<BTreeSet<NodeId>>,
     /// Batches delivered, and the heartbeats they carried.
     batches: AtomicU64,
     batched: AtomicU64,
@@ -87,7 +87,7 @@ impl Transport for Wire {
         let net = Arc::clone(&self.0);
         let engine = self.engine(target);
         Box::pin(async move {
-            if net.old.lock().unwrap().contains(&target) {
+            if net.refuse.lock().unwrap().contains(&target) {
                 return Err("404: no such route".to_owned());
             }
             let _n = net.batches.fetch_add(1, Ordering::Relaxed);
@@ -184,15 +184,9 @@ impl Cluster {
             .collect()
     }
 
-    fn batch(&self, nodes: &[NodeId], on: bool) {
-        for n in nodes {
-            self.engines[n].set_batch_heartbeats(on);
-        }
-    }
-
-    fn set_old(&self, node: NodeId, old: bool) {
-        let mut set = self.net.old.lock().unwrap();
-        let _changed = if old {
+    fn refuse_batches(&self, node: NodeId, refuse: bool) {
+        let mut set = self.net.refuse.lock().unwrap();
+        let _changed = if refuse {
             set.insert(node)
         } else {
             set.remove(&node)
@@ -220,45 +214,30 @@ impl Cluster {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mixed_cluster_keeps_its_leaders_through_the_batching_rollout() {
+async fn batched_heartbeats_keep_every_leader_and_fall_back_when_a_peer_refuses_them() {
     let c = cluster().await;
     let before = c.leaders();
     assert_eq!(before.len(), GROUPS as usize);
 
-    // A cluster below the feature: node 3 runs the release before, no node
-    // batches, and each group heartbeats on its own.
-    c.set_old(3, true);
-    c.holds(&before, "before the rollout").await;
-    let (batches, _, single) = c.counts();
-    assert_eq!(batches, 0, "a node batched below the cluster version");
-    assert!(single > 0);
-
-    // Node 3 is replaced by a new one, and the cluster version reaches the
-    // nodes one at a time: node 1 batches while 2 and 3 do not yet; every
-    // node takes both forms.
-    c.set_old(3, false);
-    c.batch(&[1], true);
-    c.holds(&before, "node 1 batching").await;
-    assert!(c.counts().0 > 0, "node 1 sent no batch");
-
-    c.batch(&[2, 3], true);
-    tokio::time::sleep(Duration::from_millis(4 * HEARTBEAT_MS)).await;
+    // Every group's heartbeats to a peer go in one batch per tick, none on
+    // its own, and every leader holds over several election timeouts.
     let (b0, h0, s0) = c.counts();
-    c.holds(&before, "every node batching").await;
+    c.holds(&before, "batched").await;
     let (b1, h1, s1) = c.counts();
     let (batches, carried, single) = (b1 - b0, h1 - h0, s1 - s0);
-    // Two leaders, each with two followers, each holding half the groups: a
+    assert!(batches > 0, "no batch was sent");
+    assert_eq!(single, 0, "a heartbeat went on its own");
+    // Two leaders, each with two followers, each leading half the groups: a
     // tick's heartbeats to one peer are one batch of `GROUPS / 2`.
-    assert_eq!(single, 0, "a heartbeat went on its own while batching");
     assert!(
         carried >= batches * (GROUPS / 4),
         "{carried} heartbeats in {batches} batches: not gathered per peer"
     );
-    println!("every node batching: {carried} heartbeats in {batches} batches over {HOLD:?}");
+    println!("batched: {carried} heartbeats in {batches} batches over {HOLD:?}");
 
-    // A peer that does not take a batch (as an old node would, were the gate
-    // wrong): each heartbeat is sent again on its own and answered.
-    c.set_old(3, true);
+    // A peer that refuses a batch (unreachable, or without the route): each
+    // heartbeat is sent again on its own and answered, so no group loses it.
+    c.refuse_batches(3, true);
     let (_, _, s0) = c.counts();
     c.holds(&before, "a peer refusing batches").await;
     assert!(
@@ -266,10 +245,9 @@ async fn a_mixed_cluster_keeps_its_leaders_through_the_batching_rollout() {
         "no heartbeat fell back to its own message"
     );
 
-    // And back: batching off everywhere is the release before's behaviour.
-    c.set_old(3, false);
-    c.batch(&[1, 2, 3], false);
-    c.holds(&before, "batching off again").await;
+    // And it takes batches again.
+    c.refuse_batches(3, false);
+    c.holds(&before, "batches taken again").await;
 
     for e in c.engines.values() {
         e.shutdown().await;

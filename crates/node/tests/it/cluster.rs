@@ -6890,28 +6890,16 @@ async fn a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy(
     let (_client, _a) = signed_up(&c, reached, "bob-after-a-misaddressed-heartbeat").await;
 }
 
-/// B6: a cluster whose nodes all run this release logs its version, which
-/// brings batched heartbeats, and every node turns batching on; the system
-/// group keeps its leader and term through the switch and after, and writes
-/// commit. (The rollout from a release before, node by node, is
-/// `calimero-log`'s `a_mixed_cluster_keeps_its_leaders_through_the_batching_rollout`.)
+/// B6: heartbeats travel batched per peer (`internal/raft-batch`): the system
+/// group keeps its leader and term over several election timeouts on them
+/// alone, every node receives batches, and writes commit. (A peer that
+/// refuses batches, answered item by item: `calimero-log`'s
+/// `batched_heartbeats_keep_every_leader_and_fall_back_when_a_peer_refuses_them`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_cluster_of_this_release_batches_its_heartbeats_and_keeps_its_leader() {
+async fn heartbeats_travel_batched_and_the_cluster_keeps_its_leader() {
     let c = Cluster::start(3).await;
     let node = |i: usize| &c.nodes[i].as_ref().unwrap().node;
     let before = node(0).system.status();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    while !(0..3).all(|i| node(i).engine.batch_heartbeats()) {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "batching never turned on: {:?}",
-            (0..3)
-                .map(|i| node(i).engine.batch_heartbeats())
-                .collect::<Vec<_>>()
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    // Several election timeouts on batched heartbeats alone.
     tokio::time::sleep(Duration::from_secs(3)).await;
     for i in 0..3 {
         let s = node(i).system.status();
@@ -6922,6 +6910,26 @@ async fn a_cluster_of_this_release_batches_its_heartbeats_and_keeps_its_leader()
             i + 1
         );
     }
+    let leader = (0..3)
+        .find(|i| node(*i).system.status().is_leader)
+        .expect("a system leader");
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let ops = c.client(follower);
+    ops.use_api_key("ops-secret").await;
+    let metrics = ops.ops().metrics().await.unwrap();
+    let batches: u64 = metrics
+        .lines()
+        .find(|l| {
+            l.starts_with("http_request_duration_seconds_count")
+                && l.contains("path=\"/internal/raft-batch\"")
+        })
+        .and_then(|l| l.rsplit(' ').next()?.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        batches > 0,
+        "no heartbeat batch reached node {}",
+        follower + 1
+    );
     let (_client, _a) = signed_up(&c, 1, "alice-on-batched-heartbeats").await;
 }
 

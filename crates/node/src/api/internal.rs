@@ -308,8 +308,7 @@ struct RaftItem {
 /// B6), answered in order. Each item passes the checks a message alone does
 /// ([`admit_raft`]) and only a heartbeat (an append with no entries) travels
 /// in one; an item that fails is answered with its error, and the others
-/// still go to their groups. Taken whatever the cluster version: a node
-/// sends one only once it brings `Feature::BatchedHeartbeats`.
+/// still go to their groups.
 async fn internal_raft_batch(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,

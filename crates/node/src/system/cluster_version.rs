@@ -214,16 +214,10 @@ pub enum Feature {
     /// `UndoUpgrade { release_installed }`: an undo goes back only to an installed release;
     /// an earlier release would apply one to a release uninstalled under a shared bundle.
     UndoToInstalledRelease,
-    /// Heartbeats batched per peer (`internal/raft-batch`, B6): a wire message
-    /// between nodes, not a log entry ([`Feature::in_log`]). A node on an
-    /// earlier release has no such route, so a node batches only once the
-    /// logged version brings it (`calimero_log::Engine::set_batch_heartbeats`);
-    /// every node of this release takes a batch either way.
-    BatchedHeartbeats,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 49] = [
+pub const FEATURES: [Feature; 48] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -272,7 +266,6 @@ pub const FEATURES: [Feature; 49] = [
     Feature::UnclassifiedUpdates,
     Feature::OffersOnly,
     Feature::UndoToInstalledRelease,
-    Feature::BatchedHeartbeats,
 ];
 
 impl Feature {
@@ -328,7 +321,6 @@ impl Feature {
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
             Self::OffersOnly => "offersOnly",
             Self::UndoToInstalledRelease => "undoToInstalledRelease",
-            Self::BatchedHeartbeats => "batchedHeartbeats",
         }
     }
 
@@ -380,19 +372,8 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
-            Self::OffersOnly | Self::UndoToInstalledRelease | Self::BatchedHeartbeats => {
-                "1.0.0-rc.36"
-            }
+            Self::OffersOnly | Self::UndoToInstalledRelease => "1.0.0-rc.36",
         }
-    }
-
-    /// Whether an entry of the system log uses it. A wire feature (a message
-    /// between nodes) is named by no command: it is on where the logged
-    /// version brings it (`SystemState::cluster_brings`), which keeps any
-    /// older node out of the cluster from then on.
-    #[must_use]
-    pub const fn in_log(self) -> bool {
-        !matches!(self, Self::BatchedHeartbeats)
     }
 }
 
@@ -986,7 +967,6 @@ mod tests {
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
         match feature {
-            Feature::BatchedHeartbeats => panic!("{feature:?} is a wire feature: no entry uses it"),
             Feature::Delegation => entry(json!({ "op": "setDelegation", "account": "a",
                 "source": "app", "target": "kv-app", "methods": ["get"] })),
             Feature::InviteCapabilities => SystemCmd::CreateInvite {
@@ -1492,7 +1472,7 @@ mod tests {
     #[test]
     fn a_feature_is_never_proposed_while_an_older_node_holds_the_log() {
         let mut nodes = cluster(&[RC16, RC16, RC14]);
-        for feature in FEATURES.into_iter().filter(|f| f.in_log()) {
+        for feature in FEATURES {
             let cmd = uses(feature);
             let needs = cmd.features();
             assert!(needs.contains(&feature), "{feature:?}: {needs:?}");
@@ -1524,13 +1504,12 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        let (older, newer): (Vec<Feature>, Vec<Feature>) =
-            FEATURES.iter().filter(|f| f.in_log()).partition(|f| {
-                ![
-                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
-                ]
-                .contains(&f.since())
-            });
+        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES.iter().partition(|f| {
+            ![
+                RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
+            ]
+            .contains(&f.since())
+        });
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -1828,48 +1807,6 @@ mod tests {
         for &feature in &rc36 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        assert!(same_state(&nodes));
-    }
-
-    /// A wire feature (batched heartbeats) is named by no entry, so the gate
-    /// on proposals never sees it: it is on where the logged version brings
-    /// it, and that version keeps every older node out (`may_join`). While an
-    /// rc.35 node holds the log it stays off; once every node runs rc.36 and
-    /// the version is logged it is on, on every replica alike.
-    #[test]
-    fn a_wire_feature_is_on_only_once_the_logged_version_keeps_older_nodes_out() {
-        let wire: Vec<Feature> = FEATURES.into_iter().filter(|f| !f.in_log()).collect();
-        assert_eq!(wire, [Feature::BatchedHeartbeats]);
-        let on = |nodes: &[Replica]| -> Vec<bool> {
-            nodes
-                .iter()
-                .map(|n| n.machine.state.cluster_brings(Feature::BatchedHeartbeats))
-                .collect()
-        };
-        let mut nodes = cluster(&[RC36, RC36, RC35]);
-        let raise = SystemCmd::SetClusterVersion {
-            version: RC35.into(),
-            nodes: (1..=3)
-                .zip([RC36, RC36, RC35])
-                .map(|(id, r)| (id, r.to_owned()))
-                .collect(),
-        };
-        propose(&mut nodes, &raise).unwrap();
-        assert_eq!(
-            on(&nodes),
-            [false; 3],
-            "on while an rc.35 node holds the log"
-        );
-        // The rc.35 node is replaced; the leader logs rc.36.
-        nodes[2].release = RC36;
-        let raise = SystemCmd::SetClusterVersion {
-            version: RC36.into(),
-            nodes: (1..=3).map(|id| (id, RC36.to_owned())).collect(),
-        };
-        propose(&mut nodes, &raise).unwrap();
-        assert_eq!(on(&nodes), [true; 3]);
-        let logged = nodes[0].machine.state.cluster_version.clone();
-        assert!(!may_join(logged.as_deref(), Some(RC35)));
         assert!(same_state(&nodes));
     }
 

@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -118,13 +117,11 @@ pub const HEARTBEAT_BATCH_WINDOW: Duration = Duration::from_millis(5);
 type Waiter = oneshot::Sender<Result<RpcResponse, String>>;
 type Queued = (GroupId, AppendEntriesRequest<TypeConfig>, Waiter);
 
-/// One node's outbound heartbeats, gathered per peer while batching is on
-/// ([`crate::Engine::set_batch_heartbeats`]): every group's empty append to
-/// a peer within [`HEARTBEAT_BATCH_WINDOW`] travels in one
+/// One node's outbound heartbeats, gathered per peer: every group's empty
+/// append to a peer within [`HEARTBEAT_BATCH_WINDOW`] travels in one
 /// [`Transport::send_batch`]. Everything else goes on its own.
 pub struct Batcher {
     pub(crate) transport: Arc<dyn Transport>,
-    on: AtomicBool,
     queues: Mutex<HashMap<NodeId, Vec<Queued>>>,
 }
 
@@ -132,17 +129,8 @@ impl Batcher {
     pub(crate) fn new(transport: Arc<dyn Transport>) -> Self {
         Self {
             transport,
-            on: AtomicBool::new(false),
             queues: Mutex::new(HashMap::new()),
         }
-    }
-
-    pub(crate) fn on(&self) -> bool {
-        self.on.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn set(&self, on: bool) {
-        self.on.store(on, Ordering::Release);
     }
 
     /// Queue one group's heartbeat for `target` and wait for its answer.
@@ -285,9 +273,9 @@ impl RaftNetwork<TypeConfig> for Connection {
         rpc: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, BasicNode, RaftError<NodeId>>> {
-        // A heartbeat (nothing to append) joins the peer's batch while
-        // batching is on; entries always go on their own.
-        let answer = if rpc.entries.is_empty() && self.batcher.on() {
+        // A heartbeat (nothing to append) joins the peer's batch; entries
+        // always go on their own.
+        let answer = if rpc.entries.is_empty() {
             answered(
                 self.batcher
                     .heartbeat(self.target, self.addr.clone(), self.group, rpc)

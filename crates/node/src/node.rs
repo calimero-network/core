@@ -766,9 +766,9 @@ impl Transport for PeerTransport {
         })
     }
 
-    /// Heartbeats of several groups in one message (`internal/raft-batch`),
-    /// sent only while the cluster version brings
-    /// [`Feature::BatchedHeartbeats`](crate::system::cluster_version::Feature).
+    /// Heartbeats of several groups in one message (`internal/raft-batch`,
+    /// B6). A peer on a release before it has no such route: the batcher then
+    /// sends each heartbeat on its own (`calimero_log::network::Batcher`).
     /// A group whose data the peer may not hold is answered here, as `send`
     /// refuses it, and never sent.
     fn send_batch(
