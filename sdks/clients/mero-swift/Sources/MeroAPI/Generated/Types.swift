@@ -1553,7 +1553,7 @@ public protocol APIProtocol: Sendable {
     func packageUpload(_ input: Operations.PackageUpload.Input) async throws -> Operations.PackageUpload.Output
     /// Install a release from the registry
     ///
-    /// For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither.
+    /// For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).
     ///
     /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
     ///
@@ -4720,7 +4720,7 @@ extension APIProtocol {
     }
     /// Install a release from the registry
     ///
-    /// For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither.
+    /// For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).
     ///
     /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
     ///
@@ -8008,7 +8008,7 @@ public enum Components {
                 case undo
             }
         }
-        /// A package and the releases of it the caller may see, oldest first; `latest` is the newest of those.
+        /// A package and the releases of it the caller may see, oldest first; `latest` is the newest of those. A release's `visibility`: `public` (everyone here uses it; a release the operator installed, the cluster's catalog, is always), `private` (members of the organizations it was installed for; none: the accounts that installed it), absent for one recorded before the node kept it. `orgs`: of a private release's organizations, only those the caller is a member of.
         ///
         /// - Remark: Generated from `#/components/schemas/Package`.
         public struct Package: Codable, Hashable, Sendable {
@@ -8065,6 +8065,40 @@ public enum Components {
                 public var installedBy: Swift.String
                 /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/installedAt`.
                 public var installedAt: Swift.Int64
+                /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/visibility`.
+                @frozen public enum VisibilityPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                    case _public = "public"
+                    case _private = "private"
+                }
+                /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/visibility`.
+                public var visibility: Components.Schemas.Package.VersionsPayloadPayload.VisibilityPayload?
+                /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/OrgsPayload`.
+                public struct OrgsPayloadPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/OrgsPayload/orgId`.
+                    public var orgId: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/OrgsPayload/name`.
+                    public var name: Swift.String
+                    /// Creates a new `OrgsPayloadPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - orgId:
+                    ///   - name:
+                    public init(
+                        orgId: Swift.String,
+                        name: Swift.String
+                    ) {
+                        self.orgId = orgId
+                        self.name = name
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case orgId
+                        case name
+                    }
+                }
+                /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/orgs`.
+                public typealias OrgsPayload = [Components.Schemas.Package.VersionsPayloadPayload.OrgsPayloadPayload]
+                /// - Remark: Generated from `#/components/schemas/Package/VersionsPayload/orgs`.
+                public var orgs: Components.Schemas.Package.VersionsPayloadPayload.OrgsPayload?
                 /// Creates a new `VersionsPayloadPayload`.
                 ///
                 /// - Parameters:
@@ -8077,6 +8111,8 @@ public enum Components {
                 ///   - outbound:
                 ///   - installedBy:
                 ///   - installedAt:
+                ///   - visibility:
+                ///   - orgs:
                 public init(
                     version: Swift.String,
                     mpk: Swift.String,
@@ -8086,7 +8122,9 @@ public enum Components {
                     metadata: OpenAPIRuntime.OpenAPIValueContainer,
                     outbound: [Swift.String],
                     installedBy: Swift.String,
-                    installedAt: Swift.Int64
+                    installedAt: Swift.Int64,
+                    visibility: Components.Schemas.Package.VersionsPayloadPayload.VisibilityPayload? = nil,
+                    orgs: Components.Schemas.Package.VersionsPayloadPayload.OrgsPayload? = nil
                 ) {
                     self.version = version
                     self.mpk = mpk
@@ -8097,6 +8135,8 @@ public enum Components {
                     self.outbound = outbound
                     self.installedBy = installedBy
                     self.installedAt = installedAt
+                    self.visibility = visibility
+                    self.orgs = orgs
                 }
                 public enum CodingKeys: String, CodingKey {
                     case version
@@ -8108,6 +8148,8 @@ public enum Components {
                     case outbound
                     case installedBy
                     case installedAt
+                    case visibility
+                    case orgs
                 }
             }
             /// - Remark: Generated from `#/components/schemas/Package/versions`.
@@ -44273,7 +44315,7 @@ public enum Operations {
     }
     /// Install a release from the registry
     ///
-    /// For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither.
+    /// For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).
     ///
     /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
     ///

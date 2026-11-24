@@ -94,7 +94,9 @@ def sync_detailed(
     here uses it. Else it is fetched with the credential and the caller's account, and is private: only
     the members of the organizations it was installed for use it, and an install for another adds that
     one; installed for none (the caller is in none), only the accounts that install it use it. `404`
-    when the registry serves it to neither.
+    when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the
+    caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node
+    accounts).
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
@@ -132,7 +134,9 @@ def sync(
     here uses it. Else it is fetched with the credential and the caller's account, and is private: only
     the members of the organizations it was installed for use it, and an install for another adds that
     one; installed for none (the caller is in none), only the accounts that install it use it. `404`
-    when the registry serves it to neither.
+    when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the
+    caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node
+    accounts).
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
@@ -165,7 +169,9 @@ async def asyncio_detailed(
     here uses it. Else it is fetched with the credential and the caller's account, and is private: only
     the members of the organizations it was installed for use it, and an install for another adds that
     one; installed for none (the caller is in none), only the accounts that install it use it. `404`
-    when the registry serves it to neither.
+    when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the
+    caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node
+    accounts).
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
@@ -201,7 +207,9 @@ async def asyncio(
     here uses it. Else it is fetched with the credential and the caller's account, and is private: only
     the members of the organizations it was installed for use it, and an install for another adds that
     one; installed for none (the caller is in none), only the accounts that install it use it. `404`
-    when the registry serves it to neither.
+    when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the
+    caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node
+    accounts).
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
