@@ -1,0 +1,63 @@
+---
+title: Confidential KV
+description: Reach a Confidential KV store from a service with Calimero.fromEnv() and its typed KvClient, configured entirely from environment variables.
+sidebar:
+  order: 9
+---
+
+A service reaches a Confidential KV store with `Calimero.fromEnv()`.
+It reads its whole configuration from the environment, so the same code runs against a cluster in production and a dev node locally.
+
+```bash
+CALIMERO_CLUSTER=eu-shared-1      # the cluster the store runs on
+CALIMERO_API_KEY=cal_...          # the key the store's admin gave access
+CALIMERO_KV_STORE=<app id>        # the store
+CALIMERO_MIN_RELEASE=2.3.109      # the oldest mero-tee release to trust
+```
+
+The console's Connect tab shows the first three for a new key.
+
+```ts
+import { Calimero } from '@calimero-network/mero-js';
+
+const kv = (await Calimero.fromEnv()).kv();
+await kv.set({ bucket: 'default', key: 'flags/beta', value: JSON.stringify({ enabled: true }) });
+const entry = await kv.get({ bucket: 'default', key: 'flags/beta' }); // { value, version, ... } or null
+```
+
+`fromEnv(env)` reads `env` instead of `process.env`.
+
+## The client
+
+`kv()` is a `KvClient`, generated from the store's released ABI by core's `meroctl app codegen`, so every method, argument and answer is typed.
+The types are under `Kv`, for example `Kv.EntryView`.
+`kv(store)` binds another store, and `.client` is the `CalimeroClient` underneath, for every route the KV client does not cover.
+
+A refusal is an `AppError` whose `appCode` is one of `Kv.AppErrorCode` and whose `fields` are its fields.
+A `NotGranted` reads as a sentence, "You can't view bucket default.", and so does a `NotLinked` ("This app isn't connected to a KV store yet.").
+
+```ts
+import { AppError } from '@calimero-network/mero-js';
+
+try {
+  await kv.set({ bucket: 'default', key: 'flags/beta', value: '{}' });
+} catch (e) {
+  if (e instanceof AppError && e.appCode === 'NotGranted') console.error(e.message);
+  else throw e;
+}
+```
+
+## The variables
+
+| Variable | Meaning |
+| --- | --- |
+| `CALIMERO_CLUSTER` | The cluster to connect to, by name. Set it or `CALIMERO_NODE_URL`, not both. |
+| `CALIMERO_NODE_URL` | One node's URL instead of a cluster, for a dev node. |
+| `CALIMERO_API_KEY` | The API key the client signs in with. Required. |
+| `CALIMERO_KV_STORE` | The store `kv()` binds; `kv(store)` overrides it. |
+| `CALIMERO_MIN_RELEASE` | The oldest mero-tee release trusted, e.g. `2.3.109`. Required unless the node is unattested. |
+| `CALIMERO_TEE_PROFILE` | The image profile trusted (`release.profile`), `locked-read-only` by default. A profile whose name starts with `debug` also opts into a debug image (`release.allowDebugProfile`), whose memory the operator can read, so only for testing; any other is trusted as named. Needs `CALIMERO_MIN_RELEASE`. |
+| `CALIMERO_ALLOW_UNATTESTED` | Exactly `1` to accept a node without a real TEE (`merod --dev`). Only with `CALIMERO_NODE_URL`; a cluster refuses it. |
+
+A missing or contradictory variable throws an error naming it, before anything is sent.
+The policy these build is the one [the sealed transport](/clients/mero-js/guides/sealed-transport/) describes.

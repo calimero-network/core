@@ -18,11 +18,18 @@
   "depends_on": [],
   "inputs": [
     "docs/public/openapi.json",
-    "crates/client/tests/fixtures/receipt-vectors.json"
+    "crates/client/tests/fixtures/receipt-vectors.json",
+    "sdks/abi/kv.abi.json",
+    "scripts/app-codegen.sh",
+    "crates/app-abi/src",
+    "crates/app-build/src/codegen.rs",
+    "crates/app-build/src/abi_tools.rs",
+    "crates/app-build/examples/codegen.rs"
   ],
   "generate": "pnpm run generate",
   "generated": [
     "src/generated",
+    "src/products/kv",
     "src/client/fixtures/receipt-vectors.json"
   ],
   "workflow": ".github/workflows/sdk-mero-js.yml"

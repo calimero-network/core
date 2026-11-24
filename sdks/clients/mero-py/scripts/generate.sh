@@ -7,9 +7,10 @@
 #                                     -> calimero_client_py/facade.py  (scripts/generate_facade.py)
 #                                     -> ../../../docs/src/content/docs/clients/mero-py/reference/methods.mdx
 #   abi-codegen/examples/schemas/example_abi.json -> abi-codegen/examples/generated_client/
+#   ../../abi/kv.abi.json -> calimero_client_py/products/kv/client.py   (../../../scripts/app-codegen.sh)
 #
 # The generators and Black run, at the versions CI checks with, in their own
-# venv under target/ (ignored), so this needs only python3 and, the first
+# venv under target/ (ignored), so this needs only python3, cargo and, the first
 # time, PyPI for those tools.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -25,6 +26,7 @@ if [ ! -x "$venv/bin/python" ] || [ "$(cat "$stamp" 2>/dev/null)" != "${tools[*]
 fi
 
 "$venv/bin/python" scripts/generate_openapi_client.py
+../../../scripts/app-codegen.sh --abi ../../abi/kv.abi.json --lang python --no-openapi -o calimero_client_py/products/kv
 
 out=abi-codegen/examples/generated_client
 rm -rf "$out"
