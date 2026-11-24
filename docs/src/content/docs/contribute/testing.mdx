@@ -669,19 +669,22 @@ a case is never skipped.
 
 The rollout moves state between nodes; it does not show that this tree applies an old release's log the same way: new nodes join empty and take a snapshot, so none of them opens an old data directory.
 `crates/node/tests/upgrade_replay.rs` does, in process and in seconds (it runs with the other `calimero-node` tests): each `crates/node/tests/fixtures/upgrade/<release>/` holds the data directory of a one-node cluster as that release's `merod run --dev` left it, and `expected.json`, every answer that release gave to a fixed list of reads.
-The recorder (`upgrade_fixture.py`) writes a small data set of its own (accounts with two passkeys and a recovery code, scoped API keys, an organization with a removed member, a team and an invite, apps of three access kinds with history, a note and a blob), then every upgrade case's seed (`crates/node/tests/fault/upgrade_cases/`, but the two that upload tens of MiB), then the entries those seeds leave out (`upgrade_kinds.py`: an organization renamed, a price table, the operator's sign-up policy, a deployment deleted, ...), all through the routes a user or the operator uses.
-It reads each account's and the operator's lists back (`GET /auth/me`, `/auth/apps`, `/orgs/{org}`, `/ops/apps`, ...).
-The log stays under its snapshot interval (1000 entries), so the directory holds no system snapshot (the test asserts it) and this tree rebuilds the whole system state by applying every entry the old release logged.
+The recorder (`upgrade_fixture.py`) writes two fixtures of a release, each from a cluster of its own, since a log takes a snapshot after 1000 entries.
+`<release>/` holds a small data set the test sends exact requests about (accounts with two passkeys and a recovery code, scoped API keys, an organization with a removed member, a team and an invite, apps of three access kinds with history, a note and a blob) and the entries no seed writes (`upgrade_kinds.py`: an organization renamed, a price table, the operator's sign-up policy, a deployment deleted, ...).
+`<release>-cases/` holds every upgrade case's seed (`crates/node/tests/fault/upgrade_cases/`, but the two that upload tens of MiB).
+All of it goes through the routes a user or the operator uses, and the recorder reads each account's and the operator's lists back (`GET /auth/me`, `/auth/apps`, `/orgs/{org}`, `/ops/apps`, ...).
+Neither log reaches the snapshot interval, so a directory holds no system snapshot (the test asserts it) and this tree rebuilds the whole system state by applying every entry the old release logged.
+The recorder fails when a part reaches it: give the cases that no longer fit a part of their own.
 
-**Every kind of entry.** The fixture's system log holds an entry of every kind of `SystemCmd` but the few in `NOT_RECORDED` (`upgrade_replay.rs`), each with the reason a one-node recording cannot write it: the test fails for a kind with no entry and no reason, and for a listed kind the fixture holds.
+**Every kind of entry.** The system logs of a release's fixtures together hold an entry of every kind of `SystemCmd` but the few in `NOT_RECORDED` (`upgrade_replay.rs`), each with the reason a one-node recording cannot write it: the test fails for a kind with no entry and no reason, and for a listed kind the fixture holds.
 A new command is therefore listed there until the pinned release writes it and the fixture is recorded again.
 
 The test opens each directory, sends every read again (the same status, a body holding every field of the old one), then writes.
 
 A release's fixture is written once, with that release's binaries, and kept: the PR that moves `.github/upgrade-from` to a release adds its fixture too.
 A hard cutover drops the fixtures of the releases before it, since the tree no longer reads their data, and the test passes with none until the first release after the cutover records one (`fixtures/upgrade/README.md`); 1.0.0-rc.20's cutover dropped 1.0.0-rc.15's, and 1.0.0-rc.33's dropped every one before it.
-The fixtures held now are 1.0.0-rc.33's (the cutover release, whose data this tree reads), 1.0.0-rc.34's and 1.0.0-rc.35's; only the last covers every kind of entry.
-Its data directory is a `.tar.zst` (the seeded packages repeat each other's bytes, which gzip cannot see); older ones are `.tar.gz`.
+The fixtures held now are 1.0.0-rc.33's (the cutover release, whose data this tree reads), 1.0.0-rc.34's and 1.0.0-rc.35's; only the last (with its `-cases`) covers every kind of entry.
+Their data directories are `.tar.zst` (the seeded packages repeat each other's bytes, which gzip cannot see); older ones are `.tar.gz`.
 
 ```bash
 scripts/fetch-release.sh 1.0.0-rc.35 target/upgrade-from

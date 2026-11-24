@@ -469,32 +469,36 @@ fn coverage_gaps(
     gaps
 }
 
+/// A release's fixtures (one cluster holds under 1000 entries) together hold an entry of every kind.
 #[test]
 fn a_fixture_that_covers_every_kind_holds_an_entry_of_each() {
-    let mut covered = 0;
+    let mut by_release: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for fixture in fixtures() {
         let expected: Value =
             serde_json::from_slice(&std::fs::read(fixture.join("expected.json")).unwrap()).unwrap();
         if expected["everyKind"] != json!(true) {
             continue;
         }
-        covered += 1;
         let tmp = tempfile::tempdir().unwrap();
         unpack(&fixture, tmp.path());
-        let gaps = coverage_gaps(
-            &command_kinds(),
-            &recorded_kinds(&tmp.path().join("node1")),
-            NOT_RECORDED,
-        );
+        by_release
+            .entry(expected["release"].as_str().unwrap().to_owned())
+            .or_default()
+            .extend(recorded_kinds(&tmp.path().join("node1")));
+    }
+    assert!(
+        !by_release.is_empty(),
+        "no fixture records every kind of entry"
+    );
+    for (release, recorded) in by_release {
+        let gaps = coverage_gaps(&command_kinds(), &recorded, NOT_RECORDED);
         assert!(
             gaps.is_empty(),
-            "{}: the system log does not cover every kind of entry:\n{}\nrecord it again \
-             (crates/node/tests/fault/upgrade_fixture.py) or list the kind in NOT_RECORDED",
-            fixture.display(),
+            "{release}: the system logs of its fixtures do not cover every kind of entry:\n{}\nrecord it \
+             again (crates/node/tests/fault/upgrade_fixture.py) or list the kind in NOT_RECORDED",
             gaps.join("\n")
         );
     }
-    assert!(covered > 0, "no fixture records every kind of entry");
 }
 
 #[test]
