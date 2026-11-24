@@ -4,6 +4,7 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use ciborium::value::Integer;
 use ciborium::Value;
@@ -38,7 +39,7 @@ use crate::state::{stored_key, KeyValue, StateView, GENERATION};
 use crate::time;
 use crate::types::{
     Audience, BlobInfo, Caller, Directory, Event, HostDenied, InvalidInvocation, Invocation,
-    InvocationKind, OrgRole, Outcome, Status, TrapKind, Usage, Xcall,
+    InvocationKind, OrgRole, Outcome, Status, TrapKind, Usage, Xcall, WALL_CLOCK_EXCEEDED,
 };
 
 mod file_ops;
@@ -178,6 +179,11 @@ pub struct HostCore {
     host_fuel: Cell<u64>,
     /// The searches the request has left, shared with the views its xcalls reach.
     searches: SearchBudget,
+    /// When the run's wall clock ends (`with_deadline`); `None`: host calls wait as long as
+    /// their hosts do.
+    deadline: Option<Instant>,
+    /// Whether a host call met the deadline: `finish` answers `Timeout`.
+    timed_out: bool,
 }
 
 impl HostCore {
@@ -243,7 +249,39 @@ impl HostCore {
             cancels: Vec::new(),
             host_fuel: Cell::new(0),
             searches: SearchBudget::default(),
+            deadline: None,
+            timed_out: false,
         })
+    }
+
+    /// When the run's wall clock ends. The engine's own deadline counts only while the
+    /// guest's code runs, so a host call that may wait (`http_send`, `xcall_*`,
+    /// `action_view`, `action_call`) is refused once it has passed and ends the run if it
+    /// returns after it: either way the run ends `Trap(Timeout, WALL_CLOCK_EXCEEDED)`, as a
+    /// run that overran in its own code does. The embedder hands the same instant to the
+    /// hosts that wait, so none waits past it.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// `HostDenied` once the deadline has passed, and the run marked timed out.
+    fn within_deadline(&mut self) -> Result<(), HostDenied> {
+        if self.deadline.is_some_and(|d| Instant::now() >= d) {
+            self.timed_out = true;
+            return Err(HostDenied::new(WALL_CLOCK_EXCEEDED));
+        }
+        Ok(())
+    }
+
+    /// Runs `wait`, a host call that may block, within the run's deadline
+    /// ([`Self::with_deadline`]).
+    fn blocking<T>(&mut self, wait: impl FnOnce(&Self) -> T) -> Result<T, HostDenied> {
+        self.within_deadline()?;
+        let answer = wait(self);
+        self.within_deadline()?;
+        Ok(answer)
     }
 
     /// The app's blobs as the node records them (R8); without it the app has none.
@@ -968,7 +1006,8 @@ impl HostCore {
             Err(e) => return Ok(Err(e)),
         };
         let key = self.next_sync_key(&host.key(), app, method, args);
-        Ok(self.answered(bounded(host.call(app, method, args, &key))))
+        let answer = self.blocking(|_| bounded(host.call(app, method, args, &key)))?;
+        Ok(self.answered(answer))
     }
 
     /// Runs view `method` of `app` on its latest committed state and hands back its JSON
@@ -988,7 +1027,8 @@ impl HostCore {
             Ok(host) => host,
             Err(e) => return Ok(Err(e)),
         };
-        Ok(self.answered(bounded(host.view(app, method, args))))
+        let answer = self.blocking(|_| bounded(host.view(app, method, args)))?;
+        Ok(self.answered(answer))
     }
 
     /// Runs every request of `requests` at once (the node's [`XcallHost::batch`]) and
@@ -1064,7 +1104,7 @@ impl HostCore {
                 key: key.as_deref(),
             })
             .collect();
-        let mut replies = host.batch(&sent).into_iter();
+        let mut replies = self.blocking(|_| host.batch(&sent))?.into_iter();
         for answer in answers.iter_mut().filter(|a| a.is_none()) {
             let reply = replies
                 .next()
@@ -1230,7 +1270,8 @@ impl HostCore {
     ) -> Result<Result<Vec<u8>, String>, HostDenied> {
         self.burn_bytes(method.len().saturating_add(args.len()));
         self.count_subcall()?;
-        let answer = self.action_host()?.view(method, args);
+        let host = self.action_host()?;
+        let answer = self.blocking(|_| host.view(method, args))?;
         Ok(self.answered(answer))
     }
 
@@ -1251,7 +1292,7 @@ impl HostCore {
             .or_insert(0);
         let key = subcall_key(&host.key(), method, args, *n);
         *n += 1;
-        let answer = host.call(method, args, &key);
+        let answer = self.blocking(|_| host.call(method, args, &key))?;
         Ok(self.answered(answer))
     }
 
@@ -1281,7 +1322,7 @@ impl HostCore {
             return Ok(Err("request body too large".to_owned()));
         }
         self.http_requests += 1;
-        let response = self.http.send(request);
+        let response = self.blocking(|core| core.http.send(request))?;
         self.burn_bytes(response.as_ref().map_or_else(String::len, |r| r.body.len()));
         if logged {
             self.http_log.push(HttpExchange::record(request, &response));
@@ -1356,7 +1397,12 @@ impl HostCore {
         } else {
             (status, result)
         };
-        let status = if self.files.unavailable() {
+        let status = if self.timed_out {
+            Status::Trap {
+                kind: TrapKind::Timeout,
+                detail: WALL_CLOCK_EXCEEDED.to_owned(),
+            }
+        } else if self.files.unavailable() {
             Status::Trap {
                 kind: TrapKind::Unavailable,
                 detail: FILE_UNAVAILABLE.to_owned(),
