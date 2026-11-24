@@ -29,10 +29,21 @@ const DAY: u64 = 24 * 3600;
 
 /// A signed single-service `.mpk` of `PACKAGE` at `version`, declaring no destination.
 fn release(version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
+    release_of(PACKAGE, version, wasm, key, Value::Null)
+}
+
+/// [`release`] of `package`, its manifest's `uses` set to `uses` (JSON; `null` for none).
+fn release_of(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    uses: Value,
+) -> Vec<u8> {
     let sha = |b: &[u8]| hex::encode(calimero_identity::sha256(b));
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
-        package: PACKAGE.to_owned(),
+        package: package.to_owned(),
         app_version: version.to_owned(),
         signer_id: Some(calimero_bundle::derive_signer_id_did_key(
             key.verifying_key().as_bytes(),
@@ -54,7 +65,7 @@ fn release(version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u
         frontend_aliases: Vec::new(),
         outbound: Vec::new(),
         secrets: None,
-        uses: None,
+        uses: serde_json::from_value(uses).unwrap(),
         upgrades: None,
         instance_org: None,
         guests: None,
@@ -926,5 +937,94 @@ async fn an_update_never_applies_on_its_own_from_an_offer_that_no_longer_serves(
         let _ = pass(&c).await;
     }
     assert_eq!(running(&carol, &app).await, "1.0.0");
+    shift_update_clock(0);
+}
+
+/// A green update of an instance whose release creates apps (`uses`, `mode: create`), with
+/// no destination in the unit, applies on its own even though the new release pins newer
+/// releases of its members: it moves the instance alone and the members stay where they
+/// are, until an owner or admin upgrades the unit. `meroctl app check`'s line and the
+/// protocol docs say so; this is the rule they describe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_update_whose_members_differ_applies_on_its_own_and_moves_the_instance_alone() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    let uses = |kv: &str| json!({ "kv": { "package": "com.test.auto-kv", "range": "^0.1", "version": kv } });
+    for (package, version, uses, tag) in [
+        ("com.test.auto-kv", "0.1.0", Value::Null, "kv10"),
+        ("com.test.auto-kv", "0.1.1", Value::Null, "kv11"),
+        ("com.test.auto-unit", "0.1.0", uses("0.1.0"), "u10"),
+    ] {
+        let _ = alice
+            .packages()
+            .upload(
+                release_of(
+                    package,
+                    version,
+                    &variant(&kv_wasm(), tag),
+                    &publisher,
+                    uses,
+                ),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let org = home_org(&alice).await;
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": "com.test.auto-unit", "version": "0.1.0", "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+    let _set = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{org}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap();
+    let _ = alice
+        .packages()
+        .upload(
+            release_of(
+                "com.test.auto-unit",
+                "0.2.0",
+                &variant(&kv_wasm(), "u20"),
+                &publisher,
+                uses("0.1.1"),
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let update = get_until(&alice, &format!("apps/{notes}/update"), 15, |u| {
+        u["available"]["version"] == "0.2.0"
+    })
+    .await;
+    assert_eq!(update["available"]["class"], "green", "{update}");
+    assert_eq!(update["unit"], true, "{update}");
+
+    shift_update_clock(DAY + 600);
+    passes_until(
+        &c,
+        || async { running(&alice, &notes).await == "0.2.0" },
+        "the instance never applied on its own",
+    )
+    .await;
+    let moved = get(&alice, &format!("apps/{notes}")).await.unwrap();
+    assert_eq!(moved["lastUpgrade"]["by"], "policy:auto-update", "{moved}");
+    assert_eq!(moved["lastUpgrade"]["auto"], true, "{moved}");
+    assert_eq!(running(&alice, &kv).await, "0.1.0");
+    assert_eq!(pass(&c).await, 0);
+    assert_eq!(running(&alice, &kv).await, "0.1.0");
     shift_update_clock(0);
 }
