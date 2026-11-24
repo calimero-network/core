@@ -468,8 +468,11 @@ UNDO_NOT_AS_NAMED`). Once the restore finishes (`FinishRestore`) the restore
 point is spent; until then the undo may be sent again, which seeds it again.
 Refusals, all before the passkey: `409 NO_RESTORE_POINT`,
 `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app no longer runs what the upgrade
-moved it to), `RESTORE_POINT_UNAVAILABLE` (its node does not answer or lost
-it). The record says `lastUpgrade.undo: true`.
+moved it to), `UNDO_RELEASE_GONE` (the release it would return to is no longer
+installed, as when its developer uninstalled it: `Feature::UndoToInstalledRelease`,
+1.0.0-rc.36), `RESTORE_POINT_UNAVAILABLE` (its node does not answer or lost
+it). An instance of a deployment may undo to a release the deployment no longer
+offers: the undo is the customer's way back for a week. The record says `lastUpgrade.undo: true`.
 
 Storage stays bounded: a node keeps, per app, the file the app's record names
 and those taken in the last hour (an upgrade not logged yet), and sweeps the
