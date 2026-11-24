@@ -138,6 +138,9 @@ NOT_COVERED = [
      "served-frontend path above"),
     ("Blobs and files", "Revoking a published blob's grants (`/blobs/{id}/revoke`)",
      "not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow"),
+    ("Pipelines", "A compute run's logs (`GET /apps/{app}/runs/{run}/logs`, `meroctl cloud compute pipeline logs`)",
+     "the route is deprecated (`api-deprecations.toml`) and answers `{ logs: [] }`: a run keeps no log, as an app's "
+     "log lines may hold user data, and no fixture method writes one, so there is no stored log to carry across a roll"),
     ("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
      "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
      "is covered, the stream itself by the cluster tests"),
