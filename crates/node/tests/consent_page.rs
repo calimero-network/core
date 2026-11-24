@@ -417,6 +417,12 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         .and_then(|o| o.remove("update"))
         .unwrap();
     assert_eq!(update["approval"]["step"], "only", "{update}");
+    let offered_by = snapshot.as_object_mut().and_then(|o| o.remove("offeredBy"));
+    assert_eq!(
+        offered_by,
+        Some(Value::Null),
+        "from no deployment, offered by no one"
+    );
     assert_eq!(update["policy"]["source"], "default", "{update}");
     assert!(update["class"].is_string(), "{update}");
     // The confirmation code: the same in the create answer and the model,
@@ -3233,14 +3239,11 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     let model = Page::new(made["url"].as_str().unwrap()).model().await;
     assert_eq!(model["kind"], "install", "{model}");
     assert_eq!(model["deployment"], named, "{model}");
-    let offered_by = format!("Offered by acme (deployment {d}), run by the account dev.");
-    assert!(
-        model["points"]
-            .as_array()
-            .unwrap()
-            .contains(&json!(offered_by)),
-        "{model}"
-    );
+    let offered_by = json!({
+        "title": "Offered by acme, run by the account dev.",
+        "detail": format!("Deployment {d}"),
+    });
+    assert_eq!(model["offeredBy"], offered_by, "{model}");
     let u = bob_app
         .transport()
         .json(Request::new(Method::GET, format!("apps/{inst}/update")))
@@ -3283,13 +3286,7 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
     assert_eq!(model["kind"], "upgrade", "{model}");
     assert_eq!(model["upgrade"]["to"]["version"], "2.0.0", "{model}");
     assert_eq!(model["deployment"], named, "{model}");
-    assert!(
-        model["points"]
-            .as_array()
-            .unwrap()
-            .contains(&json!(offered_by)),
-        "{model}"
-    );
+    assert_eq!(model["offeredBy"], offered_by, "{model}");
     let mut carol_page = SoftAuthenticator::with_key(&carol_in_app, "localhost", &origin(&url));
     let ((code, done), args) = page.approve(&c, &mut carol_page).await;
     assert_eq!(code, 200, "{done}");
