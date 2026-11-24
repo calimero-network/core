@@ -18,6 +18,11 @@
 //! value (this release may add fields, never drop or change one). Then the
 //! replayed state takes a write.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};

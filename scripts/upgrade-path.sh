@@ -95,7 +95,7 @@ rm -rf "$REPLAY"
 replay=0
 {
   python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir "$FROM_DIR" --out "$REPLAY/$FROM" &&
-    UPGRADE_REPLAY_DIR="$REPLAY" cargo test --release -p calimero-node --test it upgrade_replay::
+    UPGRADE_REPLAY_DIR="$REPLAY" cargo test --release -p calimero-node --test upgrade_replay
 } || replay=$?
 [ "$status" != 0 ] || status=$replay
 
