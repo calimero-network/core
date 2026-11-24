@@ -43,7 +43,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.modules.setdefault("upgrade_deep", sys.modules[__name__])
+import ed25519_sign  # noqa: E402
 import upgrade_path  # noqa: E402
+from rollout import OPERATOR_SEED  # noqa: E402
 from rv2 import ORIGIN, CliError, HttpError  # noqa: E402
 from upgrade_path import Case, Failed  # noqa: E402
 
@@ -99,9 +101,16 @@ NOT_COVERED = [
      "the suite's packages carry no frontend, and the node routes a frontend by Host under the apps "
      "domain, which plain HTTP on 127.0.0.1 does not reach; the cluster test "
      "`app_frontends_are_served_and_their_sessions_are_bound` covers serving"),
-    ("Governance", "Owner-held release approvals and release deadlines",
+    ("Governance", "Owner-held release approvals",
      "the rolled cluster gives release approvals to the operator (`--release-approvals operator`), as "
      "Calimero Cloud does; the operator's approval of the new release is the rollout's first step"),
+    ("Governance", "The operator's app upgrades (`POST /ops/apps/{app}/upgrade`, `POST /ops/orgs/{org}/upgrade`) "
+     "and outbound approvals (`POST /ops/outbound`)",
+     "governance is fixed at genesis and the suite's cluster is deployed with each app's owner deciding both "
+     "(`--app-upgrades owner`, `--outbound-approvals owner`, as `GET /releases` shows), so these routes answer "
+     "`403 FORBIDDEN` on every phase; the owners' decisions are the `kv-package` and `outbound-approvals` "
+     "cases'. `an_operator_upgrade_is_reported_as_the_operators` and the operator-governed tests in "
+     "`cluster.rs` cover the operator's on one build"),
     ("Deployments", "A granted cluster's installs (`--deployments granted`: `403 DEPLOY_NOT_GRANTED`, "
      "`NOT_A_DEPLOYER` at apply), the one-way switch to it (`SetDeploymentsGranted`, `POST "
      "/ops/deployments/granted`) and an owner who grants deployers (`--deployers owner`, `SetClusterOwner`, "
@@ -535,6 +544,19 @@ def anyone(w, method, path, body=None, node=None):
 def ops(w, method, path, body=None, node=None):
     node = node if node is not None else w.members()[0]
     return _http(method, w.fleet.url(node) + path, body, w.fleet.ops_token, 30)
+
+
+def operator(w, method, path, body=None, node=None):
+    """An operator decision over its ops route: the node answers `428 OPERATOR_SIGNATURE_REQUIRED`
+    with the bytes to sign, and the retry carries the operator key's signature over them."""
+    try:
+        return ops(w, method, path, body, node)
+    except HttpError as e:
+        if e.status != 428 or not isinstance(e.body, dict):
+            raise
+        details = e.body["details"]
+    sig = ed25519_sign.sign(bytes.fromhex(OPERATOR_SEED), base64.b64decode(details["message"])).hex()
+    return ops(w, method, path, {**(body or {}), "operatorProof": {"nonce": details["nonce"], "signature": sig}}, node)
 
 
 def _http(method, url, body, bearer, timeout):

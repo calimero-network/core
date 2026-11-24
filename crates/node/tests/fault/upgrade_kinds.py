@@ -8,30 +8,14 @@ The kinds no step reaches on one node are `NOT_RECORDED` in `upgrade_replay.rs`,
 from __future__ import annotations
 
 import base64
-import json
 import time
 import uuid
 
 import ed25519_sign
-from rollout import OPERATOR_SEED
 from rv2 import HttpError
-from upgrade_deep import install, join, new_org, ops, people, team_id
+from upgrade_deep import install, join, new_org, operator, ops, people, team_id
 
-SECRET = "com.calimero.upgrade.kv-secret"
 FAR = "2099-01-01T00:00:00Z"  # a time no run reaches: a deadline or an invite that never ends
-
-
-def operator(w, method, path, body=None):
-    """An operator decision over its ops route: the node answers `428 OPERATOR_SIGNATURE_REQUIRED`
-    with the bytes to sign, and the retry carries the operator key's signature over them."""
-    try:
-        return ops(w, method, path, body)
-    except HttpError as e:
-        if e.status != 428 or not isinstance(e.body, dict):
-            raise
-        details = e.body["details"]
-    sig = ed25519_sign.sign(bytes.fromhex(OPERATOR_SEED), base64.b64decode(details["message"])).hex()
-    return ops(w, method, path, {**(body or {}), "operatorProof": {"nonce": details["nonce"], "signature": sig}})
 
 
 def organization(w):

@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import json
 
-from upgrade_deep import (DeepCase, anyone, check, decision, eq, new_org, ops, person, same_read, scrub,
-                          snap, subset)
+from upgrade_deep import (DeepCase, anyone, check, decision, eq, install, new_org, ops, person, scrub, snap,
+                          subset)
 from upgrade_path import case
+
+
+PREFIX = "https://api.example.com/"
 
 
 def _versions(v):
@@ -23,28 +26,27 @@ def _versions(v):
 class Approvals(DeepCase):
     name = "outbound-approvals"
     area = "Governance"
-    seeds = "an organization's outbound approval for a package and an account's own"
-    verifies = ("each approval as its holder reads it (or the same refusal, where governance gives it to the "
-                "operator); every release the cluster approved stays approved after the roll")
+    seeds = "an organization's outbound approval of the prefix a package's release declares"
+    verifies = ("the approval as the organization's owner reads it on every node; every release the cluster "
+                "approved stays approved after the roll")
 
     def populate(self, w):
         oli = person(w, "oli")
+        package, _ = install(oli, w, "kv-secret-1.0.0.mpk")  # declares the prefix it is approved for
         org = new_org(oli, "Outbound Org")
-        s = {"org": org, "decisions": {
-            "org outbound": decision(lambda: oli.raw("post", f"orgs/{org}/outbound", {
-                "package": "com.calimero.upgrade.kv-a", "prefixes": ["https://api.example.com/"], "replace": True})),
-            "own outbound": decision(lambda: oli.raw("post", "auth/outbound", {
-                "package": "com.calimero.upgrade.kv-a", "prefixes": ["https://own.example.com/"], "replace": True})),
-        }}
+        oli.raw("post", f"orgs/{org}/outbound", {"package": package, "prefixes": [PREFIX], "replace": True})
+        s = {"org": org}
         s["me"] = scrub(oli.get("auth/me")).get("outboundApprovals")
         s["org_read"] = snap(oli, f"orgs/{org}")
+        check(PREFIX in json.dumps(s["org_read"].get("outboundApprovals")), f"the approval is not read back: {s['org_read']}")
         s["releases"] = _versions(anyone(w, "GET", "releases"))
         return s
 
     def check(self, w, s):
         oli = person(w, "oli")
         eq(oli.get("auth/me").get("outboundApprovals"), s["me"], "the account's outbound approvals")
-        same_read(oli, f"orgs/{s['org']}", s["org_read"], "the organization's approvals")
+        for n in w.members():
+            subset(scrub(oli.get(f"orgs/{s['org']}", node=n)), s["org_read"], f"the organization's approvals on node {n}")
         now = _versions(anyone(w, "GET", "releases"))
         lost = [v for v in s["releases"] if v not in now]
         check(not lost, f"approved releases dropped: {lost} (now {now})")

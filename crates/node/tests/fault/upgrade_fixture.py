@@ -45,6 +45,7 @@ SNAPSHOT_EVERY = 1000  # applied entries after which a group's log takes a snaps
 SKIPPED = {
     "files-and-compute": "it uploads a 40 MiB file",
     "sealed-files-sessions": "it uploads two files of 32 MiB and one of 2 MiB",
+    "replica-sets": "it moves an app among three nodes",
 }
 
 
