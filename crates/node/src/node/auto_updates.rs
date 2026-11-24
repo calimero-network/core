@@ -242,7 +242,7 @@ impl Node {
                         // A failure of the release itself is noted on the app, which
                         // leaves the candidates; any other is tried again after a backoff.
                         let _r = self.with_auto_update_memory(|mem| mem.failed(m, now));
-                        warn!(app = %app.app_id, version = %to.version, error = %e.message, "an update did not apply on its own");
+                        warn!(app = %app.app_id, version = %to.version, status = e.status, code = %e.code, "an update did not apply on its own");
                     }
                 }
                 continue 'apps;

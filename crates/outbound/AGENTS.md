@@ -36,6 +36,11 @@ deployment managers'; `calimero_node::component::run_secrets`) wins over the
 operator's for that name, still only to its declared hosts. The echo answers each
 filled-in value's length (`secretBytes`), never a value.
 
+What it logs (every line reaches the operator): a refusal as `refusal_kind`
+(`NotApproved`, `AwaitingApproval`, `Invalid`) with the URL's host, a sent request
+with the declared prefix that covers it, never the URL's path, query, body or a
+name the guest wrote; the guest gets the refusal's words (`log_tests`).
+
 A failed request reaches the guest and the `outbound request failed` log line (which
 ships to the operator) only as its `FailureKind` (`timeout`, `connect`, `too large`,
 `redirect`, `other`), never in the transport's words, which can quote the request.

@@ -2602,7 +2602,9 @@ impl Node {
         let held = 1 + results.iter().filter(|r| r.is_ok()).count();
         for (addr, r) in peers.iter().zip(&results) {
             if let Err(e) = r {
-                warn!(%addr, error = %e, "bundle not stored on peer");
+                // The peer's error by its code: its message is the peer's words.
+                let named = crate::log_safe::kind(e.as_ref());
+                warn!(%addr, error_kind = %named, "bundle not stored on peer");
             }
         }
         if held * 2 <= peers.len() + 1 {

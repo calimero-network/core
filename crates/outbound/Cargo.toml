@@ -30,6 +30,8 @@ rcgen.workspace = true
 rustls.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-rustls.workspace = true
+# Captures what a request logs, to check no input reaches the operator's log.
+tracing-subscriber.workspace = true
 
 [features]
 # DEV/TEST ONLY: `[outbound.testing]`, which answers requests to `.test` hosts
