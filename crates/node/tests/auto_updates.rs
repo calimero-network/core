@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 #[path = "harness/cluster.rs"]
 #[allow(
     dead_code,
-    reason = "shared with tests/cluster.rs, which uses the parts this test does not"
+    reason = "shared with tests/it/cluster.rs, which uses the parts this test does not"
 )]
 mod harness;
 
@@ -450,6 +450,60 @@ async fn a_green_update_applies_after_its_hold_and_is_undone_within_a_week() {
         .unwrap_err();
     assert!(e.to_string().contains("UNDO_WINDOW_PASSED"), "{e}");
     assert_eq!(read(&alice, &app, "k").await, json!("again"));
+    shift_update_clock(0);
+}
+
+/// A developer who uninstalls a release it no longer offers takes it from the customer's
+/// undo too, even where the release the app runs ships the same WASM and keeps the bundle:
+/// the route says why before the passkey is asked for, and the app stays where it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_undo_is_refused_to_a_release_that_was_uninstalled() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    let app = auto_app(&alice, &mut alice_pk, &publisher).await;
+    let same_wasm = variant(&kv_wasm(), "v11");
+    for version in ["1.1.0", "1.1.1"] {
+        let _ = alice
+            .packages()
+            .upload(release(version, &same_wasm, &publisher))
+            .await
+            .unwrap();
+        let _up = alice
+            .apps()
+            .upgrade(
+                &app,
+                typed(json!({ "version": version })),
+                Some(&mut alice_pk),
+            )
+            .await
+            .unwrap();
+        let _moved = get_until(&alice, &format!("apps/{app}"), 15, |a| {
+            a["release"]["version"] == version
+        })
+        .await;
+    }
+    let plan = get(&alice, &format!("apps/{app}/undo")).await.unwrap();
+    assert_eq!(plan["available"], true, "{plan}");
+    let _gone = alice
+        .packages()
+        .version_uninstall(PACKAGE, "1.1.0")
+        .await
+        .unwrap();
+    let plan = get(&alice, &format!("apps/{app}/undo")).await.unwrap();
+    assert_eq!(plan["available"], false, "{plan}");
+    assert_eq!(plan["reason"]["code"], "UNDO_RELEASE_GONE", "{plan}");
+    let e = alice
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("apps/{app}/undo").as_str()).json(json!({})),
+            &mut alice_pk,
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("UNDO_RELEASE_GONE"), "{e}");
+    assert_eq!(running(&alice, &app).await, "1.1.1");
     shift_update_clock(0);
 }
 

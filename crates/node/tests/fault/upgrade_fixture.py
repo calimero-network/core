@@ -1,12 +1,12 @@
 """Writes the replay fixture of a release: one node's data directory as that release's merod
-left it, and the answers it gave, for `crates/node/tests/upgrade_replay.rs`.
+left it, and the answers it gave, for `crates/node/tests/it/upgrade_replay.rs`.
 
     scripts/fetch-release.sh 1.0.0-rc.35 target/upgrade-from
     scripts/build-release-fixtures.sh 1.0.0-rc.35 target/upgrade-from
     scripts/build-upgrade-deep-fixtures.sh target/upgrade-from
     python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from \\
         --out target/upgrade-replay/1.0.0-rc.35
-    UPGRADE_REPLAY_DIR=target/upgrade-replay cargo test -p calimero-node --test upgrade_replay
+    UPGRADE_REPLAY_DIR=target/upgrade-replay cargo test -p calimero-node --test it upgrade_replay::
 
 Run it with the pinned release's merod and meroctl (`--from-dir`, laid out by
 `scripts/fetch-release.sh`); `scripts/upgrade-path.sh` does so on every `Upgrade path` run,

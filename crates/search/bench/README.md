@@ -12,7 +12,7 @@ How the feature works (opt-in, query API, how the index follows state) is on the
 docs site's *Full-text search* page and in `crates/search/AGENTS.md`. End to end
 (the kv fixture component in a 3-node cluster) it is tested, not benched, by
 `views_search_a_components_tables_as_they_change` in
-`crates/node/tests/component_cluster.rs`.
+`crates/node/tests/it/component_cluster.rs`.
 
 ## Reproduce
 

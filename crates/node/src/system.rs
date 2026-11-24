@@ -217,8 +217,12 @@ pub const UNDO_STALE: &str =
 /// restore points name (the instance and the members its unit's upgrade moved).
 pub const UNDO_NOT_AS_NAMED: &str =
     "UNDO_NOT_AS_NAMED: an undo reverts the instance and the members its upgrade moved, each seeded by the node that holds its restore point";
+/// The apply error for an undo to a release that is no longer installed (a bundle another
+/// release ships may remain, but the release itself and its frontend are gone).
+pub const UNDO_RELEASE_GONE: &str =
+    "UNDO_RELEASE_GONE: the release the app ran before is no longer installed";
 /// The apply errors a code prefixes (`CODE: why`), with the status the API answers.
-pub const UPDATE_REFUSALS: [(&str, u16); 12] = [
+pub const UPDATE_REFUSALS: [(&str, u16); 13] = [
     (BAD_UPGRADE_POLICY, 400),
     (SECOND_APPROVAL_REQUIRED, 409),
     (UPGRADE_CLASS_MISMATCH, 409),
@@ -231,6 +235,7 @@ pub const UPDATE_REFUSALS: [(&str, u16); 12] = [
     (UNDO_WINDOW_PASSED, 409),
     (UNDO_STALE, 409),
     (UNDO_NOT_AS_NAMED, 409),
+    (UNDO_RELEASE_GONE, 409),
 ];
 /// The apply error for a price table whose version is not the current one plus one.
 pub const PRICE_VERSION: &str = "PRICE_VERSION: the version must be the current one plus one";
@@ -2096,6 +2101,41 @@ impl SystemState {
                 .is_some_and(|h| h == bundle)
     }
 
+    /// The one release whose service is `bundle`; none when no release ships it
+    /// or several do, as releases may share a WASM.
+    #[must_use]
+    pub fn sole_release_of(&self, bundle: &str) -> Option<PackageRef> {
+        let mut found = None;
+        for (name, p) in &self.packages {
+            for v in p.versions.values() {
+                for (service, hash) in v.app_parts() {
+                    if hash != bundle {
+                        continue;
+                    }
+                    if found.is_some() {
+                        return None;
+                    }
+                    found = Some(PackageRef {
+                        package: name.clone(),
+                        version: v.version.clone(),
+                        service: (!service.is_empty()).then(|| service.clone()),
+                        compute: false,
+                    });
+                }
+            }
+        }
+        found
+    }
+
+    /// The release `app` runs: the one its record names, else, for a record
+    /// without it, the only release shipping its bundle ([`Self::sole_release_of`]).
+    #[must_use]
+    pub fn running_release(&self, app: &AppRecord) -> Option<PackageRef> {
+        app.release
+            .clone()
+            .or_else(|| self.sole_release_of(&app.bundle))
+    }
+
     /// Whether a release ships `compute` (a compute bundle hash, or none) for the service
     /// whose app component is `bundle`. Releases may share an app component and differ in
     /// compute, so the caller names the compute hash and this checks the pair.
@@ -2388,6 +2428,52 @@ impl SystemState {
             g.live(now)
                 && matches!(Deployer::from_key(key), Some(Deployer::Org(o)) if self.manages_apps(&o, account, None))
         })
+    }
+
+    /// Whether `account` may create, at `at`, an instance of `release` from no deployment's
+    /// offer: whoever [may deploy](Self::may_deploy) then, and anyone for a release the
+    /// operator installed. Having installed the release is not enough: a revoked grant ends it.
+    #[must_use]
+    pub fn creates_outside_offers(
+        &self,
+        account: &str,
+        release: Option<&PackageRef>,
+        at: u64,
+    ) -> bool {
+        self.may_deploy(account, at)
+            || release.is_some_and(|r| {
+                self.packages
+                    .get(&r.package)
+                    .and_then(|p| p.versions.get(&r.version))
+                    .is_some_and(|v| v.installed_by_any(OPERATOR))
+            })
+    }
+
+    /// Whether `actor` may move `app` to `bundle` (from `release`) at `at`: an instance
+    /// from a deployment, or one moving within its package, may; else only into what
+    /// `actor` [creates outside offers](Self::creates_outside_offers).
+    #[must_use]
+    pub fn upgrades_outside_offers(
+        &self,
+        app: &AppRecord,
+        actor: &str,
+        release: Option<&PackageRef>,
+        bundle: &str,
+        at: u64,
+    ) -> bool {
+        if app.deployment.is_some() {
+            return true;
+        }
+        let from = app
+            .release
+            .as_ref()
+            .map(|r| r.package.as_str())
+            .or_else(|| self.package_of(app));
+        let to = release.map(|r| r.package.as_str()).or_else(|| {
+            let b = self.bundles.get(bundle)?;
+            b.package.as_ref().map(|r| r.package.as_str())
+        });
+        (from.is_some() && from == to) || self.creates_outside_offers(actor, release, at)
     }
 
     /// The owner that grants deployers: the cluster's owner where governance
@@ -5384,6 +5470,11 @@ pub enum SystemCmd {
         /// Absent in an entry an earlier release logged, whose members carry no deployment.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         unit_offer: Option<PackageRef>,
+        /// Where deployments are granted, an instance from no deployment is a deployer's
+        /// ([`SystemState::creates_outside_offers`]). Set once every node reads it
+        /// ([`cluster_version::Feature::OffersOnly`]); absent in an earlier entry.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        offers_only: bool,
     },
     UpgradeApp {
         app_id: AppId,
@@ -5522,6 +5613,10 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// The release it returns to must still be installed ([`SystemState::undo_release_installed`]);
+        /// set once every node reads it ([`cluster_version::Feature::UndoToInstalledRelease`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        release_installed: bool,
     },
     TransferApp {
         app_id: AppId,

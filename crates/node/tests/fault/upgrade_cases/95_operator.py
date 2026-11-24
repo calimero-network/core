@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 
-from upgrade_deep import (DeepCase, anyone, check, decision, eq, fixture, operator, ops, people, scrub, subset)
+from upgrade_deep import (DeepCase, anyone, check, decision, eq, fixture, signed_ops, ops, people, scrub, subset)
 from upgrade_path import case
 
 PACKAGE = "com.calimero.upgrade.kv-op"
@@ -140,7 +140,7 @@ class ReleaseDeadlines(DeepCase):
         return {d["version"]: d["after"] for d in anyone(w, "GET", "releases", node=node)["deadlines"]}
 
     def populate(self, w):
-        operator(w, "POST", "ops/releases/9.9.9/deadline", {"after": FAR})
+        signed_ops(w, "POST", "ops/releases/9.9.9/deadline", {"after": FAR})
         s = {"deadlines": {"9.9.9": FAR}}
         self.check(w, s)
         return s
@@ -150,7 +150,7 @@ class ReleaseDeadlines(DeepCase):
             eq(self._listed(w, n), s["deadlines"], f"the release deadlines on node {n}")
 
     def exercise(self, w, s):
-        operator(w, "DELETE", "ops/releases/9.9.9/deadline")
-        operator(w, "POST", "ops/releases/9.9.8/deadline", {"after": FAR})
+        signed_ops(w, "DELETE", "ops/releases/9.9.9/deadline")
+        signed_ops(w, "POST", "ops/releases/9.9.8/deadline", {"after": FAR})
         s["deadlines"] = {"9.9.8": FAR}
         self.check(w, s)

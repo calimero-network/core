@@ -734,6 +734,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             .unwrap(),
         ),
         unit_offer: None,
+        offers_only: false,
     }
     };
     let e = m.run_unproven(with_compute("bad", "j2")).unwrap_err();
@@ -870,6 +871,7 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             .unwrap(),
         ),
         unit_offer: None,
+        offers_only: false,
     };
     let _ok = m.run_unproven(app).unwrap();
     let uninstall = |version: &str| SystemCmd::UninstallPackage {
@@ -6637,6 +6639,7 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
             .unwrap(),
         ),
         unit_offer: None,
+        offers_only: false,
     };
     let upgrade = |id: &str, actor: &str, at: u64| SystemCmd::UpgradeApp {
         compute_bundle: None,
@@ -6946,6 +6949,7 @@ fn a_publisher_approves_the_releases_of_every_instance_of_its_packages() {
             .unwrap(),
         ),
         unit_offer: None,
+        offers_only: false,
     };
     let e = m.run_unproven(create("second", "b1")).unwrap_err();
     assert!(e.starts_with(super::DEADLINE_PREFIX), "{e}");
@@ -7871,6 +7875,162 @@ fn on_a_granted_cluster_only_deployers_install() {
     }
 }
 
+/// Where deployments are granted, an instance from no deployment is a deployer's, or of a
+/// release the operator installed; judged at apply when the entry says so or the logged
+/// cluster version brings the rule, so an entry from before replays as it applied.
+#[test]
+fn on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers() {
+    use super::{cluster_version::Feature, Deployments, PackageRef, NOT_A_DEPLOYER, OPERATOR};
+    let outside = |id: &str, owner: &str, version: &str, offers_only: bool| {
+        let mut cmd = instance(id, owner, &format!("b-{version}"), None);
+        if let SystemCmd::CreateApp {
+            app,
+            offers_only: flag,
+            ..
+        } = &mut cmd
+        {
+            app.release = Some(PackageRef {
+                package: "p".into(),
+                version: version.into(),
+                service: None,
+                compute: false,
+            });
+            *flag = offers_only;
+        }
+        cmd
+    };
+    let mut m = deploying(Deployments::Granted);
+    let _ok = m
+        .run_unproven(grant(account_deployer("alice"), None, OPERATOR))
+        .unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+    let _ok = m.run_unproven(install_at(OPERATOR, "0.9.0", 5)).unwrap();
+
+    assert_eq!(
+        m.run_unproven(outside("b1", "bob", "1.0.0", true))
+            .unwrap_err(),
+        NOT_A_DEPLOYER
+    );
+    let _ok = m
+        .run_unproven(outside("a1", "alice", "1.0.0", true))
+        .unwrap();
+    let _ok = m.run_unproven(outside("b2", "bob", "0.9.0", true)).unwrap();
+    let _ok = m
+        .run_unproven(outside("b3", "bob", "1.0.0", false))
+        .unwrap();
+
+    m.state.cluster_version = Some(Feature::OffersOnly.since().into());
+    assert_eq!(
+        m.run_unproven(outside("b4", "bob", "1.0.0", false))
+            .unwrap_err(),
+        NOT_A_DEPLOYER,
+        "bob shares org with alice, the installer, and still needs an offer"
+    );
+    let _ok = m
+        .run_unproven(SystemCmd::RevokeDeployer {
+            deployer: account_deployer("alice"),
+            at: 6,
+            actor: OPERATOR.into(),
+            proof: None,
+            consent: None,
+        })
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(outside("a2", "alice", "1.0.0", false))
+            .unwrap_err(),
+        NOT_A_DEPLOYER,
+        "a revoked deployer, though it installed the release"
+    );
+
+    let mut open = deploying(Deployments::Open);
+    let _ok = open.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+    let _ok = open
+        .run_unproven(outside("b1", "bob", "1.0.0", true))
+        .unwrap();
+}
+
+/// Where deployments are granted, an instance from no deployment moves into another
+/// package only as its upgrader could create one there, from the logged version that
+/// brings the rule; within its package, and before that version, it moves as it did.
+#[test]
+fn on_a_granted_cluster_an_instance_outside_every_deployment_keeps_out_of_a_deployers_package() {
+    use super::{cluster_version::Feature, Deployments, NOT_A_DEPLOYER, OPERATOR};
+    let mut m = deploying(Deployments::Granted);
+    let _ok = m
+        .run_unproven(grant(account_deployer("alice"), None, OPERATOR))
+        .unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.1.0", 5)).unwrap();
+    let catalog = SystemCmd::InstallPackage {
+        package: "q".into(),
+        signer_id: "did:key:q".into(),
+        release: serde_json::from_value(json!({
+            "version": "1.0.0", "mpk": "q", "mpkSize": 1, "source": "upload",
+            "services": { "": "b-q" }, "installedBy": OPERATOR, "installedAt": 5
+        }))
+        .unwrap(),
+    };
+    let _ok = m.run_unproven(catalog).unwrap();
+    let create =
+        |m: &mut SystemMachine, id: &str, owner: &str, bundle: &str, release: (&str, &str)| {
+            let mut cmd = instance(id, owner, bundle, None);
+            if let SystemCmd::CreateApp { app, .. } = &mut cmd {
+                app.release = Some(super::PackageRef {
+                    package: release.0.into(),
+                    version: release.1.into(),
+                    service: None,
+                    compute: false,
+                });
+            }
+            m.run_unproven(cmd).unwrap();
+        };
+    create(&mut m, "early", "bob", "b-q", ("q", "1.0.0"));
+    create(&mut m, "late", "bob", "b-q", ("q", "1.0.0"));
+    create(&mut m, "own", "alice", "b-1.0.0", ("p", "1.0.0"));
+    create(&mut m, "alice-q", "alice", "b-q", ("q", "1.0.0"));
+
+    let _ok = m
+        .run_unproven(upgrade_to("early", "bob", "b-1.0.0", Some(("p", "1.0.0"))))
+        .unwrap();
+
+    m.state.cluster_version = Some(Feature::OffersOnly.since().into());
+    assert_eq!(
+        m.run_unproven(upgrade_to("late", "bob", "b-1.0.0", Some(("p", "1.0.0"))))
+            .unwrap_err(),
+        NOT_A_DEPLOYER
+    );
+    let _ok = m
+        .run_unproven(upgrade_to("early", "bob", "b-1.1.0", Some(("p", "1.1.0"))))
+        .unwrap();
+    let _ok = m
+        .run_unproven(upgrade_to("own", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
+        .unwrap();
+
+    // Revoked, alice enters her own package no more; within one she still moves.
+    let _ok = m
+        .run_unproven(SystemCmd::RevokeDeployer {
+            deployer: account_deployer("alice"),
+            at: 6,
+            actor: OPERATOR.into(),
+            proof: None,
+            consent: None,
+        })
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(upgrade_to(
+            "alice-q",
+            "alice",
+            "b-1.1.0",
+            Some(("p", "1.1.0"))
+        ))
+        .unwrap_err(),
+        NOT_A_DEPLOYER
+    );
+    let _ok = m
+        .run_unproven(upgrade_to("own", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
+        .unwrap();
+}
+
 /// Where deployments are open, installs go on exactly as before.
 #[test]
 fn on_an_open_cluster_anyone_installs() {
@@ -8146,6 +8306,7 @@ fn instance(id: &str, owner: &str, bundle: &str, deployment: Option<&str>) -> Sy
             .unwrap(),
         ),
         unit_offer: None,
+        offers_only: false,
     }
 }
 
@@ -12391,6 +12552,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
         actor: actor.into(),
         at,
         consent: Value::Null,
+        release_installed: false,
     };
     let within = hold_over + UNDO_WINDOW_SECS;
     assert_eq!(
@@ -12543,6 +12705,140 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
     // A state from before restore points reads with none and writes as it did.
     let shown = serde_json::to_value(&m.state.apps["rawapp"]).unwrap();
     assert!(shown.get("restorePoint").is_none(), "{shown}");
+}
+
+/// An undo goes back only to a release that is still installed: a developer who
+/// uninstalls a release it no longer offers takes it from the customers' undo too, even
+/// where another release ships the same WASM and the bundle stays. An entry logged
+/// before the rule replays as it applied.
+#[test]
+fn an_undo_never_returns_to_a_release_that_is_no_longer_installed() {
+    use super::cluster_version::Feature;
+    use super::UNDO_RELEASE_GONE;
+    let moved_to_the_shared_wasm = || {
+        let mut m = auto_fixture();
+        let manual = |version: &str, taken| {
+            let mut cmd = classified_upgrade("cora", version, Some(green()), 50);
+            if let SystemCmd::UpgradeApp {
+                bundle,
+                restore_point,
+                ..
+            } = &mut cmd
+            {
+                *bundle = "b3".into();
+                *restore_point = taken;
+            }
+            cmd
+        };
+        let _ok = m
+            .run_unproven(manual("1.0.1", Some(taken_on(1, 3))))
+            .unwrap();
+        let _ok = m
+            .run_unproven(manual(
+                "1.0.2",
+                Some(crate::types::TakenRestorePoint::default()),
+            ))
+            .unwrap();
+        let _ok = m
+            .run_unproven(SystemCmd::UninstallPackage {
+                package: "p".into(),
+                version: Some("1.0.1".into()),
+                actor: "pam".into(),
+            })
+            .unwrap();
+        assert!(m.state.bundles.contains_key("b3"), "1.0.2 still ships it");
+        m
+    };
+    let undo = |release_installed: bool| SystemCmd::UndoUpgrade {
+        app_id: "inst".into(),
+        apps: serde_json::from_value(json!({ "inst": [] })).unwrap(),
+        actor: "cora".into(),
+        at: 60,
+        consent: Value::Null,
+        release_installed,
+    };
+    assert_eq!(
+        undo(true).features(),
+        [Feature::RestorePoints, Feature::UndoToInstalledRelease]
+    );
+    assert_eq!(undo(false).features(), [Feature::RestorePoints]);
+
+    let mut m = moved_to_the_shared_wasm();
+    assert_eq!(
+        m.run_unproven(undo(true)),
+        Err(UNDO_RELEASE_GONE.to_owned())
+    );
+    let a = &m.state.apps["inst"];
+    assert_eq!(
+        a.release.as_ref().unwrap().version,
+        "1.0.2",
+        "nothing moved"
+    );
+    assert!(a.restore_point.is_some(), "the restore point is kept");
+    // The logged cluster version brings the rule to an entry without the flag.
+    m.state.cluster_version = Some(Feature::UndoToInstalledRelease.since().to_owned());
+    assert_eq!(
+        m.run_unproven(undo(false)),
+        Err(UNDO_RELEASE_GONE.to_owned())
+    );
+    // An entry logged before it, with no flag, applied.
+    let mut m = moved_to_the_shared_wasm();
+    let _ok = m.run_unproven(undo(false)).unwrap();
+    assert_eq!(
+        m.state.apps["inst"].release.as_ref().unwrap().version,
+        "1.0.1"
+    );
+    // A seed sent again after the undo moved the app is not refused for a release uninstalled
+    // since: the app already runs it and waits for its restore.
+    let mut m = auto_fixture();
+    for (version, taken) in [("1.0.1", taken_on(1, 3)), ("1.0.2", taken_on(2, 7))] {
+        let mut up = classified_upgrade("cora", version, Some(green()), 50);
+        if let SystemCmd::UpgradeApp {
+            bundle,
+            restore_point,
+            ..
+        } = &mut up
+        {
+            *bundle = "b3".into();
+            *restore_point = Some(taken);
+        }
+        let _ok = m.run_unproven(up).unwrap();
+    }
+    let seeded = |release_installed| SystemCmd::UndoUpgrade {
+        app_id: "inst".into(),
+        apps: serde_json::from_value(json!({ "inst": [2, 1] })).unwrap(),
+        actor: "cora".into(),
+        at: 60,
+        consent: Value::Null,
+        release_installed,
+    };
+    let _ok = m.run_unproven(seeded(true)).unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some("1.0.1".into()),
+            actor: "pam".into(),
+        })
+        .unwrap();
+    let _ok = m.run_unproven(seeded(true)).unwrap();
+    // Installed, the release is undone to as ever, flagged or not.
+    let mut m = auto_fixture();
+    let mut up = classified_upgrade("cora", "1.0.1", Some(green()), 50);
+    if let SystemCmd::UpgradeApp {
+        bundle,
+        restore_point,
+        ..
+    } = &mut up
+    {
+        *bundle = "b3".into();
+        *restore_point = Some(crate::types::TakenRestorePoint::default());
+    }
+    let _ok = m.run_unproven(up).unwrap();
+    let _ok = m.run_unproven(undo(true)).unwrap();
+    assert_eq!(
+        m.state.apps["inst"].release.as_ref().unwrap().version,
+        "1.0.0"
+    );
 }
 
 /// An instance of a deployment applies its offer on its own once its hold has passed

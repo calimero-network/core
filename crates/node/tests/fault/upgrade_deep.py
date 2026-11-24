@@ -77,6 +77,12 @@ NOT_COVERED = [
      "`restore-points-undo`'s. An upgrade entry and a record without `auto` read and replay as before. "
      "`system::tests` (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`, "
      "`a_deployment_instances_hold_runs_from_its_offer`) and `tests/auto_updates.rs` cover it on one build"),
+    ("Apps", "An undo refused to a release no longer installed (`UndoUpgrade::release_installed`, `UNDO_RELEASE_GONE`)",
+     "it adds a refusal, not a stored shape: an entry without the flag replays as it applied below cluster "
+     "version 1.0.0-rc.36 (`Feature::UndoToInstalledRelease`), and the undo itself is `restore-points-undo`'s. "
+     "The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's "
+     "single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` "
+     "and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
@@ -133,6 +139,12 @@ NOT_COVERED = [
      "`an_open_cluster_installs_as_before_until_the_operator_grants_deployments` and "
      "`the_cluster_owner_grants_deployers_once_the_operator_names_it` (`deployers.rs`) cover the rest on one "
      "build"),
+    ("Governance", "A release deadline that passes while a cluster rolls (`SystemState::retired`: the old nodes are "
+     "placed no new app mid-roll)",
+     "a deadline is judged at the command's own time, so the granted run sets a passed one on the old nodes' own "
+     "release, which retires no node; one on the new release would stop placement on the old nodes before the roll "
+     "and needs a deadline timed to the rollout. `a_release_deadline_stops_new_work_but_not_running_apps` "
+     "(`cluster.rs`) covers retired nodes on one build"),
     ("Packages", "Multi-service packages (`services`) and instances of a named service (`--service`)",
      "not seeded yet: the suite installs the release's single-service kv bundle; `meroctl app pack --service` "
      "writes one from components now, and the node's install of a named service is covered on one build "
@@ -175,6 +187,15 @@ NOT_COVERED = [
      "`update-classes-approvals` cases'. "
      "`an_install_sheet_shows_what_gets_created_and_where_data_can_go` and "
      "`an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build"),
+    ("Deployments", "A customer's instance outside every deployment on a granted cluster, refused at create and "
+     "on an upgrade into a deployer's package (`403 DEPLOY_NOT_GRANTED`; `CreateApp { offers_only }` and "
+     "`UpgradeApp` at apply, `Feature::OffersOnly`)",
+     "a refusal that stores nothing, on a granted cluster, which the open upgrade-path cluster is not and cannot "
+     "become without turning every case that installs after the switch red; an entry without `offers_only` "
+     "replays as it applied below cluster version 1.0.0-rc.36. "
+     "`on_a_granted_cluster_a_customer_creates_only_from_an_offer` (`deployments.rs`) and "
+     "`system::tests::on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers` and "
+     "`..._keeps_out_of_a_deployers_package` (the replay) cover it on one build"),
 ]
 
 
@@ -563,17 +584,18 @@ def ops(w, method, path, body=None, node=None):
     return _http(method, w.fleet.url(node) + path, body, w.fleet.ops_token, 30)
 
 
-def operator(w, method, path, body=None, node=None):
-    """An operator decision over its ops route: the node answers `428 OPERATOR_SIGNATURE_REQUIRED`
+def signed_ops(w, method, path, body=None):
+    """An operator decision over the ops route: the node answers `428 OPERATOR_SIGNATURE_REQUIRED`
     with the bytes to sign, and the retry carries the operator key's signature over them."""
     try:
-        return ops(w, method, path, body, node)
+        return ops(w, method, path, body)
     except HttpError as e:
         if e.status != 428 or not isinstance(e.body, dict):
             raise
         details = e.body["details"]
-    sig = ed25519_sign.sign(bytes.fromhex(OPERATOR_SEED), base64.b64decode(details["message"])).hex()
-    return ops(w, method, path, {**(body or {}), "operatorProof": {"nonce": details["nonce"], "signature": sig}}, node)
+    seed = bytes.fromhex(OPERATOR_SEED)
+    sig = ed25519_sign.sign(seed, base64.b64decode(details["message"])).hex()
+    return ops(w, method, path, {**(body or {}), "operatorProof": {"nonce": details["nonce"], "signature": sig}})
 
 
 def _http(method, url, body, bearer, timeout):
@@ -693,7 +715,8 @@ def matrix() -> str:
     for cls in upgrade_path.CASES:
         c = cls()
         if isinstance(c, DeepCase):
-            rows.append(f"| {c.area} | `{c.name}` | {c.seeds} | {c.verifies} | yes (since {c.since}) |")
+            run = "" if len(c.governance) > 1 else f", {c.governance[0]} run only"
+            rows.append(f"| {c.area} | `{c.name}` | {c.seeds} | {c.verifies} | yes (since {c.since}{run}) |")
         else:
             doc = " ".join((cls.__doc__ or "").split())
             rows.append(f"| Representative | `{c.name}` | {doc} | read back, extended, read again | yes |")

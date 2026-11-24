@@ -15,7 +15,7 @@ one app, each an explicit check against the caller (the rules are stated in
 
 The app owner, who runs `init`, owns the config and is the one writer of every set.
 
-It is also the node's org fixture: `crates/node/tests/component_cluster.rs` and
+It is also the node's org fixture: `crates/node/tests/it/component_cluster.rs` and
 `fixtures.rs` build it, and `shared_storage.rs` runs its writer sets on a cluster.
 
 ## ABI
