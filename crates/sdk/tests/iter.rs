@@ -1,5 +1,10 @@
 //! Iterating collections and tables: every item across pages, read a page at a time.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
+)]
+
 use calimero_sdk::collections::{Cell, Counter, Frozen, PerUser, Set, UnorderedMap, Vector};
 use calimero_sdk::env::{mock, Caller};
 use calimero_sdk::table::FieldSet;

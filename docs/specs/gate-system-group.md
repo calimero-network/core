@@ -1,7 +1,7 @@
 # Gating the system group by release approval: design proposal
 
 Oct 29, 2026 · Status: **Phase 0 implemented** (peer identity on internal routes, proofs checked
-at apply, per-node session signing; `crates/node/tests/approval_bypasses.rs`). Phases 1 to 3 (realms and realm keys,
+at apply, per-node session signing; `crates/node/tests/it/approval_bypasses.rs`). Phases 1 to 3 (realms and realm keys,
 clients and mdma, hardening) are a proposal, not implemented.
 
 Release approvals keep an app's data off node images nobody approved: `Node::may_send`
@@ -579,7 +579,7 @@ chosen, and per-app encryption keys so that app data stops depending on K_c (F6)
 
 Each test is written red first, at the layer a user hits (`CLAUDE.md`).
 
-Phase 0, in `crates/node/tests/cluster.rs` next to
+Phase 0, in `crates/node/tests/it/cluster.rs` next to
 `only_releases_the_owner_approved_hold_an_apps_data` (which already starts node 3 on an
 unapproved release):
 

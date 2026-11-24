@@ -21,7 +21,7 @@ must not repeat across leader kills).
 
 Usage: python3 -I rooms_fault.py --iterations 200 --seed 1 [--duration 6] [--wasm PATH]
 The Rooms component is the cached build of `cargo test --release -p calimero-node
---test rooms` (target/app-components/rooms-*.wasm) unless --wasm names one.
+--test it rooms::` (target/app-components/rooms-*.wasm) unless --wasm names one.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def default_wasm():
     found = sorted((ROOT / "target" / "app-components").glob("rooms-*.wasm"),
                    key=lambda p: p.stat().st_mtime)
     if not found:
-        raise SystemExit("no Rooms component: run cargo test --release -p calimero-node --test rooms")
+        raise SystemExit("no Rooms component: run cargo test --release -p calimero-node --test it rooms::")
     return str(found[-1])
 
 

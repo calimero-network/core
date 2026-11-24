@@ -21,3 +21,6 @@ calimero-primitives.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 toml.workspace = true
+
+[lints]
+workspace = true

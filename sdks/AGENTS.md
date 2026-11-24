@@ -17,6 +17,7 @@ sdks/
 │   ├── mero-icons/          # React       npm  @calimero-network/mero-icons
 │   ├── mero-tokens/         # TypeScript  npm  @calimero-network/mero-tokens
 │   └── mero-charts/         # React       npm  @calimero-network/mero-charts (on mero-design)
+├── abi/                     # apps' released ABIs the clients generate typed app clients from (SOURCE: where each comes from)
 ├── package.json             # the pnpm workspace of the JS SDKs (private)
 └── pnpm-workspace.yaml
 ```
@@ -41,8 +42,13 @@ sdks/
   the method list) comes from the node's API document,
   `docs/public/openapi.json`, through the SDK's `generate` command
   (`python3 scripts/sdks.py generate [name]`). Never edit generated files by
-  hand; change the server (or the generator) and regenerate. The hand-written,
-  ergonomic layer is everything else.
+  hand; change the server (or the generator) and regenerate. The one command
+  works on macOS and Linux: with no `swift` installed, mero-swift generates in a
+  pinned `swift` Docker image (`SDKS_GENERATE_IN_CONTAINER=1` forces that).
+  A client's typed app clients (the Confidential KV's) are generated the same
+  way, by core's `meroctl app codegen` (`scripts/app-codegen.sh`, from this
+  tree) from an ABI vendored once in `sdks/abi/`.
+  The hand-written, ergonomic layer is everything else.
 - **Docs**: a client's guides and reference are pages of core's docs site,
   `docs/src/content/docs/clients/<name>/` (the Clients section), built and
   link-checked with the rest of `docs/`; no SDK keeps a docs site of its own.

@@ -32,7 +32,7 @@ typed error extends `CalimeroError`, so `instanceof CalimeroError` and its
 | `FeatureNotActive` | `409 FEATURE_NOT_ACTIVE` | The command (or a field of it) needs a cluster version not every node supports yet: a rollout from an older release is under way, and nothing was done. `feature`, `needs` (the release it needs) and `active` (the cluster's now, `''` when not every node said) come from `details`. It works once the old nodes have left: `client.apps.move` on a cluster still holding a node from before 1.0.0-rc.15, say. |
 | `QuotaExceeded` | `429 QUOTA_EXCEEDED` | The caller holds as many of something (registered origins, a component app's blobs, …) as it may. |
 | `ArgsTooLarge` | `413 ARGS_TOO_LARGE` | The call's arguments are over the node's limit (512 KiB); it did not run. |
-| `AppError` | `422 APP_ERROR` | The app refused the call: `appCode` (its declared error) and `fields`. The call was logged; its key is spent. |
+| `AppError` | `422 APP_ERROR` | The app refused the call: `appCode` (its declared error) and `fields`. The call was logged; its key is spent. A KV `NotGranted` or a `uses` link's `NotLinked` reads as a sentence ("You can't view bucket default."). |
 | `TrapError` | `422 TRAP` | The run trapped: `kind` (`OutOfFuel`, `OutOfMemory`, …). Logged. |
 | `UnavailableError` | any `503`, or no answer | After the client's retries, on every node it knows: `reason` (`timeout`, `migrating`, `unavailable`, `network`, …), `committed`, `retryAfter`. |
 | `CalimeroError` | anything else | `status` and the node's `code`: `FORBIDDEN`, `CONFLICT`, `NOT_INSTALLED`, `NO_REGISTRY`, `BAD_PACKAGE`, `UPGRADE_FAILED`, `INIT_FAILED`, `TOO_LARGE`, … |

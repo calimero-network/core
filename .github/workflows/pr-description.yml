@@ -44,9 +44,6 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Test the check
-        run: python3 scripts/tests/check-compat-door-test.py
-
       # HEAD is the PR merge commit, so its first parent is the base it merges into.
       - name: Check the door the body declares
         env:

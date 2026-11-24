@@ -13,3 +13,6 @@ testing = ["calimero-sdk/testing"]
 
 [dependencies]
 calimero-sdk.workspace = true
+
+[lints]
+workspace = true
