@@ -66,7 +66,8 @@ class ClusterAppTest {
 
     /**
      * What the node's consent page does on *Approve* (`POST /consent/{id}/approve`, in the clear):
-     * the route's `412` over the frozen request, then the passkey's assertion as `confirm`.
+     * the route's `412` over the frozen request, then the passkey's assertion as `confirm`. Like the
+     * page's script in a browser, it says it is same-origin; with no `Origin` the node refuses `403`.
      */
     private suspend fun approveOnPage(
         started: ConsentStarted,
@@ -79,6 +80,8 @@ class ClusterAppTest {
                 Request
                     .Builder()
                     .url(url)
+                    // The page's own fetch: the node takes a decision only from a same-origin request.
+                    .header("Sec-Fetch-Site", "same-origin")
                     .post(body.toString().toRequestBody("application/json".toMediaType()))
                     .build()
             return http.newCall(request).execute().use { r -> r.code to Json.parseToJsonElement(r.body!!.string()).jsonObject }
