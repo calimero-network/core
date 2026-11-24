@@ -1,0 +1,104 @@
+name: Upgrade path (granted)
+
+# The upgrade path from a cluster whose owners hold release approvals and grant
+# deployers, with deployments switched to granted (`GOVERNANCE=granted
+# scripts/upgrade-path.sh`; docs: contribute/testing, "The granted run"). The
+# required `Upgrade path` job in ci-checks.yml runs the open cluster on every PR;
+# this one runs nightly on master, opening (or updating) an issue on failure, and
+# on dispatch.
+
+on:
+  schedule:
+    - cron: "47 2 * * *" # nightly, off the hour
+  workflow_dispatch:
+    inputs:
+      nightly:
+        description: Report the result in the nightly tracking issue, as a scheduled run does
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upgrade-path-granted-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upgrade-path-granted:
+    name: Upgrade path (granted, from the pinned release)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The release group ci-checks' `Upgrade path` job saves on master: restore only.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-wasip2
+          shared-key: release
+          save-if: "false"
+
+      - name: Upgrade path (granted)
+        env:
+          GOVERNANCE: granted
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: scripts/upgrade-path.sh
+
+      - name: Upload the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-path-granted
+          # A failed run keeps its work directory: each node's nodeN.log and data.
+          path: |
+            target/upgrade-path.json
+            target/upgrade-path
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # A red scheduled run is otherwise read by nobody: keep one open issue for it.
+  report:
+    name: Report the nightly
+    needs: [upgrade-path-granted]
+    if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.nightly))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # One issue per branch (a dispatched nightly on another branch gets its own).
+          title="Nightly granted upgrade path is failing"
+          if [ "$REF_NAME" != master ]; then
+            title="$title on $REF_NAME"
+          fi
+          failed=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "- `\(.key)`: \(.value.result)"' <<<"$NEEDS")
+          issue=$(gh issue list --state open --search "in:title \"$title\"" --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$failed" ]; then
+            body=$(printf 'The nightly granted upgrade path on %s failed: %s\n\n%s\n' "$SHA" "$RUN_URL" "$failed")
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "$body"
+            else
+              gh issue create --title "$title" --body "$body"
+            fi
+          elif [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "Green again on $SHA: $RUN_URL"
+            gh issue close "$issue"
+          fi

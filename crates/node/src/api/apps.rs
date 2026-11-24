@@ -884,27 +884,21 @@ async fn app_list(
     let apps: Vec<Value> = node.sys(|s| {
         s.apps
             .values()
-            .filter(|a| {
-                bound.as_ref().is_none_or(|pkg| {
-                    s.bundles
-                        .get(&a.bundle)
-                        .and_then(|b| b.package.as_ref())
-                        .is_some_and(|r| r.package == *pkg)
-                })
+            .map(|a| (a, s.running_release(a)))
+            .filter(|(_, r)| {
+                bound
+                    .as_ref()
+                    .is_none_or(|pkg| r.as_ref().is_some_and(|r| r.package == *pkg))
             })
-            .filter(|a| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
-            .filter(|a| s.may_reach(a, account.as_deref()))
-            .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
-            .filter(|a| {
-                q.package.as_ref().is_none_or(|p| {
-                    s.bundles
-                        .get(&a.bundle)
-                        .and_then(|b| b.package.as_ref())
-                        .is_some_and(|r| r.package == *p)
-                })
+            .filter(|(a, _)| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
+            .filter(|(a, _)| s.may_reach(a, account.as_deref()))
+            .filter(|(a, _)| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
+            .filter(|(_, r)| {
+                q.package
+                    .as_ref()
+                    .is_none_or(|p| r.as_ref().is_some_and(|r| r.package == *p))
             })
-            .map(|a| {
-                let release = s.bundles.get(&a.bundle).and_then(|b| b.package.clone());
+            .map(|(a, release)| {
                 json!({
                     "appId": a.app_id,
                     "name": a.name,

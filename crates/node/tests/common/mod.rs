@@ -14,9 +14,6 @@ use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::attest::Mode;
 use calimero_node::{run, run_job, Config, JobConfig, Running, RunningJob};
 
-#[path = "../harness/eventually.rs"]
-pub mod poll;
-
 /// The app `apps/<name>` (e.g. "fixture-kv" or "team-space") as a component, built on first use and cached
 /// by source hash under `target/app-components` (the fixture, the SDK crates, the toolchain and
 /// app-build's post-processing are hashed; see `calimero_app_build::cache_key`).
@@ -156,8 +153,10 @@ impl Cluster {
             let mut nodes = Vec::new();
             let mut dirs = Vec::new();
             let mut configs = Vec::new();
+            // `c` keeps these apart from `harness::cluster_name`'s, whose counter is its own
+            // and which shares the process with this one in `tests/it`.
             let name = format!(
-                "test-{}-{}",
+                "test-{}-c{}",
                 std::process::id(),
                 NEXT_CLUSTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             );

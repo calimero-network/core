@@ -55,9 +55,10 @@
     "clean": "pnpm rimraf dist",
     "prepublishOnly": "pnpm clean && pnpm build && pnpm test:unit && pnpm lint && pnpm typecheck && pnpm typecheck:consumer && pnpm typecheck:tests",
     "test:cluster": "vitest run --config vitest.cluster.config.ts",
-    "generate": "pnpm gen:api && pnpm refresh:receipt-vectors",
+    "generate": "pnpm gen:api && pnpm gen:kv && pnpm refresh:receipt-vectors",
     "gen:api": "openapi-typescript ../../../docs/public/openapi.json -o src/generated/api.ts && node scripts/gen-methods.mjs",
-    "check:api": "pnpm generate && git diff --exit-code -- src/generated src/client/fixtures/receipt-vectors.json && test -z \"$(git status --porcelain --untracked-files=all -- src/generated)\"",
+    "gen:kv": "../../../scripts/app-codegen.sh --abi ../../abi/kv.abi.json --lang ts --no-openapi -o src/products/kv",
+    "check:api": "pnpm generate && git diff --exit-code -- src/generated src/products/kv src/client/fixtures/receipt-vectors.json && test -z \"$(git status --porcelain --untracked-files=all -- src/generated src/products/kv)\"",
     "refresh:receipt-vectors": "scripts/refresh-receipt-vectors.sh"
   },
   "files": [

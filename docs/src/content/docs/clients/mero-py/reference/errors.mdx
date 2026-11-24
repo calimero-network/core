@@ -12,6 +12,10 @@ sidebar:
   - `code` is the node's error code, for example `CONFIRM_REQUIRED`;
   - `details` is a JSON string (`"null"` when there are none).
 
+  A `422 APP_ERROR`'s `details` carry the app's `code` and `fields`; for a KV
+  `NotGranted` or a `uses` link's `NotLinked` the message is a sentence
+  ("You can't view bucket default.").
+
   Every way of calling the node raises it the same way: the generated methods
   (`client.apps.call(...)`), `client.json.*`, the calls on any path and the
   hand-written flows. The [method reference](/clients/mero-py/reference/methods/) lists the
