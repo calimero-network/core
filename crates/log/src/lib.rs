@@ -38,7 +38,10 @@ pub use format::{OtherStore, STORE_FORMAT};
 pub use machine::{
     read_snapshot_file, read_snapshot_rows, Applied, Machine, PortableRow, Shared, SNAPSHOT_FORMAT,
 };
-pub use network::{BoxFuture, RpcRequest, RpcResponse, Transport};
+use network::Batcher;
+pub use network::{
+    BoxFuture, RpcRequest, RpcResponse, Transport, HEARTBEAT_BATCH_WINDOW, MAX_HEARTBEATS_PER_BATCH,
+};
 use store::{Db, LogStore};
 pub use store::{GroupState, StateTx};
 pub use types::{Bytes, GroupId, NodeId, Raft};
@@ -162,7 +165,7 @@ pub const RESTART_MAX: Duration = Duration::from_secs(300);
 /// What a group needs to start its Raft core again ([`Group::restart`]).
 struct Reopen {
     db: Arc<Db>,
-    transport: Arc<dyn Transport>,
+    batcher: Arc<Batcher>,
     config: Arc<openraft::Config>,
     applied_tx: Arc<watch::Sender<u64>>,
     /// Set once the engine stops or removes the group: no restart after that.
@@ -176,6 +179,11 @@ trait RpcTarget: Send + Sync {
     /// Delete the group's data from this node (after [`Self::shutdown`]): a
     /// snapshot build openraft still runs records nothing for it after.
     fn drop_data(&self) -> eyre::Result<()>;
+    /// The engine's heartbeat tick ([`heartbeat_ticker`]): send the group's
+    /// heartbeats if it leads here. openraft's own heartbeat timer is off
+    /// (`enable_heartbeat: false`), so every group's go out together and
+    /// those to one peer join one batch.
+    fn tick(&self) -> BoxFuture<()>;
 }
 
 /// One Raft group on this node.
@@ -268,7 +276,7 @@ impl<M: Machine> Group<M> {
         let log = LogStore::new(self.id, Arc::clone(&self.reopen.db));
         let network = network::Network {
             group: self.id,
-            transport: Arc::clone(&self.reopen.transport),
+            batcher: Arc::clone(&self.reopen.batcher),
         };
         let raft = Raft::new(self.node, Arc::clone(&self.reopen.config), network, log, sm).await?;
         // Checked and swapped under the lock `shutdown` closes the group
@@ -830,6 +838,14 @@ impl<M: Machine> RpcTarget for Group<M> {
         })
     }
 
+    fn tick(&self) -> BoxFuture<()> {
+        let raft = self.raft();
+        Box::pin(async move {
+            // A follower ignores it; a stopped core answers an error.
+            let _ = raft.trigger().heartbeat().await;
+        })
+    }
+
     fn drop_data(&self) -> eyre::Result<()> {
         // openraft does not wait for a snapshot build when its core shuts
         // down. Under both locks no build is between its check and its write
@@ -927,9 +943,11 @@ impl StoreWatch {
 pub struct Engine {
     node: NodeId,
     db: Arc<Db>,
-    transport: Arc<dyn Transport>,
+    batcher: Arc<Batcher>,
     config: Config,
-    groups: RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>,
+    groups: Arc<RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>>,
+    /// Whether the heartbeat ticker ([`heartbeat_ticker`]) runs.
+    ticking: AtomicBool,
     factory: RwLock<Option<GroupFactory>>,
     removals: Removals,
 }
@@ -1009,9 +1027,10 @@ impl Engine {
         Ok(Arc::new(Self {
             node,
             db,
-            transport,
+            batcher: Arc::new(Batcher::new(transport)),
             config,
-            groups: RwLock::new(HashMap::new()),
+            groups: Arc::new(RwLock::new(HashMap::new())),
+            ticking: AtomicBool::new(false),
             factory: RwLock::new(None),
             removals: Removals::default(),
         }))
@@ -1139,6 +1158,9 @@ impl Engine {
             // the node's body limit and give it time to arrive.
             snapshot_max_chunk_size: SNAPSHOT_CHUNK_BYTES,
             install_snapshot_timeout: 10_000,
+            // The engine's ticker sends every group's heartbeats at once, so
+            // those to one peer travel in one batch ([`heartbeat_ticker`]).
+            enable_heartbeat: false,
             ..Default::default()
         }
         .validate()?;
@@ -1159,16 +1181,22 @@ impl Engine {
         let log = LogStore::new(id, Arc::clone(&self.db));
         let network = network::Network {
             group: id,
-            transport: Arc::clone(&self.transport),
+            batcher: Arc::clone(&self.batcher),
         };
         let raft = Raft::new(self.node, Arc::clone(&config), network, log, sm).await?;
+        if !self.ticking.swap(true, Ordering::AcqRel) {
+            drop(tokio::spawn(heartbeat_ticker(
+                Arc::downgrade(&self.groups),
+                Duration::from_millis(self.config.heartbeat_ms),
+            )));
+        }
         let group = Arc::new(Group {
             id,
             node: self.node,
             raft: RwLock::new(raft),
             reopen: Reopen {
                 db: Arc::clone(&self.db),
-                transport: Arc::clone(&self.transport),
+                batcher: Arc::clone(&self.batcher),
                 config,
                 applied_tx,
                 closed: AtomicBool::new(false),
@@ -1266,6 +1294,44 @@ impl Engine {
         }
     }
 
+    /// Dispatch a batch of RPCs that arrived from a peer, each to its group
+    /// at once; the answers in order.
+    pub async fn handle_rpc_batch(&self, items: Vec<(GroupId, RpcRequest)>) -> Vec<RpcResponse> {
+        let mut answers = Vec::with_capacity(items.len());
+        let mut unhosted = Vec::new();
+        {
+            let groups = self
+                .groups
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (i, (group, request)) in items.into_iter().enumerate() {
+                match groups.get(&group) {
+                    Some(t) => answers.push(Some(tokio::spawn(t.handle(request)))),
+                    None => {
+                        answers.push(None);
+                        unhosted.push((i, group, request));
+                    }
+                }
+            }
+        }
+        let mut late = HashMap::new();
+        for (i, group, request) in unhosted {
+            let _prev = late.insert(i, self.handle_rpc(group, request).await);
+        }
+        let mut out = Vec::with_capacity(answers.len());
+        for (i, task) in answers.into_iter().enumerate() {
+            out.push(match task {
+                Some(t) => t
+                    .await
+                    .unwrap_or_else(|e| RpcResponse::Error(e.to_string())),
+                None => late
+                    .remove(&i)
+                    .unwrap_or_else(|| RpcResponse::Error("no answer".to_owned())),
+            });
+        }
+        out
+    }
+
     /// Dispatch an RPC that arrived from a peer.
     pub async fn handle_rpc(&self, group: GroupId, request: RpcRequest) -> RpcResponse {
         let target = self
@@ -1299,5 +1365,32 @@ impl Engine {
             }
         };
         target.handle(request).await
+    }
+}
+
+/// Every `every` (`Config::heartbeat_ms`), send every hosted group's
+/// heartbeats at once, so those to one peer join one batch
+/// ([`network::Batcher`]). Ends with the engine.
+async fn heartbeat_ticker(
+    groups: Weak<RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>>,
+    every: Duration,
+) {
+    let mut tick = tokio::time::interval(every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let _at = tick.tick().await;
+        let Some(groups) = groups.upgrade() else {
+            return;
+        };
+        let targets: Vec<_> = groups
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        drop(groups);
+        for t in targets {
+            t.tick().await;
+        }
     }
 }
