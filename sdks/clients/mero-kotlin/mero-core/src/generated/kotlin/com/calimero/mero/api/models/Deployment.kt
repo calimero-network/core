@@ -24,13 +24,15 @@
 package com.calimero.mero.api.models
 
 import com.calimero.mero.api.models.DeploymentAppsInner
+import com.calimero.mero.api.models.DeploymentTransfer
+import com.calimero.mero.api.models.DeploymentTransferred
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339.
+ * A deployment as its managers list it. `host` is its frontend host, `null` on a node with no apps domain; times are RFC 3339. `transfer`: the offer of it to another owner waiting for acceptance (`expiresAt`: 7 days after `offeredAt`), else `null`; `transferred`: whom it came from at its last hand-over, else `null`.
  *
  * @param id 
  * @param host 
@@ -39,6 +41,8 @@ import kotlinx.serialization.Contextual
  * @param apps 
  * @param createdBy 
  * @param createdAt 
+ * @param transfer 
+ * @param transferred 
  */
 @Serializable
 
@@ -63,7 +67,13 @@ data class Deployment (
     val createdBy: kotlin.String,
 
     @SerialName(value = "createdAt")
-    val createdAt: kotlin.String
+    val createdAt: kotlin.String,
+
+    @SerialName(value = "transfer")
+    val transfer: DeploymentTransfer? = null,
+
+    @SerialName(value = "transferred")
+    val transferred: DeploymentTransferred? = null
 
 ) {
 

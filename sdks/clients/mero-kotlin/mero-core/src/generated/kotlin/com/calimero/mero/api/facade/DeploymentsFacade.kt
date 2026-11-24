@@ -124,7 +124,7 @@ class DeploymentsFacade internal constructor(
     /**
      * Deployments
      *
-     * The deployments the caller manages.
+     * The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting for its acceptance (`POST /deployments/{id}/transfer/accept`).
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -227,6 +227,65 @@ class DeploymentsFacade internal constructor(
         id: kotlin.String,
     ): DeploymentSecrets200Response =
         api(null, null, emptySet()).signUpAndDeployments.deploymentSecrets(id = id)
+
+    /**
+     * Accept a deployment offered to an owner
+     *
+     * A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to, offeredAt }` (the offer it accepts): `to` becomes the owner, and the deployment's offers and customers' instances stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new owner sets its own. Until a person approves an update of a customer's instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_STALE` once whoever offered it may no longer hand it over, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /deployments/{id}/transfer/accept` (`deployment_transfer_accept`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun transferAccept(
+        id: kotlin.String,
+        to: com.calimero.mero.Deployer,
+        passkey: PasskeyProvider? = null,
+    ): DeploymentTransferAccept200Response =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentTransferAccept(id = id, deploymentTransferAcceptRequest = DeploymentTransferAcceptRequest(to = to))
+
+    /**
+     * Cancel the offer of a deployment
+     *
+     * A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over `deployment:{id} / __cancel_deployment_transfer / {}`. `404 NO_TRANSFER` when none waits.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `DELETE /deployments/{id}/transfer` (`deployment_transfer_cancel`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun transferCancel(
+        id: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): DeploymentTransferCancel200Response =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentTransferCancel(id = id)
+
+    /**
+     * Offer a deployment to another owner
+     *
+     * The deployment's owner account, or an owner or admin of its organization (managing it, `MANAGE_APPLICATION`, is not enough: `403`), offers it to `to`, another account or organization, with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.36.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /deployments/{id}/transfer` (`deployment_transfer_offer`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun transferOffer(
+        id: kotlin.String,
+        to: com.calimero.mero.Deployer,
+        passkey: PasskeyProvider? = null,
+    ): DeploymentTransferOffer200Response =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentTransferOffer(id = id, deploymentTransferOfferRequest = DeploymentTransferOfferRequest(to = to))
 
     /**
      * Withdraw an offer

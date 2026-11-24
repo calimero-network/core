@@ -24,6 +24,7 @@
 package com.calimero.mero.api.models
 
 import com.calimero.mero.api.models.Deployment
+import com.calimero.mero.api.models.DeploymentList200ResponseOfferedInner
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -33,13 +34,17 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param deployments 
+ * @param offered 
  */
 @Serializable
 
 data class DeploymentList200Response (
 
     @SerialName(value = "deployments")
-    val deployments: kotlin.collections.List<Deployment>
+    val deployments: kotlin.collections.List<Deployment>,
+
+    @SerialName(value = "offered")
+    val offered: kotlin.collections.List<DeploymentList200ResponseOfferedInner>
 
 ) {
 

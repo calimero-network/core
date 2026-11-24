@@ -24,17 +24,19 @@
 package com.calimero.mero.api.models
 
 import com.calimero.mero.api.models.DeploymentShownOwner
+import com.calimero.mero.api.models.DeploymentShownTransferred
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * The deployment an instance comes from, as its customers are shown it: names are not unique, so always with its id and its owner's kind and name (`null` once the owner is gone).
+ * The deployment an instance comes from, as its customers are shown it: names are not unique, so always with its id and its owner's kind and name (`null` once the owner is gone); once it changed hands, whom it came from and when (`transferred`, RFC 3339).
  *
  * @param id 
  * @param name 
  * @param owner 
+ * @param transferred 
  */
 @Serializable
 
@@ -47,7 +49,10 @@ data class DeploymentShown (
     val name: kotlin.String,
 
     @SerialName(value = "owner")
-    val owner: DeploymentShownOwner
+    val owner: DeploymentShownOwner,
+
+    @SerialName(value = "transferred")
+    val transferred: DeploymentShownTransferred? = null
 
 ) {
 
