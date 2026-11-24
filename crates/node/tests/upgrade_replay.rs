@@ -116,6 +116,7 @@ fn config(dir: &Path, port: u16, release: &str) -> Config {
         registry: None,
         allow_unsigned_bundles: true,
         allow_package_uploads: true,
+        app_logs: false,
         outbound: None,
         governance: Default::default(),
         apps_domain: None,

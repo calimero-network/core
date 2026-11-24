@@ -73,6 +73,7 @@ fn config(dir: &Path, node_id: u64, counter: Option<Arc<MemoryCounter>>) -> Conf
         registry: None,
         allow_unsigned_bundles: true,
         allow_package_uploads: true,
+        app_logs: false,
         outbound: None,
         governance: Default::default(),
         apps_domain: None,

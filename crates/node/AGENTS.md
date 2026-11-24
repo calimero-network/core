@@ -291,7 +291,17 @@ is its command line.
   node checks the publisher signature and every artifact digest
   (`calimero_bundle::VerifiedBundle`), `minRuntimeVersion` (build.rs's
   `CALIMERO_RELEASE_VERSION`), the package's pinned signer (first release wins,
-  `apply` re-checks) and that each service's WASM compiles. The log keeps the
+  `apply` re-checks) and that each service's WASM compiles. Each compile (every service's
+  component and compute component, and a raw `POST /bundles`) goes through the node's one
+  `compile::Compiler` (`Node::compile`): on the blocking pool, `MAX_CONCURRENT_COMPILES` (1)
+  at a time, `MAX_QUEUED_COMPILES` (4) more waiting at most `COMPILE_WAIT` (10 s), past that
+  `503 BUSY`; one that runs past `COMPILE_TIMEOUT` (60 s) is `422 COMPILE_TIMEOUT` (with the
+  service in `details`) and keeps the slot until its thread returns. A component over
+  `MAX_COMPONENT_BYTES` (a blob, 47 MiB, unpacked) is `413 TOO_LARGE` before it compiles: it
+  could not reach another node as a blob. A component app's first-use prepare at run time
+  (`Node::prepare_bytes`) stays outside the compiler, off the workers through `spawn_blocking`.
+  Regression: `an_install_that_compiles_slowly_leaves_the_async_worker_free`
+  (`tests/slow_compile.rs`, `testing::slow_compiles`), `compile::tests`. The log keeps the
   `.mpk`'s hash; a node that runs a release it does not hold fetches it itself
   (`Node::release_wasm`: the registry for a registry release, never a peer; a peer
   for an upload), refuses bytes whose hash differs, and verifies them again.
@@ -765,26 +775,14 @@ is its command line.
   An output the result method does not store is forgotten `BLOB_IDLE_MS` later, and the org's file quota is released when the leader collects it.
   `AppMachine::blob_view_with_outputs` gives the leader's result run the records the final will leave, so `storage_put` accepts those references.
   A final marks each output `FileSeal.output`, the flag that makes it publishable (only a signed done report carries outputs).
-  **Run logs.**
-  A job node joins `Outcome::logs` (stdout, stderr, `log`) with `\n` after an attempt where the module ran (not a lost attempt or an integrity refusal).
-  A non-empty log is cut to `MAX_RUN_LOG_BYTES` (1 MiB, ending with `[log truncated]`) and sealed like an output under its own key (`exec::sealed_log`).
-  The host keeps at most 64 KiB of log lines per run, so the cap is a backstop.
-  `Report::log` (`Option<OutputRef>`) names it, and a failed report may carry one.
-  With no log `report_message` signs the bytes it always did; a log appends `calimero.compute.report.log.v1\0` and the ref as an output's.
-  `GET /job/runs/{app}/{run}/{attempt}/log/{k}` and `.../log/key` serve it like an output (`404 NO_LOG` when none).
-  A leader sends `x-run-log` (`LOG_HEADER`) on a request only while every replica runs this release (`Node::replicas_take_logs`, looked at once per 5 s).
-  A held report with a log is dropped and asked for again without the header once the gate has closed.
-  The job node signs the report both ways and answers with the log only to a request with the header, so an older leader or replica never meets the field.
-  The leader fetches the log like an output (`Held::Log`, `finish::stage_log`, charged to the payer) and the final carries it as `FinalEntry::log`.
-  A log that is over the cap, already a file of the app, or cannot be charged, fetched or proved is left out with a warn log, and its pushed segments are deleted.
-  `check_final` takes a log only when it is the report's; `apply_compute_final` keeps it only if it is a new file within the cap (`kept_log`), else drops it and still ends the run.
-  A kept log is a sealed file marked `FileSeal.log` (not `output`), so `runs.publish` refuses it and it is neither a pipeline output nor a run input.
-  `RunRecord::log` names it, held with one reference until `finish_run` drops the record from the last `FINISHED_RUNS_KEPT`.
-  It counts toward the app's file quota like any file, and goes `BLOB_IDLE_MS` after its record.
-  The app's code does not see it (`NodeFiles::sealed`), and the file list leaves it out.
-  A rollback to a release before logs shows a kept log as an ordinary sealed file.
-  `GET /apps/{app}/runs/{run}/logs` answers `{ logs: [{ attempt, id, size, sha256 }] }`, at most one, behind `files_gate` (a stranger gets `403`).
-  The bytes are read with the files export.
+  **Run logs: none are kept.**
+  An app's log lines (stdout, stderr, `log`) may hold user data, which neither Calimero nor the operator may see, so no node keeps a compute run's log, and a production node does not even collect a call's, view's, timer's or action's: its host drops every line (`HostCore::with_logs`, off unless `Config::app_logs`). A development node (`Config::app_logs`, `--dev`, `merod local`) prints each line to its own log (`node::component::print_app_logs`, target `app_log`, with app, kind and method) and stores none; `meroctl local compute run` prints a compute method's on stderr.
+  A job node seals none (its `Report::log` is always none, and `GET /job/runs/{app}/{run}/{attempt}/log/{k}` and `.../log/key`, deprecated since 1.0.0-rc.36, answer `404 NO_LOG` for any run, `runs::no_log`), and a leader never asks for one: it sends no `x-run-log` header, without which a job node of an earlier release (1.0.0-rc.35 and before) answers its report as it was before logs, signed without one.
+  A report that names a log does not hold up (`report_is_valid`), so its attempt is lost and runs on the next job node.
+  `Report::log` stays in the wire format and in `report_message` (a log appends `calimero.compute.report.log.v1\0` and the ref as an output's), and apply is unchanged, so a final an earlier leader logged with `FinalEntry::log` replays identically: `check_final` takes a log only when it is the report's, and `apply_compute_final` keeps it only if it is a new file within `MAX_RUN_LOG_BYTES` (`kept_log`), as a sealed file marked `FileSeal.log` (not `output`) that `runs.publish` refuses, that is neither a pipeline output nor a run input, and that the app's code does not see (`NodeFiles::sealed`).
+  `RunRecord::log` names it, held with one reference until `finish_run` drops the record from the last `FINISHED_RUNS_KEPT`; it counts toward the app's file quota and goes `BLOB_IDLE_MS` after its record.
+  Nothing answers it: the files export refuses a `FileSeal.log` file as unknown (`404`), the run view answers `logs: []`, and `GET /apps/{app}/runs/{run}/logs` (deprecated since 1.0.0-rc.36, `api-deprecations.toml`) answers `{ logs: [] }` behind `files_gate` (a stranger gets `403`).
+  Regressions: `a_compute_run_keeps_no_log` (`compute_runs.rs`), `a_report_naming_a_log_does_not_hold_up`, `a_job_node_keeps_no_log_even_when_a_leader_asks_for_one` (`job_runs.rs`), and the apply tests in `component/tests/runs.rs` (`a_final_stores_its_log_as_a_sealed_file_that_is_not_an_output_or_an_input` and after).
   The result method takes one argument shaped like the SDK's `ComputeOutcome`: camelCase `run, method, attempt, status, reason, result, outputs: [{ id, size, sha256 }], usage`, where an output `id` is the 64-hex blob id (a `BlobRef`) and 64-bit integers are decimal strings.
   The compute fixture's `onDone` takes that shape (`compute_fixture.rs` in `calimero-app-engine-wasmtime`).
   The cluster tests' fixture (`apps/fixture-compute`) takes it as the SDK's `ComputeOutcome` and stores each output's `BlobRef` when the run is done.
@@ -896,7 +894,7 @@ is its command line.
   Only those who may handle the app's files (`api::may_handle_files`: its owner, its organization's members) start, cancel or retry a run, even where an `anyone` grant admits others (`403 FORBIDDEN`); anyone who reaches the app reads it without results or file hashes. Regression: `only_those_who_handle_the_apps_files_start_cancel_or_retry_a_pipeline`.
   The routes judge the request against the pinned pipeline first (`NO_SUCH_PIPELINE`, `BAD_INPUTS`, `BAD_PARAMS`, `TOO_MANY_PIPELINE_RUNS`, `PIPELINES_NEED_ONE_SERVICE`, `CLUSTER_NOT_UPGRADED`); start and cancel travel as the host commands `__pipeline_start` and `__pipeline_cancel` to the leader, reads as the reserved view `__pipeline_run` (`PIPELINE_VIEW`).
   A run with no result method ends with an empty result outcome and prepares nothing on the replica engine.
-  **Receipts**: a linked run's final writes a `StepRunProof` (`component/proofs.rs`, hidden row `rows::CPROOF` by step run id: attempt, node, job key, assignment digest, SHA-256 of the signed report message, the job's signature, outputs, usage; no report fields for a leader-ended run) and the proofs go with the pipeline run's record when it is dropped (`drop_step_proofs`), so they outlive the `RunRecord`s (`FINISHED_RUNS_KEPT`). A cached run has no proof: its item row keeps its cache key (`StepState::cached_keys` once read). `PipelineRun::input_files` records each input's size and hash at start. `GET /apps/{app}/pipeline-runs/{run}/receipt` (`api/pipeline_receipt.rs`; `may_handle_files`, else `403`; `409 RUN_NOT_ENDED`) reads both through `__pipeline_run` with `receipt: true` and answers `{ receipt, node, signature }`: `calimero_client::receipt::PipelineReceipt` (`modules` is the module name to compute hash with `self` for the package's own, `pipelineHash` maps steps to modules), signed by `Node::sign_pipeline_receipt` over `receipt_message` (`"calimero.pipeline.receipt.v1\0" || JCS(receipt)`). `?version=2` (`ReceiptQuery`; `400 BAD_VERSION` for another) adds each proof's `job` evidence (`JobEvidence`, from the final's report, kept in its own row `rows::CREPORT` by run id so the proof row keeps the shape a release before reads) and `jobAttestations`: `computeAttempt` carries the job node's attestation the leader admitted it on (`AttemptEntry::job_attestation`, kept on `Attempt`; proposed only for a pipeline's run, only while every replica runs this release, `Node::replicas_take_logs`, as a run's log is (job nodes apply no log, so one that is down does not hold it back), and only while the pipeline run keeps none for that job key yet, so a fan-out logs it about once per job node), and a linked run's final writes it once per pipeline run and job key (`rows::CJOB`, `<pipeline run>/<job key>`); both go with the proofs. The view adds evidence only when asked (`evidence: true`), so an API node on the release before still reads the leader's answer. The client checks it all (`calimero_client::receipt::verify_job_reports`, `Client::verify_receipt`). Module logs are not in the receipt. Tests: `component/tests/pipelines.rs`, `pipeline_runs.rs` (`a_finished_run_has_a_receipt_signed_by_an_attested_node`, `a_running_run_has_no_receipt_yet`, `a_fan_out_with_cached_items_marks_them_cached_in_its_receipt`, `a_stranger_cannot_read_a_receipt`).
+  **Receipts**: a linked run's final writes a `StepRunProof` (`component/proofs.rs`, hidden row `rows::CPROOF` by step run id: attempt, node, job key, assignment digest, SHA-256 of the signed report message, the job's signature, outputs, usage; no report fields for a leader-ended run) and the proofs go with the pipeline run's record when it is dropped (`drop_step_proofs`), so they outlive the `RunRecord`s (`FINISHED_RUNS_KEPT`). A cached run has no proof: its item row keeps its cache key (`StepState::cached_keys` once read). `PipelineRun::input_files` records each input's size and hash at start. `GET /apps/{app}/pipeline-runs/{run}/receipt` (`api/pipeline_receipt.rs`; `may_handle_files`, else `403`; `409 RUN_NOT_ENDED`) reads both through `__pipeline_run` with `receipt: true` and answers `{ receipt, node, signature }`: `calimero_client::receipt::PipelineReceipt` (`modules` is the module name to compute hash with `self` for the package's own, `pipelineHash` maps steps to modules), signed by `Node::sign_pipeline_receipt` over `receipt_message` (`"calimero.pipeline.receipt.v1\0" || JCS(receipt)`). `?version=2` (`ReceiptQuery`; `400 BAD_VERSION` for another) adds each proof's `job` evidence (`JobEvidence`, from the final's report, kept in its own row `rows::CREPORT` by run id so the proof row keeps the shape a release before reads) and `jobAttestations`: `computeAttempt` carries the job node's attestation the leader admitted it on (`AttemptEntry::job_attestation`, kept on `Attempt`; proposed only for a pipeline's run, only while every replica runs this release, `Node::replicas_take_logs` (job nodes apply no log, so one that is down does not hold it back), and only while the pipeline run keeps none for that job key yet, so a fan-out logs it about once per job node), and a linked run's final writes it once per pipeline run and job key (`rows::CJOB`, `<pipeline run>/<job key>`); both go with the proofs. The view adds evidence only when asked (`evidence: true`), so an API node on the release before still reads the leader's answer. The client checks it all (`calimero_client::receipt::verify_job_reports`, `Client::verify_receipt`). Module logs are not in the receipt. Tests: `component/tests/pipelines.rs`, `pipeline_runs.rs` (`a_finished_run_has_a_receipt_signed_by_an_attested_node`, `a_running_run_has_no_receipt_yet`, `a_fan_out_with_cached_items_marks_them_cached_in_its_receipt`, `a_stranger_cannot_read_a_receipt`).
   **Cost cap** (`PipelineRun::cost: CostCap { maxCost, priceVersion, table, worstCase }`, set by the start route from `sys_fresh`'s price table, `NO_PRICE_TABLE` without one; the table is copied so apply reads no system state): `PipelineRun::committed_cost` is the sum over steps of `StepState::cost` (priced usage of finished runs, `priced_cost`, added in `settle_step_run` even after the step ended) and, for a running step, its active runs (`started - finished`) times `StepState::run_cost` (the worst case of one run, set when a wave starts).
   `plan` cuts each wave to what `Budget::afford` allows and, when the cap kept runs out that the wave would otherwise carry, adds `Failed{COST_CAP}` for the step in the same round; apply refuses a `Start`/`More` whose new runs' worst case would pass the cap (`COST_CAP`, nothing changes) and takes `Failed{COST_CAP}` on a running step as `StepState::capped`: no more runs, the active ones finish and are paid for, then the step fails with that reason.
   Cached runs cost zero; the view shows `cost`, `costSoFar` and each step's `cost` as decimal strings.
@@ -1321,9 +1319,13 @@ is its command line.
   changes, a member with egress joins or leaves, or a release newly calls another app as
   the person, else green, with `reasons`, the egress diff (`before`, `after`, `added`,
   `removed`), `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
-  unit's moves its direct members as `unit_plan` does. Nothing applies an update by its
-  class yet (C8). Regressions: `a_units_destinations_are_judged_over_its_members`
-  (`tests/consent_page.rs`), `calimero_bundle::update::tests`.
+  unit's moves its direct members as `unit_plan` does. The class decides how it applies:
+  under `secondApprover` a red one takes two approvers (C8), under `noDestinations` a
+  green one of a unit with no destination before or after applies on its own, moving the app alone (C9).
+  Regressions: `a_units_destinations_are_judged_over_its_members`
+  (`tests/consent_page.rs`), `calimero_bundle::update::tests`,
+  `an_update_whose_members_differ_applies_on_its_own_and_moves_the_instance_alone`
+  (`tests/auto_updates.rs`).
 - **Update classes and policies** (C8; `system/updates.rs`, `api/update_policies.rs`;
   docs: protocol upgrades "The class at apply", "Update policies"): every `UpgradeApp`
   the API writes carries `class` (`types::UpgradeClass`: `egress::update` of that app's
@@ -1355,8 +1357,8 @@ is its command line.
   __set_upgrade_policy / system::upgrade_policy_args`, kept on `Org::upgrade_policy` and
   `Org::app_upgrade_policies` (a move drops the app's, `move_app`); `types::UpgradePolicy
   { autoApply: never | noDestinations, holdHours, secondApprover }`, `holdHours` in `MIN_HOLD_HOURS..=MAX_HOLD_HOURS`
-  (`BAD_UPGRADE_POLICY`); `SystemState::upgrade_policy_of` (app, org, default). Only
-  `secondApprover` acts now: `ApproveUpgrade` (consent `<app> / __approve_upgrade /
+  (`BAD_UPGRADE_POLICY`); `SystemState::upgrade_policy_of` (app, org, default).
+  `secondApprover` acts through `ApproveUpgrade` (consent `<app> / __approve_upgrade /
   system::approve_upgrade_args`, `POST /apps/{app}/upgrade-approvals { version, unit? }`)
   logs a `types::PendingApproval` in `Org::pending_upgrades` (one per app; `targets` for a
   unit; `ONE_APPROVAL` without the policy or for a green class, `APPROVAL_PENDING` for
@@ -2373,7 +2375,17 @@ API and system group:
   with integrity, keyed by mero-kms and opened inside the TD), since tantivy writes its
   files as they are; otherwise in memory. One on disk is never trusted to be current: it
   is compared with the state on its first use, and one under another schema or format is
-  made anew; `drop_app` removes its files. Regressions:
+  made anew; `drop_app` removes its files. A tantivy writer holds three threads
+  (indexing, segment updater, merges) and an arena of up to
+  `calimero_search::index::WRITER_MEMORY` while it indexes, so only the apps refreshed
+  last keep theirs between refreshes, `MAX_OPEN_WRITERS` (16) across every app's tables
+  (`Writers`, least recently refreshed released first, the latest app kept whatever its
+  count; an app whose indexes a refresh or query holds is put back first in line, never
+  waited for); a released writer
+  finishes its merges on a thread of its own (`ContextIndex::release_writer`), and the
+  app's next refresh opens it again. A batch that fails releases its writer at once, so
+  its uncommitted changes never reach a later commit. Regressions:
+  `at_most_max_open_writers_stay_open_across_every_apps_indexes`,
   `preparing_a_views_search_indexes_nothing_until_it_queries`,
   `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`,
   `an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps`,

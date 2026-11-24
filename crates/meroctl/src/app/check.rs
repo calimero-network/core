@@ -507,10 +507,18 @@ fn summary(j: &Judged<'_>) -> String {
         format!("  Data can go to: {}\n", c.egress.after.join(", "))
     };
 
-    if c.class == Class::Green {
-        out += "  Users on automatic updates: apply it on their own (green: same signer, no new destination, same state version)\n";
-    } else {
-        out += "  Users on automatic updates: wait for a person's approval (red):\n";
+    // What a node does with it under an organization's `autoApply: noDestinations` policy
+    // (`SystemState::auto_update_gate`): only a green update whose unit sends nothing out,
+    // before or after, applies on its own, and it moves the app alone.
+    let sends_out = !c.egress.before.is_empty() || !c.egress.after.is_empty();
+    let members_move = before.members != after.members;
+    out += match c.class {
+        Class::Red => "  Users on automatic updates: wait for a person's approval (red):\n",
+        Class::Green if sends_out => "  Users on automatic updates: wait for an owner's or admin's approval (green, but the app or the apps it created can send data out; only an update whose unit sends nothing out applies on its own)\n",
+        Class::Green if members_move => "  Users on automatic updates: apply it on their own after the hold where the policy is noDestinations, moving the app alone (green, no data leaves Calimero; the apps it created stay on their releases until an owner or admin moves the unit)\n",
+        Class::Green => "  Users on automatic updates: apply it on their own after the hold where the policy is noDestinations (green: same signer, no new destination, same state version, no data leaves Calimero)\n",
+    };
+    if c.class == Class::Red {
         for r in &c.reasons {
             out += &format!("    - {}\n", say(r));
         }
@@ -636,7 +644,14 @@ mod tests {
             "{text}"
         );
         assert!(!text.to_lowercase().contains("sealed"), "{text}");
-        assert!(text.contains("apply it on their own (green"), "{text}");
+        // Green, but the unit sends data out: no policy applies it on its own.
+        assert!(!text.contains("apply it on their own"), "{text}");
+        assert!(
+            text.contains(
+                "  Users on automatic updates: wait for an owner's or admin's approval (green, but the app or the apps it created can send data out; only an update whose unit sends nothing out applies on its own)\n"
+            ),
+            "{text}"
+        );
         assert!(
             text.contains("New methods: pin, unpin · removed: none · state version unchanged (1)"),
             "{text}"
@@ -757,6 +772,41 @@ mod tests {
         );
         assert!(text.contains("Methods: unknown"), "{text}");
         assert!(text.contains("state version 1 → none"), "{text}");
+    }
+
+    #[test]
+    fn a_green_update_that_sends_nothing_out_may_apply_on_its_own_under_the_policy() {
+        let before = Unit::of(release("1.3.0", &[], &["get"]));
+        let after = Unit::of(release("1.4.0", &[], &["get", "pin"]));
+        let (text, _) = judge(&before, &after, None, &[]);
+        assert!(
+            text.contains(
+                "  Users on automatic updates: apply it on their own after the hold where the policy is noDestinations (green: same signer, no new destination, same state version, no data leaves Calimero)\n"
+            ),
+            "{text}"
+        );
+
+        // A destination before but none after: the policy still waits (before or after).
+        let before = Unit::of(release("1.3.0", &[ACME], &["get"]));
+        let (text, _) = judge(&before, &after, None, &[]);
+        assert!(
+            text.contains("wait for an owner's or admin's approval (green, but the app or the apps it created can send data out"),
+            "{text}"
+        );
+
+        // Members that move: it still applies on its own, and the members stay where they are.
+        let mut before = Unit::of(release("1.3.0", &[], &["get"]));
+        let mut after = Unit::of(release("1.4.0", &[], &["get"]));
+        let mut store = release("1.0.0", &[], &["put"]);
+        store.package = "com.acme.store".into();
+        let _prev = before.members.insert("store".into(), store.clone());
+        store.version = "1.1.0".into();
+        let _prev = after.members.insert("store".into(), store);
+        let (text, _) = judge(&before, &after, None, &[]);
+        assert!(
+            text.contains("  Users on automatic updates: apply it on their own after the hold where the policy is noDestinations, moving the app alone (green, no data leaves Calimero; the apps it created stay on their releases until an owner or admin moves the unit)\n"),
+            "{text}"
+        );
     }
 
     #[test]

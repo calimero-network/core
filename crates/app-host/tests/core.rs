@@ -228,6 +228,7 @@ fn failed_status_drops_diff_and_events() {
     let mut host = core_for(&state, &inv);
     host.storage_put(b"k", b"v").unwrap();
     host.emit(event()).unwrap().unwrap();
+    let mut host = host.with_logs(true);
     host.log("kept".to_owned());
     let out = host.finish(
         Status::AppError {
@@ -1842,4 +1843,25 @@ fn only_a_persons_delivered_call_names_the_app_it_came_through() {
         assert_eq!(refused.err(), Some(InvalidInvocation::ViaOutsideXcall));
         assert!(core_for(&state, &i).with_via(None).is_ok());
     }
+}
+
+/// An app's log lines may hold user data, so a host keeps none unless its embedder
+/// asks: a development node or a local run, never a production node.
+#[test]
+fn a_host_keeps_no_log_lines_unless_its_embedder_asks() {
+    let state = base(&[]);
+    let inv = inv(InvocationKind::Call);
+    let mut host = core_for(&state, &inv);
+    host.log("user typed: my secret diagnosis".to_owned());
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert!(
+        out.logs.is_empty(),
+        "a host nobody asked kept {:?}",
+        out.logs
+    );
+
+    let mut host = core_for(&state, &inv).with_logs(true);
+    host.log("kept".to_owned());
+    let out = host.finish(Status::Ok, Vec::new(), Usage::default());
+    assert_eq!(out.logs, ["kept"]);
 }
