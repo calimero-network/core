@@ -52,6 +52,7 @@ from upgrade_path import Case, Failed  # noqa: E402
 ROOT = HERE.parents[3]
 MATRIX_BEGIN = "{/* upgrade-matrix:begin: python3 -I crates/node/tests/fault/upgrade_deep.py --matrix */}"
 MATRIX_END = "{/* upgrade-matrix:end */}"
+VIEW_TRIES = 3  # a view that hits the node's run deadline under load is retried
 
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
@@ -434,7 +435,13 @@ class Person:
             body["consistency"] = "stale"
         if min_index:
             body["minIndex"] = int(min_index)
-        return self.http("POST", f"apps/{app}/views", body, key=key, node=node)
+        for attempt in range(VIEW_TRIES):
+            try:
+                return self.http("POST", f"apps/{app}/views", body, key=key, node=node)
+            except HttpError as e:
+                if not _timed_out(e) or attempt == VIEW_TRIES - 1:
+                    raise
+                time.sleep(1)
 
     def result(self, app, method, args=None, **kw):
         return self.view(app, method, args, **kw)["result"]
@@ -579,6 +586,10 @@ def _http(method, url, body, bearer, timeout):
         except ValueError:
             b = raw.decode(errors="replace")
         raise HttpError(e.code, b) from None
+
+
+def _timed_out(e):
+    return e.status == 503 and isinstance(e.body, dict) and e.body.get("error") == "TIMEOUT"
 
 
 def _transport(e):

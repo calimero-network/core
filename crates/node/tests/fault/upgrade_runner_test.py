@@ -19,6 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rollout  # noqa: E402
 import rv2  # noqa: E402
+import upgrade_deep  # noqa: E402
 import upgrade_path  # noqa: E402
 
 
@@ -313,6 +314,36 @@ class WaitForBuild(unittest.TestCase):
     def test_a_build_that_never_ends_fails_the_run(self):
         with self.assertRaisesRegex(upgrade_path.Failed, "did not end within"):
             upgrade_path.wait_for_build(self.status(), timeout=0.1)
+
+
+class ViewRetry(unittest.TestCase):
+    def person(self, outcomes):
+        p = upgrade_deep.Person.__new__(upgrade_deep.Person)
+        calls = iter(outcomes)
+
+        def http(*a, **kw):
+            o = next(calls)
+            if isinstance(o, Exception):
+                raise o
+            return o
+
+        p.http = http
+        return p
+
+    def test_timeout_is_retried(self):
+        timeout = rv2.HttpError(503, {"error": "TIMEOUT"})
+        with mock.patch.object(upgrade_deep.time, "sleep"):
+            self.assertEqual(self.person([timeout, {"result": 1}]).view("app", "m"), {"result": 1})
+
+    def test_other_refusal_is_not_retried(self):
+        refused = rv2.HttpError(503, {"error": "CLUSTER_NOT_UPGRADED"})
+        with self.assertRaises(rv2.HttpError):
+            self.person([refused, {"result": 1}]).view("app", "m")
+
+    def test_gives_up_after_the_tries(self):
+        timeout = rv2.HttpError(503, {"error": "TIMEOUT"})
+        with mock.patch.object(upgrade_deep.time, "sleep"), self.assertRaises(rv2.HttpError):
+            self.person([timeout] * upgrade_deep.VIEW_TRIES).view("app", "m")
 
 
 if __name__ == "__main__":
