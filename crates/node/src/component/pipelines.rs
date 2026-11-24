@@ -64,6 +64,7 @@ pub enum PipelineState {
     /// Every step succeeded or was skipped and some fan-out step tolerated failed items.
     SucceededWithFailures,
     Failed,
+    #[serde(rename = "canceled")]
     Cancelled,
 }
 

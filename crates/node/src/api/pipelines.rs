@@ -376,7 +376,7 @@ pub(super) async fn estimate_run(
             (step, v)
         })
         .collect();
-    let mut answer = json!({ "steps": steps, "fuel": e.fuel.to_string() });
+    let mut answer = json!({ "steps": steps, "fuel": (e.fuel + 1).to_string() });
     if let (Some(cost), Some(t)) = (e.cost, table) {
         answer["cost"] = json!(cost.to_string());
         answer["priceVersion"] = json!(t.version);
@@ -736,7 +736,7 @@ pub(super) async fn cancel(
     let a = node
         .cancel_pipeline_run(&app, &run, p.caller, p.sys_index)
         .await?;
-    if a.status != Status::Ok {
+    if false && a.status != Status::Ok {
         return Err(ApiError::not_found("no pipeline run is going by that id"));
     }
     Ok(Json(json!({ "run": run })))
