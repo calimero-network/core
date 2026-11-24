@@ -232,3 +232,16 @@ propose lock; an append takes no leadership round); 64 `Group::write`s in flight
 `client_write` as its own synced RocksDB write on the leader's core task, so
 these too commit no faster than one sync each); and one RocksDB write synced and unsynced on the same disk, the
 unit a commit's latency is made of.
+
+Bench: `cargo bench -p calimero-log --bench heartbeats` (`benches/heartbeats.rs`,
+B6): 1, 100 and 1,000 idle groups (`HEARTBEAT_GROUPS`) on 3 engines, all led by
+node 1, on `Config::default()`; it prints the messages node 1 sends one follower
+per second and per heartbeat interval, and the process CPU per Raft message.
+Each group's openraft core heartbeats each follower on its own (an empty append,
+in practice every 300 ms: openraft 0.9 checks `heartbeat_ms` only on its tick,
+every 1.5 x `heartbeat_ms`), so a peer gets about one message per shared group
+per 300 ms (663 per 200 ms at 1,000 groups); heartbeats are not batched per peer.
+Routing a message is a hash lookup here (`Engine::handle_rpc`) and in the node
+(`SystemMachine::app_of_group`, #5163), so the CPU per message stays flat (~31 µs
+at 100 and 1,000 groups in one process). Batching them per peer is designed, not
+built (B6).
