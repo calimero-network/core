@@ -2426,10 +2426,15 @@ API and system group:
   for every table whose declared fields are what it was built with, across an upgrade
   too; a table that is new or whose fields changed starts from a new index and one no
   longer declared is dropped; when the keys since are unknown (the first search after a
-  start, keys the ring lost, a mark another view moved meanwhile) each index is compared
+  start, keys the ring lost, a view on an older state than the indexes hold) each index is compared
   with the state (`TableIndex::reconcile`: every record's document digest,
   `calimero_search::index::doc_digest`, against the one the index holds) and only what
-  differs is indexed again. A view that never searches indexes nothing. Indexes are kept
+  differs is indexed again. A view that never searches indexes nothing. A view searches
+  the state it reads and no other (C4): once the indexes reach its state it keeps a
+  point-in-time snapshot of them (a tantivy `Searcher` and the document keys per table,
+  `AppIndexes::snapshot`) for all its searches, and the views queued on earlier states
+  (`AppEntry::waiting`, weak) are brought up first, in order (`AppEntry::due`), so the
+  shared indexes never jump past a live view's state. Indexes are kept
   under `<data dir>/search/<sha256(app)>/<sha256(table)>` (tantivy `MmapDirectory`) only
   when `Config::kms_keys.disk` is set (`--kms-disk-evidence`: mero-tee's LUKS2 data disk
   with integrity, keyed by mero-kms and opened inside the TD), since tantivy writes its
@@ -2447,7 +2452,9 @@ API and system group:
   its uncommitted changes never reach a later commit. Regressions:
   `at_most_max_open_writers_stay_open_across_every_apps_indexes`,
   `preparing_a_views_search_indexes_nothing_until_it_queries`,
-  `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`,
+  `a_view_whose_indexes_a_later_upgrade_moved_searches_its_own_state`,
+  `a_view_searches_the_state_it_reads_while_a_later_view_moves_the_indexes`,
+  `a_view_that_searches_after_a_later_view_did_searches_its_own_state`,
   `an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps`,
   `an_index_kept_on_disk_catches_up_after_a_restart_reindexing_only_what_changed`,
   `an_index_on_disk_under_other_fields_is_made_anew`. The run
