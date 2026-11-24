@@ -112,13 +112,15 @@ def sync_detailed(
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
     which signs upgrades of one app in place of a passkey; only an owner or admin of the app's
     organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they
-    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm methods of the key's
-    own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
-    `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
-    making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
-    error, applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain
-    key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own.
-    `412` first. The key is shown once.
+    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the
+    key's own `apps` that the same passkey approves, each naming the new key: every string argument
+    exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the
+    consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
+    JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
+    key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
+    applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a
+    client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412`
+    first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -156,13 +158,15 @@ def sync(
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
     which signs upgrades of one app in place of a passkey; only an owner or admin of the app's
     organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they
-    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm methods of the key's
-    own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
-    `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
-    making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
-    error, applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain
-    key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own.
-    `412` first. The key is shown once.
+    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the
+    key's own `apps` that the same passkey approves, each naming the new key: every string argument
+    exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the
+    consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
+    JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
+    key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
+    applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a
+    client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412`
+    first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -195,13 +199,15 @@ async def asyncio_detailed(
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
     which signs upgrades of one app in place of a passkey; only an owner or admin of the app's
     organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they
-    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm methods of the key's
-    own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
-    `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
-    making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
-    error, applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain
-    key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own.
-    `412` first. The key is shown once.
+    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the
+    key's own `apps` that the same passkey approves, each naming the new key: every string argument
+    exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the
+    consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
+    JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
+    key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
+    applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a
+    client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412`
+    first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -237,13 +243,15 @@ async def asyncio(
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
     which signs upgrades of one app in place of a passkey; only an owner or admin of the app's
     organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they
-    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm methods of the key's
-    own `apps` that the same passkey approves: every string argument exactly `key:$key` is written
-    `key:<keyId>`, the `412` details list them so (`then`), and the retry runs them in order before
-    making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method,
-    error, applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain
-    key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own.
-    `412` first. The key is shown once.
+    apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the
+    key's own `apps` that the same passkey approves, each naming the new key: every string argument
+    exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the
+    consent and the system log state each call's arguments only by hash (`argsHash`, SHA-256 of their
+    JCS), the `412` details list them so (`then`), and the retry runs them in order before making the
+    key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error,
+    applied }`) and no key is made. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a
+    client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412`
+    first. The key is shown once.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

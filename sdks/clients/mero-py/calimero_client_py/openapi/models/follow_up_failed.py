@@ -18,7 +18,9 @@ T = TypeVar("T", bound="FollowUpFailed")
 @_attrs_define
 class FollowUpFailed:
     """`details` of a `422 FOLLOW_UP_FAILED`: the API key's follow-up that failed (`index` in `then`, its app and method)
-    and the error it answered, and the follow-ups before it, which applied (`applied`, their indexes); no key was made.
+    and the error it answered, the follow-ups before it, which applied (`applied`, their indexes), and the failed one
+    again in `unknown` when its answer (a 5xx, after it was sent again under its own key) could not say whether it
+    applied; no key was made.
 
         Attributes:
             index (int):
@@ -26,6 +28,7 @@ class FollowUpFailed:
             method (str):
             error (FollowUpFailedError):
             applied (list[int]):
+            unknown (list[int]):
     """
 
     index: int
@@ -33,6 +36,7 @@ class FollowUpFailed:
     method: str
     error: "FollowUpFailedError"
     applied: list[int]
+    unknown: list[int]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +52,8 @@ class FollowUpFailed:
 
         applied = self.applied
 
+        unknown = self.unknown
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -57,6 +63,7 @@ class FollowUpFailed:
                 "method": method,
                 "error": error,
                 "applied": applied,
+                "unknown": unknown,
             }
         )
 
@@ -77,12 +84,15 @@ class FollowUpFailed:
 
         applied = cast(list[int], d.pop("applied"))
 
+        unknown = cast(list[int], d.pop("unknown"))
+
         follow_up_failed = cls(
             index=index,
             app=app,
             method=method,
             error=error,
             applied=applied,
+            unknown=unknown,
         )
 
         follow_up_failed.additional_properties = d

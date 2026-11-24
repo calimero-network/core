@@ -6,6 +6,12 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from typing import cast
+
+if TYPE_CHECKING:
+    from ..models.receipt import Receipt
+
+
 T = TypeVar("T", bound="ApikeyCreateResponse200ThenItem")
 
 
@@ -15,16 +21,23 @@ class ApikeyCreateResponse200ThenItem:
     Attributes:
         index (int):
         result (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+        receipt (Receipt): The answering node's signature (receipt key, hex) over `(app, index, SHA-256(JCS(result)),
+            node)`.
     """
 
     index: int
     result: Any
+    receipt: "Receipt"
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.receipt import Receipt
+
         index = self.index
 
         result = self.result
+
+        receipt = self.receipt.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -32,6 +45,7 @@ class ApikeyCreateResponse200ThenItem:
             {
                 "index": index,
                 "result": result,
+                "receipt": receipt,
             }
         )
 
@@ -39,14 +53,19 @@ class ApikeyCreateResponse200ThenItem:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.receipt import Receipt
+
         d = dict(src_dict)
         index = d.pop("index")
 
         result = d.pop("result")
 
+        receipt = Receipt.from_dict(d.pop("receipt"))
+
         apikey_create_response_200_then_item = cls(
             index=index,
             result=result,
+            receipt=receipt,
         )
 
         apikey_create_response_200_then_item.additional_properties = d
