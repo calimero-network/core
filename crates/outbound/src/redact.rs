@@ -1,5 +1,5 @@
-//! Redacting a request's secrets from what comes back: the response body, and a
-//! failure's reason, which goes to the guest and into the node's log.
+//! Redacting a request's secrets from what comes back: the response body. A
+//! failure never carries the transport's words (`FailureKind`), so it needs none.
 //!
 //! An upstream that echoes its input may echo a secret encoded rather than as
 //! it was sent, so each secret is matched in the encodings an HTTP API commonly
@@ -119,22 +119,6 @@ impl Redactor {
                 let mut out = Vec::with_capacity(bytes.len());
                 matcher.replace_all_with_bytes(&bytes, &mut out, |_, _, out| {
                     out.extend_from_slice(REDACTED);
-                    true
-                });
-                out
-            }
-        }
-    }
-
-    /// `text` with every match replaced by [`REDACTED`]. Every pattern is UTF-8,
-    /// so a match never splits a character.
-    pub(crate) fn redact_str(&self, text: String) -> String {
-        match &self.matcher {
-            None => text,
-            Some(matcher) => {
-                let mut out = String::with_capacity(text.len());
-                matcher.replace_all_with(&text, &mut out, |_, _, out| {
-                    out.push_str("[redacted]");
                     true
                 });
                 out
@@ -314,8 +298,8 @@ mod tests {
         let r = redactor(&["first-secret", "second-secret", "first-secret"]);
         assert!(r.patterns <= 2 * PATTERNS_PER_SECRET);
         assert_eq!(
-            r.redact_str("a first-secret, a 7365636f6e642d736563726574, nothing else".to_owned()),
-            "a [redacted], a [redacted], nothing else"
+            r.redact(b"a first-secret, a 7365636f6e642d736563726574, nothing else".to_vec()),
+            b"a [redacted], a [redacted], nothing else"
         );
         assert_eq!(redactor(&[]).redact(b"as is".to_vec()), b"as is");
     }

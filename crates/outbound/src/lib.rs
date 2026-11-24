@@ -24,9 +24,10 @@
 //! body. The node asks its [`SecretProvider`] for `NAME` **for the app the run
 //! belongs to**, identified by the node (package and signer of the installed
 //! application), never by the guest. A secret is substituted only into a
-//! request to one of the hosts it is bound to; any copy of it in the response
-//! or a failure's reason, as sent or in a common encoding (the `redact`
-//! module), is replaced with `[redacted]` before the guest or the log sees it. The guest never
+//! request to one of the hosts it is bound to; any copy of it in the response,
+//! as sent or in a common encoding (the `redact` module), is replaced with
+//! `[redacted]` before the guest sees it. A failure reaches the guest and the
+//! log only as its [`FailureKind`], never in the transport's words. The guest never
 //! reads a secret, so it cannot write one into state, where it would
 //! replicate to every member.
 //!
@@ -356,7 +357,7 @@ pub struct Prepared {
     pub body: Zeroizing<Vec<u8>>,
     /// The secrets substituted, once per substitution.
     secrets: Vec<Zeroizing<String>>,
-    /// Their redaction from the response and a failure's reason.
+    /// Their redaction from the response.
     redactor: Redactor,
 }
 
@@ -705,18 +706,24 @@ impl OutboundHost for RunOutbound {
         let result = self.service.transport.send(&prepared);
         let (status, body) = match result {
             Ok(answer) => answer,
-            Err(reason) => {
-                // An upstream's error may quote what it was sent.
-                let reason = prepared.redactor.redact_str(reason.to_string());
+            Err(error) => {
+                // Only the kind the node names, never the transport's words: they can
+                // quote what was sent (a secret, in any encoding), and this line ships
+                // to the operator's log while the reason goes to the guest.
+                let kind = FailureKind::of(&error);
                 warn!(
                     context = %self.context,
                     package = %self.app.package,
                     host = %prepared.host,
                     path = %prepared.url.path(),
-                    %reason,
+                    kind = kind.as_str(),
                     "outbound request failed"
                 );
-                return Err(format!("the request to {} failed: {reason}", prepared.host));
+                return Err(format!(
+                    "the request to {} failed: {}",
+                    prepared.host,
+                    kind.as_str()
+                ));
             }
         };
         let body = prepared.redactor.redact(body);
@@ -868,14 +875,80 @@ pub fn is_public(ip: IpAddr) -> bool {
     }
 }
 
+/// Why a request to an upstream failed, as the node names it. Only this reaches
+/// the guest and the node's log: the transport's own words can quote the request,
+/// secrets included, and an upstream controls part of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailureKind {
+    /// No answer within the timeout.
+    Timeout,
+    /// No connection: the name did not resolve to a public address, or the
+    /// connection or TLS handshake failed.
+    Connect,
+    /// The answer was longer than [`MAX_RESPONSE_BODY`].
+    TooLarge,
+    /// The upstream answered with a redirect, which is never followed.
+    Redirect,
+    /// Anything else.
+    Other,
+}
+
+impl FailureKind {
+    /// The kind of `error`, from its typed causes only.
+    #[must_use]
+    pub fn of(error: &eyre::Report) -> Self {
+        for cause in error.chain() {
+            if cause.downcast_ref::<ResponseTooLarge>().is_some() {
+                return Self::TooLarge;
+            }
+            if let Some(e) = cause.downcast_ref::<reqwest::Error>() {
+                if e.is_timeout() {
+                    return Self::Timeout;
+                }
+                if e.is_redirect() {
+                    return Self::Redirect;
+                }
+                if e.is_connect() {
+                    return Self::Connect;
+                }
+            }
+        }
+        Self::Other
+    }
+
+    /// The kind's name, as logged and as the guest reads it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Connect => "connect",
+            Self::TooLarge => "too large",
+            Self::Redirect => "redirect",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// An answer longer than the cap.
+#[derive(Debug)]
+struct ResponseTooLarge(usize);
+
+impl fmt::Display for ResponseTooLarge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the response is longer than {} bytes", self.0)
+    }
+}
+
+impl std::error::Error for ResponseTooLarge {}
+
 async fn read_capped(mut response: reqwest::Response, max: usize) -> EyreResult<Vec<u8>> {
     if response.content_length().is_some_and(|n| n > max as u64) {
-        bail!("the response is longer than {max} bytes");
+        return Err(ResponseTooLarge(max).into());
     }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         if body.len() + chunk.len() > max {
-            bail!("the response is longer than {max} bytes");
+            return Err(ResponseTooLarge(max).into());
         }
         body.extend_from_slice(&chunk);
     }

@@ -30,9 +30,12 @@ deployment managers'; `calimero_node::component::run_secrets`) wins over the
 operator's for that name, still only to its declared hosts. The echo answers each
 filled-in value's length (`secretBytes`), never a value.
 
-Redaction (`src/redact.rs`) replaces each secret a request carried, in the response
-body and in a failed request's reason (which goes to the guest and to the
-`outbound request failed` log line), as sent and in the encodings an API commonly
+A failed request reaches the guest and the `outbound request failed` log line (which
+ships to the operator) only as its `FailureKind` (`timeout`, `connect`, `too large`,
+`redirect`, `other`), never in the transport's words, which can quote the request.
+
+Redaction (`src/redact.rs`) replaces each secret a request carried in the response
+body, as sent and in the encodings an API commonly
 echoes: hex (lower, upper), base64 (standard and URL-safe, padded or not, and the
 part the secret alone decides inside a longer base64 value such as Basic
 credentials), percent-encoding (RFC 3986 either case, `encodeURIComponent`, form)

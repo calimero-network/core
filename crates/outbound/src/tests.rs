@@ -922,6 +922,18 @@ fn a_secret_echoed_in_a_common_encoding_is_redacted_from_the_response() {
 }
 
 #[test]
+fn a_failure_names_only_its_kind_never_the_transports_words() {
+    // The transport's words can quote what it was sent; they reach neither the
+    // guest nor the node's `outbound request failed` log line, which ships to
+    // the operator.
+    let request = post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}");
+    let reason = awkward_run(true)
+        .send(&borsh::to_vec(&request).unwrap())
+        .expect_err("the transport failed");
+    assert_eq!(reason, format!("the request to {HOST} failed: other"));
+}
+
+#[test]
 fn a_secret_echoed_in_a_common_encoding_is_redacted_from_a_failure() {
     // The same reason goes to the guest and into the node's `outbound request
     // failed` log line.

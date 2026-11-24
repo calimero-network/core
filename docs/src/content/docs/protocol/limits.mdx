@@ -33,7 +33,7 @@ error the guest's host call returns.
 | Synchronous xcalls | 16 per run; arguments 512 KiB; result 1 MiB | `MAX_SYNC_XCALLS`, `MAX_SYNC_XCALL_ARGS_BYTES`, `MAX_SYNC_XCALL_RESULT_BYTES` |
 | Actions | 100 started per call or timer; 1000 `ctx.view` and `ctx.call` per action run | `MAX_STARTED_ACTIONS`, `MAX_ACTION_SUBCALLS` |
 | Outbound HTTP | 8 requests per action, one per call; bodies 1 MiB; 64 KiB recorded in a call's entry; 100 headers | `MAX_HTTP_REQUESTS`, `MAX_HTTP_BODY_BYTES`, `MAX_RECORDED_BODY_BYTES`, `MAX_HEADERS` |
-| Outbound secrets and their redaction | 32 distinct secret values per request (more is refused); each redacted from the response and a failure's reason as sent and in 19 common encodings (hex, base64, percent, JSON), 20 patterns a secret, 640 a request; encodings only for a secret of 8 to 4096 bytes, as sent otherwise | `MAX_SECRETS_PER_REQUEST`, `PATTERNS_PER_SECRET`, `MAX_REDACTION_PATTERNS`, `MIN_ENCODED_SECRET_BYTES`, `MAX_ENCODED_SECRET_BYTES` |
+| Outbound secrets and their redaction | 32 distinct secret values per request (more is refused); each redacted from the response as sent and in 19 common encodings (hex, base64, percent, JSON), 20 patterns a secret, 640 a request; encodings only for a secret of 8 to 4096 bytes, as sent otherwise | `MAX_SECRETS_PER_REQUEST`, `PATTERNS_PER_SECRET`, `MAX_REDACTION_PATTERNS`, `MIN_ENCODED_SECRET_BYTES`, `MAX_ENCODED_SECRET_BYTES` |
 | Search | 100 hits at most; query 256 bytes | `MAX_SEARCH_LIMIT`, `MAX_SEARCH_QUERY_BYTES` |
 | Files | 16 open; 2 GiB each; 64 MiB written per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_READ_CHUNK` |
 | Blob download grant | 1 day at most | `MAX_GRANT_TTL_SECS` |
