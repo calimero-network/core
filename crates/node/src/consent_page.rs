@@ -1985,15 +1985,17 @@ fn offered_by(d: &Value) -> Value {
     })
 }
 
-/// The sheet's line telling a customer their deployment changed hands since they last
+/// The sheet's warning that a customer's deployment changed hands since they last
 /// approved anything for the instance.
-fn taken_over(d: &Value) -> String {
-    format!(
-        "{} is now run by {}, who took it over from {}: they now choose its updates.",
-        d["name"].as_str().unwrap_or_default(),
-        party(&d["owner"]),
-        party(&d["transferred"]["from"])
-    )
+fn taken_over(d: &Value) -> Value {
+    json!({
+        "title": format!("{} has a new owner", d["name"].as_str().unwrap_or_default()),
+        "detail": format!(
+            "Now run by {}, who took it over from {}. They choose this app's updates from now on.",
+            party(&d["owner"]),
+            party(&d["transferred"]["from"])
+        ),
+    })
 }
 
 /// An owner as `deployment_shown` names it (`{ kind, name }`), in words.
@@ -2218,7 +2220,7 @@ async fn upgrade_request(
         "upgrade": sheet,
     });
     if let (true, Some(d)) = (node.sys(|s| s.handed_over_unseen(&app)), &shown) {
-        model["takenOver"] = json!(taken_over(d));
+        model["takenOver"] = taken_over(d);
     }
     let action = if step == updates::ApprovalStep::First {
         Action::ApproveFirst {
@@ -3826,7 +3828,10 @@ mod tests {
         d["transferred"] = json!({ "from": { "kind": "account", "name": "dev" }, "at": "x" });
         assert_eq!(
             taken_over(&d),
-            "acme is now run by the organization Globex, who took it over from the account dev: they now choose its updates."
+            json!({
+                "title": "acme has a new owner",
+                "detail": "Now run by the organization Globex, who took it over from the account dev. They choose this app's updates from now on.",
+            })
         );
     }
 

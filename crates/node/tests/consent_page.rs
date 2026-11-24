@@ -3326,8 +3326,12 @@ async fn a_customer_accepts_its_deployments_offer_on_the_page() {
         "{model}"
     );
     assert_eq!(model["offeredBy"], offered_by, "{model}");
-    let taken = "acme is now run by the organization Globex, who took it over from the account dev: they now choose its updates.";
-    assert_eq!(model["takenOver"], json!(taken), "{model}");
+    assert_eq!(
+        model["takenOver"]["title"], "acme has a new owner",
+        "{model}"
+    );
+    let taken = "Now run by the organization Globex, who took it over from the account dev. They choose this app's updates from now on.";
+    assert_eq!(model["takenOver"]["detail"], taken, "{model}");
     let mut carol_page = SoftAuthenticator::with_key(&carol_in_app, "localhost", &origin(&url));
     let ((code, done), args) = page.approve(&c, &mut carol_page).await;
     assert_eq!(code, 200, "{done}");
