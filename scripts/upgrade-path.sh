@@ -10,8 +10,8 @@
 # fetch its merod, meroctl (and mero-sign, for a release that shipped it) and kv fixture (scripts/fetch-release.sh) and build
 # its compute fixture from its tag (scripts/build-release-fixtures.sh); build this tree's
 # merod and meroctl, and kv with that meroctl (signed as kv 2.0.0, the app upgrade), in the
-# background while the test boots the old cluster and seeds; the test waits for that build before
-# the roll.
+# background beside the release's fixtures and the test's seed; the test waits for that build
+# before the roll.
 # A pinned tag that does not exist yet is reported and not run; a tag whose release
 # lacks an artifact fails.
 #
@@ -63,15 +63,13 @@ if [ "$rc" = 3 ]; then
   exit 0
 fi
 [ "$rc" = 0 ] || exit "$rc"
-scripts/build-release-fixtures.sh "$FROM" "$FROM_DIR"
-# The deep cases' components and packages, from the same tag and tools.
-scripts/build-upgrade-deep-fixtures.sh "$FROM_DIR"
-
-# This tree's binaries and fixtures build in the background while the old cluster boots and
-# seeds (the seed phase needs only the fetched release); the test waits for them before the roll.
+# This tree's binaries and fixtures build in the background, from here on beside the release's
+# fixtures and then the old cluster's boot and seed (which need only the fetched release); the
+# test waits for them before the roll.
 BUILD_LOG="$TARGET/upgrade-path-build.log"
 BUILD_STATUS="$TARGET/upgrade-path-build.status"
-rm -f "$BUILD_STATUS"
+RELEASE_FIXTURES_DONE="$TARGET/upgrade-path-release-fixtures.done"
+rm -f "$BUILD_STATUS" "$RELEASE_FIXTURES_DONE"
 
 build_this_tree() {
   cargo build --release -p merod -p meroctl
@@ -80,6 +78,7 @@ build_this_tree() {
   "$MEROCTL" app build apps/fixture-kv --out "$TARGET/app-components/kv.wasm"
   "$MEROCTL" app pack --wasm "$TARGET/app-components/kv.wasm" \
     --package com.calimero.kv-store --app-version 2.0.0 --out "$TARGET/upgrade-path-fixtures/kv-next.mpk"
+  until [ -e "$RELEASE_FIXTURES_DONE" ]; do sleep 1; done
   # The pipeline cases' package, installed on the old release: the compute component the
   # release's own tools built from its tag (build-release-fixtures.sh), so it imports no
   # calimero:app version newer than that release knows, and the release's fanout pipeline.
@@ -94,6 +93,13 @@ build_this_tree() {
 # The exit trap leaves the build's exit status where the test looks for it.
 ( trap 'echo $? >"$BUILD_STATUS"' EXIT; build_this_tree ) >"$BUILD_LOG" 2>&1 &
 BUILD_PID=$!
+# A failure below ends the script: stop waiting for the fixtures it never made.
+trap 'kill "$BUILD_PID" 2>/dev/null || true' EXIT
+
+scripts/build-release-fixtures.sh "$FROM" "$FROM_DIR"
+# The deep cases' components and packages, from the same tag and tools.
+scripts/build-upgrade-deep-fixtures.sh "$FROM_DIR"
+touch "$RELEASE_FIXTURES_DONE"
 
 status=0
 python3 -I crates/node/tests/fault/upgrade_path.py --from-dir "$FROM_DIR" \
