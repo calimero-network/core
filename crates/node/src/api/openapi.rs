@@ -470,6 +470,7 @@ fn out_ty<T: DeserializeOwned + Serialize>() -> OutTy {
 const ERROR_DETAILS: &[(&str, &str)] = &[
     ("APP_ERROR", "AppError"),
     ("BAD_BUNDLE", "ServiceRefused"),
+    ("COMPILE_TIMEOUT", "ServiceRefused"),
     ("COMPUTE_ABI_MISMATCH", "ServiceRefused"),
     ("CONFIRM_REQUIRED", "ConfirmRequired"),
     ("FEATURE_NOT_ACTIVE", "FeatureNotActive"),
@@ -702,7 +703,7 @@ fn components() -> Vec<Component> {
         ),
         component(
             "ServiceRefused",
-            "`details` of a `400 UNSUPPORTED_BUNDLE`, `400 BAD_BUNDLE` or `400 COMPUTE_ABI_MISMATCH` refusing one service of a release: the service, and `compute: true` when it was that service's compute component. Absent when the refusal is of a raw bundle.",
+            "`details` of a `400 UNSUPPORTED_BUNDLE`, `400 BAD_BUNDLE`, `400 COMPUTE_ABI_MISMATCH` or `422 COMPILE_TIMEOUT` refusing one service of a release: the service, and `compute: true` when it was that service's compute component. Absent when the refusal is of a raw bundle.",
             "{ service: string, compute?: bool }",
         ),
         component(
@@ -1284,19 +1285,19 @@ fn operations() -> Vec<Op> {
             .about("A `calimero:app` component, 16 MiB at most; only on a node started with `--allow-unsigned-bundles` or `--dev`. A WASM core module (SDK 0.12) is refused `400 UNSUPPORTED_BUNDLE`.")
             .raw("application/wasm", "the component")
             .ok("{ hash: string }")
-            .errors(&[(400, "BAD_BUNDLE"), (400, "UNSUPPORTED_BUNDLE"), (403, "FORBIDDEN"), (413, "TOO_LARGE"), (429, "QUOTA_EXCEEDED")]),
+            .errors(&[(400, "BAD_BUNDLE"), (400, "UNSUPPORTED_BUNDLE"), (403, "FORBIDDEN"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "QUOTA_EXCEEDED"), (503, "BUSY")]),
         post("/packages", "package_upload", Installer, "Upload a signed release")
             .about("A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`.")
             .raw("application/octet-stream", "the `.mpk`")
             .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (413, "TOO_LARGE")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
         get("/packages", "package_list", SignedIn, "Installed packages")
             .about("Only the releases the caller may see.")
             .ok("{ packages: #Package[] }"),
         post("/packages/install", "package_install", Installer, "Install a release from the registry")
             .json::<super::InstallBody>("{ package: string, version: string }")
             .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "NO_REGISTRY"), (403, "DEPLOY_NOT_GRANTED")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "NO_REGISTRY"), (403, "DEPLOY_NOT_GRANTED"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
         get("/packages/{package}", "package_get", SignedIn, "One package")
             .about("The versions the caller may see; `404` when none.")
             .ok("#Package")
@@ -2063,12 +2064,12 @@ fn operations() -> Vec<Op> {
         post("/ops/packages", "ops_package_upload", Ops, "Install an uploaded release as the operator")
             .raw("application/octet-stream", "the `.mpk`")
             .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
         get("/ops/packages", "ops_package_list", Ops, "The releases the operator installed").ok("{ packages: #Package[] }"),
         post("/ops/packages/install", "ops_package_install", Ops, "Install a release from the registry as the operator")
             .json::<super::InstallBody>("{ package: string, version: string }")
             .ok("{ package: string, version: string, signerId: string, services: { [string]: string } }")
-            .errors(&[(400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE")]),
+            .errors(&[(400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
         delete("/ops/packages/{package}", "ops_package_uninstall", Ops, "Uninstall what the operator installed").ok("#Uninstalled"),
         delete("/ops/packages/{package}/{version}", "ops_package_version_uninstall", Ops, "Uninstall one operator-installed version").ok("#Uninstalled"),
         get("/ops/quotas", "ops_quotas_get", Ops, "The quotas")
@@ -3344,6 +3345,13 @@ mod tests {
                 bundle(crate::packages::COMPUTE_ABI_MISMATCH),
                 "svc",
                 false,
+            ),
+            crate::packages::of_service(
+                ApiError::from(crate::compile::CompileError::TimedOut(
+                    crate::compile::COMPILE_TIMEOUT,
+                )),
+                "svc",
+                true,
             ),
         ]
     }

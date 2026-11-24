@@ -723,6 +723,16 @@ impl Node {
         &self.wasm
     }
 
+    /// [`Self::app_engine`], to move onto another thread.
+    pub(crate) fn app_engine_arc(&self) -> Arc<calimero_app_engine_wasmtime::WasmtimeEngine> {
+        Arc::clone(&self.wasm)
+    }
+
+    /// [`Self::compute_engine`], to move onto another thread.
+    pub(crate) fn compute_engine_arc(&self) -> Arc<calimero_app_engine_wasmtime::WasmtimeEngine> {
+        Arc::clone(&self.compute_wasm)
+    }
+
     /// The engine a release's compute components are prepared on.
     #[must_use]
     pub fn compute_engine(&self) -> &calimero_app_engine_wasmtime::WasmtimeEngine {

@@ -71,6 +71,8 @@ past it is logged trapped. Compute runs on job nodes have their own caps
 | A system write | 10 s, then `503 UNAVAILABLE` | `SYSTEM_WRITE_TIMEOUT` |
 | Idempotency records per app | 100 000 (both kinds), at most 4096 dropped per entry | `IDEMPOTENCY_MAX_RECORDS`, `EXPIRY_STEP` |
 | Cluster-key requests handled at once | 4 | `MAX_CONCURRENT_KEY_RELEASES` |
+| One component of a package release (a service's WASM or compute component, unpacked) | 47 MiB, as a blob: `413 TOO_LARGE` at install | `MAX_COMPONENT_BYTES` |
+| Compiles at install and raw bundle upload | 1 at a time, off the async workers; 4 more wait, each at most 10 s, past that `503 BUSY` with `Retry-After: 1`; one compile past 60 s is `422 COMPILE_TIMEOUT` | `MAX_CONCURRENT_COMPILES`, `MAX_QUEUED_COMPILES`, `COMPILE_WAIT`, `COMPILE_TIMEOUT` |
 | Quotes (`GET /attestation`, a job node's and a waiting node's, `merod attest --serve`) | 1 made at a time, off the async workers; 8 more wait, each at most 3 s; past that `503 BUSY` with `Retry-After: 1` | `MAX_CONCURRENT_QUOTES`, `MAX_QUEUED_QUOTES`, `QUOTE_WAIT` |
 | Sealed-file exports | 30 a minute per account per node | `MAX_EXPORTS_PER_MINUTE` |
 | Sessions listed (`GET /auth/sessions`) | 256 | `MAX_SESSIONS_LISTED` |
