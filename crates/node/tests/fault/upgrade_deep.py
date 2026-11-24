@@ -151,6 +151,12 @@ NOT_COVERED = [
     ("Ops", "Restoring a backup onto the new release",
      "`POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, "
      "not a rollout"),
+    ("Ops", "The recovery disk (`--recovery-dir`, `GET /ops/recovery-files`, `POST /recover/holder`, `ImportHolder`, "
+     "`POST /ops/recover`, `merod run --recover-from`)",
+     "a node writes the disk every `RECOVERY_EVERY` (300 s) from a task of its own, no route starts a pass, and the "
+     "suite's nodes run without `--recovery-dir`; a pass would need the harness to wait five minutes on each release "
+     "and a key pair held outside every node. `recovery_disk.rs` covers the pass, the holder's import and founding "
+     "from the disk on one build"),
     ("Ops", "A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`)",
      "a read that stores nothing, so there is no data to carry across a roll; it needs a registered job "
      "node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable"),
