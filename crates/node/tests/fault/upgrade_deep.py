@@ -81,6 +81,10 @@ NOT_COVERED = [
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
      "recovery code (`account-recovery-code`) is covered"),
+    ("Accounts", "A consent proof spent once (`SystemState::used_proofs`, `ExpireProofs`): a passkey assertion presented again is refused",
+     "a replay needs the assertion of an earlier request, which meroctl makes afresh each time and the suite's "
+     "standard-library Python cannot make (P-256); every consent a case logs is spent and carried across the roll, "
+     "and `forged_decisions_are_refused_where_they_apply_on_every_node` and `system::tests` cover the replay on one build"),
     ("Accounts", "Sign-up through a cluster sign-up invite, and issuing one",
      "meroctl's login takes no invite and has no command to issue one (an operator-signed request); "
      "the policy and the invite list are read back (`ops-state`)"),
