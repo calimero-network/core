@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+DATA_DIRS = ("datadir.tar.zst", "datadir.tar.gz")  # the data directory, as zstd now, gzip in the older fixtures
 RECORD = "python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from --out crates/node/tests/fixtures/upgrade/{}"
 
 
@@ -34,12 +35,14 @@ def main(argv=None):
     if release is None or release.startswith("hard-cutover:"):
         return 0
     folder = args.fixtures / release
-    if (folder / "expected.json").is_file() and (folder / "datadir.tar.gz").is_file():
+    if (folder / "expected.json").is_file() and any((folder / n).is_file() for n in DATA_DIRS):
         return 0
     print(
         f"::error::{args.pin.name} pins {release}, which has no replay fixture under crates/node/tests/fixtures/upgrade/.\n"
         f"Record it with that release's own binaries:\n"
         f"  scripts/fetch-release.sh {release} target/upgrade-from\n"
+        f"  scripts/build-release-fixtures.sh {release} target/upgrade-from\n"
+        f"  scripts/build-upgrade-deep-fixtures.sh target/upgrade-from\n"
         f"  {RECORD.format(release)}",
         file=sys.stderr,
     )
