@@ -19,7 +19,7 @@ calls apps. See [README.md](README.md) and its guides on core's docs site (`docs
 - `src/routes/`: the route client the generated methods call through.
 - `src/client/`: `CalimeroClient` and its helpers. `receipts.ts` mirrors core's `calimero-client` receipt checks; its vectors, `fixtures/receipt-vectors.json`, are a copy of core's `crates/client/tests/fixtures/receipt-vectors.json` made by `pnpm generate`, never hand-edited.
 - `src/generated/`: **generated, do not edit** (see below).
-- `src/products/kv/`: the Confidential KV's client, **generated, do not edit**, from `sdks/abi/kv.abi.json` (see below).
+- `src/products/kv/`: the Confidential KV's client, **generated, do not edit**, from `sdks/abi/kv.abi.json` (see below); `src/products/calimero.ts` is `Calimero.fromEnv()`, which binds it.
 - `tests/cluster/`: the cluster suite (`vitest.cluster.config.ts`); `tests/consumer/` is what `typecheck:consumer` compiles; unit tests sit beside the code as `src/**/*.test.ts`, and `typecheck:tests` (`tsconfig.test.json`) compiles them with `tests/cluster` and `tests/support`.
 - `examples/`: one directory per example (see below).
 - `sdk.json`: how core's CI treats this SDK (`scripts/sdks.py`).
