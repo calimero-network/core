@@ -67,7 +67,7 @@ fn app() -> AppIdentity {
     AppIdentity {
         package: "com.example.app".to_owned(),
         signer: "did:key:zApp".to_owned(),
-        secrets: None,
+        secrets: BTreeMap::new(),
         own: OwnSecrets::default(),
     }
 }
