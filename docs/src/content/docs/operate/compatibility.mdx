@@ -77,7 +77,7 @@ is a bug, and the CI checks below fail it.
 
 `crates/node/api-deprecations.toml` deprecates nothing now.
 
-**1.0.0-rc.36: a release's secrets are credential bindings (#0).** A release's
+**1.0.0-rc.36: a release's secrets are credential bindings (#5352).** A release's
 manifest binds each secret to one host, path prefixes there and one header or
 body field, and the node attaches it there ([Secrets](/protocol/secrets/)); an app no longer writes
 `{{secret:NAME}}`, which the outbound gate now refuses. The earlier shape

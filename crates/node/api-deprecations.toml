@@ -79,5 +79,5 @@ why = "an instance's access is its list of grants: POST /apps and POST /apps/{ap
 
 [[cutover]]
 field = "hosts"
-pr = 0
+pr = 5352
 why = "a release's secrets are credential bindings: each names one host and one header or body field the node attaches it to, and apps no longer write {{secret:NAME}} (refused); GET /apps/{app}/secrets answers host, header, format, bodyField and binding instead of hosts, release manifests and InstallPackage records with secrets in the earlier shape are not read, and clusters holding one are recreated"
