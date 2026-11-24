@@ -378,6 +378,11 @@ pub(crate) static SLOW_SYNCS: std::sync::Mutex<Vec<(PathBuf, GroupId, std::time:
 pub(crate) static SYNCS_WAITING: std::sync::Mutex<Vec<(PathBuf, GroupId, u64)>> =
     std::sync::Mutex::new(Vec::new());
 
+/// The writes queued now behind a slowed synced write holding the write path, by node
+/// directory (feature `testing`; see [`crate::testing::writes_queued`]).
+#[cfg(feature = "testing")]
+pub(crate) static WRITES_QUEUED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 /// The number the next slowed synced write takes (feature `testing`).
 #[cfg(feature = "testing")]
 static NEXT_SLOWED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -536,6 +541,29 @@ impl Db {
         self.write(tx, true)
     }
 
+    /// Take RocksDB's write path for a write (feature `testing`): shared, so it
+    /// waits only while a slowed synced write holds it, and shows in
+    /// [`crate::testing::writes_queued`] meanwhile.
+    #[cfg(feature = "testing")]
+    fn join_write_path(&self) -> std::sync::RwLockReadGuard<'_, ()> {
+        if let Ok(path) = self.write_path.try_read() {
+            return path;
+        }
+        if let Ok(mut q) = WRITES_QUEUED.lock() {
+            q.push(self.dir.clone());
+        }
+        let path = self
+            .write_path
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Ok(mut q) = WRITES_QUEUED.lock() {
+            if let Some(i) = q.iter().position(|d| *d == self.dir) {
+                let _left = q.swap_remove(i);
+            }
+        }
+        path
+    }
+
     /// Whether `group`'s unsynced writes are being dropped (feature `testing`).
     #[must_use]
     pub(crate) fn losing_unsynced(&self, group: GroupId) -> bool {
@@ -568,10 +596,7 @@ impl Db {
 
     fn write(&self, tx: &Transaction, synced: bool) -> eyre::Result<()> {
         #[cfg(feature = "testing")]
-        let _path = self
-            .write_path
-            .read()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _path = self.join_write_path();
         self.write_batch(tx, synced)
     }
 
@@ -595,10 +620,7 @@ impl Db {
         let mut batch = WriteBatch::default();
         batch.delete_range_cf(&self.cf(col)?, lo, hi);
         #[cfg(feature = "testing")]
-        let _path = self
-            .write_path
-            .read()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _path = self.join_write_path();
         self.db.write(batch)?;
         Ok(())
     }
@@ -1328,6 +1350,21 @@ pub(crate) async fn off_workers<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, StorageError> + Send + 'static,
 ) -> Result<T, StorageError> {
     tokio::task::spawn_blocking(f).await.map_err(io)?
+}
+
+/// Run `f`, which may wait on the disk or on a lock held across a disk write, from
+/// sync code reached from an async task, without holding the task's async worker:
+/// on a worker of a multi-threaded runtime through `block_in_place`, which hands
+/// the worker's other tasks to another thread first; anywhere else (the blocking
+/// pool, a plain thread, a current-thread runtime) inline. The caller still waits
+/// for `f`, as [`off_workers`]' callers do.
+pub(crate) fn wait_off_workers<R>(f: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
 }
 
 /// One group's view of the log storage.
