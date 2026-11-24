@@ -543,6 +543,8 @@ pub struct Node {
     pub(crate) export_limits: crate::api::ExportLimits,
     /// Visitors' calls through each public link, per visitor key (`api::VisitorLimits`).
     pub(crate) visitor_limits: crate::api::VisitorLimits,
+    /// API keys a fresh read found missing lately, refused with no read (`api::credential`).
+    pub(crate) unknown_api_keys: crate::api::UnknownApiKeys,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -1119,6 +1121,7 @@ impl Node {
             blob_guards: Arc::default(),
             export_limits: crate::api::ExportLimits::default(),
             visitor_limits: crate::api::VisitorLimits::default(),
+            unknown_api_keys: crate::api::UnknownApiKeys::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,

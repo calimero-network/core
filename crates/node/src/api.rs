@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::ops::Bound;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 
 use axum::body::Bytes as Body;
 use axum::extract::{Path, Query, State};
@@ -35,7 +37,7 @@ use crate::app::{AppMachine, Status};
 use crate::attest::{kms_report_data, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
-use crate::node::{CallRequest, JobAttestError, Node, ViewRequest};
+use crate::node::{CallRequest, Issuer, JobAttestError, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::cluster_version::{scope_app_features, Feature};
 use crate::system::{
@@ -680,39 +682,27 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Who is calling, from the `Authorization` header, upgrade keys included.
+///
+/// A credential is judged on the cluster's latest system state (a read index,
+/// [`Node::sys_fresh_index`]): a session or key revoked through another node is
+/// refused here at once, not once this replica catches up. What needs no state
+/// is checked before that round, so a credential that cannot be valid costs the
+/// system leader nothing (D4): an API key's shape ([`api_key_shaped`]) and the
+/// keys a fresh read found missing ([`UnknownApiKeys`]), a visitor's signature,
+/// a session token's signature under its issuer's attested key and its expiry.
 async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
     let Some(token) = bearer(headers) else {
         return Ok(None);
     };
-    // A credential is judged on the cluster's latest system state (a read
-    // index): a session or key revoked through another node is refused here
-    // at once, not once this replica catches up.
-    let (sys_index, _caught_up) = node.sys_fresh_index().await;
     if let Some(rest) = token.strip_prefix(public_links::VISITOR_PREFIX) {
-        return public_links::visitor(node, rest, sys_index).map(Some);
+        return public_links::visitor(node, rest).await.map(Some);
     }
-    if let Some(_key) = token.strip_prefix("cal_") {
-        let hash = calimero_identity::api_key_hash(token);
-        let rec = node
-            .sys_until(|s| s.api_keys.get(&hash).cloned())
-            .await
-            .ok_or_else(|| ApiError::unauthenticated("unknown API key"))?;
-        if rec.expires_at <= now_secs() {
-            return Err(ApiError::unauthenticated("API key expired"));
-        }
-        return Ok(Some(Principal {
-            caller: Caller::ApiKey {
-                key: rec.key_id.clone(),
-                account: rec.account.clone(),
-            },
-            session: None,
-            api_key: Some(rec),
-            issuer_release: None,
-            consent_page: false,
-            sys_index,
-        }));
+    if token.starts_with("cal_") {
+        return api_key(node, token).await.map(Some);
     }
-    let (claims, issuer_release) = verify_token(node, token).await?;
+    let (claims, issuer) = signed_session(node, token).await?;
+    let (sys_index, _caught_up) = node.sys_fresh_index().await;
+    let issuer_release = session_issuer_serves(node, &claims, issuer)?;
     if node.sys(|s| s.revoked_sessions.contains(&claims.session)) {
         return Err(ApiError::unauthenticated("session revoked"));
     }
@@ -743,6 +733,104 @@ async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal
     }))
 }
 
+/// An API key's length: `cal_` and 32 random bytes in unpadded base64url
+/// (`calimero_identity::new_api_key`).
+const API_KEY_CHARS: usize = 4 + 43;
+
+/// Whether `token` has the shape of an API key this cluster makes; no other is
+/// looked up.
+fn api_key_shaped(token: &str) -> bool {
+    token.len() == API_KEY_CHARS
+        && token.strip_prefix("cal_").is_some_and(|k| {
+            k.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+}
+
+/// Most API key hashes [`UnknownApiKeys`] holds at once.
+pub(crate) const MAX_UNKNOWN_API_KEYS: usize = 4096;
+
+/// How long [`UnknownApiKeys`] remembers a missing key.
+pub(crate) const UNKNOWN_API_KEY_TTL: Duration = Duration::from_secs(60);
+
+/// The hashes of API keys a caught-up read found no key for, each kept
+/// [`UNKNOWN_API_KEY_TTL`], at most [`MAX_UNKNOWN_API_KEYS`] (past that a
+/// missing key is not remembered, and costs a round each time). A key it holds
+/// is refused with no system read. It never refuses a key that exists: a hash is
+/// added only after a read caught up to an index past every write committed
+/// before the request, a key is shown to its maker only once its creation is
+/// committed, and a new key is 256 random bits, so none is presented before it
+/// exists; a deleted key's hash does not come back. Per node, in memory.
+#[derive(Default)]
+pub struct UnknownApiKeys(Mutex<HashMap<String, Instant>>);
+
+impl UnknownApiKeys {
+    fn holds(&self, hash: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(hash)
+            .is_some_and(|at| at.elapsed() < UNKNOWN_API_KEY_TTL)
+    }
+
+    fn add(&self, hash: String) {
+        let mut keys = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if keys.len() >= MAX_UNKNOWN_API_KEYS {
+            keys.retain(|_, at| at.elapsed() < UNKNOWN_API_KEY_TTL);
+            if keys.len() >= MAX_UNKNOWN_API_KEYS {
+                return;
+            }
+        }
+        let _prev = keys.insert(hash, Instant::now());
+    }
+}
+
+/// The caller an API key names. A token of another shape, or one a fresh read
+/// found missing lately, is refused before the read-index round; a missing key
+/// is waited for ([`Node::sys_until`]) only when the round did not catch this
+/// replica up, since a caught-up state already holds every key made before the
+/// request.
+async fn api_key(node: &Node, token: &str) -> Result<Principal, ApiError> {
+    let unknown = || ApiError::unauthenticated("unknown API key");
+    if !api_key_shaped(token) {
+        return Err(unknown());
+    }
+    let hash = calimero_identity::api_key_hash(token);
+    if node.unknown_api_keys.holds(&hash) {
+        return Err(unknown());
+    }
+    let (sys_index, caught_up) = node.sys_fresh_index().await;
+    let find = |s: &SystemState| s.api_keys.get(&hash).cloned();
+    let found = if caught_up {
+        node.sys(find)
+    } else {
+        node.sys_until(find).await
+    };
+    let Some(rec) = found else {
+        if caught_up {
+            node.unknown_api_keys.add(hash);
+        }
+        return Err(unknown());
+    };
+    if rec.expires_at <= now_secs() {
+        return Err(ApiError::unauthenticated("API key expired"));
+    }
+    Ok(Principal {
+        caller: Caller::ApiKey {
+            key: rec.key_id.clone(),
+            account: rec.account.clone(),
+        },
+        session: None,
+        api_key: Some(rec),
+        issuer_release: None,
+        consent_page: false,
+        sys_index,
+    })
+}
+
 /// Whether `origin` is still registered for `package`.
 fn origin_holds(node: &Node, package: Option<&str>, origin: &str) -> bool {
     node.sys(|s| {
@@ -758,28 +846,19 @@ fn origin_gone() -> ApiError {
     )
 }
 
-/// Check a session token: signed by the receipt key of the node it names,
-/// which this node attests at that node's registered address, and whose
-/// attested release may serve the account
-/// (`SystemState::release_may_serve_account`). Answers the claims and the
-/// issuer's release, which each app access checks too (`Principal::within`).
-async fn verify_token(
-    node: &Node,
-    token: &str,
-) -> Result<(SessionClaims, Option<String>), ApiError> {
+/// The issuer a session token names, as this node attested it, under whose
+/// receipt key the token is signed and unexpired: what needs no fresh system
+/// state, so a token its issuer did not sign is refused before the read-index
+/// round. [`session_issuer_serves`] judges the issuer on the fresh state after.
+async fn signed_session(node: &Node, token: &str) -> Result<(SessionClaims, Issuer), ApiError> {
     let claims = peek_session(token).map_err(|_| ApiError::unauthenticated("malformed token"))?;
     let issuer_id = claims.node;
-    let unknown = || {
-        ApiError::unauthenticated(
-            "the token's issuing node is not a node of this cluster, or cannot be attested; refresh the session",
-        )
-    };
     // Answered from the key this node attested ahead of time: the issuer may
     // be stopped or frozen by now.
     let mut issuer = node
         .session_issuer(issuer_id, false)
         .await
-        .ok_or_else(unknown)?;
+        .ok_or_else(unknown_issuer)?;
     let named = calimero_identity::from_b64url(&claims.key).ok();
     if named.as_deref() != Some(issuer.key.as_slice()) {
         // Signed under another key than the one attested here: the issuer's
@@ -787,10 +866,33 @@ async fn verify_token(
         issuer = node
             .session_issuer(issuer_id, true)
             .await
-            .ok_or_else(unknown)?;
+            .ok_or_else(unknown_issuer)?;
     }
     let claims = verify_session(&issuer.key, token, now_secs())
         .map_err(|e| ApiError::unauthenticated(&e.to_string()))?;
+    Ok((claims, issuer))
+}
+
+fn unknown_issuer() -> ApiError {
+    ApiError::unauthenticated(
+        "the token's issuing node is not a node of this cluster, or cannot be attested; refresh the session",
+    )
+}
+
+/// Judged on fresh system state, after [`signed_session`]: the token's issuer
+/// is still a node of this cluster, and its attested release may serve the
+/// account (`SystemState::release_may_serve_account`). Answers the issuer's
+/// release, which each app access checks too (`Principal::within`).
+fn session_issuer_serves(
+    node: &Node,
+    claims: &SessionClaims,
+    issuer: Issuer,
+) -> Result<Option<String>, ApiError> {
+    let issuer_id = claims.node;
+    // A node removed before the request arrived: its sessions stop verifying.
+    if issuer_id != node.config.node_id && !node.is_peer(issuer_id) {
+        return Err(unknown_issuer());
+    }
     let release = issuer
         .release
         .ok_or_else(|| ApiError::unauthenticated("the token's issuing node names no release"))?;
@@ -802,7 +904,7 @@ async fn verify_token(
             "this session was signed by a node whose release the account's owners have not approved; sign in again",
         ));
     }
-    Ok((claims, Some(release)))
+    Ok(Some(release))
 }
 
 /// This node's release is not one the account's approvers approved: it
@@ -2322,8 +2424,43 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        admit_pending, typed_id, Pending, MAX_CHALLENGES_PER_ACCOUNT, MAX_PENDING_CHALLENGES,
+        admit_pending, api_key_shaped, typed_id, Pending, UnknownApiKeys,
+        MAX_CHALLENGES_PER_ACCOUNT, MAX_PENDING_CHALLENGES, MAX_UNKNOWN_API_KEYS,
     };
+
+    /// Every key the node makes passes the shape check that refuses a token
+    /// before its system read; nothing else of the `cal_` prefix does.
+    #[test]
+    fn every_made_api_key_is_shaped_and_junk_is_not() {
+        for _ in 0..1000 {
+            let (key, _hash) = calimero_identity::new_api_key();
+            assert!(api_key_shaped(&key), "{key}");
+        }
+        let made = calimero_identity::new_api_key().0;
+        for junk in [
+            "cal_",
+            "cal_short",
+            &made[..made.len() - 1],
+            &format!("{made}A"),
+            &format!("cal_{}", "!".repeat(43)),
+            &format!("cax_{}", &made[4..]),
+        ] {
+            assert!(!api_key_shaped(junk), "{junk}");
+        }
+    }
+
+    /// The missing-key memory holds what it was given and stops growing at
+    /// its bound rather than evicting a fresh entry.
+    #[test]
+    fn unknown_api_keys_are_bounded() {
+        let keys = UnknownApiKeys::default();
+        assert!(!keys.holds("h0"));
+        for i in 0..MAX_UNKNOWN_API_KEYS + 10 {
+            keys.add(format!("h{i}"));
+        }
+        assert!(keys.holds("h0"));
+        assert!(!keys.holds(&format!("h{MAX_UNKNOWN_API_KEYS}")));
+    }
 
     fn sign_up(expires: u64) -> Pending {
         Pending::Register {
