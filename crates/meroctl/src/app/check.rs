@@ -509,12 +509,13 @@ fn summary(j: &Judged<'_>) -> String {
 
     // What a node does with it under an organization's `autoApply: noDestinations` policy
     // (`SystemState::auto_update_gate`): only a green update whose unit sends nothing out,
-    // before or after, applies on its own, and it moves the app alone.
+    // before or after, and that removes no method, applies on its own; it moves the app alone.
     let sends_out = !c.egress.before.is_empty() || !c.egress.after.is_empty();
     let members_move = before.members != after.members;
     out += match c.class {
         Class::Red => "  Users on automatic updates: wait for a person's approval (red):\n",
         Class::Green if sends_out => "  Users on automatic updates: wait for an owner's or admin's approval (green, but the app or the apps it created can send data out; only an update whose unit sends nothing out applies on its own)\n",
+        Class::Green if !c.removed_methods.is_empty() => "  Users on automatic updates: wait for an owner's or admin's approval (green, but it removes a method another app may call)\n",
         Class::Green if members_move => "  Users on automatic updates: apply it on their own after the hold where the policy is noDestinations, moving the app alone (green, no data leaves Calimero; the apps it created stay on their releases until an owner or admin moves the unit)\n",
         Class::Green => "  Users on automatic updates: apply it on their own after the hold where the policy is noDestinations (green: same signer, no new destination, same state version, no data leaves Calimero)\n",
     };
@@ -658,6 +659,19 @@ mod tests {
         );
         assert!(text.contains("Signer: did:key:a (unchanged)"), "{text}");
         assert!(text.ends_with("Gate (--fail-on red): passed"), "{text}");
+    }
+
+    #[test]
+    fn a_green_update_that_removes_a_method_waits_for_an_owner_or_admin() {
+        let before = Unit::of(release("1.3.0", &[], &["get", "set"]));
+        let after = Unit::of(release("1.4.0", &[], &["get"]));
+        let (text, passed) = judge(&before, &after, Some(FailOn::Red), &[]);
+        assert!(passed, "still green: the gate passes");
+        assert!(!text.contains("apply it on their own"), "{text}");
+        assert!(
+            text.contains("  Users on automatic updates: wait for an owner's or admin's approval (green, but it removes a method another app may call)\n"),
+            "{text}"
+        );
     }
 
     #[test]
