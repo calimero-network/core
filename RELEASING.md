@@ -238,7 +238,7 @@ opens one pull request per consumer in [`.github/fleet.json`](.github/fleet.json
 on the branch `chore/core-X`, as the organization's GitHub App, with
 [`.github/scripts/bump-fleet.sh`](.github/scripts/bump-fleet.sh) doing the edits:
 
-- `cargo` surface (apps, mero-ar, mero-tag, calimero-studio): pins
+- `cargo` surface (apps, calimero-studio): pins
   `calimero-network/core` to the tag `X` (`chore(deps): pin the Calimero SDK to X`).
   A source-level break makes that pull request red until someone writes the code.
   Where the repository pins the client generator in `scripts/install-meroctl.sh`
@@ -252,7 +252,7 @@ on the branch `chore/core-X`, as the organization's GitHub App, with
   re-pins `mero-tee/build-inputs.lock.json` from the release's `SHA256SUMS`, and
   cuts a new image version (`chore(image): bundle merod X and cut a new image version`).
   The image itself is released by mero-tee's own workflows.
-- `mobile` surface (apps, mero-tag, mero-ar): once Maven Central serves mero-kotlin `X`, moves the
+- `mobile` surface (apps, mero-tag and mero-ar among them): once Maven Central serves mero-kotlin `X`, moves the
   core package's `exactVersion` in XcodeGen `project.yml`, `exact:` in
   `Package.swift`, the core pin in `Package.resolved` (to the commit `X` is tagged
   at), and the `libs.versions.toml` version the `network.calimero:mero-kotlin`
