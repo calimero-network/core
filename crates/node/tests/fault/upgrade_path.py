@@ -396,7 +396,8 @@ def main(argv=None):
         run_step(w, cases, "verify", results)
         run_step(w, cases, "extend", results)
         w.phase = "restart"
-        restart_from_disk(w, NEW_IDS[0])
+        for node in NEW_IDS:
+            restart_from_disk(w, node)
         run_step(w, cases, "verify", results, label="verify after restart")
     except Exception as e:  # noqa: BLE001
         results.append({"case": "(runner)", "step": w.phase, "status": "fail", "seconds": 0,

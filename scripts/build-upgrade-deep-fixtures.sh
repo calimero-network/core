@@ -18,7 +18,7 @@
 # release that has the units examples, calendar-0.1.0.mpk, calendar-0.1.1.mpk,
 # planner-0.1.0.mpk, planner-0.2.0.mpk and booking-0.1.0.mpk (com.calimero.example.*); from
 # one whose meroctl packs them, kv-guest-1.0.0.mpk (`guests: allowed`), kv-secret-1.0.0.mpk
-# (it declares a secret, `secrets`), kv-svc-1.0.0.mpk (two services, from 1.0.0-rc.25) and kv-unit-1.0.0.mpk (`uses` kv-secret, `mode = "create"`).
+# (it declares a secret, `secrets`), kv-svc-1.0.0.mpk and kv-svc-1.1.0.mpk (two services, from 1.0.0-rc.25) and kv-unit-1.0.0.mpk (`uses` kv-secret, `mode = "create"`).
 set -euo pipefail
 
 OUT=$(cd "${1:?usage: build-upgrade-deep-fixtures.sh OUT}" && pwd -P)
@@ -62,10 +62,12 @@ done
 pack "$DEEP/notes-v1.wasm" com.calimero.upgrade.notes 1.0.0 notes-1.0.0.mpk
 pack "$DEEP/notes-v2.wasm" com.calimero.upgrade.notes 2.0.0 notes-2.0.0.mpk
 
-# A package of two services (`--service NAME=PATH`, from 1.0.0-rc.25): kv-svc-1.0.0.mpk.
+# A package of two services (`--service NAME=PATH`, from 1.0.0-rc.25): kv-svc-1.0.0.mpk and 1.1.0.
 if "$PACK" --help 2>/dev/null | grep -q -- '--service'; then
-  "$PACK" --package com.calimero.upgrade.kv-svc --app-version 1.0.0 \
-    --service alpha="$DEEP/kv-m1.wasm" --service beta="$DEEP/kv-m2.wasm" --out "$DEEP/kv-svc-1.0.0.mpk"
+  for v in 1.0.0 1.1.0; do
+    "$PACK" --package com.calimero.upgrade.kv-svc --app-version "$v" \
+      --service alpha="$DEEP/kv-m1.wasm" --service beta="$DEEP/kv-m2.wasm" --out "$DEEP/kv-svc-$v.mpk"
+  done
 else
   echo "note: this meroctl has no --service (before 1.0.0-rc.25): kv-svc is not packed" >&2
 fi
