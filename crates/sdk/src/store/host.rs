@@ -2,6 +2,19 @@
 
 use super::{RangeCursor, Store};
 use crate::bindings::calimero::app::storage;
+use crate::error::{RunLimit, StorageError};
+
+/// The host's answer to a write past one of the run's limits (WIT `limit-exceeded`).
+fn run_limit(e: storage::LimitExceeded) -> StorageError {
+    StorageError::RunLimit {
+        limit: match e.limit {
+            storage::RunLimit::Writes => RunLimit::Writes,
+            storage::RunLimit::Bytes => RunLimit::Bytes,
+        },
+        max: e.max,
+        attempted: e.attempted,
+    }
+}
 
 /// The host's storage; a zero-sized handle.
 #[derive(Clone, Copy, Debug, Default)]
@@ -23,16 +36,16 @@ impl Store for HostStore {
         storage::get(k)
     }
 
-    fn put(&mut self, k: &[u8], v: &[u8]) {
-        storage::put(k, v);
+    fn put(&mut self, k: &[u8], v: &[u8]) -> Result<(), StorageError> {
+        storage::put_checked(k, v).map_err(run_limit)
     }
 
-    fn delete(&mut self, k: &[u8]) {
-        storage::delete(k);
+    fn delete(&mut self, k: &[u8]) -> Result<(), StorageError> {
+        storage::delete_checked(k).map_err(run_limit)
     }
 
-    fn add(&mut self, k: &[u8], delta: i64) {
-        storage::add(k, delta);
+    fn add(&mut self, k: &[u8], delta: i64) -> Result<(), StorageError> {
+        storage::add_checked(k, delta).map_err(run_limit)
     }
 
     fn range(&self, start: &[u8], end: &[u8], reverse: bool) -> HostCursor {

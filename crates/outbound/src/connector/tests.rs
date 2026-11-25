@@ -13,11 +13,19 @@ const STRIPE_KEY: &str = "sk_test_51Owner";
 const OPENAI_KEY: &str = "sk-proj-owner";
 const INTENTS: &str = "https://api.stripe.com/v1/payment_intents";
 
+/// The shop's release, binding the Stripe and OpenAI keys for its raw requests:
+/// the node attaches each in `authorization` on its host's `/v1` paths.
 fn shop() -> AppIdentity {
+    let bearer = |host: &str| {
+        calimero_bundle::BundleSecret::header(host, &["/v1"], "authorization", Some("Bearer {}"))
+    };
     AppIdentity {
         package: "com.example.shop".to_owned(),
         signer: "did:key:zShop".to_owned(),
-        secrets: None,
+        secrets: BTreeMap::from([
+            ("STRIPE_SECRET_KEY".to_owned(), bearer("api.stripe.com")),
+            ("OPENAI_API_KEY".to_owned(), bearer("api.openai.com")),
+        ]),
         own: OwnSecrets::default(),
     }
 }
@@ -158,10 +166,7 @@ fn raw(url: &str, body: &str) -> Vec<u8> {
     borsh::to_vec(&OutboundRequest {
         method: OutboundMethod::Post,
         url: url.to_owned(),
-        headers: vec![(
-            "authorization".to_owned(),
-            "Bearer {{secret:STRIPE_SECRET_KEY}}".to_owned(),
-        )],
+        headers: vec![],
         body: body.as_bytes().to_vec(),
     })
     .unwrap()
@@ -224,10 +229,7 @@ fn a_declared_connector_is_the_only_way_to_its_host() {
     let models = OutboundRequest {
         method: OutboundMethod::Get,
         url: "https://api.openai.com/v1/models".to_owned(),
-        headers: vec![(
-            "authorization".to_owned(),
-            "Bearer {{secret:OPENAI_API_KEY}}".to_owned(),
-        )],
+        headers: vec![],
         body: vec![],
     };
     let _answer = http
@@ -254,11 +256,11 @@ fn create_payment_intent_sends_exactly_the_pinned_request() {
             INTENTS.to_owned(),
             vec![
                 ("stripe-version".to_owned(), "2024-06-20".to_owned()),
-                ("authorization".to_owned(), format!("Bearer {STRIPE_KEY}")),
                 (
                     "content-type".to_owned(),
                     "application/x-www-form-urlencoded".to_owned()
                 ),
+                ("authorization".to_owned(), format!("Bearer {STRIPE_KEY}")),
             ],
             "amount=2000&currency=usd&customer=cus_9s6XKzkNRiz8i3&metadata%5Border_id%5D=A-17"
                 .to_owned(),
@@ -443,16 +445,17 @@ fn a_connector_call_goes_through_every_gate_of_a_raw_request() {
     )
     .unwrap_err();
     assert!(
-        err.contains("no value for secret STRIPE_SECRET_KEY"),
+        err.contains("secret STRIPE_SECRET_KEY has no value"),
         "{err}"
     );
     assert!(upstream.sent().is_empty());
 
-    // A release that declares its raw secrets still gets the connector's key,
-    // only to the connector's host, and the call counts as a request.
+    // A release that binds no secret for its raw requests still gets the
+    // connector's key, through the connector's binding, only to the connector's
+    // host, and the call counts as a request.
     let sent = Arc::new(AtomicU64::new(0));
     let mut declaring = shop();
-    declaring.secrets = Some(BTreeMap::new());
+    declaring.secrets = BTreeMap::new();
     let clients = service(&upstream).for_run_with_connectors(
         declaring,
         vec![],
@@ -530,8 +533,8 @@ mod openai {
         assert_eq!(
             sent[0].2,
             vec![
-                ("authorization".to_owned(), format!("Bearer {OPENAI_KEY}")),
                 ("content-type".to_owned(), "application/json".to_owned()),
+                ("authorization".to_owned(), format!("Bearer {OPENAI_KEY}")),
             ]
         );
         let body: Value = serde_json::from_str(&sent[0].3).unwrap();

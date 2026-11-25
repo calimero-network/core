@@ -252,6 +252,7 @@ export default defineConfig({
                 'protocol/encryption',
                 'protocol/key-rotation',
                 'protocol/security-model',
+                'protocol/secrets',
               ],
             },
             {

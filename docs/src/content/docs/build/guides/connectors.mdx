@@ -47,13 +47,15 @@ the examples below show the shape they take.
 
 ## The credential
 
-A connector attaches its key itself: the secret binding it names
-(`STRIPE_SECRET_KEY`, `OPENAI_API_KEY`), from the operator's secrets or the
-value the instance's owner set, written into `Authorization: Bearer …`. The app
-never names, places or reads it, as with any
-[secret](/build/guides/outbound/#secrets): the same binding model, scoped to the
-app's package and signer, and to the connector's host alone. An input that
-holds a secret placeholder is refused.
+A connector attaches its key itself, through a credential binding of its own:
+the secret it names (`STRIPE_SECRET_KEY`, `OPENAI_API_KEY`), in
+`authorization` as `Bearer {}`, on the connector's host. The value is the
+instance owner's, its deployment's or the operator's (whose binding must list
+that host), as for any [secret](/protocol/secrets/). The app never names,
+places or reads it, and a call carries the connector's binding alone, never
+one the release declares for its raw requests. A call with no value for it is
+refused (`secret STRIPE_SECRET_KEY has no value for this app`) rather than
+sent unauthenticated. An input that holds `{{secret:` is refused.
 
 ## Stripe
 

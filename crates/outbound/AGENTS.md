@@ -26,21 +26,36 @@ A request is made only when every gate holds:
    `calimero_primitives::outbound`, no redirects; at most
    `calimero_app_host::MAX_HTTP_REQUESTS` (8) per run, counted by the host.
 
-Secrets (`{{secret:NAME}}`) come from `EnvSecrets` or a loopback `SidecarSecrets`,
-scoped by package, signer and host, and are redacted from the response. A release
-that declares its secrets (`AppIdentity::secrets`, from its signed manifest's
-`secrets`) gets only those names, each only into a request to one of its declared
-hosts; `None` keeps the operator's bindings alone. A value set in merod for a
-declared name (`AppIdentity::own`, `OwnSecrets`: the instance owner's, else its
-deployment managers'; `calimero_node::component::run_secrets`) wins over the
-operator's for that name, still only to its declared hosts. The echo answers each
-filled-in value's length (`secretBytes`), never a value.
+Secrets are **credential bindings**: the app never places, names or reads one.
+A release's signed manifest binds each (`AppIdentity::secrets`, from `secrets`,
+`calimero_bundle::BundleSecret`) to one host, path prefixes there (whole segments,
+`applies_to` over the parsed URL's normalized path; `["/"]` for the whole host) and
+one place: a header in a
+`format` (`authorization`, `Bearer {}`) or a top-level body field of a
+form-urlencoded or JSON body (Turnstile's `secret`). `prepare` attaches each binding
+of the request's host and path itself (another path of the host gets none and goes
+out as an ordinary request: nothing of the key rides on it) (`value_of`: `AppIdentity::own`, `OwnSecrets`, the
+instance owner's else its deployment managers', `calimero_node::component::run_secrets`;
+else `EnvSecrets` or a loopback `SidecarSecrets`, scoped by package, signer and a host
+list that must hold the binding's host), and refuses a request that sets a bound
+header (any case) or body field (however spelled: decoded form keys, parsed JSON
+keys), or that writes `{{secret:` anywhere, URL (also percent-encoded), header or
+body (`PLACEHOLDER_REFUSED`, naming `SECRETS_DOCS`). A body field is appended to a
+form (`&field=value`) or spliced first into the JSON object, the app's bytes left as
+they were and the value never in a `serde_json::Value`. No value: a `required`
+binding refuses the request, another is left off. A release binding none sends
+none. Why: a placeholder the app placed could go where an honest upstream reads it
+as content and answers it back transformed (the reflection trick,
+`an_app_cannot_read_a_secret_back_through_a_reflecting_upstream`), which no
+redaction follows. The echo answers each attached value's length (`secretBytes`),
+never a value.
 
 **Connectors** (`connector.rs`, `connector/`): for a service where a key is worth
 more than the app (Stripe, an OpenAI-compatible API), the node builds the request.
 A `Connector` is a name, a pinned upstream API version, one host, the `Credential`
-it attaches (a secret binding, written into a header by the node; an input naming
-`{{secret:` is refused) and `Operation`s, each fixing method, path and where each
+it attaches (a header, attached through the credential binding
+`Connector::binding`, the connector's host, required; a call carries it alone,
+never the release's raw bindings; an input naming `{{secret:` is refused) and `Operation`s, each fixing method, path and where each
 typed `Field` (`Kind`: bounded integer, id, code, owner- or release-limited choice
 or map, chat messages) goes, and which `Output`s come back. An unknown operation
 or field, a wrong type, a value no `ConnectorGrant` limit allows is refused before
@@ -81,7 +96,8 @@ responses are read whole, so a match never spans chunks. Bounds:
 **Not covered**, so this is defence in depth, not a guarantee: any other
 transformation (another or a nested encoding, mixed-case hex, compression,
 encryption), a hash or MAC of a secret, and a partial echo (a prefix, a suffix, a
-slice). A secret should go only to a host that does not echo it.
+slice). Bindings keep the app from placing a secret where it is echoed; what the
+key may do at its bound host is still the app's to use.
 
 - `OutboundService::from_settings` → `for_run(app, declared, approval, context)`;
   `for_run_counted(.., sent)` also counts each request handed to the transport

@@ -667,11 +667,7 @@ impl SystemState {
             version: version.to_owned(),
             signer: p.signer_id.clone(),
             outbound: v.outbound.iter().cloned().collect(),
-            secrets: v
-                .secrets
-                .iter()
-                .map(|(name, s)| (name.clone(), s.hosts.iter().cloned().collect()))
-                .collect(),
+            secrets: v.secrets.clone(),
             ..Release::default()
         })
     }

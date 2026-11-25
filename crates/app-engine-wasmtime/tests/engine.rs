@@ -870,18 +870,15 @@ fn writes_past_the_run_cap_trap_host_denied_at_the_call() {
         started.elapsed()
     );
 
-    // Event audiences count too; 100 events naming a 1 MiB account each stop at the first.
+    // Event audiences count too; 100 events naming a 1 MiB account each are all refused.
+    // Past the run's bytes an event is the soft error `emit` returns (C10), which this guest
+    // ignores: the run ends `Ok` and keeps none of them.
     let out = fx.engine.invoke(
         &app,
         host(InvocationKind::Call, "shout", b""),
         Budget::call(),
     );
-    assert_eq!(
-        trap_kind(&out),
-        Some(TrapKind::HostDenied),
-        "{:?}",
-        out.status
-    );
+    assert_eq!(out.status, Status::Ok);
     assert!(out.events.is_empty());
 
     // Under the cap the same writes succeed: 15 versions of 64 KiB.
@@ -1534,7 +1531,7 @@ fn each_engine_refuses_an_abi_of_the_other_world() {
     });
     let compute_abi = serde_json::json!({
         "abiVersion": 1,
-        "world": "calimero:app/compute@0.5.6",
+        "world": "calimero:app/compute@0.5.7",
         "methods": {},
     });
     let job = calimero_app_build::with_abi(&guest("compute_probe"), &plain).expect("patch");

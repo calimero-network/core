@@ -78,8 +78,9 @@ of one a node's data still holds; such an app can still be listed and deleted.
   [...], replace }`, with a passkey assertion (`client.orgs().outbound_approval(..)` in the
   Rust client, `client.orgs.outboundApproval(..)` in mero-js). By the operator: `POST /ops/outbound`. Until then
   the request is refused with `NotApproved` (or `AwaitingApproval` for a prefix
-  a later release added), which the app can show. Secrets the operator holds
-  (`{{secret:NAME}}`) are filled in by the node and redacted from the answer.
+  a later release added), which the app can show. Secrets the release binds
+  to a host (a header or body field) are attached by the node, never placed or read by
+  the app, and redacted from the answer.
 - **Confirmations.** `#[app::confirm]` methods need a fresh passkey
   assertion over the exact call (`client.apps.call(..., { confirm })` in mero-js,
   `client.apps.call(..., confirm=passkey)` in calimero-client-py).

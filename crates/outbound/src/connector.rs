@@ -22,8 +22,9 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Instant;
 
+use calimero_bundle::BundleSecret;
 use calimero_primitives::outbound::{
-    OutboundMethod, OutboundRequest, MAX_REQUEST_BODY, SECRET_PREFIX, SECRET_SUFFIX,
+    OutboundMethod, OutboundRequest, MAX_REQUEST_BODY, SECRET_PLACEHOLDER,
 };
 use eyre::{bail, eyre, Result as EyreResult};
 use serde_json::{Map, Value};
@@ -75,9 +76,11 @@ pub struct Connector {
     pub operations: &'static [Operation],
 }
 
-/// Where a connector's credential goes: the secret binding `secret` (the
-/// operator's, or one the instance's owner set), in header `header` written as
-/// `format` with `{}` for the value. The app never names or places it.
+/// Where a connector's credential goes: the secret `secret` (the instance's owner's
+/// value, its deployment's or the operator's), in header `header` written as
+/// `format` with `{}` for the value. The node attaches it through a credential
+/// binding to the connector's host ([`Connector::binding`]), as it attaches a
+/// release's own; the app never names, places or reads it.
 #[derive(Debug)]
 pub struct Credential {
     pub secret: &'static str,
@@ -178,6 +181,21 @@ pub struct ConnectorGrant {
 }
 
 impl Connector {
+    /// The credential binding a call attaches: [`Credential`]'s header on the
+    /// connector's host, every path (the operation fixes the path), required, so
+    /// a call with no value for it is refused rather than sent unauthenticated.
+    #[must_use]
+    pub fn binding(&self) -> BundleSecret {
+        let mut binding = BundleSecret::header(
+            self.host,
+            &["/"],
+            self.credential.header,
+            Some(self.credential.format),
+        );
+        binding.required = true;
+        binding
+    }
+
     fn operation(&self, name: &str) -> Option<&Operation> {
         self.operations.iter().find(|o| o.name == name)
     }
@@ -233,7 +251,7 @@ impl Connector {
             bail!("{}.{} takes no field {extra:?}", self.name, op.name);
         }
         if names_a_secret(&Value::Object(input.clone())) {
-            bail!("an input may not name a secret ({SECRET_PREFIX}…{SECRET_SUFFIX})");
+            bail!("an input may not name a secret ({SECRET_PLACEHOLDER}…}}}})");
         }
 
         let mut path = op.path.to_owned();
@@ -283,13 +301,6 @@ impl Connector {
             .iter()
             .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
             .collect();
-        headers.push((
-            self.credential.header.to_owned(),
-            self.credential.format.replace(
-                "{}",
-                &format!("{SECRET_PREFIX}{}{SECRET_SUFFIX}", self.credential.secret),
-            ),
-        ));
         let body = match op.body {
             Body::None => Vec::new(),
             Body::Form => {
@@ -372,15 +383,15 @@ fn put(out: &mut Value, to: &[&str], value: Value) {
     }
 }
 
-/// Whether any string or key in `value` holds a secret placeholder, which
-/// `prepare` would fill in.
+/// Whether any string or key in `value` holds the retired secret placeholder: no
+/// secret is ever filled in, and an input naming one is a sign of an app trying.
 fn names_a_secret(value: &Value) -> bool {
     match value {
-        Value::String(s) => s.contains(SECRET_PREFIX),
+        Value::String(s) => s.contains(SECRET_PLACEHOLDER),
         Value::Array(list) => list.iter().any(names_a_secret),
         Value::Object(map) => map
             .iter()
-            .any(|(k, v)| k.contains(SECRET_PREFIX) || names_a_secret(v)),
+            .any(|(k, v)| k.contains(SECRET_PLACEHOLDER) || names_a_secret(v)),
         _ => false,
     }
 }
@@ -624,15 +635,12 @@ impl ConnectorHost for RunConnectors {
         let request = connector
             .build(grant, operation, input)
             .map_err(|e| self.refused(name, &e))?;
-        // The credential is the connector's, bound to its host alone, whatever
-        // the release declares for its raw requests.
+        // The call carries the connector's credential binding alone, attached by
+        // `prepare` as it attaches a release's: never a binding the release declares
+        // for its raw requests.
         let mut app = self.app.clone();
-        if let Some(secrets) = &mut app.secrets {
-            let _ = secrets.insert(
-                connector.credential.secret.to_owned(),
-                vec![connector.host.to_owned()],
-            );
-        }
+        app.secrets =
+            BTreeMap::from([(connector.credential.secret.to_owned(), connector.binding())]);
         let declared: BTreeSet<String> = connector.prefixes(grant).into_iter().collect();
         let prepared = self
             .service

@@ -1552,12 +1552,11 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
             hosts(added.iter().map(String::as_str)),
         ));
     }
-    let mut secrets = strings(&sheet["secrets"]["added"]);
-    secrets.extend(strings(&sheet["secrets"]["hostsChanged"]));
+    let secrets = strings(&sheet["secrets"]["words"]);
     if !secrets.is_empty() {
         out.push(attention(
             "secrets",
-            "Asks for a new secret, or sends one to other addresses:".to_owned(),
+            "Asks for a new secret, or has one sent elsewhere or another way:".to_owned(),
             secrets,
         ));
     }

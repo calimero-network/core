@@ -112,16 +112,16 @@ def sync_detailed(
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
-    (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose
-    release declares the name; it wins over the operator's. Kept in the system group's state, sealed,
-    never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A
-    manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint
-    }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment
-    offers declares the name, or a release one of those references in its signed `uses` (an installed
-    release of the package inside the reference's range), whose value reaches the apps an instance
-    creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at
-    most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for
+    an instance whose release declares the name; it wins over the operator's. Kept in the system group's
+    state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every
+    app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / {
+    name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release
+    the deployment offers declares the name, or a release one of those references in its signed `uses`
+    (an installed release of the package inside the reference's range), whose value reaches the apps an
+    instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400
+    BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below
+    cluster version 1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -163,16 +163,16 @@ def sync(
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
-    (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose
-    release declares the name; it wins over the operator's. Kept in the system group's state, sealed,
-    never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A
-    manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint
-    }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment
-    offers declares the name, or a release one of those references in its signed `uses` (an installed
-    release of the package inside the reference's range), whose value reaches the apps an instance
-    creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at
-    most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for
+    an instance whose release declares the name; it wins over the operator's. Kept in the system group's
+    state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every
+    app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / {
+    name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release
+    the deployment offers declares the name, or a release one of those references in its signed `uses`
+    (an installed release of the package inside the reference's range), whose value reaches the apps an
+    instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400
+    BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below
+    cluster version 1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -209,16 +209,16 @@ async def asyncio_detailed(
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
-    (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose
-    release declares the name; it wins over the operator's. Kept in the system group's state, sealed,
-    never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A
-    manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint
-    }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment
-    offers declares the name, or a release one of those references in its signed `uses` (an installed
-    release of the package inside the reference's range), whose value reaches the apps an instance
-    creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at
-    most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for
+    an instance whose release declares the name; it wins over the operator's. Kept in the system group's
+    state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every
+    app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / {
+    name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release
+    the deployment offers declares the name, or a release one of those references in its signed `uses`
+    (an installed release of the package inside the reference's range), whose value reaches the apps an
+    instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400
+    BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below
+    cluster version 1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -258,16 +258,16 @@ async def asyncio(
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
-    (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose
-    release declares the name; it wins over the operator's. Kept in the system group's state, sealed,
-    never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A
-    manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint
-    }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment
-    offers declares the name, or a release one of those references in its signed `uses` (an installed
-    release of the package inside the reference's range), whose value reaches the apps an instance
-    creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at
-    most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version
-    1.0.0-rc.32.
+    (`app_secret_set`), and only where the secret's binding says (its host, header or body field), for
+    an instance whose release declares the name; it wins over the operator's. Kept in the system group's
+    state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every
+    app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / {
+    name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release
+    the deployment offers declares the name, or a release one of those references in its signed `uses`
+    (an installed release of the package inside the reference's range), whose value reaches the apps an
+    instance creates with it; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400
+    BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below
+    cluster version 1.0.0-rc.32.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

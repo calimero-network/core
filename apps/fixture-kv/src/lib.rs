@@ -272,6 +272,16 @@ impl Kv {
         Ok(())
     }
 
+    /// Writes `n` keys (`quiet-0` ..) of `size` bytes each without events, so only the run's
+    /// write limits (10,000 writes, 1 MiB) stop it: the refused write's typed `RunLimit`.
+    pub fn fill_quiet(&mut self, n: u32, size: u32) -> app::Result<()> {
+        let value = "x".repeat(size as usize);
+        for i in 0..n {
+            let _event = self.upsert(&format!("quiet-{i}"), &value)?;
+        }
+        Ok(())
+    }
+
     /// Never returns: runs until the node's fuel or wall-clock budget stops it.
     pub fn spin(&mut self) -> app::Result<()> {
         let mut n: u64 = 0;
@@ -546,7 +556,9 @@ impl Kv {
     }
 
     /// An action (D12): reads `key` through a view, sends it to the echo host with the
-    /// action's key and a secret, and writes what came back through `applyEnrichment`.
+    /// action's key, and writes what came back through `applyEnrichment`. A secret the
+    /// release binds to the echo host (`ECHO_KEY`, in tests) is attached by the node, never
+    /// named here.
     #[app::action]
     pub fn enrich(ctx: &mut ActionCtx, key: String) -> app::Result<()> {
         let value: Option<String> = ctx.view("get", &KeyArg { key: &key })?;
@@ -554,8 +566,7 @@ impl Kv {
             "https://echo.outbound.test/v1/enrich?v={}",
             value.unwrap_or_default()
         ))
-        .header("Idempotency-Key", &ctx.key())
-        .header("Authorization", "Bearer {{secret:ECHO_KEY}}");
+        .header("Idempotency-Key", &ctx.key());
         let response = ctx.fetch(&request)?;
         let summary = format!("{} {}", response.status, response.text());
         ctx.call::<(), _>(

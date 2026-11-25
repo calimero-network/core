@@ -17,7 +17,7 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app/compute@0.5.6","methods":{"spin":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"bomb":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"id":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"wall":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"draw":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"random":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"hashmap":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"nan":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"grow":{"kind":"compute","compute":{"fuel":1,"result":"r"}}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app/compute@0.5.7","methods":{"spin":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"bomb":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"id":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"wall":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"draw":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"random":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"hashmap":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"nan":{"kind":"compute","compute":{"fuel":1,"result":"r"}},"grow":{"kind":"compute","compute":{"fuel":1,"result":"r"}}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]

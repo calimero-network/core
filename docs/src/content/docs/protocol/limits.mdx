@@ -20,12 +20,12 @@ error the guest's host call returns.
 | --- | --- | --- |
 | Fuel per call or view | 200 000 000 | `DEFAULT_FUEL` |
 | Memory | 1024 pages = 64 MiB, one memory | `DEFAULT_MEMORY_PAGES`, `MAX_MEMORIES` |
-| Wall clock | 2 s for a call, view, timer or delivery; 10 s for an action. A deadline for the whole run, host calls included: one that waits (outbound HTTP, a synchronous xcall, an action's view or call) waits no longer than the run has left, and one that ends past it ends the run `Timeout` (`wall clock exceeded`), not logged | `CALL_WALL_CLOCK`, `ACTION_WALL_CLOCK`, `WALL_CLOCK_EXCEEDED` |
+| Wall clock | 2 s for a call, view, timer or delivery; 10 s for an action | `CALL_WALL_CLOCK`, `ACTION_WALL_CLOCK` |
 | Stack | 200 KiB | `MAX_WASM_STACK` |
 | Table elements, instances, tables, resources | 100 000, 20, 2, 4096 | `MAX_TABLE_ELEMENTS`, `MAX_INSTANCES`, `MAX_TABLES`, `MAX_RESOURCES` |
 | Storage key | 1 KiB | `MAX_KEY_BYTES` |
-| Bytes one run writes (keys, values, event names and data; every overwrite counts) | 1 MiB (`HostDenied("entry too large")`) | `MAX_RUN_BYTES` |
-| Writes per run | 10 000 | `MAX_WRITES` |
+| Bytes one run writes (keys, values, event names and data; every overwrite counts) | 1 MiB (soft: the SDK's typed `RunLimit` error with the bytes the run would reach, WIT `storage.put-checked` 0.5.7; a component built before traps `HostDenied("entry too large")`) | `MAX_RUN_BYTES` |
+| Writes per run | 10 000 (soft: `RunLimit` with the write's number; before 0.5.7 a trap) | `MAX_WRITES` |
 | Range reads | 1000 entries and 4 MiB (past the first entry) per batch; 1024 open cursors | `MAX_RANGE_BATCH`, `MAX_RANGE_BATCH_BYTES`, `MAX_OPEN_CURSORS` |
 | Events | 1000 per run; name 100 bytes; data 16 KiB; 1000 accounts in an audience | `MAX_EVENTS`, `MAX_EVENT_NAME_BYTES`, `MAX_EVENT_DATA_BYTES`, `MAX_AUDIENCE_ACCOUNTS` |
 | App log | 64 KiB per run; later lines dropped; never kept by the node | `MAX_LOG_BYTES` |
@@ -35,6 +35,7 @@ error the guest's host call returns.
 | Outbound HTTP | 8 requests per action, one per call; bodies 1 MiB; 64 KiB recorded in a call's entry; 100 headers | `MAX_HTTP_REQUESTS`, `MAX_HTTP_BODY_BYTES`, `MAX_RECORDED_BODY_BYTES`, `MAX_HEADERS` |
 | Connector calls | input 64 KiB; 64 values in one limit (metadata keys, models); each call counts as an outbound request | `MAX_CONNECTOR_INPUT`, `MAX_LIMIT_VALUES` |
 | Outbound secrets and their redaction | 32 distinct secret values per request (more is refused); each redacted from the response as sent and in 19 common encodings (hex, base64, percent, JSON), 20 patterns a secret, 640 a request; encodings only for a secret of 8 to 4096 bytes, as sent otherwise | `MAX_SECRETS_PER_REQUEST`, `PATTERNS_PER_SECRET`, `MAX_REDACTION_PATTERNS`, `MIN_ENCODED_SECRET_BYTES`, `MAX_ENCODED_SECRET_BYTES` |
+| Declared secrets (credential bindings) | 16 per release; name 64 bytes; description 256 bytes; one host, 1 to 8 path prefixes of 256 bytes each, and one place each (a header, or a body field); header name or body field 64 bytes; header `format` 64 bytes with `{}` once; no two on one host's same place on a shared path | `MAX_SECRETS`, `MAX_SECRET_NAME_BYTES`, `MAX_SECRET_DESCRIPTION_BYTES`, `MAX_SECRET_PATHS`, `MAX_SECRET_PATH_BYTES`, `MAX_SECRET_FIELD_BYTES`, `MAX_SECRET_FORMAT_BYTES` |
 | Search | 100 hits at most; query 256 bytes; 32 searches per run (`"too many searches in one run"`) | `MAX_SEARCH_LIMIT`, `MAX_SEARCH_QUERY_BYTES`, `MAX_SEARCHES_PER_RUN` |
 | Files | 16 open; 2 GiB each; 64 MiB written per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_READ_CHUNK` |
 | Blob download grant | 1 day at most | `MAX_GRANT_TTL_SECS` |
@@ -66,7 +67,9 @@ rolling upgrade. Job nodes charge compute runs from that release on.
 
 A run's result also has to fit the log: its whole entry — arguments, diff,
 events — must stay under **1 MiB** (`calimero_log::MAX_ENTRY_BYTES`); a run
-past it is logged trapped. Compute runs on job nodes have their own caps
+past it is logged trapped (`HostDenied`, `entry too large`). The test harness
+measures the same entry (`calimero_app_host::entry_bytes`) and refuses the run
+the same way. Compute runs on job nodes have their own caps
 (`MAX_COMPUTE_FUEL` 10^12, `MAX_COMPUTE_MEMORY_MIB` 4096,
 `MAX_COMPUTE_WALL_SECS` 900; [Compute actions](/protocol/compute-actions/#limits)).
 
@@ -90,7 +93,7 @@ past it is logged trapped. Compute runs on job nodes have their own caps
 | Entries whose touched entities search remembers | 4096 | `TOUCHED_RING` |
 | Presence | 512 authors per app, 4 KiB state, 7 s TTL | `MAX_AUTHORS_PER_APP`, `MAX_STATE_BYTES`, `PRESENCE_TTL_MS` |
 | Event and presence streams per node | 4096 | `MAX_EVENT_STREAMS` |
-| Open passkey ceremonies per node | 10 000 sign-ins and sign-ups, 16 per sealed session (a new one displaces the oldest of its session, or of the biggest holder when full); apart from those, 64 per account and 10 000 across accounts; each 5 minutes | `MAX_PENDING_CHALLENGES`, `MAX_CEREMONIES_PER_SESSION`, `MAX_CHALLENGES_PER_ACCOUNT`, `MAX_ACCOUNT_CHALLENGES` |
+| Open passkey ceremonies per node | 10 000 sign-ins and sign-ups; apart from those, 64 per account and 10 000 across accounts; each 5 minutes | `MAX_PENDING_CHALLENGES`, `MAX_CHALLENGES_PER_ACCOUNT`, `MAX_ACCOUNT_CHALLENGES` |
 | Sealed sessions per node | 16 384 anonymous, 4096 identified (peers), each evicting its own; 1 h lifetime, 10 min idle | `MAX_SESSIONS`, `MAX_IDENTIFIED_SESSIONS`, `SESSION_LIFETIME` |
 | Sealed handshakes per node | anonymous 100/s (burst 200); identified 50/s (burst 100), apart | `HANDSHAKES_PER_SECOND`, `IDENTIFIED_HANDSHAKES_PER_SECOND` |
 | Release frontends | 32 open, 4096 releases remembered as shipping none; 4 `.mpk` loads at once, one per release | `CACHED_FRONTENDS`, `CACHED_ABSENT_FRONTENDS`, `FRONTEND_LOADS` |
@@ -103,7 +106,6 @@ past it is logged trapped. Compute runs on job nodes have their own caps
 | Quotes (`GET /attestation`, a job node's and a waiting node's, `merod attest --serve`) | 1 made at a time, off the async workers; 8 more wait, each at most 3 s; past that `503 BUSY` with `Retry-After: 1` | `MAX_CONCURRENT_QUOTES`, `MAX_QUEUED_QUOTES`, `QUOTE_WAIT` |
 | Sealed-file exports | 30 a minute per account per node | `MAX_EXPORTS_PER_MINUTE` |
 | Sessions listed (`GET /auth/sessions`) | 256 | `MAX_SESSIONS_LISTED` |
-| API keys a fresh read found missing, refused with no system read | 4096 per node, each 60 s | `MAX_UNKNOWN_API_KEYS`, `UNKNOWN_API_KEY_TTL` |
 | Deployments | 16 per owner, 10 000 per cluster, 64 apps each | `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT` |
 | Organization and app-team names | 64 characters | `MAX_ORG_NAME_CHARS`, `MAX_APP_TEAM_NAME_CHARS` |
 | Team rows changed at once | 64 teams | `MAX_TEAM_BATCH` |

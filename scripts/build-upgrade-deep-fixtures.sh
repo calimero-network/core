@@ -61,12 +61,12 @@ done
 pack "$DEEP/notes-v1.wasm" com.calimero.upgrade.notes 1.0.0 notes-1.0.0.mpk
 pack "$DEEP/notes-v2.wasm" com.calimero.upgrade.notes 2.0.0 notes-2.0.0.mpk
 
-# A release that admits guests (`guests: allowed`); a release that declares a secret its
-# outbound requests name (`secrets`); and a kv unit: kv-unit's release `uses` kv-secret with
+# A release that admits guests (`guests: allowed`); a release that binds a secret to a header
+# of its outbound host (`secrets`); and a kv unit: kv-unit's release `uses` kv-secret with
 # `mode = "create"`. Each declared in a crate's metadata as an app's author would (no lock:
 # kv-unit is packed unpinned, so the newest installed release in range is created), by a
-# release whose meroctl writes them (secrets and `uses` from 1.0.0-rc.31; `--guests` from
-# 1.0.0-rc.33). Each is packed when the pinned meroctl can; a case whose package is missing
+# release whose meroctl writes them (secrets and `uses` from 1.0.0-rc.31, secrets bound to
+# a header or body field from 1.0.0-rc.37; `--guests` from 1.0.0-rc.33). Each is packed when the pinned meroctl can; a case whose package is missing
 # then fails to seed, so a pin that cannot pack one says so here.
 if "$PACK" --help 2>/dev/null | grep -q -- '--guests'; then
   "$PACK" --wasm "$DEEP/kv-guest.wasm" --package com.calimero.upgrade.kv-guest --app-version 1.0.0 \
@@ -89,7 +89,9 @@ package = "com.calimero.upgrade.kv-secret"
 outbound = ["https://api.example.com/"]
 
 [package.metadata.calimero.secrets.API_KEY]
-hosts = ["api.example.com"]
+host = "api.example.com"
+paths = ["/"]
+header = "x-api-key"
 description = "The example API's key"
 required = true
 TOML
