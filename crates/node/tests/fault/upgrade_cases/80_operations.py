@@ -385,3 +385,81 @@ class RestoreBackup(DeepCase):
         person(w, "rowan").call(s["app"], "set", {"key": "again", "value": "after the restore"})
         s["want"]["again"] = "after the restore"
         self.check(w, s)
+
+
+def _job_nodes(w):
+    """The ids of the job nodes the directory holds (`GET /ops/placement`)."""
+    return sorted(n["id"] for n in ops(w, "GET", "ops/placement")["nodes"] if str(n.get("role")).lower() == "job")
+
+
+def _attested(w, states=("admitted",)):
+    """`{job node: its attestation answer}` as the node's check reports it: each in one of `states`."""
+    got = {}
+    for job in _job_nodes(w):
+        got[job] = until(f"job node {job} is attested", lambda job=job: _in_states(
+            ops(w, "GET", f"ops/job-nodes/{job}/attestation"), job, states), 30)
+    check(got, "no job node is registered")
+    return got
+
+
+def _in_states(answer, job, states):
+    check(answer.get("state") in states and answer.get("node") == job, f"job node {job}: {answer}")
+    return answer
+
+
+@case
+class JobNodeAttestation(DeepCase):
+    name = "job-node-attestation"
+    area = "Ops"
+    since = "1.0.0-rc.25"
+    seeds = "the job node the cluster registered (compute runs use it); nothing is stored beyond its registration"
+    verifies = ("the operator's read of each registered job node's attestation answers `admitted`: the old "
+                "release's nodes judging the old job node, then every new node judging that old job node once it "
+                "serves again after the roll (and a compute run started then is placed on it and ends), then the new nodes "
+                "judging the new one; while the cluster is mixed the "
+                "old job node, which the pipelines case stopped, may be `unreachable`; a replica's id is refused `404`")
+
+    def populate(self, w):
+        _attested(w)
+        return {}
+
+    def check(self, w, s, states=("admitted",)):
+        _attested(w, states)
+        replica = w.members()[0]
+        refused(("NOT_FOUND", "404"), lambda: ops(w, "GET", f"ops/job-nodes/{replica}/attestation"),
+                "the attestation of a replica node")
+
+    def during_mix(self, w, s):
+        # The pipelines case stops the old job node before the roll, so it is still registered and unreachable.
+        self.check(w, s, ("admitted", "unreachable"))
+
+    def with_old_job(self, w, s):
+        for job in sorted(w.fleet.jobs):
+            for node in w.members():
+                until(f"node {node} admits the old job node {job}", lambda: _in_states(
+                    ops(w, "GET", f"ops/job-nodes/{job}/attestation", node=node), job, ("admitted",)), 60)
+        self._run_places_on(w, sorted(w.fleet.jobs)[0])
+
+    def _run_places_on(self, w, job):
+        """A compute run started now, with the old job node the only one registered, is placed on it and ends."""
+        jory = person(w, "jory")
+        package, version = w.registry.publish(w.fixtures["compute_from"])
+        jory.raw("post", "packages/install", {"package": package, "version": version})
+        org = new_org(jory, "Old Job Org")
+        app = jory.raw("post", "apps", {"name": "old-job", "package": package, "version": version, "org": org})["appId"]
+        file_id = jory.a.upload_file(app, random.Random(31).randbytes(50_000))["id"]
+        run = jory.call(app, "startDigest", {"inputs": [file_id]}, timeout=60)["result"]
+
+        def placed():
+            nodes = [a["node"] for a in jory.get(f"apps/{app}/runs/{run}")["attempts"]]
+            check(nodes, "the run is not placed yet")
+            return nodes
+
+        eq(until("the run is placed", placed, 120)[0], job, "the node the run was placed on")
+
+        def ended():
+            outcome = jory.result(app, "outcome", {"run": run})
+            check(outcome, "the run has no outcome yet")
+            return json.loads(outcome)
+
+        eq(until("the run ends", ended, 240)["status"], "done", "the run on the old job node")
