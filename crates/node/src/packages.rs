@@ -22,7 +22,7 @@ use calimero_app_host::{Abi, MethodKind};
 use calimero_bundle::VerifiedBundle;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::compile::Engine;

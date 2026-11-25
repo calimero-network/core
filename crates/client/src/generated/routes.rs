@@ -3641,10 +3641,16 @@ impl Packages<'_> {
     /// Install a release from the registry.
     ///
     /// `POST /packages/install` (`package_install`). Who: an installer (an account holder, or an unscoped API key that is not read-only).
-    pub async fn install(self, package: &str, version: &str) -> Result<PackageInstalled> {
+    pub async fn install(
+        self,
+        package: &str,
+        version: &str,
+        org: Option<&str>,
+    ) -> Result<PackageInstalled> {
         let mut fields = Map::new();
         route::put(&mut fields, "package", &package)?;
         route::put(&mut fields, "version", &version)?;
+        route::put_some(&mut fields, "org", org)?;
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "packages/install").json(body);
         route::json(self.client.transport(), req, None, None, false).await
@@ -3746,8 +3752,12 @@ impl Packages<'_> {
     /// Upload a signed release.
     ///
     /// `POST /packages` (`package_upload`). Who: an installer (an account holder, or an unscoped API key that is not read-only).
-    pub async fn upload(self, bytes: Vec<u8>) -> Result<PackageInstalled> {
-        let req = Request::new(Method::POST, "packages").bytes("application/octet-stream", bytes);
+    pub async fn upload(self, bytes: Vec<u8>, org: Option<&str>) -> Result<PackageInstalled> {
+        let mut req =
+            Request::new(Method::POST, "packages").bytes("application/octet-stream", bytes);
+        if let Some(v) = org {
+            req = req.query("org", v);
+        }
         route::json(self.client.transport(), req, None, None, false).await
     }
 
