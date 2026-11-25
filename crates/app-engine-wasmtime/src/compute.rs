@@ -51,3 +51,16 @@ impl job::Host for StoreData {
         self.host.compute_progress(percent, &step).map_err(denied)
     }
 }
+
+/// Shadows the compute world's `job` functions with their charged versions (`fuel.rs`);
+/// `files` is `bindings::charge_files`.
+pub(crate) fn charge_calls(linker: &mut Linker<StoreData>) -> Result<()> {
+    use crate::fuel::{calimero, charged};
+    let mut i = calimero(linker, "job")?;
+    charged!(i, "run-id", |d| job::Host::run_id(d));
+    charged!(i, "inputs", |d| job::Host::inputs(d));
+    charged!(i, "progress", |d, percent: u8, step: String| -> () {
+        job::Host::progress(d, percent, step)
+    });
+    Ok(())
+}

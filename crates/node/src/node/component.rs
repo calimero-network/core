@@ -927,6 +927,7 @@ impl Node {
         // their grant, `Node::caller_for`): its own caller when that is a person.
         let forward = forwarded(&invocation.caller);
         let via = extras.via.clone();
+        let searches = extras.searches.clone().unwrap_or_default();
         let xcalls = extras.key.and_then(|key| {
             let node = self.this.lock().ok()?.upgrade()?;
             let handle = tokio::runtime::Handle::try_current().ok()?;
@@ -937,6 +938,7 @@ impl Node {
                 handle,
                 read_only: extras.read_only,
                 person: forward.clone(),
+                searches: searches.clone(),
                 deadline,
             }) as Arc<dyn calimero_app_host::XcallHost>)
         });
@@ -957,14 +959,14 @@ impl Node {
         let (kind, method) = (invocation.kind, invocation.method.clone());
         match HostCore::new(app_id, state, applied, invocation, directory)
             .and_then(|host| host.with_via(via))
+            .map(|host| host.with_search_budget(searches))
         {
             Ok(host) => {
                 let host = host
                     .with_deadline(deadline)
                     .with_blobs(blobs)
                     .with_files(files.clone())
-                    .with_logs(self.config.app_logs)
-                    .with_host_fuel(self.charges_host_fuel());
+                    .with_logs(self.config.app_logs);
                 let host = match extras.runs {
                     Some(runs) => host
                         .with_compute(prepared.abi.clone(), runs)
@@ -1528,6 +1530,7 @@ impl Node {
                                 read_only: false,
                                 via: None,
                                 secrets,
+                                searches: None,
                             },
                         );
                         let outcome = ran.outcome;
@@ -1761,6 +1764,7 @@ impl Node {
                                     compute_component,
                                     via: req.via.clone(),
                                     secrets,
+                                    searches: None,
                                 },
                             );
                             ran_for = Some(started.elapsed());
@@ -2258,6 +2262,7 @@ impl Node {
         &self,
         g: &Group<AppMachine>,
         req: &ViewRequest,
+        searches: Option<&calimero_app_host::SearchBudget>,
     ) -> Result<ViewAnswer, ApiError> {
         if req.method == RUN_VIEW {
             return self.run_view(g, req);
@@ -2327,6 +2332,7 @@ impl Node {
         );
         let meter = self.meter(&req.app_id, &bundle);
         let via = req.via.clone();
+        let searches = searches.cloned();
         // A view may run up to its deadline: off the async workers.
         let (out, run) = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
@@ -2344,6 +2350,7 @@ impl Node {
                         read_only: false,
                         via,
                         secrets: crate::component::InstanceSecrets::new(),
+                        searches,
                     },
                     search,
                 )
@@ -2554,6 +2561,8 @@ impl Node {
             handle: tokio::runtime::Handle::current(),
             deadline,
         });
+        // The views its xcalls reach share one search budget, as a request's do.
+        let searches = calimero_app_host::SearchBudget::default();
         let xcalls = Arc::new(NodeXcall {
             node: Arc::clone(self),
             source: app_id.to_owned(),
@@ -2562,6 +2571,7 @@ impl Node {
             read_only: false,
             // An action serves no one when it runs (D12): its calls name no person.
             person: None,
+            searches: searches.clone(),
             deadline,
         });
         let meter = self.meter(app_id, &prepared.hash);
@@ -2594,7 +2604,6 @@ impl Node {
         };
         let (wasm, prepared, app) = (Arc::clone(&self.wasm), prepared.clone(), app_id.to_owned());
         let (keep_logs, method) = (self.config.app_logs, record.method.clone());
-        let host_fuel = self.charges_host_fuel();
         let ran = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
                 match HostCore::new(
@@ -2612,7 +2621,7 @@ impl Node {
                                 .with_http(http)
                                 .with_xcall_host(xcalls)
                                 .with_logs(keep_logs)
-                                .with_host_fuel(host_fuel),
+                                .with_search_budget(searches),
                             budget,
                         );
                         print_app_logs(&app, InvocationKind::Action, &method, &out.logs);
@@ -3044,13 +3053,6 @@ impl Node {
     /// Whether a message's outbox row names the person its run served: from the logged
     /// cluster version that brings `Feature::Delegation` on, so every replica applies the
     /// row alike. Judged on the logged version alone (no round to the nodes).
-    /// Whether runs pay fuel for their host calls (C7): once the logged cluster version brings
-    /// [`crate::system::cluster_version::Feature::HostFuel`], so a call answers alike on every
-    /// node of a cluster mid-upgrade.
-    fn charges_host_fuel(&self) -> bool {
-        self.sys(|s| s.cluster_brings(crate::system::cluster_version::Feature::HostFuel))
-    }
-
     fn carries_person(&self) -> bool {
         self.sys(|s| {
             crate::system::cluster_version::check(
@@ -3144,6 +3146,10 @@ struct RunExtras {
     /// The instance's own secret values (`AppMachine::instance_secrets`), read with the
     /// state the run sees, for the outbound gate.
     secrets: crate::component::InstanceSecrets,
+    /// The searches the request has left when this run serves a synchronous `xcall_view`
+    /// (its caller's), shared with the run and the views its own xcalls reach; `None` is a
+    /// fresh request (`MAX_SEARCHES_PER_RUN`).
+    searches: Option<calimero_app_host::SearchBudget>,
 }
 
 /// How long a call, timer or delivery waits for one outbound response (D76): within the
@@ -3204,6 +3210,8 @@ struct NodeXcall {
     /// The person the run serves: a call or view runs as them where they granted the source
     /// that method of the target (`Node::as_person`).
     person: Option<Caller>,
+    /// The searches the request has left: a view this run reaches shares them.
+    searches: calimero_app_host::SearchBudget,
     /// When the run's wall clock ends: no answer is waited for past it.
     deadline: Instant,
 }
@@ -3299,9 +3307,9 @@ impl NodeXcall {
             min_index: 0,
             via,
         };
-        let node = Arc::clone(&self.node);
+        let (node, searches) = (Arc::clone(&self.node), self.searches.clone());
         Ok(Box::pin(async move {
-            match node.view(&req).await {
+            match node.view_searching(&req, Some(&searches)).await {
                 Ok(a) if a.timeout => Err(xcall_failure("the view timed out")),
                 Ok(a) => answer_bytes(&a.status, &a.result, &a.error),
                 Err(e) => Err(refusal_text(&e)),
