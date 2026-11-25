@@ -62,10 +62,17 @@ code, and app code beyond what its owner approved.
   passkey step-up for owners.
 - **Exfiltration over the network** — outbound HTTPS only to hosts the operator
   allows, under prefixes the app's signed manifest declares and its approver
-  approved, from writing runs only. The app's own code is not stopped from
-  sending what it reads to such a host; an organization that needs that
-  guarantee turns egress off (for itself or one instance), and then no request
-  leaves for its apps whatever an approval says
+  approved, from writing runs only. An API key goes only where the signed
+  manifest binds it, attached by the node: the app never places or reads one
+  ([Secrets](/protocol/secrets/)), but a raw request can still use it for
+  anything it allows under its bound paths. For a service where that matters,
+  a first-party [connector](/build/guides/connectors/) is the only way to its
+  host: the node builds each request from a declared operation and typed
+  fields, attaches the key through its binding, and returns only declared
+  fields. The app's own code is not stopped from sending what it reads to an
+  approved host; an organization that needs that guarantee turns egress off
+  (for itself or one instance), and then no request or connector call leaves
+  for its apps whatever an approval says
   ([Egress off](/build/guides/outbound/#egress-off)).
 - **A stolen session** — 15-minute tokens, refresh tokens exchanged once they
   are an hour old whose reuse after that revokes the session (a copy taken

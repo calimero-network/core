@@ -2692,18 +2692,12 @@ impl Node {
                 calimero_outbound::AppIdentity {
                     package: release.at.package.clone(),
                     signer,
-                    // A release that declares secrets gets only those, to their hosts.
-                    secrets: (!release.version.secrets.is_empty()).then(|| {
-                        release
-                            .version
-                            .secrets
-                            .iter()
-                            .map(|(name, s)| (name.clone(), s.hosts.clone()))
-                            .collect()
-                    }),
+                    // The credentials the release binds: the outbound gate attaches each
+                    // to its host's requests itself; a release binding none sends none.
+                    secrets: release.version.secrets.clone(),
                     // The owner's own values, then the deployment's (read from this
                     // node's system state at run time), for names the release still
-                    // declares; the deployment's only for a release of a package it
+                    // binds; the deployment's only for a release of a package it
                     // offers, whatever the record says the instance runs.
                     own: crate::component::run_secrets(
                         own,

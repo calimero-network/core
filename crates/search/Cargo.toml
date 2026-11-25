@@ -9,6 +9,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+ciborium.workspace = true
 eyre.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
