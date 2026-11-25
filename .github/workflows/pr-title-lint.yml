@@ -8,6 +8,7 @@ on:
       - edited
       - reopened
       - synchronize
+  merge_group:
 
 permissions:
   contents: read
@@ -15,6 +16,8 @@ permissions:
 jobs:
   lint:
     name: Lint
+    # The title was linted on the PR; a queue run has no title, and a skipped job passes the check.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -1,10 +1,10 @@
 name: Report master
 description: >
-  Keep one open issue per workflow while master is red. There is no merge queue:
-  a pull request lands once its own checks pass, and the merged commit is first
-  tested in full on the push to master. A red push opens (or comments on) the
-  issue, naming the commit and its pull request, which is reverted rather than
-  fixed forward; the next green push closes it. Runs on a push to master only.
+  Keep one open issue per workflow while master is red. The merge queue gates on
+  the fast checks (a PR's reachable tests); the push to master runs every test and
+  e2e.yml after the merge. A red push opens (or comments on) the issue, naming the
+  commit and its pull request, which is reverted rather than fixed forward; the
+  next green push closes it. Runs on a push to master only.
 
 inputs:
   needs:

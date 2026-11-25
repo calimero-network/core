@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: ["master"]
+  merge_group:
   # Every PR, with no `paths:` filter: the `Rust` check is required, and `scope`
   # below skips what a change cannot reach (all of it, for docs). A filter would
   # need a stub workflow to report the check whenever it skipped.
@@ -18,9 +19,9 @@ env:
 permissions:
   contents: read
 
-# Cancel superseded PR runs. Master gets a run per commit: there is no merge
-# queue, so this run is the merged tree's first full test, and one group per
-# ref would drop a pending push whose files the next push's range leaves out.
+# Cancel superseded PR runs. Master is never cancelled and gets a run per commit:
+# its push runs every test, after a queue that ran only the tests the change
+# reaches, so a replaced pending run would leave a merged commit untested.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
@@ -79,9 +80,9 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          # push: the pushed range.
-          FROM: ${{ github.event.before }}
-          TO: ${{ github.sha }}
+          # push: the pushed range; merge_group: the queue entry against its base.
+          FROM: ${{ github.event.before || github.event.merge_group.base_sha }}
+          TO: ${{ github.event.merge_group.head_sha || github.sha }}
         run: |
           set -uo pipefail
           # Every failure below leaves `files` empty, and ci-scope.py runs every
@@ -95,7 +96,7 @@ jobs:
                 files=$listed
               fi
               ;;
-            push)
+            push | merge_group)
               # A new branch has an all-zero `before`; compare lists at most 300 files.
               if [ -n "${FROM//0/}" ] \
                 && listed=$(gh api "repos/$REPO/compare/$FROM...$TO" --jq '.files[].filename') \
@@ -125,19 +126,22 @@ jobs:
       - name: Require every Rust job to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
           # job -> the `scope` output that decides whether it runs
           GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-doc":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","app-lockfiles":"rust","upgrade-path":"upgrade_path"}'
         run: |
-          jq -e --argjson gates "$GATES" '
+          # A push to master runs every test and the jobs that save caches (the merge
+          # queue ran the other jobs on this tree), so there a gated job may be skipped.
+          jq -e --argjson gates "$GATES" --arg event "$EVENT" '
             .scope.outputs as $scope
             | to_entries | all(
                 .value.result == "success"
                 or (.value.result == "skipped" and ($gates[.key] // "") != ""
-                    and $scope[$gates[.key]] == "false")
+                    and ($scope[$gates[.key]] == "false" or $event == "push"))
               )' <<<"$NEEDS"
 
-  # Master is tested after the merge (no merge queue): a red push opens an issue, a
-  # green one closes it (.github/actions/report-master).
+  # Master's push runs what the queue does not (every test; e2e.yml): a red push opens
+  # an issue, a green one closes it (.github/actions/report-master).
   report-master:
     name: Report master
     needs: [rust]
@@ -256,7 +260,7 @@ jobs:
   rust-doc:
     name: Rust docs
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust != 'false'
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -294,10 +298,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A push to master runs every shard too: nothing tested the merged tree
-        # before it landed. Shard 1 alone saves; the build it saves is the whole
-        # workspace's whatever the quarter, and the test apps it saves are those its
-        # tests build (the shared fixtures; a guest only another quarter uses is
+        # A push to master runs every shard with no filter: the queue ran only the
+        # tests its change reaches. Shard 1 alone saves; the build it saves is the
+        # whole workspace's whatever the quarter, and the test apps it saves are those
+        # its tests build (the shared fixtures; a guest only another quarter uses is
         # built on a miss).
         shard: [1, 2, 3, 4]
     steps:
@@ -345,14 +349,16 @@ jobs:
       # Twice the cores: most slow tests wait on timers and the network, not the
       # CPU. The node's integration tests, which do load it, take three or four of
       # these slots each (.config/nextest.toml).
-      # A PR runs the tests of the crates it changes and of every crate depending on
-      # them (`scope`'s test_filter: nextest `rdeps`); a change reaching beyond the
-      # workspace's crate graph runs every test. A push to master runs every test,
-      # so a test the filter missed fails there, against the merged commit.
+      # A PR and its merge-queue entry run the tests of the crates the change touches
+      # and of every crate depending on them (`scope`'s test_filter: nextest `rdeps`;
+      # the queue's diff is the entry against its base, so it still catches two
+      # changes that break each other within that graph); a change reaching beyond
+      # the workspace's crate graph runs every test. A push to master runs every test,
+      # after the merge, and opens the red-master issue when one fails.
       - name: Cargo test
         env:
           PARTITION: ${{ format('count:{0}/4', matrix.shard) }}
-          FILTER: ${{ github.event_name == 'pull_request' && needs.scope.outputs.test_filter || '' }}
+          FILTER: ${{ github.event_name != 'push' && needs.scope.outputs.test_filter || '' }}
           NEXTEST_TEST_THREADS: "8"
           # No test may run past 15 s: .config/nextest.toml's ci profile kills it at 30 s,
           # past its own listed limit for the tests over budget when the rule came in.
@@ -482,7 +488,7 @@ jobs:
   rust-compute-tools:
     name: Compute end to end (meroctl)
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust != 'false'
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -537,7 +543,7 @@ jobs:
   rust-features:
     name: Rust feature-gated tests
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust != 'false'
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -565,7 +571,7 @@ jobs:
   compat:
     name: Compatibility
     needs: scope
-    if: needs.scope.outputs.rust != 'false'
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -591,7 +597,7 @@ jobs:
   app-lockfiles:
     name: App lockfiles
     needs: scope
-    if: needs.scope.outputs.rust != 'false'
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -616,7 +622,7 @@ jobs:
   rust-supply-chain:
     name: Rust supply chain
     needs: scope
-    if: needs.scope.outputs.rust != 'false'
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
