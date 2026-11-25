@@ -161,7 +161,8 @@ to: `(package, signer)`.
 
 Many organizations may share one cluster, and what one of them installed is
 not another's to list or run.
-An account installs a release for an organization it is a member of: the one it names (`org`), else its only one.
+An account installs a release for an organization it is a member of: the one it names (`org`), else its only one; an account in several must name one.
+Below the cluster version that brings `Feature::PrivateReleases` an install names no organization, as before, so a rolling upgrade breaks no install.
 The release is public when the registry serves it to anyone (fetched without the cluster's registry credential), and private otherwise: a private registry package (fetched with the credential and the installing account, `x-calimero-install-account`), or an upload.
 A release is visible, which is the right to use it (`SystemState::sees_release`), to:
 
@@ -195,8 +196,11 @@ release of another organization neither blocks it nor shows), and answers `404`
 when it reads none, on the API and the consent page; the page's requesting app
 name and author and the frontend origins it may return to come from that release
 too. An
-organization's upgrade run moves an app only to a release its upgrader sees;
-the operator's, to one it installed or the app's owner sees.
+upgrade run, whoever starts it, moves an app only to a release the app's owner
+sees, or that the app's deployment still offers; the operator's run also to one
+it installed. From the cluster version that brings `Feature::PrivateReleases`,
+applying the move judges it again (`RELEASE_NOT_USABLE`), so no node moves an
+app onto a release its owner may not use.
 
 Records from before `installers` existed read with none; every release has
 always recorded `installedBy`, so each is visible by the rules above from the
