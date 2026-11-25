@@ -34,6 +34,10 @@ use crate::harness;
 
 use harness::{cluster_name, free_port, kv_wasm, node_config, typed, wire, ORIGIN};
 
+const ELECTION_MIN_MS: u64 = 5_000; // long enough that a held follower never starts an election
+const ELECTION_MAX_MS: u64 = 6_000;
+const FORM_TIMEOUT: Duration = Duration::from_millis(10 * ELECTION_MAX_MS); // a split vote costs a round
+
 /// Forward `listen` to `upstream`; while `held` is true, bytes towards
 /// `upstream` wait. Answers flow back freely.
 async fn proxy(listen: TcpListener, upstream: String, held: watch::Receiver<bool>) {
@@ -126,9 +130,8 @@ impl ProxiedCluster {
                     .unwrap()
                     .socket_addrs(|| None)
                     .unwrap()[0];
-                // A held follower must not start an election while it waits.
-                config.raft.election_min_ms = 5_000;
-                config.raft.election_max_ms = 6_000;
+                config.raft.election_min_ms = ELECTION_MIN_MS;
+                config.raft.election_max_ms = ELECTION_MAX_MS;
                 configure(&mut config);
                 match run(config).await {
                     Ok(r) => nodes.push(r),
@@ -159,13 +162,23 @@ impl ProxiedCluster {
             hold,
             _dirs: dirs,
         };
-        for _ in 0..200 {
+        let deadline = tokio::time::Instant::now() + FORM_TIMEOUT;
+        while tokio::time::Instant::now() < deadline {
             if c.nodes.iter().all(|r| r.node.sys(|s| s.nodes.len() == 3)) {
                 return c;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!("cluster did not form");
+        let seen: Vec<String> = c
+            .nodes
+            .iter()
+            .map(|r| {
+                let st = r.node.system.status();
+                let nodes = r.node.sys(|s| s.nodes.len());
+                format!("nodes {nodes}, term {}, leader {:?}", st.term, st.leader)
+            })
+            .collect();
+        panic!("cluster did not form: {seen:?}");
     }
 
     fn client(&self, i: usize) -> Client {
@@ -1143,7 +1156,7 @@ async fn an_undo_counts_lost_writes_from_a_majority_where_the_restore_points_nod
     for (version, wasm) in [("1.0.0", kv_wasm()), ("1.1.0", v11)] {
         let _ = alice
             .packages()
-            .upload(undo_release(version, &wasm))
+            .upload(undo_release(version, &wasm), None)
             .await
             .unwrap();
     }

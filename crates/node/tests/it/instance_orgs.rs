@@ -145,14 +145,19 @@ async fn an_instance_goes_where_its_release_says() {
         orgs(&zed).await.is_empty(),
         "a sign-up makes no organization"
     );
-    for who in [&zed, &yan] {
-        for (package, mode) in [
-            (STANDALONE, Some(InstanceOrg::Standalone)),
-            (IN_ORG, Some(InstanceOrg::Org)),
-            (EITHER, None),
-        ] {
-            let _ok = who.packages().upload(release(package, mode)).await.unwrap();
-        }
+    // The operator's catalog: an account's install is for an organization it is in.
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    for (package, mode) in [
+        (STANDALONE, Some(InstanceOrg::Standalone)),
+        (IN_ORG, Some(InstanceOrg::Org)),
+        (EITHER, None),
+    ] {
+        let _ok = ops
+            .ops()
+            .package_upload(release(package, mode))
+            .await
+            .unwrap();
     }
     let recorded = c.nodes[0].as_ref().unwrap().node.sys(|s| {
         [STANDALONE, IN_ORG, EITHER].map(|p| s.packages[p].versions["1.0.0"].instance_org)
@@ -272,10 +277,11 @@ async fn an_instance_goes_where_its_release_says() {
 async fn an_app_is_transferred_only_to_a_member_of_its_organization() {
     let c = Cluster::start(3).await;
     let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let _ok = alice
         .packages()
-        .upload(release(EITHER, None))
+        .upload(release(EITHER, None), None)
         .await
         .unwrap();
     let app = alice

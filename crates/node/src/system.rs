@@ -363,6 +363,17 @@ pub enum BundleSource {
     Upload,
 }
 
+/// Who may use a release an account installed ([`SystemState::sees_release`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Visibility {
+    /// The registry serves it to anyone: everyone here may use it.
+    Public,
+    /// A private registry package, or an upload: members of the organizations it was
+    /// installed for ([`PackageVersion::orgs`]).
+    Private,
+}
+
 /// A package: one publisher key, any number of releases.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -508,6 +519,15 @@ pub struct PackageVersion {
     /// (`Node::release_guests`) and apply takes as `forbidden`. Left out when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guests: Option<calimero_bundle::GuestPolicy>,
+    /// Public or private, as the registry served it (an upload is private). Recorded only
+    /// once every node keeps it (`Feature::PrivateReleases`); absent in a release recorded
+    /// before, which keeps the rule from before ([`SystemState::sees_release`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<Visibility>,
+    /// The organizations it was installed for, one more with each install for another
+    /// (`Feature::PrivateReleases`). Left out when empty.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub orgs: BTreeSet<OrgId>,
 }
 
 impl PackageVersion {
@@ -579,8 +599,14 @@ impl PackageRecord {
     /// The highest release by semver (a version that does not parse sorts first).
     #[must_use]
     pub fn latest(&self) -> Option<&PackageVersion> {
+        self.latest_where(|_| true)
+    }
+
+    /// The highest release by semver among those `keep` holds of.
+    pub fn latest_where(&self, keep: impl Fn(&PackageVersion) -> bool) -> Option<&PackageVersion> {
         self.versions
             .values()
+            .filter(|v| keep(v))
             .max_by(|a, b| compare_versions(&a.version, &b.version))
     }
 }
@@ -1499,6 +1525,11 @@ impl DeployerGrant {
 pub const NOT_A_DEPLOYER: Rejection =
     Rejection::new(RejectionKind::DeployNotGranted, "This cluster only lets Calimero Cloud deployers install apps; ask the cluster's owner or operator for a deployer grant.");
 
+/// A refusal: a release is installed for an organization its installer is not a member of,
+/// or an account installs a private release for none.
+pub const NOT_AN_ORG_MEMBER: &str =
+    "an account installs a private release for an organization it is a member of";
+
 /// How many deployer grants a cluster keeps.
 pub const MAX_DEPLOYERS: usize = 10_000;
 
@@ -2077,41 +2108,151 @@ impl SystemState {
         }
     }
 
-    /// Whether `who` (an account, or [`OPERATOR`]) may see and use the
-    /// release `v`: whoever installed it; everyone, for a release the
-    /// operator installed (the cluster's own catalog, which it upgrades apps
-    /// to); an account sharing an organization with an account that installed
-    /// it; and an account that reaches an app running one of its services.
-    /// The operator sees only the releases it installed. Anyone else is
-    /// answered as if it were not installed.
+    /// Whether `who` (an account, or [`OPERATOR`]) may use the release `v`: list it,
+    /// install, create, upgrade to or offer it. Everyone, for a release the operator
+    /// installed (the cluster's own catalog); the operator, only those. A public release:
+    /// everyone. A private one: a member of an organization it was installed for; installed
+    /// for none (its installers were in none), its installing accounts. A release
+    /// recorded before either (`visibility` absent): whoever installed it, an account
+    /// sharing an organization with an installing account, and an account that reaches an
+    /// app running one of its services. Anyone else is answered as if it were not installed.
     #[must_use]
     pub fn sees_release(&self, v: &PackageVersion, who: &str) -> bool {
-        if v.installed_by_any(who) || v.installed_by_any(OPERATOR) {
+        if v.installed_by_any(OPERATOR) {
             return true;
         }
         if who == OPERATOR {
             return false;
         }
-        let shares_org = v.installing_accounts().any(|installer| {
-            self.orgs
-                .values()
-                .any(|o| o.role(installer).is_some() && o.role(who).is_some())
-        });
-        shares_org
-            || self.apps.values().any(|a| {
-                v.app_parts().values().any(|h| *h == a.bundle) && self.may_reach(a, Some(who))
-            })
+        match v.visibility {
+            Some(Visibility::Public) => true,
+            Some(Visibility::Private) if v.orgs.is_empty() => v.installed_by_any(who),
+            Some(Visibility::Private) => v.orgs.iter().any(|o| self.member_of(o, who)),
+            None => {
+                v.installed_by_any(who)
+                    || v.installing_accounts().any(|installer| {
+                        self.orgs
+                            .values()
+                            .any(|o| o.role(installer).is_some() && o.role(who).is_some())
+                    })
+                    || self.reaches_release(v, who)
+            }
+        }
     }
 
-    /// The releases of `p` that `who` may see ([`Self::sees_release`]).
-    pub fn visible_versions<'a>(
+    /// Whether `who` may read the facts of the release `v` of `package` (its name and version
+    /// where an instance runs it): [`Self::sees_release`], or `who` reaches an app running it
+    /// (one that names no release, only when `v` is not recorded private).
+    #[must_use]
+    pub fn reads_release(&self, package: &str, v: &PackageVersion, who: &str) -> bool {
+        self.sees_release(v, who)
+            || (who != OPERATOR
+                && self.apps.values().any(|a| {
+                    // Releases may share a WASM: an app runs the one its record names, and
+                    // one naming none is never told a private sibling.
+                    a.release
+                        .as_ref()
+                        .map_or(v.visibility != Some(Visibility::Private), |r| {
+                            r.package == package && r.version == v.version
+                        })
+                        && v.app_parts().values().any(|h| *h == a.bundle)
+                        && self.may_reach(a, Some(who))
+                }))
+    }
+
+    /// Whether `who` reaches an app running one of `v`'s services.
+    fn reaches_release(&self, v: &PackageVersion, who: &str) -> bool {
+        self.apps
+            .values()
+            .any(|a| v.app_parts().values().any(|h| *h == a.bundle) && self.may_reach(a, Some(who)))
+    }
+
+    /// [`Self::sees_release`] for a session bound to the package's frontend (`frontend`):
+    /// a release recorded before `visibility` keeps the rule from before, every release of
+    /// it; any other, what the account sees.
+    #[must_use]
+    pub fn sees_release_from(&self, v: &PackageVersion, who: &str, frontend: bool) -> bool {
+        (frontend && v.visibility.is_none()) || self.sees_release(v, who)
+    }
+
+    /// Whether `who` is a member (or above) of `org`.
+    #[must_use]
+    pub fn member_of(&self, org: &str, who: &str) -> bool {
+        self.orgs
+            .get(org)
+            .and_then(|o| o.role(who))
+            .is_some_and(|r| r >= OrgRole::Member)
+    }
+
+    // The lookups below are how a route reads a release a client names; anything else
+    // answers as if it were not installed (`tests/it/release_lookups.rs`).
+
+    /// The releases of `package` that `who` may use ([`Self::sees_release`]); `frontend`: a
+    /// session bound to the package's frontend ([`Self::sees_release_from`]).
+    pub fn releases_used<'a>(
         &'a self,
-        p: &'a PackageRecord,
+        package: &str,
         who: &'a str,
+        frontend: bool,
     ) -> impl Iterator<Item = &'a PackageVersion> + 'a {
+        self.packages
+            .get(package)
+            .into_iter()
+            .flat_map(|p| p.versions.values())
+            .filter(move |v| self.sees_release_from(v, who, frontend))
+    }
+
+    /// `package` if `who` may use one of its releases ([`Self::releases_used`]).
+    #[must_use]
+    pub fn package_used(&self, package: &str, who: &str, frontend: bool) -> Option<&PackageRecord> {
+        let p = self.packages.get(package)?;
         p.versions
             .values()
-            .filter(move |v| self.sees_release(v, who))
+            .any(|v| self.sees_release_from(v, who, frontend))
+            .then_some(p)
+    }
+
+    /// `package@version` if `who` may use it ([`Self::sees_release`]).
+    #[must_use]
+    pub fn release_used(&self, package: &str, version: &str, who: &str) -> Option<&PackageVersion> {
+        self.packages
+            .get(package)?
+            .versions
+            .get(version)
+            .filter(|v| self.sees_release(v, who))
+    }
+
+    /// The newest release of `package` that `who` may use.
+    #[must_use]
+    pub fn newest_used(&self, package: &str, who: &str) -> Option<&PackageVersion> {
+        self.packages
+            .get(package)?
+            .latest_where(|v| self.sees_release(v, who))
+    }
+
+    /// The newest release of `package` whose facts `who` reads ([`Self::reads_release`]); a
+    /// session bound to its frontend (`frontend`) also every release recorded before
+    /// `visibility`.
+    #[must_use]
+    pub fn newest_read(&self, package: &str, who: &str, frontend: bool) -> Option<&PackageVersion> {
+        self.packages.get(package)?.latest_where(|v| {
+            (frontend && v.visibility.is_none()) || self.reads_release(package, v, who)
+        })
+    }
+
+    /// `to`, for an instance `app` from a deployment, when the move stays on that deployment
+    /// ([`Self::within_deployment`]: its offer that still serves, or a unit member's target in
+    /// `run`), whether or not its owner may use the release otherwise.
+    #[must_use]
+    pub fn release_offered_to(
+        &self,
+        app: &AppRecord,
+        to: &PackageRef,
+        run: Option<&str>,
+    ) -> Option<&PackageVersion> {
+        app.deployment.as_ref()?;
+        self.within_deployment(app, Some(to), run).ok()?;
+        self.packages.get(&to.package)?.versions.get(&to.version)
     }
 
     /// Whether a WASM of `release`, to be installed under `package` signed by
@@ -2136,6 +2277,48 @@ impl SystemState {
                         .any(|v| v.parts(name).any(|(h, _)| h == hash))
                 })
         })
+    }
+
+    /// Whether a release of a package signed by `signer`, installed by `actor` and private to
+    /// `private_for` (`None`: not private), may pin `m` of `module` as a pipeline module: one
+    /// `actor` may use that is not recorded private, the operator's, its own signer's, or a
+    /// private one installed for every organization the installing release is private to.
+    #[must_use]
+    pub fn may_pin(
+        &self,
+        module: &PackageRecord,
+        m: &PackageVersion,
+        actor: &str,
+        signer: &str,
+        private_for: Option<&BTreeSet<OrgId>>,
+    ) -> bool {
+        self.sees_release(m, actor)
+            && (m.visibility != Some(Visibility::Private)
+                || m.installed_by_any(OPERATOR)
+                || module.signer_id == signer
+                || private_for.is_some_and(|orgs| orgs.is_subset(&m.orgs)))
+    }
+
+    /// Whether every module `release` pins passes [`Self::may_pin`].
+    #[must_use]
+    pub fn may_pin_all(
+        &self,
+        release: &PackageVersion,
+        actor: &str,
+        signer: &str,
+        private_for: Option<&BTreeSet<OrgId>>,
+    ) -> bool {
+        release
+            .pipelines
+            .values()
+            .flat_map(|r| r.modules.values())
+            .all(|pin| {
+                self.packages.get(&pin.package).is_some_and(|p| {
+                    p.versions
+                        .get(&pin.version)
+                        .is_some_and(|m| self.may_pin(p, m, actor, signer, private_for))
+                })
+            })
     }
 
     /// Whether a release other than `package`'s own pins `package@version` as a pipeline module.
@@ -2271,7 +2454,10 @@ impl SystemState {
 
     /// Whether `who` may name the bundle `hash` for an app: it must be
     /// recorded, and if a package release ships it, one such release must be
-    /// visible to `who`, or `who` uploaded the same WASM as a raw bundle.
+    /// visible to `who`; the uploader of a raw bundle always names it, while a release's
+    /// first installer, recorded as `uploaded_by` too, counts only beside a release recorded
+    /// before `visibility`. An uploader is told from an installer by not being one of the
+    /// installers of the release the row names.
     #[must_use]
     pub fn sees_bundle(&self, hash: &str, who: &str) -> bool {
         let Some(b) = self.bundles.get(hash) else {
@@ -2286,9 +2472,18 @@ impl SystemState {
             .flat_map(|p| p.versions.values())
             .filter(|v| v.app_parts().values().any(|h| h == hash))
             .peekable();
-        shipped.peek().is_none()
-            || b.uploaded_by == who
-            || shipped.any(|v| self.sees_release(v, who))
+        let uploaded_raw = b.uploaded_by == who
+            && !b.package.as_ref().is_some_and(|r| {
+                self.packages
+                    .get(&r.package)
+                    .and_then(|p| p.versions.get(&r.version))
+                    .is_some_and(|v| v.installed_by_any(who))
+            });
+        uploaded_raw
+            || shipped.peek().is_none()
+            || shipped.any(|v| {
+                self.sees_release(v, who) || (v.visibility.is_none() && b.uploaded_by == who)
+            })
     }
 
     /// [`Self::approved_releases`] for an app of `org`, before it exists.
@@ -2821,6 +3016,30 @@ impl SystemState {
             .get(&offer.version)
     }
 
+    /// Whether `d`'s offer of `v` still serves: someone who acts for its owner may use `v`.
+    /// A release every member of the owning organization may use is answered by whether one
+    /// of them acts for it; only a release recorded before `visibility` is judged member by
+    /// member.
+    #[must_use]
+    pub fn offer_serves(&self, d: &Deployment, v: &PackageVersion) -> bool {
+        let candidates: Vec<&str> = match &d.owner {
+            Deployer::Account(a) => vec![a],
+            Deployer::Org(o) => {
+                let mut members = self.orgs.get(o).into_iter().flat_map(|o| o.members.keys());
+                let for_all = v.installed_by_any(OPERATOR)
+                    || v.visibility == Some(Visibility::Public)
+                    || (v.visibility == Some(Visibility::Private) && v.orgs.contains(o));
+                if for_all {
+                    return members.any(|m| self.acts_for(&d.owner, m));
+                }
+                members.map(String::as_str).collect()
+            }
+        };
+        candidates
+            .into_iter()
+            .any(|m| self.acts_for(&d.owner, m) && self.sees_release(v, m))
+    }
+
     /// Whether `d` offers a release that ships `bundle`: what an instance
     /// created from it must run.
     #[must_use]
@@ -2850,16 +3069,23 @@ impl SystemState {
         })
     }
 
-    /// The installed releases `v` references (`PackageVersion::uses`), each with its
-    /// package: every installed release of a referenced package inside the reference's
-    /// range (the one its lock pinned among them), which is what an app it creates may run,
-    /// then and after an upgrade within the range. A range that does not parse reaches none.
+    /// The installed releases `v` of `package` references (`PackageVersion::uses`), each
+    /// with its package: every installed release of a referenced package inside the
+    /// reference's range (the one its lock pinned among them), which is what an app it
+    /// creates may run, then and after an upgrade within the range. A range that does not
+    /// parse reaches none, nor does a release no one acting for `d`'s owner may use
+    /// ([`Self::offer_serves`]) unless `package`'s signer signs it ([`Self::same_signer`]).
     pub fn used_releases<'a>(
         &'a self,
+        d: &'a Deployment,
+        package: &'a str,
         v: &'a PackageVersion,
     ) -> impl Iterator<Item = (&'a str, &'a PackageVersion)> + 'a {
+        // Gated so earlier log entries replay as they applied.
+        let private = self.cluster_brings(cluster_version::Feature::PrivateReleases);
         v.uses.values().flat_map(move |u| {
             let range = semver::VersionReq::parse(&u.range).ok();
+            let same_signer = self.same_signer(package, &u.package);
             self.packages
                 .get(&u.package)
                 .into_iter()
@@ -2867,10 +3093,20 @@ impl SystemState {
                 .filter(move |r| {
                     range.as_ref().is_some_and(|range| {
                         semver::Version::parse(&r.version).is_ok_and(|ver| range.matches(&ver))
-                    })
+                    }) && (!private || same_signer || self.offer_serves(d, r))
                 })
                 .map(move |r| (u.package.as_str(), r))
         })
+    }
+
+    /// Whether packages `a` and `b` are pinned to one signer: a publisher composing its own
+    /// packages, whose unit takes a member of either whoever may use it (`unit_members`).
+    #[must_use]
+    pub fn same_signer(&self, a: &str, b: &str) -> bool {
+        matches!(
+            (self.packages.get(a), self.packages.get(b)),
+            (Some(a), Some(b)) if a.signer_id == b.signer_id
+        )
     }
 
     /// Whether a release that a release `d` offers references
@@ -2880,7 +3116,7 @@ impl SystemState {
     pub fn deployment_uses_declare(&self, d: &Deployment, name: &str) -> bool {
         d.apps.values().any(|o| {
             self.offered_release(o).is_some_and(|v| {
-                self.used_releases(v)
+                self.used_releases(d, &o.package, v)
                     .any(|(_, r)| r.secrets.contains_key(name))
             })
         })
@@ -2896,7 +3132,8 @@ impl SystemState {
             let Some(v) = self.offered_release(o) else {
                 continue;
             };
-            let reached = std::iter::once((o.package.as_str(), v)).chain(self.used_releases(v));
+            let reached = std::iter::once((o.package.as_str(), v))
+                .chain(self.used_releases(d, &o.package, v));
             for (package, r) in reached {
                 for name in r.secrets.keys() {
                     let row = out.entry(name.clone()).or_default();
@@ -2920,9 +3157,10 @@ impl SystemState {
     pub fn deployment_covers(&self, d: &Deployment, package: &str) -> bool {
         d.apps.values().any(|o| {
             o.package == package
-                || self
-                    .offered_release(o)
-                    .is_some_and(|v| self.used_releases(v).any(|(p, _)| p == package))
+                || self.offered_release(o).is_some_and(|v| {
+                    self.used_releases(d, &o.package, v)
+                        .any(|(p, _)| p == package)
+                })
         })
     }
 
@@ -2946,6 +3184,14 @@ impl SystemState {
         };
         let d = self.deployments.get(id).ok_or(OUTSIDE_DEPLOYMENT)?;
         let to = release.ok_or(OUTSIDE_DEPLOYMENT)?;
+        // Only an offer that still serves, from the version that brings private releases, so
+        // earlier entries replay as they applied.
+        let serves = |o: &Offer| {
+            !self.cluster_brings(cluster_version::Feature::PrivateReleases)
+                || self
+                    .offered_release(o)
+                    .is_some_and(|v| self.offer_serves(d, v))
+        };
         if app
             .release
             .as_ref()
@@ -2972,14 +3218,14 @@ impl SystemState {
                             .is_some_and(|p| p.package == r.package)
                         && d.apps
                             .values()
-                            .any(|o| o.package == r.package && o.version == r.version)
+                            .any(|o| o.package == r.package && o.version == r.version && serves(o))
                 });
             return unit_run.map(|_| ()).ok_or(OUTSIDE_DEPLOYMENT);
         }
         if !d
             .apps
             .values()
-            .any(|o| o.package == to.package && o.version == to.version)
+            .any(|o| o.package == to.package && o.version == to.version && serves(o))
         {
             return Err(OUTSIDE_DEPLOYMENT);
         }
@@ -3868,6 +4114,10 @@ impl SystemState {
             return Err(ONLY_ADMINS_INSTALL.into());
         }
         let in_org = |a: &&AppRecord| a.org == org;
+        // A package named outright with no release the actor may use answers as a missing
+        // one; entries logged below the version that brings private releases apply as they did.
+        let gated = self.cluster_brings(cluster_version::Feature::PrivateReleases);
+        let named = apps.is_some();
         let specs = match apps {
             Some(specs) => specs,
             None => self
@@ -3918,10 +4168,13 @@ impl SystemState {
                 return Err("a package is named twice".into());
             }
             let record = self.packages.get(&spec.package).ok_or("no such package")?;
+            let newest = record.latest_where(|v| !gated || self.sees_release(v, actor));
+            if named && newest.is_none() {
+                return Err("no such package".into());
+            }
             let name = match spec.name {
                 Some(n) => n,
-                None => record
-                    .latest()
+                None => newest
                     .and_then(|v| v.metadata.get("name"))
                     .and_then(Value::as_str)
                     .unwrap_or(spec.package.as_str())
@@ -4357,11 +4610,12 @@ impl SystemState {
                 .and_then(|p| source?.app_team(p))
                 .map(|t| t.team_id.clone())
         });
+        let gated = self.cluster_brings(cluster_version::Feature::PrivateReleases);
         let team_name = package.as_deref().map(|p| {
             let name = self
                 .packages
                 .get(p)
-                .and_then(PackageRecord::latest)
+                .and_then(|r| r.latest_where(|v| !gated || self.sees_release(v, actor)))
                 .and_then(|v| v.metadata.get("name"))
                 .and_then(Value::as_str)
                 .filter(|n| !n.trim().is_empty())

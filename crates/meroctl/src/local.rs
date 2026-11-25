@@ -722,7 +722,7 @@ impl Deploy {
             Ok(std::fs::write(&w, built.app.component)?)
         })
         .await??;
-        let answer = crate::app::install_file(env, &self.wasm).await?;
+        let answer = crate::app::install_file(env, &self.wasm, None).await?;
         let bundle = answer["bundle"].as_str().unwrap_or_default().to_owned();
         eprintln!("• uploaded bundle {bundle}");
         if let Some(f) = &self.frontend {

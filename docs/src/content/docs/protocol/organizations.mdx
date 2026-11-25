@@ -208,6 +208,16 @@ there with the release each runs and its last upgrade (who, of which kind),
 the releases that govern each app, and the releases the cluster's nodes run
 ([Reading the approvals](/protocol/governance/#reading-the-approvals)).
 
+### Private packages
+
+A package an organization installs as private is that organization's alone on
+a shared cluster: only its members list it, install it, create instances of it,
+upgrade to it or offer it in a deployment. A member who leaves loses it, and an
+install for a second organization shares it with that one too. Making an
+instance reachable to others (grants, guests, public links, a deployment's
+customers) shares that instance, never the release it runs. The full rule is in
+[Who sees a release](/protocol/applications/#who-sees-a-release).
+
 ### Members' security
 
 The owner and admins read what tells them a member may be locked out, with
@@ -350,6 +360,10 @@ no instance, and naming `childTeams` (as naming `join`) leaves `shared`,
 absent, meaning "no other team", so `POST /orgs/{org}/app-teams { apps:
 [{ package, instances: [], childTeams: true }, ...] }` turns it on for every
 app team named, with one passkey, and changes nothing else.
+A package named that has no release the admin may use (a private release of another
+organization) answers `400 REJECTED: no such package`, as one the cluster lacks, before
+the passkey and again at apply; a new app team, here or by a move, takes the display
+name of the newest release its maker may use, else the package id.
 
 To keep one app apart and leave the others as they are, a package names its
 own `join` in the same request: `invite` closes that app team alone, in the

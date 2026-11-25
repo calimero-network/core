@@ -143,7 +143,18 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             if !s.upgrade_policy_of(a).0.second_approver || class.is_green() {
                 return Err(ONE_APPROVAL);
             }
-            if s.logged_release(&package, &version).is_none() {
+            // A release the actor may not use is missing; entries logged below the version
+            // that brings private releases replay as they applied.
+            let to = PackageRef {
+                package: package.clone(),
+                version: version.clone(),
+                service: None,
+                compute: false,
+            };
+            let usable = !s.cluster_brings(cluster_version::Feature::PrivateReleases)
+                || s.release_used(&package, &version, &actor).is_some()
+                || s.release_offered_to(a, &to, None).is_some();
+            if s.logged_release(&package, &version).is_none() || !usable {
                 return Err("that release is not installed".into());
             }
             if s.running(a).is_some_and(|r| r.package != package) {
@@ -400,7 +411,7 @@ impl SystemState {
     /// What lets an update of `app` to `to` (its `bundle`), carrying `class`, apply on
     /// its own at `at` with restore point `taken` (`UpgradeApp::auto`): the app's policy
     /// says `noDestinations`; the class is green; it moves the app along its package to
-    /// a newer release; the app is no unit's member (a member moves with its unit); its
+    /// a newer release, outside a deployment one its owner may use; the app is no unit's member (a member moves with its unit); its
     /// unit, as the log holds it, has no destination before or after; its hold has
     /// passed since the release was logged (its deployment's offer of exactly it for an
     /// instance of a deployment, else its install); and a restore point was taken where
@@ -544,20 +555,32 @@ impl SystemState {
             return Err(AUTO_UPDATE_REFUSED);
         }
         let since = match &app.deployment {
+            // Only an offer that still serves, as for any upgrade (`within_deployment`).
             Some(d) => self
                 .deployments
                 .get(d)
                 .and_then(|d| {
-                    d.apps
-                        .values()
-                        .find(|o| o.package == to.package && o.version == to.version)
+                    d.apps.values().find(|o| {
+                        o.package == to.package
+                            && o.version == to.version
+                            && (!self.cluster_brings(cluster_version::Feature::PrivateReleases)
+                                || self
+                                    .offered_release(o)
+                                    .is_some_and(|v| self.offer_serves(d, v)))
+                    })
                 })
                 .map(|o| o.added_at)
                 .ok_or(AUTO_UPDATE_REFUSED)?,
+            // Only a release the owner may use; entries logged below the version that brings
+            // private releases replay as they applied.
             None => self
                 .packages
                 .get(&to.package)
                 .and_then(|p| p.versions.get(&to.version))
+                .filter(|v| {
+                    !self.cluster_brings(cluster_version::Feature::PrivateReleases)
+                        || self.sees_release(v, &app.owner)
+                })
                 .map(|v| v.installed_at)
                 .ok_or(AUTO_UPDATE_REFUSED)?,
         };
@@ -580,23 +603,50 @@ impl SystemState {
             let runs = self.apps.get(id).and_then(|m| self.running(m));
             let resolved = uses
                 .and_then(|u| u.get(name))
-                .and_then(|u| self.release_of_use(u));
+                .and_then(|u| self.release_of_use(u, app, &to.package));
             !matches!((runs, resolved), (Some(r), Some((p, v))) if r.package == p && r.version == v)
         })
     }
 
-    /// The release a `uses` reference creates an app at, as creating an instance picks it:
-    /// the one its lock pinned, else the newest installed inside its range; `None` when
-    /// that release is not installed.
-    pub fn release_of_use(&self, u: &ReleaseUse) -> Option<(String, String)> {
+    /// The release a `uses` reference of a release of `parent` creates an app at for `app`, as
+    /// creating an instance picks it: the one its lock pinned, else the newest installed
+    /// inside its range, among those `app`'s owner may use, `parent`'s signer signs, or
+    /// `app`'s deployment offers (`unit_members`); `None` when no such release is installed.
+    pub fn release_of_use(
+        &self,
+        u: &ReleaseUse,
+        app: &AppRecord,
+        parent: &str,
+    ) -> Option<(String, String)> {
+        let private = self.cluster_brings(cluster_version::Feature::PrivateReleases);
+        let same_signer = self.same_signer(parent, &u.package);
+        let offers = app
+            .deployment
+            .as_ref()
+            .and_then(|d| self.deployments.get(d));
+        let usable = |version: &str, v: &PackageVersion| {
+            !private
+                || same_signer
+                || self.sees_release(v, &app.owner)
+                || offers.is_some_and(|d| {
+                    self.offer_serves(d, v)
+                        && d.apps
+                            .values()
+                            .any(|o| o.package == u.package && o.version == version)
+                })
+        };
         let installed = &self.packages.get(&u.package)?.versions;
         let version = match &u.version {
-            Some(v) => installed.contains_key(v).then(|| v.clone())?,
+            Some(v) => installed
+                .get(v)
+                .is_some_and(|r| usable(v, r))
+                .then(|| v.clone())?,
             None => {
                 let range = semver::VersionReq::parse(&u.range).ok()?;
                 installed
-                    .keys()
-                    .filter_map(|v| semver::Version::parse(v).ok().map(|p| (p, v)))
+                    .iter()
+                    .filter(|(k, v)| usable(k, v))
+                    .filter_map(|(v, _)| semver::Version::parse(v).ok().map(|p| (p, v)))
                     .filter(|(p, _)| range.matches(p))
                     .max_by(|a, b| a.0.cmp(&b.0))
                     .map(|(_, v)| v.clone())?

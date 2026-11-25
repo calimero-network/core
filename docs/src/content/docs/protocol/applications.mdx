@@ -40,7 +40,8 @@ publisher's key, and every artifact in the archive is listed with its digest.
 - **Pipelines** (`pipelines/*.yaml`) are compiled and checked at install
   against the release's compute methods and the modules of other packages a
   step names (`module: <package>[@<version>]`, pinned to the release resolved
-  then); any error is `400 BAD_PIPELINE` with every problem listed. `GET
+  then: one the installer may use that is public or the operator's, its own
+  signer's, or private to every organization a private release is for); any error is `400 BAD_PIPELINE` with every problem listed. `GET
   /packages/{package}/{version}/pipelines` answers them ([Pipeline
   runs](/protocol/compute-actions/#pipeline-runs)).
 
@@ -60,7 +61,7 @@ publisher's key, and every artifact in the archive is listed with its digest.
   steps={[
     { from: 0, to: 0, label: 'meroctl app build; meroctl app pack (sign)' },
     { from: 0, to: 1, label: 'publish package@version (.mpk)' },
-    { from: 2, to: 3, label: 'POST /packages/install { package, version }' },
+    { from: 2, to: 3, label: 'POST /packages/install { package, version, org? }' },
     { from: 3, to: 1, label: 'fetch the .mpk (--registry-url)' },
     { from: 3, to: 3, label: 'verify: signature, digests, min runtime, signer pin, WASM' },
     { from: 3, to: 4, label: 'InstallPackage { .mpk hash, services, outbound }' },
@@ -81,10 +82,10 @@ instead; a production node refuses uploads (`403 UPLOADS_DISABLED`).
 
 There are two ways in:
 
-- `POST /packages/install { package, version }` fetches `package@version` from
+- `POST /packages/install { package, version, org? }` fetches `package@version` from
   the operator's registry (`--registry-url`, `calimero-app-downloader`'s
   `HttpRegistry`).
-- `POST /packages` takes an uploaded `.mpk`, on a development cluster only.
+- `POST /packages?org=` takes an uploaded `.mpk`, on a development cluster only.
 
 Before the system log records anything (`InstallPackage`), the node that took
 the request verifies the release (`Node::verify_release`):
@@ -153,22 +154,36 @@ to: `(package, signer)`.
   release also ships stays, recorded under that release. Only whoever installed
   the package's first release (an account, or the operator) may uninstall, and
   never a release a deployment offers.
+  It takes only the releases it may use: one it may not answers as a missing
+  version, and with none named, the others stay.
+  The same holds for registering the package's origins: a first installer does it
+  only while a release of the package is theirs to use.
 
 ## Who sees a release
 
 Many organizations may share one cluster, and what one of them installed is
-not another's to list or run. A release is visible (`SystemState::sees_release`) to:
+not another's to list or run.
+An account installs a release for an organization it is a member of: the one it names (`org`), else its only one; an account in several must name one.
+Below the cluster version that brings `Feature::PrivateReleases` an install names no organization, as before, so a rolling upgrade breaks no install.
+The release is public when the registry serves it to anyone (fetched without the cluster's registry credential), and private otherwise: a private registry package (fetched with the credential and the installing account, `x-calimero-install-account`), or an upload.
+A release is visible, which is the right to use it (`SystemState::sees_release`), to:
 
-- whoever installed it: the account recorded as `installedBy`, or one that
-  installed the same release again later (`installers`);
 - every account, for a release the operator installed (`/ops/packages`): the
   cluster's own catalog, which the operator upgrades apps to;
-- an account that shares an organization with an account that installed it;
-- an account that reaches an app running one of its services (so a member of
-  an app always sees the release it runs);
-- a session opened on the package's own frontend, for every release of that
-  package (the frontend is public by name, and it creates instances of it);
+- every account, for a public release;
+- a member of an organization a private release was installed for (an installer
+  only while such a member), each install for another organization adding it;
+- the accounts that installed a private release installed for no organization
+  (an account in none installs for none), until an install for an organization
+  adds one; an account in none installing again a release already private to some
+  organization is refused `404` before anything is recorded, as the registry
+  answers an account it does not serve;
 - the operator, for the releases it installed; it sees no account's releases.
+
+A session opened on the package's own frontend sees what its account sees, the display name and author of the package's newest release included; a sign-up there names the package by its id unless that release is public, the operator's, or recorded before `visibility`.
+A release recorded before releases were public or private keeps the earlier rule: whoever installed it, an account sharing an organization with an installer, an account that reaches an app running it, and a session on the package's frontend.
+Reaching an instance reads the release it runs (its name and version, `SystemState::reads_release`), never uses it, nor reads another release that shares its WASM.
+An instance whose record names no release (made by its WASM's hash) is told, to one who only reaches it, a release that reader may use, else a public or catalog one that ships its WASM, never a private one.
 
 For anyone else the release is not installed. `GET /packages` and
 `GET /packages/{p}` list only the releases the caller sees (a package with
@@ -177,10 +192,17 @@ upgrading an app from it resolves as for a missing release: without a version,
 the newest release the caller sees; with one, the release is installed from
 the registry first, which makes a registry release the caller's too, and
 answers what a missing release answers when the registry lacks it (an upload).
-Naming its WASM by hash answers as an unknown bundle, and approving outbound
-hosts for a package with no release the caller sees answers `404`. An
-organization's upgrade run moves an app only to a release its upgrader sees;
-the operator's, to one it installed or the app's owner sees.
+Naming its WASM by hash answers as an unknown bundle. Approving outbound hosts
+takes the prefixes of the newest release the caller reads (a newer private
+release of another organization neither blocks it nor shows), and answers `404`
+when it reads none, on the API and the consent page; the page's requesting app
+name and author and the frontend origins it may return to come from that release
+too. An
+upgrade run, whoever starts it, moves an app only to a release the app's owner
+sees, or that the app's deployment still offers; the operator's run also to one
+it installed. From the cluster version that brings `Feature::PrivateReleases`,
+applying the move judges it again (`RELEASE_NOT_USABLE`), so no node moves an
+app onto a release its owner may not use.
 
 Records from before `installers` existed read with none; every release has
 always recorded `installedBy`, so each is visible by the rules above from the
@@ -376,10 +398,19 @@ unless another crate is named. The design and its reasons are above; a module's 
 Code: `packages.rs`, `system::PackageRecord`.
 
 Signed `.mpk` releases.
-`POST /packages/install { package, version }` fetches from the operator's registry
-(`--registry-url`, `calimero-app-downloader`'s `HttpRegistry`); `POST /packages` takes an uploaded
+`POST /packages/install { package, version, org? }` fetches from the operator's registry
+(`--registry-url`, `calimero-app-downloader`'s `HttpRegistry`); `POST /packages?org=` takes an uploaded
 file, only with `Config::allow_package_uploads` (`--dev`; else `403 UPLOADS_DISABLED`: a production
 release comes from the registry, which any node can fetch it from again).
+An account installs for an organization (`Node::install_org`): `org`, which it must be a member of (else `404`), else its only one (`api::apps::only_org`; several `400 ORG_REQUIRED`).
+Below the logged cluster version that brings `Feature::PrivateReleases` an install names no organization at all (`record_release` drops it), so a multi-org account is never asked for `org`.
+Public or private (`PackageVersion::visibility`, `Feature::PrivateReleases`, rc.38; `Node::fetch_for_install`): the registry URL's credential (userinfo) is left out first, and a release served so is public (a `401` or `403` to that fetch, `RegistryStatus`, counts as not public; any other failure is `503`); else it is fetched with the credential and `x-calimero-install-account: <account>` (`INSTALL_ACCOUNT_HEADER`; none for the operator) and is private.
+An upload is private.
+An account in no organization installs for none (`orgs` empty): such a private release is its installing accounts' alone (`sees_release`, `installed_by_any`) until an install for an organization adds one, and then the organization rule holds (regressions `a_private_release_for_no_organization_is_its_installers_alone`, `system::tests` and `tests/cluster.rs`).
+`PackageVersion::orgs` gains the organization of each install; `InstallPackage` refuses one the actor is not a member of (`NOT_AN_ORG_MEMBER`).
+An install again that would leave the release one its installer may not use (an account in no organization, of a release private to some) is refused before it is logged, `404` as the registry answers an account it does not serve (`not_for_this_account`), and records nothing (regression `an_install_its_installer_could_not_use_is_refused_and_records_nothing`).
+A reinstall the registry serves to anyone makes a release public, never private again.
+`release_mpk` fetches a public release without the credential and, when the registry no longer serves it so (`404`, `401`, `403`: the publisher made it private since), once more with it; any other release with it from the start, naming no account; the recorded hash pins what comes back.
 Before `InstallPackage` is logged the node checks the publisher signature and every artifact digest
 (`calimero_bundle::VerifiedBundle`), `minRuntimeVersion` (build.rs's `CALIMERO_RELEASE_VERSION`),
 the package's pinned signer (first release wins, `apply` re-checks) and that each service's WASM
@@ -418,8 +449,8 @@ A release may ship pipelines (`pipelines` in the manifest or a service; `package
 Install compiles each (`calimero_pipeline::compile`) and checks it against an `Env` with the module
 `self` (the package's compute methods and caps; the default for a step that names none), one module
 per other package a step names (`module: <package>[@<version>]`, resolved by `Node::resolve_modules`
-to a release the installer sees, newest when no version, that ships one compute component, else
-`UNKNOWN_MODULE`), and the cluster's pool memory ceilings; anything else is `400 BAD_PIPELINE` with
+to a release `SystemState::may_pin` allows (the installer may use it, and it is not recorded private, the operator's, of the same signer, or private to every organization the installing private release is for, judged on the release as the install leaves it; an install again of a release resolves its existing pins), newest when no version, that ships one compute component, else
+`UNKNOWN_MODULE`; `InstallPackage` judges `may_pin_all` again once the logged cluster version brings `Feature::PrivateReleases`; regressions `a_private_module_is_pinned_only_into_a_release_private_to_its_organizations`, `system::tests` and `tests/component_packages.rs`), and the cluster's pool memory ceilings; anything else is `400 BAD_PIPELINE` with
 `details: [{file, path, code, message}]` for every error, a package with pipelines but no compute
 component included (`NO_COMPUTE`) and a repeated name (`DUPLICATE_NAME`); a named service declaring
 pipelines is `422 PIPELINES_NEED_ONE_SERVICE`, as start refuses it.
@@ -433,8 +464,8 @@ parts, and `Node::pipeline_json(hash)` reads it, else recompiles it from the rel
 Such a release is installed only once every node runs this release (`409 CLUSTER_NOT_UPGRADED`).
 `GET /packages/{package}/{version}/pipelines` (who sees the release) answers `{ name: { hash,
 worstCaseFuel, modules, pipeline } }`; `meroctl app pipelines`.
-`GET /packages/{package}/{version}/capabilities` (the same access: who sees the release, or a
-session bound to the package) answers the release's capability card before any app of it exists: `{
+`GET /packages/{package}/{version}/capabilities` (the same access: who sees the release; a
+session bound to the package sees what its account does, every release only for a record from before `visibility`, `SystemState::sees_release_from`) answers the release's capability card before any app of it exists: `{
 package, version, service, bundle, mpk, manifestHash, signer, name, author, outbound, abi }`, the
 first eight keys as `consent_page::diff::side` shows each side of an upgrade's sheet, `outbound` the
 manifest's sorted prefixes and `abi` the service component's embedded `calimero:abi` verbatim
@@ -485,19 +516,17 @@ a release from before counts the whole `.mpk` per part).
 `POST /apps { package, version?, service? }` creates from a release (installing it from the registry
 first); upgrade takes `{ version }`; `DELETE /apps/{app}`; `DELETE /packages/{p}[/{v}]` is refused
 while an app runs the release (a WASM another release ships stays).
+It takes only releases the actor may use, one it may not answering as missing (`api::packages::refuse_unusable`, before anything is logged, a missing package too, and `UninstallPackage` at apply once the logged cluster version brings `Feature::PrivateReleases`, so earlier entries replay as they applied; `manages_package` keeps a first installer to the origins of a package with a release it may use, the same way; regressions `an_uninstall_takes_only_the_releases_its_actor_may_use`, `a_first_installer_uninstalls_only_the_releases_it_may_use`, `an_uninstall_of_a_release_its_actor_may_not_use_logs_nothing`, `a_first_installer_manages_origins_only_while_it_may_use_a_release`).
 Raw `POST /bundles` is development only (`allow_unsigned_bundles`, on with `--dev`).
 
-**Who sees a release** (`SystemState::sees_release`): its installers (`installed_by`, and
-`PackageVersion::installers`, added when someone installs the same release again), everyone for a
-release the operator installed (the catalog), accounts sharing an organization with an installing
-account, accounts that reach an app running it, a session bound to the package's frontend (all its
-releases), and the operator for its own installs only.
-For anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages` leave it out
-(`404` by name), `resolve_release` treats it as missing (a registry install makes it theirs; an
-upload answers as a missing release), a bundle hash it ships is an unknown bundle (`sees_bundle`),
-outbound approval answers `404`, and upgrade runs skip it (`api::upgrade_sees`; the operator's: its
-own or the app owner's).
-Frontends stay public by name.
+**Who sees a release** (`SystemState::sees_release`, the right to use it): everyone for a release the operator installed (the catalog), and the operator for its own installs only; a public release (`visibility: public`): everyone; a private one: the members of an organization in `PackageVersion::orgs` (an installer only while such a member), or with `orgs` empty, its installing accounts.
+A release recorded before `visibility` keeps the earlier rule: its installers (`installed_by`, `PackageVersion::installers`), accounts sharing an organization with an installing account, accounts that reach an app running it, and a session bound to the package's frontend (`sees_release_from`).
+Reading the release an instance runs (`report::release_of_app`) is `SystemState::reads_release`: who sees it, or reaches an app running it (the package and version the app's record names, so a release sharing its WASM, in that package or another, is not read; for a record naming none, only a release not recorded private, so `GET /apps/{app}/update`'s `running`, `GET /apps`' `package` and `version` and the reports never name a private sibling to one who only reaches it: regressions `reaching_an_app_by_its_bundle_never_names_a_private_sibling`, `the_app_list_never_names_a_private_sibling_sharing_the_wasm`, `an_outbound_approval_never_reads_another_packages_release_of_the_same_wasm`, `the_app_list_filters_by_the_package_an_instance_runs`, `system::tests::reaching_an_instance_never_reads_another_packages_release_of_its_wasm`, `report::tests` and `tests/cluster.rs`).
+A route (`src/api`, `src/consent_page`) reads a release a client names only through `SystemState`'s lookups: `release_used`, `releases_used` (with a bound session's `frontend`), `package_used`, `newest_used` (use), `newest_read` (read) and `release_offered_to` (a deployment's offer that still serves).
+The gate `tests/it/release_lookups.rs` (`routes_read_releases_through_the_rule`) fails on any other read of `packages` or `versions` there, or of a bundle record's release (`bundles`, which names the release its WASM was first recorded from; filter by `report::release_of_app`), unless its `READS_ALLOWED` names the line and why no client names that release.
+For anyone else it is not installed: `GET /packages[/{p}]` and `GET /ops/packages` leave it out (`404` by name), `resolve_release` treats it as missing (a registry install makes it theirs; an upload answers as a missing release), a bundle hash it ships is an unknown bundle (`sees_bundle`; the uploader of a raw bundle still names it, while a release's first installer, recorded as its uploader too, counts only beside a release recorded before `visibility`), outbound approval (`POST /orgs/{org}/outbound`, the consent page's `outbound`) approves and shows the prefixes of the newest release the caller reads (the operator's cluster-wide one, the newest of all; `PackageRecord::latest_where`; `SetOutboundApproval` at apply once the logged cluster version brings `Feature::PrivateReleases`), `404` with none; the page's `requestedBy` and its `returnTo` origins read that release too (regression `an_outbound_approval_takes_the_newest_release_its_approver_reads`), and upgrade runs skip it (`api::upgrade_sees`; the operator's: its own or the app owner's).
+Frontends stay public by name; the newest release's display name and author reach a session bound to the package (the consent page's `requestedBy`) only when its account reads that release, an app team (`ScopeApps`, `MoveApp`, `createOrg`'s) is named after the newest release its maker may use (`PackageRecord::latest_where`), and a package named for one with no such release answers `no such package` (API, and apply once the logged cluster version brings `Feature::PrivateReleases`; `createOrg` then offers no app team; regressions `an_app_team_reads_only_the_releases_its_actor_may_use`, `an_app_team_of_a_private_package_answers_as_a_missing_package`), and a sign-up on the package's origin (`passkeys::app_name`) names the newest release that is public, the operator's or recorded before `visibility`; else they answer as for a release without them (`a_strangers_bound_session_never_shows_a_private_releases_name`, `a_sign_up_names_the_newest_release_open_to_anyone`).
+Regressions: `a_private_package_is_listed_only_to_accounts_that_may_use_it`, `a_release_from_before_installers_reads_and_records_who_installs_it_again`, `a_private_release_is_used_only_in_the_organizations_it_was_installed_for` (both `system::tests` and `tests/cluster.rs`), `a_release_recorded_before_visibility_keeps_the_rule_from_before`, `reaching_an_instance_reads_its_release_but_does_not_use_it`, `a_bound_session_does_not_open_a_package_its_account_cannot_see`, `another_orgs_account_cannot_install_a_private_package_from_the_registry`, `a_release_is_fetched_again_with_the_credential_only_while_it_is_private`, `an_anonymous_fetch_refused_as_unauthorized_goes_on_with_the_credential`, `an_outbound_approval_never_reads_a_release_its_approver_cannot_read`, `an_outbound_sheet_never_shows_a_release_its_asker_cannot_read`.
 
 ### Deployments
 
@@ -517,13 +546,13 @@ Create and offer need `may_deploy` for the actor where deployments are granted.
 Bounds: `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT`; names
 `deployment_name_fits`, app names and ids `deployment_segment_fits`.
 `POST /apps { deployment, package, version? }` creates from the offer (`api::offered_bundle`, no
-install, no grant, no `sees_release`) and records `AppRecord::deployment`; `CreateApp` checks the
+install, no grant, no `sees_release` for the creator; an offer serves, for a create or an upgrade, only while someone who `acts_for` the owner may use its release, `SystemState::offer_serves`, else `400 NOT_OFFERED`; apply is unchanged and instances made before keep running; regression `an_offer_outlives_no_offerer_who_may_no_longer_use_its_release`) and records `AppRecord::deployment`; `CreateApp` checks the
 offer again (`offers_bundle`).
 The managers decide which release its instances run; an owner only accepts it: `upgrade_app`
 resolves an instance's target from the offer (`api::apps::offered_bundle`, the package it runs;
 naming no version accepts the offer), and another version, another package or a raw bundle is `409
 OUTSIDE_DEPLOYMENT` (`node::outside_deployment`) before the step-up; `run_upgrade` and an org,
-publisher or unit run judge the same (`SystemState::within_deployment`), and `UpgradeApp` refuses it
+publisher, operator's or unit run judge the same (`SystemState::within_deployment`: once the logged cluster version brings `Feature::PrivateReleases`, only an offer that still serves, `offer_serves`, as an automatic update's deployment branch, `auto_update_allows`; regressions `an_offer_that_no_longer_serves_moves_no_instance`, `the_operators_run_follows_no_offer_that_no_longer_serves`, `an_update_never_applies_on_its_own_from_an_offer_that_no_longer_serves`, `system::tests::an_offer_that_no_longer_serves_moves_no_instance_from_the_version_that_brings_the_rule`, `system::tests::a_deployment_instance_updates_on_its_own_only_from_an_offer_that_serves`), and `UpgradeApp` refuses it
 at apply when its `in_deployment` flag is set (`Feature::UpgradeInDeployment`, rc.32,
 `in_deployment_rule`) or the logged cluster version brings it (`SystemState::cluster_brings`);
 earlier entries replay as they applied.
@@ -559,7 +588,7 @@ A name a release an offered one references declares is taken too (`SetDeployment
 }`, which the API sets only when no offered release declares it; `Feature::DeploymentUsedSecrets`,
 rc.32; an entry without it is judged by the offers alone, as before):
 `SystemState::deployment_uses_declare` over `used_releases` (every installed release of each
-`PackageVersion::uses` package inside its range).
+`PackageVersion::uses` package inside its range that someone acting for the deployment's owner may use, `offer_serves`, or that the offered package's signer signs, `same_signer`, as `unit_members` admits a member, once the logged cluster version brings `Feature::PrivateReleases`; regressions `a_deployments_secrets_never_name_a_used_release_its_owner_may_not_use`, `system::tests::a_used_release_its_owner_may_not_use_declares_no_deployment_secret`, `system::tests::a_member_of_its_offers_signer_reads_the_deployments_secret`).
 `uses` (`system::ReleaseUse`: package, range, version) is recorded by `InstallPackage` only once the
 feature is active (`record_release` drops it before; `SystemCmd::features` names it), and installing
 the same `.mpk` again fills it into a record that has none.
@@ -601,15 +630,15 @@ Code: `api/apps.rs`: `create_instance`, `unit_members`; docs: build packaging-si
 
 Creating an instance of a release whose signed manifest has `uses` with `mode: create` first creates
 each referenced app (same organization and owner, the release its lock pinned or the newest
-installed one in range, else `409 USES_NOT_INSTALLED`; at most `MAX_UNIT_DEPTH` deep), then records
+installed one in range that the creator may use (`sees_release`), the instance's own signer published, or, for an instance from a deployment, someone acting for its owner may use (`offer_serves`); else `409 USES_NOT_INSTALLED`, answered as for a package not installed; the member's create runs exactly that release (`CreateAppBody::unit_release`, `serde(skip)`); a unit's preview (`egress::release_unit`) and upgrade (`unit_plan`, `egress::update`) pick by the same rule for the instance's owner and deployment; at most `MAX_UNIT_DEPTH` deep), then records
 them on the instance (`AppRecord::links`, `Feature::AppLinks`, rc.31) and, when the release's `init`
 takes `links`, passes their ids in `initArgs` (a client's own `links` there is refused).
 A failure after a member was made leaves it in place.
+Regressions: `creating_an_instance_creates_the_apps_its_release_uses`, `a_unit_never_creates_a_member_from_a_private_release_its_creator_cannot_use`, `a_deployments_unit_never_creates_a_member_from_a_private_release_it_does_not_offer`, `a_deployments_unit_creates_a_member_its_owner_may_use_without_offering_it`, `a_deployments_unit_takes_no_member_from_an_offer_that_no_longer_serves`.
 A unit is one (`Feature::WholeUnits`, rc.32): members of an instance from a deployment carry its
 deployment (billed to its developer, its secret values), their `CreateApp` naming the offer of the
 instance's release that covers them (`unit_offer`, checked at apply in place of the member's own
-release; set by the node, `CreateAppBody::unit_offer` is `serde(skip)`; the member's release is
-resolved without the owner's visibility, as the instance's offer is).
+release; set by the node, `CreateAppBody::unit_offer` is `serde(skip)`; the member's release is the one `unit_members` chose, above).
 `DELETE /apps/{app}` of an instance deletes its whole unit (`SystemState::unit_of`: its `links`,
 transitively, as they exist; `DeleteApp { members }` names them and apply refuses a list that
 differs, `UNIT_NOT_AS_NAMED`, or an actor who may not delete each one) and answers them in
@@ -628,6 +657,7 @@ version, targets }`) names each member's own release (`UpgradeRun::targets`, `Ru
 and `run_may_move` and `UpgradeApp { run }` judge a member by its target (`UpgradeRun::target_of`).
 A member upgraded alone off its instance's range is refused at the API (`refuse_off_unit_range`,
 `409 OUTSIDE_UNIT_RANGE`).
+`unit_plan` reads nothing of a target its account may not use: it answers as `resolve_release` answers a missing release (for an instance from a deployment, anything but its offer that still serves is `409 OUTSIDE_DEPLOYMENT`), before any member, target or passkey (regression `a_unit_upgrade_answers_a_release_its_owner_may_not_use_as_a_missing_one`).
 The consent page's `upgradeUnit { app, toVersion }` (`unit_upgrade_request`) builds one model from
 `api::unit_plan` and each app's `upgrade_request` sheet (members skip the package-bound session's
 `within`: the instance created them), `Action::UpgradeUnit` is stale when a bundle or the targets

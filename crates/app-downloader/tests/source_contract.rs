@@ -90,6 +90,47 @@ async fn http_source_returns_none_on_404() {
     assert!(fetched.is_none());
 }
 
+/// Answer one request with an empty 200, handing back the request's bytes as read.
+async fn capture_once() -> (Url, JoinHandle<String>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let handle = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("accept");
+        let mut scratch = [0_u8; 4096];
+        let n = sock.read(&mut scratch).await.expect("read");
+        let _ignored = sock
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            .await;
+        String::from_utf8_lossy(&scratch[..n]).to_lowercase()
+    });
+    (
+        format!("http://{addr}/").parse().expect("valid url"),
+        handle,
+    )
+}
+
+/// A header the caller adds goes with the fetch; a base without userinfo sends no
+/// credential.
+#[tokio::test]
+async fn http_source_sends_the_headers_it_was_given() {
+    let (base, server) = capture_once().await;
+    let _fetched = HttpRegistry::new(base)
+        .expect("client")
+        .with_header("x-calimero-install-account", "acc1")
+        .expect("a valid header")
+        .fetch(&req(None))
+        .await
+        .expect("served");
+    let request = server.await.expect("captured");
+    assert!(
+        request.contains("x-calimero-install-account: acc1"),
+        "{request}"
+    );
+    assert!(!request.contains("authorization"), "{request}");
+}
+
 /// An unusable base is the same on every fetch, so it is refused when the
 /// source is built rather than once a download is in flight.
 #[test]

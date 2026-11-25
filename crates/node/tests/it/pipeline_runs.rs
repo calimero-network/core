@@ -230,6 +230,7 @@ impl Rig {
             n.node.set_compute_limits(test_limits());
         }
         let (alice, pk) = signed_up(&c, 0, "alice").await;
+        let _org = alice.orgs().create("alice org", None, None).await.unwrap();
         let compute = common::components("fixture-compute")
             .compute
             .expect("a compute component");
@@ -254,14 +255,17 @@ impl Rig {
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice
             .packages()
-            .upload(mpk_with_pipelines(
-                "com.test.job",
-                "1.0.0",
+            .upload(
+                mpk_with_pipelines(
+                    "com.test.job",
+                    "1.0.0",
+                    None,
+                    Some(&compute),
+                    &pipelines,
+                    &key,
+                ),
                 None,
-                Some(&compute),
-                &pipelines,
-                &key,
-            ))
+            )
             .await
             .unwrap();
         let app = alice
@@ -871,14 +875,17 @@ async fn a_run_started_on_v1_keeps_running_v1_after_an_upgrade_to_v2() {
     let _installed = rig
         .alice
         .packages()
-        .upload(mpk_with_pipelines(
-            "com.test.job",
-            "2.0.0",
+        .upload(
+            mpk_with_pipelines(
+                "com.test.job",
+                "2.0.0",
+                None,
+                Some(&v2),
+                &[("pipelines/chain.yaml", CHAIN)],
+                &key,
+            ),
             None,
-            Some(&v2),
-            &[("pipelines/chain.yaml", CHAIN)],
-            &key,
-        ))
+        )
         .await
         .unwrap();
     let file = rig.upload(&vec![5u8; INPUT_LEN]).await;
@@ -922,20 +929,24 @@ async fn a_run_started_on_v1_keeps_running_v1_after_an_upgrade_to_v2() {
 async fn starting_needs_every_node_on_this_release() {
     let mut c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let compute = common::components("fixture-compute")
         .compute
         .expect("a compute component");
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let _installed = alice
         .packages()
-        .upload(mpk_with_pipelines(
-            "com.test.job",
-            "1.0.0",
+        .upload(
+            mpk_with_pipelines(
+                "com.test.job",
+                "1.0.0",
+                None,
+                Some(&compute),
+                &[("pipelines/chain.yaml", CHAIN)],
+                &key,
+            ),
             None,
-            Some(&compute),
-            &[("pipelines/chain.yaml", CHAIN)],
-            &key,
-        ))
+        )
         .await
         .unwrap();
     let app = alice
@@ -1518,7 +1529,7 @@ async fn a_retry_keeps_the_original_release_after_an_upgrade() {
         &pipelines,
         &key,
     );
-    rig.alice.packages().upload(mpk).await.unwrap();
+    rig.alice.packages().upload(mpk, None).await.unwrap();
     rig.alice
         .apps()
         .upgrade(
@@ -1583,27 +1594,33 @@ async fn a_step_runs_another_packages_module_under_the_callers_keys_and_payer() 
     let _module = rig
         .alice
         .packages()
-        .upload(common::mpk_parts(
-            "com.test.module",
-            "1.0.0",
+        .upload(
+            common::mpk_parts(
+                "com.test.module",
+                "1.0.0",
+                None,
+                Some(&module),
+                "0.1.0",
+                &key,
+            ),
             None,
-            Some(&module),
-            "0.1.0",
-            &key,
-        ))
+        )
         .await
         .unwrap();
     let _user = rig
         .alice
         .packages()
-        .upload(mpk_with_pipelines(
-            "com.test.job",
-            "2.0.0",
+        .upload(
+            mpk_with_pipelines(
+                "com.test.job",
+                "2.0.0",
+                None,
+                Some(&rig.compute),
+                &[("pipelines/via-module.yaml", VIA_MODULE)],
+                &key,
+            ),
             None,
-            Some(&rig.compute),
-            &[("pipelines/via-module.yaml", VIA_MODULE)],
-            &key,
-        ))
+        )
         .await
         .unwrap();
     let _up = rig
@@ -2364,14 +2381,17 @@ async fn validate_reports_every_error_with_its_path_and_writes_nothing() {
     let refused = rig
         .alice
         .packages()
-        .upload(mpk_with_pipelines(
-            "com.test.job",
-            "1.0.1",
+        .upload(
+            mpk_with_pipelines(
+                "com.test.job",
+                "1.0.1",
+                None,
+                Some(&rig.compute),
+                &[("pipelines/ghostly.yaml", GHOSTLY)],
+                &key,
+            ),
             None,
-            Some(&rig.compute),
-            &[("pipelines/ghostly.yaml", GHOSTLY)],
-            &key,
-        ))
+        )
         .await
         .unwrap_err();
     let mut installed: Vec<_> = refused

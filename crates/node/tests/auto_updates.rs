@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::types::{OrgRole, ViewsRequestConsistency};
 use calimero_client::Request;
 use calimero_node::testing::shift_update_clock;
 use reqwest::Method;
@@ -284,10 +284,11 @@ async fn a_green_update_applies_after_its_hold_and_is_undone_within_a_week() {
     shift_update_clock(0);
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
     let _ = alice
         .packages()
-        .upload(release("1.0.0", &kv_wasm(), &publisher))
+        .upload(release("1.0.0", &kv_wasm(), &publisher), None)
         .await
         .unwrap();
     let org = home_org(&alice).await;
@@ -325,7 +326,10 @@ async fn a_green_update_applies_after_its_hold_and_is_undone_within_a_week() {
     assert_eq!(set["policy"]["autoApply"], "noDestinations", "{set}");
     let _ = alice
         .packages()
-        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let update = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
@@ -467,7 +471,7 @@ async fn an_undo_is_refused_to_a_release_that_was_uninstalled() {
     for version in ["1.1.0", "1.1.1"] {
         let _ = alice
             .packages()
-            .upload(release(version, &same_wasm, &publisher))
+            .upload(release(version, &same_wasm, &publisher), None)
             .await
             .unwrap();
         let _up = alice
@@ -516,7 +520,10 @@ async fn auto_app(
 ) -> String {
     let _ = alice
         .packages()
-        .upload(release("1.0.0", &kv_wasm(), publisher))
+        .upload(
+            release("1.0.0", &kv_wasm(), publisher),
+            Some(&home_org(alice).await),
+        )
         .await
         .unwrap();
     let org = home_org(alice).await;
@@ -569,7 +576,10 @@ async fn a_passing_failure_before_an_automatic_update_is_retried_not_held_agains
     let app = auto_app(&alice, &mut alice_pk, &publisher).await;
     let _ = alice
         .packages()
-        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let _ = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
@@ -623,7 +633,7 @@ async fn a_red_newest_release_does_not_hold_back_a_green_one_below_it() {
     ] {
         let _ = alice
             .packages()
-            .upload(release(version, &wasm, &publisher))
+            .upload(release(version, &wasm, &publisher), None)
             .await
             .unwrap();
     }
@@ -658,7 +668,10 @@ async fn an_undo_counts_lost_writes_after_the_restore_points_node_lost_the_app()
     let app = auto_app(&alice, &mut alice_pk, &publisher).await;
     let _ = alice
         .packages()
-        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let info = get(&alice, &format!("apps/{app}")).await.unwrap();
@@ -751,7 +764,10 @@ async fn passes_take_turns_and_move_an_app_once() {
     let app = auto_app(&alice, &mut alice_pk, &publisher).await;
     let _ = alice
         .packages()
-        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let _ = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
@@ -796,7 +812,10 @@ async fn a_pass_off_the_system_leader_moves_nothing() {
     let app = auto_app(&alice, &mut alice_pk, &publisher).await;
     let _ = alice
         .packages()
-        .upload(release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher))
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            None,
+        )
         .await
         .unwrap();
     let _ = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
@@ -818,6 +837,201 @@ async fn a_pass_off_the_system_leader_moves_nothing() {
     shift_update_clock(0);
 }
 
+/// An update applies on its own only to a release the app's owner may use: Mal, once a
+/// member of Bobco, made an instance of Bobco's private release in his own organization
+/// under the automatic policy; removed from Bobco, he never gets its next private release,
+/// however many passes run past the hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_update_never_applies_on_its_own_to_a_release_its_owner_may_not_use() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (bob, mut bob_pk) = signed_up(&c, 0, "bob").await;
+    let (mal, mut mal_pk) = signed_up(&c, 1, "mal").await;
+    let bobco = bob
+        .orgs()
+        .create("Bobco", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let malco = mal
+        .orgs()
+        .create("Malco", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mal_id = mal.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = bob
+        .orgs()
+        .set_member(&bobco, &mal_id, OrgRole::Member, Some(&mut bob_pk))
+        .await
+        .unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[48; 32]);
+    let _ = bob
+        .packages()
+        .upload(release("1.0.0", &kv_wasm(), &publisher), Some(&bobco))
+        .await
+        .unwrap();
+    let app = mal
+        .apps()
+        .create(typed(
+            json!({ "name": "p", "package": PACKAGE, "version": "1.0.0", "org": malco }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _set = mal
+        .transport()
+        .confirmed(
+            Request::new(
+                Method::POST,
+                format!("orgs/{malco}/upgrade-policy").as_str(),
+            )
+            .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
+            &mut mal_pk,
+        )
+        .await
+        .unwrap();
+    let _ = bob
+        .orgs()
+        .remove_member(&bobco, &mal_id, Some(&mut bob_pk))
+        .await
+        .unwrap();
+    let _ = bob
+        .packages()
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            Some(&bobco),
+        )
+        .await
+        .unwrap();
+
+    shift_update_clock(DAY + 600);
+    for _ in 0..3 {
+        let _ = pass(&c).await;
+    }
+    assert_eq!(running(&mal, &app).await, "1.0.0");
+    shift_update_clock(0);
+}
+
+/// An update applies on its own to an instance from a deployment only while its offer
+/// serves: Mal, a member of Bobco, offers Bobco's private release in his deployment and
+/// moves the offer to its next one; removed from Bobco, his offer no longer serves, and
+/// Carol's instance from it stays where it is, however many passes run past the hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_update_never_applies_on_its_own_from_an_offer_that_no_longer_serves() {
+    shift_update_clock(0);
+    let c = Cluster::start(3).await;
+    let (bob, mut bob_pk) = signed_up(&c, 0, "bob").await;
+    let (mal, mut mal_pk) = signed_up(&c, 1, "mal").await;
+    let (carol, mut carol_pk) = signed_up(&c, 2, "carol").await;
+    let org_of = |answer: Value| answer["orgId"].as_str().unwrap().to_owned();
+    let bobco = org_of(
+        bob.orgs()
+            .create("Bobco", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+    );
+    let caro = org_of(
+        carol
+            .orgs()
+            .create("Caro", None, None)
+            .await
+            .map(wire)
+            .unwrap(),
+    );
+    let mal_id = mal.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = bob
+        .orgs()
+        .set_member(&bobco, &mal_id, OrgRole::Member, Some(&mut bob_pk))
+        .await
+        .unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[49; 32]);
+    let _ = bob
+        .packages()
+        .upload(release("1.0.0", &kv_wasm(), &publisher), Some(&bobco))
+        .await
+        .unwrap();
+    let d = mal
+        .deployments()
+        .create(
+            "labs",
+            typed(json!({ "account": mal_id })),
+            Some(&mut mal_pk),
+        )
+        .await
+        .map(wire)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = mal
+        .deployments()
+        .offer(&d, "p", PACKAGE, "1.0.0", Some(&mut mal_pk))
+        .await
+        .unwrap();
+    let app = carol
+        .apps()
+        .create(typed(
+            json!({ "name": "p", "deployment": d, "package": PACKAGE, "org": caro }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _set = carol
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{caro}/upgrade-policy").as_str())
+                .json(json!({ "policy": { "autoApply": "noDestinations", "holdHours": 24 } })),
+            &mut carol_pk,
+        )
+        .await
+        .unwrap();
+    let _ = bob
+        .packages()
+        .upload(
+            release("1.1.0", &variant(&kv_wasm(), "v11"), &publisher),
+            Some(&bobco),
+        )
+        .await
+        .unwrap();
+    let _ = mal
+        .deployments()
+        .offer(&d, "p", PACKAGE, "1.1.0", Some(&mut mal_pk))
+        .await
+        .unwrap();
+    let _ = bob
+        .orgs()
+        .remove_member(&bobco, &mal_id, Some(&mut bob_pk))
+        .await
+        .unwrap();
+
+    shift_update_clock(DAY + 600);
+    for _ in 0..3 {
+        let _ = pass(&c).await;
+    }
+    assert_eq!(running(&carol, &app).await, "1.0.0");
+    shift_update_clock(0);
+}
+
 /// A green update that drops a method waits for a person: another app may call it (here
 /// the plugin's `askWho` calls the calendar's `whoView`), so it never applies on its own,
 /// and a quiet release below it still does. A person may still approve it.
@@ -834,7 +1048,7 @@ async fn a_green_update_that_drops_a_method_waits_for_a_person() {
         release("1.0.0", &kv_wasm(), &publisher),
         release_of("com.test.plugin", "1.0.0", &kv_wasm(), &publisher, uses),
     ] {
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let org = home_org(&alice).await;
     let create = |name: &str, package: &str| {
@@ -877,7 +1091,7 @@ async fn a_green_update_that_drops_a_method_waits_for_a_person() {
         release("1.0.1", &variant(&kv_wasm(), "v101"), &publisher),
         release("1.1.0", &dropped, &publisher),
     ] {
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let update = get_until(&alice, &format!("apps/{calendar}/update"), 15, |u| {
         u["available"]["version"] == "1.1.0"
@@ -939,7 +1153,7 @@ async fn an_update_that_would_move_the_units_members_waits_for_a_person() {
         ),
         release_of(notes, "0.1.0", &kv_wasm(), &publisher, kv_at("0.1.0")),
     ] {
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let org = home_org(&alice).await;
     let app = alice
@@ -982,7 +1196,7 @@ async fn an_update_that_would_move_the_units_members_waits_for_a_person() {
             kv_at("0.1.1"),
         ),
     ] {
-        let _ = alice.packages().upload(mpk).await.unwrap();
+        let _ = alice.packages().upload(mpk, None).await.unwrap();
     }
     let update = get_until(&alice, &format!("apps/{app}/update"), 15, |u| {
         u["available"]["version"] == "0.2.0"

@@ -231,7 +231,8 @@ organization (`CreateApiKey { owner_approves }`, judged where it applies). Its r
 app, the package (by default the one the app runs) and that package's pinned
 signer, and the public half of an Ed25519 key derived from the key itself
 (`proof::api_key_public`: seed `SHA-256("calimero.api-key.v1\0" || key)`); the
-passkey consent covers all four.
+passkey consent covers all four. A package with no release its maker may use is
+answered `404 no such package`, as one the cluster lacks, before the passkey.
 
 - **What it does**: `POST /apps/{app}/upgrade { version }` for its app, with no
   step-up, to a release of its package installed under the signer it names (a
