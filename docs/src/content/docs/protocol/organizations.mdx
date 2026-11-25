@@ -739,7 +739,8 @@ one fail.
 
 **Limits.** `RECOVERY_DELAY_SECS` (72 hours) is judged at the commands' own
 times (stamped by the node that takes the request, replicated with it), never
-at apply. One pending recovery per organization: a second start is `409
+at apply. 72 hours is long enough for an owner to notice over a weekend, and
+short enough to get a working organization back within a working week. One pending recovery per organization: a second start is `409
 RECOVERY_PENDING` until the owner cancels or the pending one finishes, so a
 seed holder cannot replace a pending recovery with their own. The nonce is at
 most `MAX_RECOVERY_NONCE_BYTES` (64); the key and signature text are bounded
@@ -1067,7 +1068,7 @@ Ownership moves with `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` 
 
 ### Organization recovery
 
-Code: `docs/specs/org-recovery.md`; `Org::recovery`, `types::OrgRecovery`.
+Code: `crates/node/src/system/recovery.rs`; `Org::recovery`, `types::OrgRecovery`.
 
 An org may hold a recovery key (Ed25519 public half; the owner keeps the seed).
 `SetRecoveryKey` (owner, consent `__set_recovery_key { publicKey }`; a new key or `null` ends a

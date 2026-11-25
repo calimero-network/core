@@ -52,7 +52,7 @@ pub struct Quotas {
     pub max_orgs_per_account: u32,
     /// Accounts the cluster takes in all: where sign-up is open
     /// ([`Governance::sign_up`]), this is what keeps it from growing without
-    /// bound (Xil's review, issue 12).
+    /// bound.
     pub max_accounts: u32,
     /// Plaintext bytes of the files an organization's apps hold (a personal
     /// organization's too).
@@ -62,21 +62,21 @@ pub struct Quotas {
     pub max_concurrent_runs_per_org: u32,
     /// The declared fuel of an organization's granted runs, summed.
     pub compute_fuel_per_org: u64,
-    /// Fuel a developer's apps may burn per UTC day, summed over its component apps
-    /// (Q20, D76, D78); 0 (the default) is no limit. The developer is the one usage
-    /// is billed to (`usage::developer`, #4839): the owner of the deployment an app
+    /// Fuel a developer's apps may burn per UTC day, summed over its component apps;
+    /// 0 (the default) is no limit. The developer is the one usage
+    /// is billed to (`usage::developer`): the owner of the deployment an app
     /// was created from, else the app's organization or owner. Over it, a client's
     /// call or an xcall delivery to any of the developer's apps is refused before it
     /// runs (`429 QUOTA_EXCEEDED`); `init` and timer ticks still run, and still
     /// count. Checked where the call runs, against the apps' usage books, not at
-    /// apply: those live in the app groups. A decimal string in JSON (D20); a number
+    /// apply: those live in the app groups. A decimal string in JSON; a number
     /// is refused. Written only once every node runs a release that knows it
     /// (`UPGRADE_PENDING`, `Node::nodes_behind_release`).
     #[serde(with = "decimal_u64")]
     pub max_fuel_per_developer_per_day: u64,
 }
 
-/// A `u64` as a decimal string in JSON (D20): digits only, no sign, no leading zero.
+/// A `u64` as a decimal string in JSON: digits only, no sign, no leading zero.
 /// A JSON number is refused, so a client never sends a cap a JavaScript number has
 /// already rounded.
 mod decimal_u64 {
@@ -737,7 +737,7 @@ pub struct SystemState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub delegations: BTreeMap<AccountId, BTreeMap<AppId, BTreeMap<AppId, Vec<String>>>>,
     /// Account recoveries under way, by account: the passkey the start
-    /// logged and when it may finish (`docs/specs/account-recovery.md`). At
+    /// logged and when it may finish ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)). At
     /// most one per account. Left out when empty, as `recovery_keys`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub account_recoveries: BTreeMap<AccountId, crate::types::PendingAccountRecovery>,
@@ -3809,8 +3809,8 @@ impl SystemState {
         }
     }
 
-    /// Whether `actor`, not `app`'s owner, may change its access to `to`
-    /// (G1): someone who manages the organization's apps (`MANAGE_APPLICATION`,
+    /// Whether `actor`, not `app`'s owner, may change its access to `to`:
+    /// someone who manages the organization's apps (`MANAGE_APPLICATION`,
     /// [`Self::manages_apps`]) where the app is now and where it goes, on its
     /// each team its grants name, organization-wide for grants with no team
     /// ([`Self::manages_access`]). Org admins and the owner hold it everywhere, a
@@ -5165,7 +5165,7 @@ impl SystemState {
     }
 
     /// Whether `account` (`None`: anonymous) receives an event of `app` sent to
-    /// `audience` by `emitter` (R9): it must still reach the app, and be in the
+    /// `audience` by `emitter`: it must still reach the app, and be in the
     /// audience as the system state stands at this moment, so a removed member
     /// stops receiving at once.
     #[must_use]
@@ -7205,7 +7205,7 @@ pub enum SystemCmd {
         consent: Value,
     },
     /// The capabilities members hold unless set for them: organization-wide
-    /// (`team: None`), or everyone in `team` on top of their own (G6).
+    /// (`team: None`), or everyone in `team` on top of their own.
     SetDefaultCapabilities {
         org: OrgId,
         /// Absent in entries from before, which set the organization's.
@@ -7351,7 +7351,7 @@ pub enum SystemCmd {
         now: u64,
         signature: String,
     },
-    /// Give apps their own access lists in one step (G3): for each package
+    /// Give apps their own access lists in one step: for each package
     /// named (absent: every package with an instance an `org` grant admits
     /// here), find or make its app team ([`crate::types::Team::app_package`]),
     /// give every person who reaches its instances now a row there, and give

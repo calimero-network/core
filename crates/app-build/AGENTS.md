@@ -5,7 +5,7 @@
 - **Crate**: `calimero-app-build` (`publish = false`, prototype; `meroctl`, which ships with each release, runs it); a library (the `mero-app-build` binary is gone; `meroctl` is its command line); the standard library's `File::lock` for the build lock
 - **Used by**: `meroctl app build`, `meroctl app codegen`, `meroctl app abi diff`, `meroctl app uses` and `meroctl app pack DIR` (`crates/meroctl/src/make.rs`); an app's `build.rs` (`uses::generate`)
 - **Entry**: `src/lib.rs`
-- **Spec**: `docs/specs/app-runtime-v0.14.md` (D45 build path)
+- **Docs**: [Packaging & signing](https://calimero-network.github.io/core/build/packaging-signing/)
 
 ## What This Crate Does
 
@@ -13,7 +13,7 @@
 
 `build_components_cached(crate_dir, also_hash, cache_dir)` reuses `cache_dir/<name>-<cache_key>.wasm` (the app component) and `<name>-<cache_key>.compute.wasm` (the compute one, written first and present only when the app has compute methods), and returns both as `CachedApp`.
 `build_component_cached` returns the app component of the same entry.
-A miss builds under an exclusive cross-process file lock (`std::fs::File::lock`, `cache_dir/target/<name>.build.lock`, one per crate; Ruling 46) into one cargo target dir for every crate, `cache_dir/target/shared` (`build_component`'s own lock makes builds of different crates take turns; their shared dependencies compile once), recomputes the key and re-checks the cache once it holds the lock, so concurrent processes (nextest runs each test in its own) build once and the rest reuse the result. The key walk skips a file that vanishes while it walks. Test: `tests/concurrent_cache.rs` (6 processes on a cold cache, one `cargo build`).
+A miss builds under an exclusive cross-process file lock (`std::fs::File::lock`, `cache_dir/target/<name>.build.lock`, one per crate) into one cargo target dir for every crate, `cache_dir/target/shared` (`build_component`'s own lock makes builds of different crates take turns; their shared dependencies compile once), recomputes the key and re-checks the cache once it holds the lock, so concurrent processes (nextest runs each test in its own) build once and the rest reuse the result. The key walk skips a file that vanishes while it walks. Test: `tests/concurrent_cache.rs` (6 processes on a cold cache, one `cargo build`).
 
 `build_in_repo_cache(crate_dir)` is that cache at the repository's `target/app-components`, hashing the SDK, its macros, `calimero-app-sdk` and the WIT, answered as a `BuiltApp` (`Built::from_component` reads the ABI and imports back from the cached bytes). Every test that builds a guest goes through it (the node's, the engine's, the SDK's, meroctl's `compute_run`), so a guest compiles once per tree whichever test binary asks first; CI keeps `target/app-components` in its test-app cache.
 

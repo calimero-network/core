@@ -397,7 +397,7 @@ impl<M: Machine> Group<M> {
     /// it answers `NotLeader` with the current leader (the caller forwards, as an
     /// append from a deposed node would make it), and never builds with a term
     /// it does not lead: ids made from another node's term could collide with that
-    /// leader's (D52).
+    /// leader's, since a component's unique ids are `term.seq.n`.
     async fn led_term(&self) -> Result<Leadership, WriteError> {
         {
             let m = self.raft().metrics();

@@ -510,7 +510,7 @@ fn init_takes_arguments_like_a_call() {
     let title =
         |app: &mut App, key: &str| ok_json(&app.view("title", &args(json!({ "key": key }))));
 
-    // Delivered, by camelCase name, a `u64` as a decimal string (D20).
+    // Delivered, by camelCase name, a `u64` as a decimal string.
     let mut app = App::new();
     let init = args(json!({ "welcome": "hello", "opensAt": "1700" }));
     let out = app.run(InvocationKind::Init, owner(), "init", &init, None);

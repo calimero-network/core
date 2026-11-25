@@ -306,7 +306,7 @@ describe('Calimero 1.0 cluster', () => {
     await tab.orgs.releaseApproval({ org, version: '2.3.200', approved: true }, { confirm: passkeyConfirm(pk) });
 
     // The account's own apps were its personal organization's, made at sign-up
-    // (core #5015, 1.0.0-rc.20, until 1.0.0-rc.32, whose sign-up makes none); a merod
+    // (1.0.0-rc.20, until 1.0.0-rc.32, whose sign-up makes none); a merod
     // without one skips this, and its account routes are no longer in the client.
     const mine = (await tab.auth.me()).orgs.find((o) => o.personal)?.orgId;
     if (mine) {
@@ -324,7 +324,7 @@ describe('Calimero 1.0 cluster', () => {
     expect(bobId).toBeTruthy();
   });
 
-  it("dates the account's passkeys, lists its sessions and ends one, on a node that has them (core #4894)", async () => {
+  it("dates the account's passkeys, lists its sessions and ends one, on a node that has them", async () => {
     const [laptop, pk] = await person(0, 'alice-sessions');
     const me = await laptop.auth.me();
     const mine = me.passkeys?.find((p) => p.id === me.passkeyId);
@@ -363,7 +363,7 @@ describe('Calimero 1.0 cluster', () => {
     expect((await laptop.auth.me()).accountId).toBe(me.accountId);
   });
 
-  it("shows an organization's admins their members' lockout risk, on a node that has it (core #4902)", async () => {
+  it("shows an organization's admins their members' lockout risk, on a node that has it", async () => {
     const [alice, alicePk] = await person(0, 'alice-security');
     const [bob] = await person(1, 'bob-security');
     const org = await (await alice.orgs.create({ name: 'Lockout Co' })).orgId;
@@ -373,7 +373,7 @@ describe('Calimero 1.0 cluster', () => {
     try {
       members = await (await alice.orgs.members({ org, detail: 'security' })).members;
     } catch (error) {
-      // merod before core #4902: no `GET /orgs/{org}/members` (a bare `404`).
+      // merod without it: no `GET /orgs/{org}/members` (a bare `404`).
       if (!(error instanceof CalimeroError && (error.status === 404 || error.status === 405)) || error instanceof NotFound) {
         throw error;
       }
@@ -394,14 +394,14 @@ describe('Calimero 1.0 cluster', () => {
     expect((await (await alice.orgs.members({ org, detail: 'security' })).members).map((m) => m.account)).not.toContain(bobId);
   });
 
-  it("lists the account's sign-ins and approvals, on a node that has them (core #4901)", async () => {
+  it("lists the account's sign-ins and approvals, on a node that has them", async () => {
     const [laptop, pk] = await person(0, 'alice-activity');
     const me = await laptop.auth.me();
     let activity;
     try {
       activity = await (await laptop.auth.activityList({})).activity;
     } catch (error) {
-      // merod before core #4901: no `/auth/activity` (a bare `404`).
+      // merod without it: no `/auth/activity` (a bare `404`).
       if (!(error instanceof CalimeroError && error.status === 404) || error instanceof NotFound) throw error;
       return;
     }

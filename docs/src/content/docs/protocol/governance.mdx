@@ -260,7 +260,7 @@ cannot log an approval of its own release.
 So a node on an unapproved image can join the cluster and replicate the system
 group, but receives no app's data until that app's approver approves its
 release. It still holds the system state (accounts, memberships, approvals) in
-full; gating that is the next phase (`docs/specs/gate-system-group.md`).
+full ([what the system group holds](/protocol/system-group/)).
 
 ## Release deadlines
 
@@ -381,19 +381,32 @@ secrets requests may carry ([Application execution](/protocol/execution/#outboun
 
 Who may **install** apps (signed packages from the registry or an upload, and
 raw bundles in development) is a rule of its own, chosen at deployment and
-attested with the rest (`Governance::deployments`, `--deployments`):
+attested with the rest (`Governance::deployments`, `--deployments`). It is
+kept apart from [sign-up](#sign-up) because people must sign up to use a
+deployer's apps: a cluster open to anyone who reaches it can still keep the
+code it runs to the deployers it granted.
 
 - **`open`** (the default): any account installs.
 - **`granted`**: an account installs only with a live **deployer grant**:
   its own (`account:<id>`), or, holding `MANAGE_APPLICATION` organization-wide,
   one its organization holds (`org:<id>`). A grant may end (`until`), judged
-  at the install's own time, never a node's clock. Everyone else still signs
-  up and creates instances of the releases they see (the operator's catalog,
-  their organization's); creating one from a release the cluster lacks
-  installs it from the registry first, and that install needs a grant. The
-  API refuses before it fetches or stores anything (`403
-  DEPLOY_NOT_GRANTED`), and `apply` refuses `InstallPackage` and `PutBundle`
-  again. The operator's own installs need none.
+  at the install's own time, never a node's clock. The API refuses before it
+  fetches or stores anything (`403 DEPLOY_NOT_GRANTED`), and `apply` refuses
+  `InstallPackage` and `PutBundle` again. The operator's own installs need
+  none.
+
+  Everyone else still signs up and creates instances from a
+  [deployment's](#deployments) offers, or of a release the operator
+  installed (its catalog). Any other instance outside every offer is a live
+  deployer's: a customer who sees a release some other way, or a deployer
+  whose grant was revoked, is refused (`POST /apps`, `403
+  DEPLOY_NOT_GRANTED`), and so is an upgrade moving such an instance into
+  another package (`SystemState::creates_outside_offers`,
+  `upgrades_outside_offers`). `CreateApp` and `UpgradeApp` refuse the same
+  where they apply once the cluster version brings `offersOnly`
+  (1.0.0-rc.36); an earlier entry replays as it applied. So on a granted
+  cluster every instance is either the operator's catalog or attributable to
+  a deployer.
 
 Who grants deployers (`Governance::deployers`, `--deployers`):
 
@@ -409,9 +422,23 @@ Who grants deployers (`Governance::deployers`, `--deployers`):
   `DELETE /deployers/{key}`, `412` first), and the operator's signature is
   refused.
 
-Revoking a grant stops new installs only: what the deployer installed, and
-the apps running it, stay. `GET /deployers` lists the rule, the owner and every
-grant, for the operator and for whoever acts for the owner.
+Revoking a grant stops new installs, deployments and offers only: what the
+deployer installed, and the apps running it, stay, and its deployments keep
+their offers, from which customers still create instances (that needs no
+grant). `GET /deployers` lists the rule, the owner and every grant, for the
+operator and for whoever acts for the owner.
+
+**Why `owner`.** It lets the operator keep running a dedicated cluster's
+machines without deciding who deploys on it. Every receipt key attests
+`deployers: owner`, so the customer can check from hardware quotes, without
+trusting the operator, that once it is named the operator's signature
+grants nothing. The attested governance does not name the owner: the owner
+reads that, and every grant, from `GET /deployers`, and may revoke any grant
+there, including one the operator made before naming it.
+
+A grant never lets its signer act inside a deployment: creating one,
+offering, withdrawing and deleting each carry a manager's own passkey
+consent ([Deployments](#deployments)), which the operator's key cannot make.
 
 Where deployments are `granted`, creating a [deployment](#deployments) and
 offering an app in one need the same grant, held by the account acting.
@@ -511,7 +538,11 @@ whoever holds `MANAGE_APPLICATION` there organization-wide (the owner and
 admins included). Each change carries the actor's own passkey consent,
 verified where it applies on every node, and is judged against the state it
 applies to, so a member whose capability was withdrawn, or who left, can no
-longer change it:
+longer change it. The deployment lists no managers (it records only who
+created it and who added each offer): they are read from the owning
+organization, so one change there covers every deployment it owns, and a
+teammate's passkey stays on their own account. The operator's key signs none
+of these changes:
 
 | Change | Route | Consent statement | Rule at apply |
 | --- | --- | --- | --- |
@@ -619,9 +650,13 @@ runs it). Records from before deployments are not moved into one.
   record names them, never a release found by its WASM), and when the
   first was created, and `memberCount` and `activeMembers30d` (members whose
   last sign-in or session exchange is within 30 days). Never who the members
-  are, teams, instance names or app data; instances in a personal
-  organization are only counted (`outsideOrgs`). Another deployment's
-  customers never appear, even on the same release.
+  are, teams, instance names or app data; below cluster version 1.0.0-rc.32
+  (`ordinaryOrgs`), instances in a personal organization are only counted
+  (`outsideOrgs`). Another deployment's
+  customers never appear, even on the same release. An organization is a
+  customer only through its instances: the listing is worked out from the
+  instances that record the deployment, so deleting its last one ends it,
+  with no other record to undo: the customer stays in control of it.
 - `GET /deployments/{id}/secrets`: for its managers, on fresh state: every
   secret its offered releases, or the releases they reference, declare and
   every one it holds a value of, with the offered apps that reach it, the
@@ -632,6 +667,60 @@ Frontends open at a deployment's release with `/d/{deployment}/`, or on the
 deployment's own host, `{dlabel}.{apps-domain}`, which `POST /deployments` and
 the reads above return as `host`
 ([Deployment hosts](/protocol/applications/#deployment-hosts)).
+
+### Decided, not yet built
+
+These were decided for deployments but are not in the code yet. Until they ship, a deployment
+cannot change owner, and nothing stops an organization that owns one from losing every manager.
+
+**A recovery key guards an org-owned deployment.**
+If every manager loses every passkey, nobody can sign for the deployment again, and its
+customers stay on its last offer for good.
+[Organization recovery](/protocol/organizations/#recovery) hands an org back to its owner after that,
+and a recovered owner holds every capability, so the guard makes that recovery available
+wherever an org owns a deployment:
+
+- Creating a deployment for an org, and accepting one into an org, will require the org to
+  hold a recovery key (`409 RECOVERY_KEY_REQUIRED`).
+- Removing an org's recovery key will be refused while the org owns a deployment; rotating it
+  to a new key stays allowed.
+- Removing a member or changing capabilities is never blocked: revoking a person is never held
+  hostage to a minimum headcount.
+- It applies from the cluster version that brings it, so entries logged before replay as they
+  applied. An org that already owns a deployment without a key is refused nothing until it
+  creates or accepts another, or removes a key it later sets.
+- Account-owned deployments are not covered. Calimero Cloud gives a developer on their own a
+  one-member organization instead, which gets its recovery key before its first deployment.
+
+**Transfer.**
+The owner will hand a deployment over in two steps, from any owner to any owner (account or
+organization on either side):
+
+1. A manager of the current owner offers it to a receiver (`OfferDeployment { deployment, to }`).
+   The receiver must exist and not be the owner. One offer at a time: a second is refused while
+   one is pending and has not lapsed.
+2. A manager of the receiver accepts it (`AcceptDeployment { deployment, to }`), naming the
+   receiver in their consent, within 7 days of the offer (`TRANSFER_TTL_SECS`), judged at the
+   commands' own times.
+   Where deployments are granted, the receiver must hold a live deployer grant; an org receiver
+   must hold a recovery key; and the receiver stays within `MAX_DEPLOYMENTS_PER_OWNER`.
+
+A manager of either side cancels a pending offer (`CancelDeploymentTransfer`), and deleting the
+deployment drops it.
+The id, name, offers, secrets and customers' instances stay; only the owner changes, and there
+is no rename.
+The deployment records the last hand-over (`transferred: { from, at }`).
+Customers are not asked and get no email: the next update sheet of each of their instances
+names the new owner ("acme-labs is now run by the organization Globex"), so they learn who
+chooses their updates before they approve one.
+In Calimero Cloud, the sender picks the receiver by pasting its workspace ID (`org:<id>` or
+`account:<id>`), never by email or a name search.
+
+**Not planned: migrating old installs.**
+An instance created before deployments existed stays outside every deployment.
+Attaching old installs to a per-installer deployment would fix nothing a deployer misses, and
+would attach customers to a deployer they never consented to.
+A customer who wants a deployer's offer creates an instance from it.
 
 ## Reading the approvals
 

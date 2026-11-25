@@ -1,6 +1,6 @@
 ---
 title: Runbooks
-description: Step-by-step operations on a merod cluster — add a node, move replicas, back up and restore apps, found a cluster again, recover from the recovery disk after every key service is gone, recover from a lost system majority, set quotas, upgrade the cluster's release, upgrade apps, rotate the ops token, handle a lost node, inspect a stopped one.
+description: Step-by-step operations on a merod cluster — add a node, move replicas, back up and restore apps, found a cluster again, recover from the recovery disk after every key service is gone, recover from a lost system majority, set quotas, upgrade the cluster's release, upgrade apps, rotate the ops token, handle a lost node or one refused as rolled back, inspect a stopped one.
 sidebar:
   order: 9
 ---
@@ -675,6 +675,35 @@ clients refresh. Removing a node ends the sessions it signed the same way.
   a majority: follow [Disaster recovery](#disaster-recovery-the-system-group-lost-its-majority).
 - **Restarting** a node with the same data directory and configuration resumes
   it: it catches up from the leaders.
+
+## A node refuses to start as rolled back
+
+`merod run` exits with `refusing to start:` and a reason when its store is
+behind the [rollback counter](/protocol/encryption/#rollback-protection)
+mero-kms keeps for its node id: the disk was restored from an older copy, the
+data directory is empty or older than rollback protection while mero-kms has
+seen this node id, or mero-kms has no counter for a store that has one. The
+reason names the store's checkpoint and mero-kms's.
+
+- **Only this node is behind** (the others start): do not force it. Treat it as
+  a lost node and replace it under a new node id: move its apps' replicas to
+  other nodes ([Move an app's replicas](#move-an-apps-replicas)), remove it
+  (`meroctl ops remove-node ID`, [Remove a node](#remove-a-node)), wipe its
+  data directory, start it under a **new** `--node-id` and register that id
+  ([Add a node](#add-a-node)). It joins empty, as a learner, and catches up.
+  Reusing the old id on an empty store is refused.
+
+- **Every node is behind, or the newest disks are lost:** start each node once
+  with `merod run --accept-rollback` (this run only; it is never stored in the
+  configuration). mero-kms sets the node's counter to its store's and raises
+  the cluster's rollback epoch: `rollbackEpoch` in `/health` rises and
+  `rollback.forced` is `true` in `meroctl ops status` on that node. Whatever
+  was committed after the copies were taken is gone; tell the cluster's users.
+- **A store under another node id, or a protected store that mero-kms answered
+  without a counter** (`this store has a rollback counter, but mero-kms
+  answered without one`): never started, `--accept-rollback` or not. Check
+  that the node runs with its own `--node-id` and data directory, and that
+  `--kms-url` points at the cluster's mero-kms of this release.
 
 ## A replica's state differs
 

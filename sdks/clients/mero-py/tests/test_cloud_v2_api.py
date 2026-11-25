@@ -258,7 +258,7 @@ def test_passkey_times_and_sessions_listed_and_ended_one_at_a_time(cluster):
         if e.args[1] != 404 or code(e) == "NOT_FOUND":
             raise
         assert mine.get("addedAt") is None, me
-        pytest.skip("the node has no session list or passkey times (core #4894)")
+        pytest.skip("the node has no session list or passkey times")
     assert isinstance(mine["addedAt"], int), me
     assert mine["lastSignInAt"] >= mine["addedAt"], me
 
@@ -299,11 +299,11 @@ def test_admins_see_their_members_lockout_risk(cluster):
     try:
         members = alice.json.orgs.members(org=org, detail="security")["members"]
     except CloudError as e:
-        # A node before core #4902: no `GET /orgs/{org}/members` (a bare
+        # A node without it: no `GET /orgs/{org}/members` (a bare
         # `404`, or `405` beside the existing POST).
         if e.args[1] not in (404, 405) or code(e) == "NOT_FOUND":
             raise
-        pytest.skip("the node has no member security listing (core #4902)")
+        pytest.skip("the node has no member security listing")
     assert len(members) == 2, members
     b = next(m for m in members if m["account"] == bob_id)
     assert (b["role"], b["passkeys"], b["recoveryCode"], b["sessions"]) == (
@@ -343,10 +343,10 @@ def test_activity_lists_sign_ins_and_approvals(cluster):
     try:
         listed = laptop.json.auth.activity_list()["activity"]
     except CloudError as e:
-        # A node before core #4901: no `/auth/activity` (a bare `404`).
+        # A node without it: no `/auth/activity` (a bare `404`).
         if e.args[1] != 404 or code(e) == "NOT_FOUND":
             raise
-        pytest.skip("the node has no activity list (core #4901)")
+        pytest.skip("the node has no activity list")
     assert [(a["kind"], a["passkey"], a["app"]) for a in listed] == [
         ("signIn", me["passkeyId"], None)
     ], listed
@@ -643,7 +643,7 @@ def mpk(package: str, version: str, wasm: bytes) -> bytes:
 
 @pytest.fixture(scope="module")
 def origins(cluster):
-    """Skip on a node without per-package origins (before core #4846): an
+    """Skip on a node without per-package origins (an older node): an
     unknown route there is a bare `404`, an unknown package here
     `NOT_FOUND`."""
     probe, _ = person(cluster, 0, "origins-probe")
@@ -651,7 +651,7 @@ def origins(cluster):
         probe.json.packages.origins_list(package="com.test.none")
     except CloudError as e:
         if code(e) != "NOT_FOUND":
-            pytest.skip("the node has no per-package origins (core #4846)")
+            pytest.skip("the node has no per-package origins")
 
 
 def test_a_packages_manager_registers_and_removes_its_web_origin(
@@ -733,7 +733,7 @@ def test_a_packages_manager_registers_and_removes_its_web_origin(
 
 
 def test_an_admin_closes_and_opens_one_app_team(cluster, wasm):
-    # core #4903: a package's own `join` (and `keep`) in POST /orgs/{org}/app-teams.
+    # A package's own `join` (and `keep`) in POST /orgs/{org}/app-teams.
     alice, pk = person(cluster, 0, "alice-appteams")
     package = "com.test.appteams"
     alice.json.packages.upload(body=mpk(package, "1.0.0", wasm))

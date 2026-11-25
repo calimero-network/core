@@ -311,8 +311,8 @@ async fn required_mode_refuses_plain_requests() {
     assert_eq!(allowed.status(), 200);
 }
 
-/// Xil's review, issue 13: a relay between client and node set the outer
-/// Origin and X-Forwarded-Host, and the node read them as the sealed request's.
+/// A relay between client and node may set the outer Origin and X-Forwarded-Host;
+/// the node never reads them as the sealed request's.
 #[tokio::test]
 async fn a_relay_cannot_choose_the_origin_the_node_reads() {
     let (url, transport, _h) = serve(SealedOptions::default()).await;

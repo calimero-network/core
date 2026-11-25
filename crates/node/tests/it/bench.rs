@@ -1,4 +1,4 @@
-//! G1 measurements (spec D32, plan Task 13 Step 1) on the in-process three-node cluster.
+//! Fuel and latency measurements on the in-process three-node cluster.
 //! Ignored by default; run in release on an otherwise idle machine:
 //!
 //! `cargo test --release -p calimero-node --test it bench:: -- --ignored --nocapture --test-threads 1`
