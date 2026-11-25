@@ -2508,6 +2508,72 @@ fn a_refusals_status_comes_from_its_kind_not_its_wording() {
     );
 }
 
+/// `CreateApp`'s own refusals reach a client with the wording, status and code
+/// they always had: each check is named, none changed what it answers.
+#[test]
+fn a_create_apps_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let _prev = m.state.bundles.insert(
+        "b1".into(),
+        serde_json::from_value(json!({ "hash": "b1", "size": 1, "uploadedBy": "alice" })).unwrap(),
+    );
+    let create = |changes: Value, unit_offer: Option<PackageRef>| {
+        let mut app = json!({
+            "appId": "new", "name": "new", "group": 0, "bundle": "b1", "owner": "alice",
+            "org": p("alice"), "replicas": [1], "createdAt": 10,
+        });
+        for (key, value) in changes.as_object().unwrap() {
+            app[key] = value.clone();
+        }
+        SystemCmd::CreateApp {
+            app: Box::new(serde_json::from_value(app).unwrap()),
+            unit_offer,
+            offers_only: false,
+        }
+    };
+    let offer = PackageRef {
+        package: "p".into(),
+        version: "1.0.0".into(),
+        service: None,
+        compute: false,
+    };
+    let cases = [
+        (create(json!({ "bundle": "nope" }), None), "unknown bundle"),
+        (create(json!({ "appId": "app" }), None), "app exists"),
+        (
+            create(json!({ "deployment": "nope" }), None),
+            "no such deployment",
+        ),
+        (
+            create(json!({}), Some(offer)),
+            "a unit's offer comes with the deployment that makes it",
+        ),
+        (
+            create(json!({ "owner": "carol", "org": "org" }), None),
+            "owner is not a member of the organization",
+        ),
+        (
+            create(json!({ "owner": "bob", "org": "org" }), None),
+            "creating apps here needs the CREATE_APP capability",
+        ),
+    ];
+    for (cmd, message) in cases {
+        let refused = m.run_unproven(cmd).unwrap_err();
+        let api = crate::node::rejected(&refused);
+        assert_eq!(
+            (api.message.as_str(), api.status, api.code.as_str()),
+            (message, 400, "REJECTED")
+        );
+    }
+    m.state.quotas.max_apps_per_account = 1;
+    let refused = m.run_unproven(create(json!({}), None)).unwrap_err();
+    let api = crate::node::rejected(&refused);
+    assert_eq!(
+        (api.message.as_str(), api.status, api.code.as_str()),
+        ("quota exceeded: apps", 429, "QUOTA_EXCEEDED")
+    );
+}
+
 /// Every account has its personal organization from sign-up
 /// (`CreateAccount { personal_org }`): it alone owns it, it is outside the
 /// organization quota, and a second one is refused. An ordinary
