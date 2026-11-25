@@ -1,4 +1,4 @@
-//! Phase 0 of gating the system group (`docs/specs/gate-system-group.md`):
+//! The inbound gate ([Between nodes](https://calimero-network.github.io/core/protocol/networking/#between-nodes)):
 //! what a node on a release an owner has not approved could do before, tried
 //! the way such a node would: with the cluster secret, over its own sealed
 //! channel, by proposing system commands, by minting sessions.

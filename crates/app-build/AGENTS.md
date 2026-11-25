@@ -5,7 +5,7 @@
 - **Crate**: `calimero-app-build` (`publish = false`, prototype; `meroctl`, which ships with each release, runs it); a library (the `mero-app-build` binary is gone; `meroctl` is its command line); the standard library's `File::lock` for the build lock
 - **Used by**: `meroctl app build`, `meroctl app codegen`, `meroctl app abi diff`, `meroctl app uses` and `meroctl app pack DIR` (`crates/meroctl/src/make.rs`); an app's `build.rs` (`uses::generate`)
 - **Entry**: `src/lib.rs`
-- **Spec**: `docs/specs/app-runtime-v0.14.md` (D45 build path)
+- **Docs**: [Packaging & signing](https://calimero-network.github.io/core/build/packaging-signing/)
 
 ## What This Crate Does
 

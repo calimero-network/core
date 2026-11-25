@@ -60,8 +60,7 @@ is its command line.
 - **Routing** (`node.rs`): system writes go to the system leader, calls and strong
   views to the app's leader (a strong view runs on the replica that takes it once it applied the leader's read index, `internal/app/index`, `Node::app_read_index`; else on the leader; regression `a_follower_answers_a_strong_view_after_a_read_index`), over **peer sealed channels** (`internal/*`) whose key
   is attested like any client's, plus the cluster secret (HMAC of K_c).
-- **Peer identity and the inbound gate** (Phase 0 of
-  `docs/specs/gate-system-group.md`): a node's channel to a peer is identified
+- **Peer identity and the inbound gate** (docs: [Between nodes](https://calimero-network.github.io/core/protocol/networking/#between-nodes)): a node's channel to a peer is identified
   (Noise IK with its own transport key, `x-calimero-node: <id>`);
   `Node::identify_peer` attests the claimed node's registered address itself and
   takes the claim only if that quote names the proven key (cached by key; the
@@ -1665,7 +1664,7 @@ is its command line.
   renames it (`RenameOrg`: owner or admin, passkey `__rename_org { name }`,
   `system::org_name_fits`, as `CreateOrg { name_fits }` checks a new one). Ownership moves with
   `SetOrgRole { role: owner }`; leaving is `RemoveOrgMember` on oneself.
-- **Organization recovery** (`docs/specs/org-recovery.md`; `Org::recovery`,
+- **Organization recovery** ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery); `Org::recovery`,
   `types::OrgRecovery`): an org may hold a recovery key (Ed25519 public half;
   the owner keeps the seed). `SetRecoveryKey` (owner, consent `__set_recovery_key
   { publicKey }`; a new key or `null` ends a pending recovery), `StartRecovery`
@@ -1683,7 +1682,7 @@ is its command line.
   `tests/it/org_recovery.rs`, `recovery_needs_the_owners_passkey_the_seed_and_the_delay`,
   `rotating_the_recovery_key_retires_the_old_seed`,
   `state_from_before_recovery_reads_with_none_and_writes_as_before`.
-- **Account recovery** (`docs/specs/account-recovery.md`; shaped like
+- **Account recovery** ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery); shaped like
   organization recovery above, same `RECOVERY_DELAY_SECS`): an account may
   hold one recovery code (`calimero_identity::new_recovery_code`, Crockford
   base32, `normalize_recovery_code`, `MAX_RECOVERY_CODE_CHARS`); the log keeps
@@ -1887,7 +1886,7 @@ is its command line.
   `tests/it/package_origins.rs`, `package_origins_carry_their_managers_consent`,
   `package_origins_are_unique_bounded_and_go_with_their_package`,
   `state_from_before_package_origins_reads_with_none_and_writes_as_before`.
-  **Served origins** (custom domains; design `docs/specs/custom-domains.md`):
+  **Served origins** (custom domains; design [Custom domains](https://calimero-network.github.io/core/protocol/applications/#custom-domains)):
   `served: true` on the body, `PackageOrigin::served` and
   `AddPackageOrigin::served` (both left out when false), consent
   `{ origin, rpId, served: true }` (`origins::add_args`, the one builder for
@@ -2188,7 +2187,7 @@ is its command line.
   client for the data disk's key (`merod kms disk-key`). The cluster's nodes share
   the disk identity, so the nodes of one release share K_r; every release has its
   own mero-kms root, so K_r changes at each release upgrade.
-- **Rollback counter** (`rollback.rs`, `docs/specs/rollback-protection.md`): with a
+- **Rollback counter** (`rollback.rs`, [Rollback protection](https://calimero-network.github.io/core/protocol/encryption/#rollback-protection)): with a
   key from mero-kms that keeps counters (`kms::KmsCounter`, `Config::rollback`), the
   node keeps an entry `(generation, mark)` in its store (`Engine::put_node_meta`, row
   `rollback`, bound to its node id) and raises it with mero-kms's every
@@ -2684,11 +2683,6 @@ API and system group:
   every `__` method there) and the leader's own re-check of upgrade authority
   (Ruling 45; the node judges it in the API and the system log); their tests are
   `#[ignore]`d with the reason.
-
-## Not done yet
-
-keys per app from mero-kms (phase 1 of `docs/specs/rollback-protection.md`), the
-rollback epoch in the attested KMS evidence, search indexes that survive a restart (rebuilt from state now, components' too).
 
 ## Commands
 

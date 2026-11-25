@@ -698,7 +698,7 @@ pub struct SystemState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub delegations: BTreeMap<AccountId, BTreeMap<AppId, BTreeMap<AppId, Vec<String>>>>,
     /// Account recoveries under way, by account: the passkey the start
-    /// logged and when it may finish (`docs/specs/account-recovery.md`). At
+    /// logged and when it may finish ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)). At
     /// most one per account. Left out when empty, as `recovery_keys`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub account_recoveries: BTreeMap<AccountId, crate::types::PendingAccountRecovery>,

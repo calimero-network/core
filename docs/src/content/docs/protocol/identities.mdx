@@ -390,16 +390,15 @@ first). Only `https://host` with no port (`http://name.localhost:port` on a
 under the apps domain or the cluster's rp-id, not a node's API host; 4 per
 package and 64 per cluster; adding one needs every node on this release
 (`409 CLUSTER_NOT_UPGRADED`). The operator lists them, by the package's label,
-at `GET /ops/served-origins`, from which Calimero Cloud orders each one's TLS
-certificate for the cluster's attested nodes and routes the name. A custom
+at `GET /ops/served-origins`. A custom
 domain's sessions are only as safe as its DNS: whoever controls the name can
-serve their own page there and use its passkeys for that package. Design:
-`docs/specs/custom-domains.md`.
+serve their own page there and use its passkeys for that package
+([custom domains](/protocol/applications/#custom-domains)).
 
-Not yet: proof that the manager controls the origin (a squatter on another
-developer's origin denies them its use on this cluster, but never sees a
-token: the sessions go to the pages on that origin), and origins scoped to a
-deployment.
+Registering an origin proves nothing about controlling it: a manager who
+registers another developer's origin denies them its use on this cluster, but
+never sees a token, since the sessions go to the pages on that origin. Origins
+belong to a package, never to a deployment.
 
 ## Account recovery
 
@@ -487,7 +486,12 @@ never a recovery under way.
 **API keys end with it.** Whoever took the lost passkey may also have made API
 keys with it, and a key works without a passkey, so a finish revokes every API
 key of the account as it ends every session. The machines the person runs need
-new keys once the recovery finishes.
+new keys once the recovery finishes. A finish an earlier release logged
+(without `revoke_api_keys`) replays as that release applied it, keeping the
+account's API keys, so a replica that replays it after a restart reaches the
+state the others reached; from the cluster's `RequireCurrentRules` mark on,
+every finish revokes them. An account recovered that way revokes its keys
+itself once signed in (`DELETE /auth/apikeys/{key}`).
 
 | Who | Can they recover the account? | What limits it |
 | --- | --- | --- |
