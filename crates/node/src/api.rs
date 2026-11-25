@@ -2857,6 +2857,7 @@ mod tests {
         assert!(put(&mut c, sign_up(100), session(1), 0).is_ok());
     }
 
+    /// An id people type never starts with `-`, which `meroctl` would read as a flag.
     #[test]
     fn a_typed_id_never_starts_with_a_dash() {
         for _ in 0..10_000 {

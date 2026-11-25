@@ -4027,6 +4027,7 @@ mod tests {
         assert_eq!(pair(&rig), (Some("b4".into()), None));
     }
 
+    /// An SDK 0.12 (wasmer) entry in a component app's log stops the group instead of applying to it.
     #[test]
     fn a_wasmer_entry_never_applies_to_a_component_app() {
         let mut r = Rig::new();

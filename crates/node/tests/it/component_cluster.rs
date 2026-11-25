@@ -2528,6 +2528,7 @@ async fn entry_timestamps_never_go_backwards() {
     assert!(as_u64(&seen.result) >= t2, "a view saw an earlier time");
 }
 
+/// A member removed from the organization stops receiving its apps' events.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn removed_member_stops_receiving_org_events() {
     let c = Cluster::start(3).await;

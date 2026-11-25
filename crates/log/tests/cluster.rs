@@ -1297,6 +1297,8 @@ async fn portable_rows_seed_a_group_under_another_clusters_key() {
     );
 }
 
+/// A restore's seed replaces a new group's state with a backup and snapshots through it; the other
+/// replicas must join from that snapshot and hold the backup's keys.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backup_seeds_another_group_that_replicas_then_join() {
     let c = DiskCluster::new(3).await;
