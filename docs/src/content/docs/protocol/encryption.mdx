@@ -173,10 +173,8 @@ Every node, of every release, derives the same keys, and nothing outside the
 cluster can. These derivations are the ones K_r fed before K_c existed, so a
 cluster founded earlier keeps every value, and a next-release node opens them
 (regression: `nodes_on_the_next_release_keep_the_data_of_the_ones_before`).
-Keys per app from mero-kms, which would let an app's data be opened only where
-that app is placed, are not done yet: today one K_c covers every app on the
-cluster (`docs/specs/rollback-protection.md`, "Keys per app, phase 1", is the
-design).
+There are no keys per app: one K_c covers every app on the cluster, so an
+app's data opens on any node of the cluster, not only where that app is placed.
 
 ## What an observer can still see
 
@@ -199,43 +197,68 @@ A host can stop a TD, copy its encrypted disk, and start it later on that copy.
 K_r and K_c open an old copy as well as a new one, so the node would forget the
 votes it cast and serve stale state, and a host that restarts every node on
 copies of one moment would erase everything committed since without any
-replica noticing. The rollback counter (`crates/node/src/rollback.rs`;
-design `docs/specs/rollback-protection.md`) refuses such a start.
+replica noticing. The rollback counter (`crates/node/src/rollback.rs`, its
+mero-kms side in `calimero-kms-client`'s `kms::rollback`) refuses such a start.
 
 - **Two copies of one counter.** mero-kms keeps, per node id of the cluster's
   key path, an entry `(generation, mark)`, and a cluster **epoch**: the number
   of rollbacks an operator has forced. The node keeps the same entry in its
   sealed store, in the node row `rollback` (`{ node, entry, epoch }`, bound to
-  its node id). Both travel sealed in the key release (`/get-key` names the
-  node id; the answer carries the entry, the epoch and a session key that only
-  the TD holds).
+  its node id). Entries compare as pairs, so a forced rollback, which starts a
+  new generation, is above every mark of the generation before. mero-kms keeps
+  the counters in its replicas' memory, as it keeps its root, and answers a
+  change once a majority of its `MERO_KMS_REPLICAS` hold it.
+- **Delivered with the key.** The node asks `/attest` for `capabilities`; a
+  mero-kms that keeps counters answers `["rollback/v1"]`, and its quote commits
+  to that list (`mero-kms/attest-transport-key/v2`), so a relay that strips it
+  breaks the quote. The node's `/get-key` then names its node id
+  (`rollbackNodeId`, committed to in its own quote under
+  `mero-kms/sealed-get-key/v2`), and the answer, sealed to the TD under
+  `mero-kms/sealed-key/v2`, carries the key, the epoch, the node's entry (none
+  if mero-kms never saw this node id) and a session id and key that only that
+  TD and mero-kms hold. A mero-kms that answers no capabilities gets the
+  request it always did.
 - **Raised every second, store first.** A running node writes `mark + 1` to its
-  store (synced), then to mero-kms (`POST /rollback/raise`, HMAC'd under the
-  session key, acknowledged by a majority of mero-kms replicas), every
-  `CHECKPOINT_EVERY` (1 s). A crash between the two leaves the store ahead,
-  which starts. A mero-kms that does not answer is retried; the node keeps
-  serving and reports the age of its last acknowledgement.
-- **Judged before any group starts** (`rollback::judge`, in `Node::start`):
+  store (synced), then to mero-kms (`POST /rollback/raise`), every
+  `CHECKPOINT_EVERY` (1 s). The store goes first so that a crash between the
+  two leaves the store ahead, which starts. A raise and its answer are
+  HMAC-SHA256 under the session key, the answer bound to the node's fresh
+  nonce, so a relay can neither move the counter nor fake an acknowledgement,
+  and no checkpoint needs a quote. The first checkpoint is part of the start:
+  unacknowledged, the node does not start. After that a mero-kms that does not
+  answer is logged and retried each second; the node keeps serving and reports
+  the seconds since the last acknowledgement (`sinceCheckpointSecs` in
+  `/ops/status`'s `rollback`).
+- **Judged before any group starts** (`rollback::judge`, in `Node::start`).
+  "Rolled back" refuses the start unless the node runs with
+  `--accept-rollback`; "never" refuses it whatever the flags.
 
   | mero-kms's entry | The store's | Outcome |
   | --- | --- | --- |
-  | none (a KMS without counters) | none | Starts **unprotected** (an older mero-kms) |
-  | none (a KMS without counters) | some | Refused: this store was protected |
-  | any | another node id | Refused: a store does not move to another id |
-  | none | none | First start: starts, at the epoch |
-  | some | none | Refused: an empty or older store under a used id |
-  | none | some | Refused: mero-kms lost its counters |
-  | `(g, m)` | below `(g, m)` | Refused: rolled back |
+  | none (a KMS without counters) | none | Starts **unprotected** (an older mero-kms); logged, and `rollback` is `null` |
+  | none (a KMS without counters) | some | Never: this store was protected, and the answer may have been stripped |
+  | any | another node id | Never: a store does not move to another id |
+  | none | none | First start, or the first since mero-kms keeps counters: starts at the epoch, mark 0 |
+  | some | none | Rolled back: an empty or older store under a used id |
+  | none | some | Rolled back: mero-kms lost its counters |
+  | `(g, m)` | below `(g, m)` | Rolled back |
   | `(g, m)` | at or above `(g, m)` | Starts |
 
 - **Recovery is explicit.** One node rolled back: wipe it, remove it, and
-  register it again under a new node id; it joins as a learner and catches up.
+  register it again under a new node id; it joins as a learner and catches up
+  ([A node refuses to start as rolled back](/operate/runbooks/#a-node-refuses-to-start-as-rolled-back)).
   Every node rolled back, or the newest disks lost: the operator starts each
-  node with `merod run --accept-rollback`, mero-kms sets that node's entry to
-  its store's and raises the cluster epoch, and every node reports the epoch
-  (`rollbackEpoch` in `/health`, `rollback` in `/ops/status`). A forced
-  rollback is visible, not impossible; the attested KMS evidence does not
-  carry the epoch yet.
+  node with `merod run --accept-rollback`; the node asks mero-kms
+  (`POST /rollback/reset`) to set its entry to its store's mark in a new
+  generation, mero-kms raises the cluster epoch, and every node reports the
+  epoch (`rollbackEpoch` in `/health`, `rollback` in `/ops/status`, with
+  `forced: true` on the node that forced it). The flag is the host's decision,
+  as restoring an old disk is: a forced rollback is visible, not impossible.
+  The attested KMS evidence does not carry the epoch.
+- **One release, one set of counters.** Each mero-tee release has its own
+  mero-kms cluster, so its own counters, and a node does not move to a new
+  release in place: a node of the next release is a new node with a new store,
+  and a counter never crosses releases.
 
 `--dev` nodes and nodes given `--storage-key*` take no counters. A rollback
 shorter than one checkpoint looks like a crash, and Raft still holds those
