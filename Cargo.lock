@@ -707,6 +707,7 @@ dependencies = [
  "calimero-app-engine-wasmtime",
  "calimero-app-host",
  "calimero-app-wit",
+ "criterion",
  "eyre",
  "hex",
  "libc",
@@ -717,6 +718,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
  "wasmparser 0.261.0",
  "wasmtime",
  "wasmtime-wasi",
@@ -750,7 +752,7 @@ dependencies = [
 name = "calimero-app-wit"
 version = "0.0.0"
 dependencies = [
- "wit-parser 0.261.0",
+ "wit-parser 0.262.0",
 ]
 
 [[package]]
