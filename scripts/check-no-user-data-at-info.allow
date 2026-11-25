@@ -1,0 +1,90 @@
+# Log statements scripts/check-no-user-data-at-info.py lets through, each with
+# why its text is the node's own. One per line:
+#
+#   <file> | <a piece of the statement, as the check prints it on one line> | <why>
+#
+# The piece is usually the message; an entry that matches nothing is reported.
+# `TODO(F6)` marks a site still to fix; anything else is safe as it stands.
+# Before adding a line, prefer logging a kind, code, id or length
+# (crates/node/src/log_safe.rs, calimero_outbound::refusal_kind).
+
+# --- calimero-log: storage and Raft errors -------------------------------------
+crates/log/src/lib.rs | "this node's Raft core of the group stopped | openraft's fatal error; a StateTx::fail reason in it is node-named (the decode sites use log_safe::serde)
+crates/log/src/lib.rs | "the group's Raft core could not restart | RocksDB and openraft errors: paths, ids, errno
+crates/log/src/machine.rs | "the machine could not serialize its state | serde_json serialize errors never quote a value
+crates/log/src/machine.rs | "the group's snapshot record does not read | a snapshot record of the node's own format; the error names a file the node chose
+crates/log/src/machine.rs | "a batch did not apply | RocksDB errors and StateTx::fail reasons, which callers keep node-named (StateTx::fail docs)
+crates/log/src/machine.rs | "the group's state could not be read again | RocksDB errors: paths and errno
+crates/log/src/store.rs | "state read failed" | RocksDB errors: paths and errno
+crates/log/src/store.rs | "this batch fails" | StateTx::fail: every caller passes a node-named reason (serialize errors, RocksDB errors, log_safe::serde for decodes); test an_entry_that_does_not_decode_is_logged_without_its_contents
+
+# --- calimero-node: background loops on the node's own disk --------------------
+crates/node/src/lib.rs | "server stopped" | the API listener's bind/accept error
+crates/node/src/lib.rs | "metrics listener stopped" | the metrics listener's bind/accept error
+crates/node/src/lib.rs | "usage sample failed" | reading the node's own disk usage
+crates/node/src/lib.rs | "segment sweep failed" | RocksDB/io errors of the segment store
+crates/node/src/lib.rs | "component cache sweep failed" | io errors under the node's compile cache
+crates/node/src/lib.rs | "restore point sweep failed" | io errors under the node's restore-point directory
+crates/node/src/lib.rs | "backup failed" | io/RocksDB errors writing the node's own backup
+crates/node/src/lib.rs | "recovery disk write failed" | io errors writing the recovery disk
+crates/node/src/node/segments.rs | "the stored segments could not be listed" | io errors of the segment store
+crates/node/src/node/segments.rs | "segment not deleted" | io errors of the segment store; the segment is named by its hash
+crates/node/src/node/component/files.rs | "file bytes not deleted" | io errors of the segment store; the segment is named by its hash
+crates/node/src/node.rs | "file bytes not deleted" | io errors of the segment store; the segment is named by its hash
+crates/node/src/node.rs | "blob not deleted" | io errors of the blob store; the blob is named by its hash
+crates/node/src/node/restore_points.rs | "could not drop a restore point" | io errors; the file name is the node's (app id and index)
+crates/node/src/component/search.rs | "a search writer not released" | tantivy's index-writer and io errors; no document text
+crates/node/src/component/search.rs | "component search not brought up to date" | TODO(F6): tantivy errors are of the index, but a reindex error could quote a field it failed on; map to a kind
+crates/node/src/component/search.rs | "search indexes not removed from disk" | io errors under the node's index directory
+crates/node/src/rollback.rs | "rollback checkpoint failed: {e:#}" | mero-kms's counter API, an attested node service; its errors carry epochs and marks
+crates/node/src/rollback.rs | "--accept-rollback: starting on a store mero-kms had seen newer ({why})" | the node's own rollback verdict: epochs and marks
+
+# --- calimero-node: cluster membership, attestation, peers ---------------------
+crates/node/src/api/internal.rs | "could not deliver the cluster key" | the sealed channel's attestation or transport error to a node's registered address; the peer's answer is reduced to its status
+crates/node/src/cluster_key.rs | "no cluster key yet" | cluster_key::ask: transport/attestation errors and the peer's status and error code (never its message)
+crates/node/src/node.rs | "could not attest a calling peer" | quote verification and transport errors for a node's registered address
+crates/node/src/node.rs | "could not attest a session issuer" | quote verification and transport errors for a node's registered address
+crates/node/src/node.rs | "{why}" | `why` is one of two literals; the error is attestation/transport to a registered node address
+crates/node/src/node.rs | "a registered node could not join yet" | openraft membership errors: node ids and addresses
+crates/node/src/node.rs | "could not promote learners to system voters yet" | openraft membership errors: node ids
+crates/node/src/node.rs | "the cluster was not founded again from its backups" | the operator's own backup files: paths, formats, io
+crates/node/src/node.rs | "could not start app group" | RocksDB/openraft errors opening the group; ids and paths
+crates/node/src/node.rs | "system write timed out" | `why` is built from node ids and log indexes (Node::system_write)
+crates/node/src/node/cluster_version.rs | "could not log the cluster version a proposal needs" | a system proposal's error: versions and the node's own refusals
+crates/node/src/node/cluster_version.rs | "could not raise the cluster version yet" | a system proposal's error: versions and the node's own refusals
+
+# --- calimero-node: compute runs and job nodes ---------------------------------
+crates/node/src/node/component/compute.rs | "assignment not built" | build_assignment: hex decoding, the node's key unwrap and signing; inputs are named by their file ids
+crates/node/src/node/component/compute/pipelines.rs | "step decision not logged" | a proposal error (not leader, timeout, the group stopped)
+crates/node/src/job_node/exec.rs | "cannot start a compute run's thread" | std::thread spawn error (io)
+crates/node/src/job_node/exec.rs | "a compute run could not be served" | TODO(F6): the engine's error (compile, instantiate, inputs); a guest's trap goes to the outcome, not here, but a host error may quote an import name
+crates/node/src/job_node/exec.rs | "cannot sign a report" | the job node's own signing key
+crates/node/src/job_node/exec.rs | "cannot remove a run file" | io errors; the path is the node's run directory
+crates/node/src/job_node/runs.rs | "cannot remove a run's directory" | io errors; the path is the node's run directory
+crates/node/src/job_node.rs | "job node server stopped" | the job listener's bind/accept error
+crates/node/src/job_node.rs | "cannot remove a run's directory" | io errors; the path is the node's run directory
+crates/node/src/app.rs | "an applied entry's answer does not serialize | serde_json serialize errors never quote a value
+
+# --- calimero-node: app logs ---------------------------------------------------
+crates/node/src/node/component.rs | target: "app_log" | an app's own lines, printed only on a development node (Config::app_logs, --dev; #5275): a production node collects none
+
+# --- calimero-outbound ---------------------------------------------------------
+crates/outbound/src/lib.rs | "outbound request failed" | TODO(F6): the transport's words can quote the request; #5333 logs FailureKind instead. Its `path` should then become `prefix`, as the success line logs
+
+# --- merod and the attestation crates: no user is involved ---------------------
+crates/merod/src/main.rs | "not reporting the data disk's KMS: {e:#}" | reading the node's own disk-key evidence file at startup
+crates/tee-attestation/src/generate.rs | "Failed to generate TDX quote" | the TDX quote driver's own error
+crates/tee-attestation/src/generate.rs | "Failed to parse generated TDX quote" | dcap-qvl's parse error of the node's own quote
+crates/tee-attestation/src/generate.rs | "Failed to convert TDX quote to serializable format" | the node's own quote
+crates/tee-attestation/src/verify.rs | "Collateral endpoint is not usable" | Intel PCS/PCCS collateral endpoint; a URL the operator configured
+crates/tee-attestation/src/verify.rs | "Failed to fetch collateral" | Intel PCS/PCCS collateral fetch error
+crates/tee-attestation/src/verify.rs | "Could not read tcbEvaluationDataNumber from collateral" | Intel collateral parse error
+crates/tee-attestation/src/verify.rs | "Failed to parse TDX quote" | dcap-qvl's parse error of a node's quote
+crates/tee-attestation/src/verify.rs | "Failed to get current time" | SystemTime error
+crates/tee-attestation/src/verify.rs | "Quote cryptographic verification: FAILED" | dcap-qvl's verification error
+crates/tee-attestation/src/verify.rs | "Failed to convert TDX quote to serializable format" | a node's quote
+crates/tee-release/src/fetch.rs | "transient release asset fetch failure, retrying" | GitHub release asset fetch status; no user input
+crates/tee-release/src/sigstore_verify.rs | "Skipping unsupported Rekor key from Sigstore trust root" | Sigstore's public trust root
+crates/bundle/src/archive.rs | "Failed to read tar archive entries (possible corruption): {}" | TODO(F6): a tar error of a signed bundle being unpacked; io/format only, but the bundle is an app developer's
+crates/bundle/src/archive.rs | "Failed to read tar entry {}: {}" | TODO(F6): as above
+crates/app-downloader/src/downloader.rs | "failed to release a rejected blob" | blob store io error; the blob is named by its hash

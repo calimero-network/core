@@ -43,6 +43,8 @@ pub enum RejectionKind {
     NotFound,
     /// `409 MODULE_IN_USE`: [`super::MODULE_IN_USE`].
     ModuleInUse,
+    /// `409 EGRESS_OFF`: [`super::EGRESS_OFF`].
+    EgressOff,
     /// `409 UNIT_MEMBER`: [`super::UNIT_MEMBER`].
     UnitMember,
     /// `409 NO_RECOVERY_KEY`: [`super::NO_RECOVERY_KEY`].
@@ -81,7 +83,7 @@ pub enum RejectionKind {
 
 impl RejectionKind {
     /// Every kind, for reading one back from its code.
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::Rejected,
         Self::QuotaExceeded,
         Self::ReleaseDeadline,
@@ -96,6 +98,7 @@ impl RejectionKind {
         Self::OutsideDeployment,
         Self::NotFound,
         Self::ModuleInUse,
+        Self::EgressOff,
         Self::UnitMember,
         Self::NoRecoveryKey,
         Self::RecoveryPending,
@@ -133,6 +136,7 @@ impl RejectionKind {
             Self::OutsideDeployment => "OUTSIDE_DEPLOYMENT",
             Self::NotFound => "NOT_FOUND",
             Self::ModuleInUse => "MODULE_IN_USE",
+            Self::EgressOff => "EGRESS_OFF",
             Self::UnitMember => "UNIT_MEMBER",
             Self::NoRecoveryKey => "NO_RECOVERY_KEY",
             Self::RecoveryPending => "RECOVERY_PENDING",
@@ -167,6 +171,7 @@ impl RejectionKind {
             | Self::PersonalOrgsEnded
             | Self::OutsideDeployment
             | Self::ModuleInUse
+            | Self::EgressOff
             | Self::UnitMember
             | Self::NoRecoveryKey
             | Self::RecoveryPending
@@ -366,7 +371,7 @@ mod tests {
     /// `node::rejected` answered for it when it matched the message.
     #[test]
     fn each_named_refusal_keeps_its_status_and_code() {
-        let named: [(&Rejection, u16, &str); 28] = [
+        let named: [(&Rejection, u16, &str); 29] = [
             (&system::NOT_A_DEPLOYER, 403, "DEPLOY_NOT_GRANTED"),
             (&system::PERSONAL_ORG_EXISTS, 409, "PERSONAL_ORG_EXISTS"),
             (&system::GUESTS_NOT_ALLOWED, 409, "GUESTS_NOT_ALLOWED"),
@@ -377,6 +382,7 @@ mod tests {
             (&system::OUTSIDE_DEPLOYMENT, 409, "OUTSIDE_DEPLOYMENT"),
             (&system::NO_DEPLOYMENT_SECRET, 404, "NOT_FOUND"),
             (&system::MODULE_IN_USE, 409, "MODULE_IN_USE"),
+            (&system::EGRESS_OFF, 409, "EGRESS_OFF"),
             (&system::UNIT_MEMBER, 409, "UNIT_MEMBER"),
             (&system::NO_RECOVERY_KEY, 409, "NO_RECOVERY_KEY"),
             (&system::RECOVERY_PENDING, 409, "RECOVERY_PENDING"),

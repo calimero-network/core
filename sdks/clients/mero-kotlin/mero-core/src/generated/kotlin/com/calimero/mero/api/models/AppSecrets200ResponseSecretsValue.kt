@@ -31,10 +31,15 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param hosts 
+ * @param host 
+ * @param paths 
+ * @param binding 
  * @param description 
  * @param required 
  * @param source 
+ * @param header 
+ * @param format 
+ * @param bodyField 
  * @param fingerprint 
  * @param setBy 
  * @param setAt 
@@ -43,8 +48,14 @@ import kotlinx.serialization.Contextual
 
 data class AppSecrets200ResponseSecretsValue (
 
-    @SerialName(value = "hosts")
-    val hosts: kotlin.collections.List<kotlin.String>,
+    @SerialName(value = "host")
+    val host: kotlin.String,
+
+    @SerialName(value = "paths")
+    val paths: kotlin.collections.List<kotlin.String>,
+
+    @SerialName(value = "binding")
+    val binding: kotlin.String,
 
     @SerialName(value = "description")
     val description: kotlin.String,
@@ -54,6 +65,15 @@ data class AppSecrets200ResponseSecretsValue (
 
     @SerialName(value = "source")
     val source: AppSecrets200ResponseSecretsValue.Source,
+
+    @SerialName(value = "header")
+    val header: kotlin.String? = null,
+
+    @SerialName(value = "format")
+    val format: kotlin.String? = null,
+
+    @SerialName(value = "bodyField")
+    val bodyField: kotlin.String? = null,
 
     @SerialName(value = "fingerprint")
     val fingerprint: kotlin.String? = null,

@@ -1064,6 +1064,7 @@ pub(super) fn new_org(
         personal,
         allow_guests: true,
         allow_public_links: true,
+        egress_off: false,
         upgrade_policy: None,
         app_upgrade_policies: BTreeMap::new(),
         pending_upgrades: BTreeMap::new(),

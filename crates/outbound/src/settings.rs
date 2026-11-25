@@ -20,8 +20,10 @@ pub struct OutboundSettings {
     /// is refused, whatever the app declares. Every host is still public-only,
     /// and a secret still goes only to the hosts it is bound to.
     pub hosts: Vec<String>,
-    /// Secrets from environment variables, by the name a request uses
-    /// (`{{secret:NAME}}`). Exclusive with `sidecar`.
+    /// Secrets from environment variables, by the name a release's manifest
+    /// binds (`secrets`): the node attaches one where that binding says, for
+    /// the packages and signers listed, only to the hosts listed. Exclusive with
+    /// `sidecar`.
     pub env_secrets: BTreeMap<String, EnvSecretSettings>,
     /// Secrets from a loopback service next to the node. Exclusive with
     /// `env_secrets`.

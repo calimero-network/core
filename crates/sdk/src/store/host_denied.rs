@@ -1,6 +1,7 @@
 //! [`Store`] in a compute component: its world has no `storage` import, so every access traps.
 
 use super::{RangeCursor, Store};
+use crate::error::StorageError;
 
 /// The host's storage as a compute component sees it: none.
 #[derive(Clone, Copy, Debug, Default)]
@@ -26,15 +27,15 @@ impl Store for HostStore {
         denied()
     }
 
-    fn put(&mut self, _k: &[u8], _v: &[u8]) {
+    fn put(&mut self, _k: &[u8], _v: &[u8]) -> Result<(), StorageError> {
         denied()
     }
 
-    fn delete(&mut self, _k: &[u8]) {
+    fn delete(&mut self, _k: &[u8]) -> Result<(), StorageError> {
         denied()
     }
 
-    fn add(&mut self, _k: &[u8], _delta: i64) {
+    fn add(&mut self, _k: &[u8], _delta: i64) -> Result<(), StorageError> {
         denied()
     }
 

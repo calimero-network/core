@@ -539,7 +539,9 @@ is its command line.
   through `uses` in `apps`. Lookup: `Node::outbound_for` -> `component::run_secrets`: the
   instance's own value, else its deployment's (`SystemState::deployment_secrets_of`,
   this node's system state at run time, not the app's log), else the operator's
-  in the gate; each only for a name the release declares. The deployment's
+  in the gate; each only for a name the release declares, and attached by the gate
+  where its binding says (`PackageVersion::secrets`, one host and one header or body
+  field each; the shape since 1.0.0-rc.37, a hard cutover). The deployment's
   only for a run of a release of a package it offers or an offered release
   references (`SystemState::deployment_covers`, over `used_releases`; any
   version: its signer is pinned): its
@@ -677,10 +679,37 @@ is its command line.
   a bundle that is a signed release declaring prefixes; identity = (package,
   pinned signer), approval = `Org/Account::outbound_approvals[signer]`, set by
   whoever holds `MANAGE_APPLICATION` org-wide in the app's organization, with
-  `SetOutboundApproval` (`POST /orgs/{org}/outbound`, passkey consent; `merge_approval` at apply). The request is
+  `SetOutboundApproval` (`POST /orgs/{org}/outbound`, passkey consent; `merge_approval` at apply).
+  **Egress switch** (`SystemCmd::SetEgress { org, app?, egress }`, ungated: a hard cutover, an earlier
+  release cannot decode it;
+  `Org::egress_off`, `AppRecord::egress_off`, `SystemState::egress_off`): an organization's owner or
+  an admin turns egress off for every app of it or one instance (`POST /orgs/{org}/egress`, `POST
+  /apps/{app}/egress { egress }`, passkey over `org:<org> / __set_egress / { app, egress }`,
+  `system::egress_args`). `outbound_for` wraps every client in `calimero_outbound::egress_gated`,
+  which reads the system state before each request and refuses `EgressOff:` over every approval;
+  `SetOutboundApproval` for an organization whose switch is off is refused (`EGRESS_OFF`, `409`;
+  `api::refuse_egress_off` before the passkey, also on the consent page's `outbound`). Off is
+  instant; on again only through the consent page (`setEgress`, `consent_page::orgs::egress`, a
+  red `egressOn` attention), the route refusing any other principal `403 CONSENT_PAGE_REQUIRED`
+  (`Principal::consent_page`). `GET /apps/{app}/egress` answers `egress`, `offBy`, `summary`
+  (`egress::NO_EGRESS`); `GET /orgs/{org}` `egressOff`. Regressions: `tests/it/egress.rs`
+  (`egress_off_refuses_an_approved_host_whatever_the_approval`,
+  `an_instances_egress_is_turned_off_and_back_on_only_on_the_page`). The request is
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again. A component's calls, timers and deliveries get the same gate
   (D76, "Component executor").
+- **Operator logs** (review finding F6): `merod run` logs at `info,openraft=warn` and
+  every line ships to the operator, so `info!`, `warn!` and `error!` carry what the
+  node names (ids, hosts, kinds, codes, counts, lengths), never an error's words where
+  they can quote input. `log_safe::serde` names a serde_json error by category and
+  position (its words quote the entry), `log_safe::kind` an error by its `ApiError`
+  code, JSON, io or HTTP kind; an `ApiError` is logged as `status`/`code`, never
+  `message`. `StateTx::fail` reasons end up in the group's stop reason and three log
+  lines, so a decode failure passes `log_safe::serde`, not `{e}`. The words go to
+  the caller's answer or `debug!`. `scripts/check-no-user-data-at-info.py` enforces
+  it, `scripts/check-no-user-data-at-info.allow` lists lines whose text is the node's
+  own. Regressions: `component::tests::an_entry_that_does_not_decode_is_logged_without_its_contents`,
+  `log_safe::tests`, calimero-outbound's `log_tests`.
 - **Files** (`files.rs`, `files/seal.rs`, `files/wrap.rs`): a file is 64 KiB AES-256-GCM STREAM chunks
   (`FileSealer`, `FileOpener`) under a random data key.
   The nonce is 4 zero bytes then the big-endian chunk index; the AAD is `calimero.file.v1` then a last-chunk flag byte.
@@ -1296,12 +1325,26 @@ is its command line.
   The component is prepared from the bundle read before the lock, so the call
   also answers a conflict when the state names another bundle by then (an
   upgrade applied in between; `call_component` compares `AppState::bundle`).
-- **Runs leave the async workers** (`node::off_workers`): a WASM run (call,
-  timer tick, init, strong view) happens inside the group's
-  proposal lock, on the machine's read lock, from borrowed state, so it cannot
-  move to `spawn_blocking`; it goes through `block_in_place`, which hands the
-  worker's other tasks (Raft heartbeats, the system group, HTTP) to another
-  worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
+- **Runs leave the async workers** (`node::off_workers`): a logged WASM run (call,
+  timer tick, init, a compute run's result method) happens inside the group's
+  proposal lock, so it cannot move to `spawn_blocking`; it goes through
+  `block_in_place`, which hands the worker's other tasks (Raft heartbeats, the system
+  group, HTTP) to another worker meanwhile. Regression:
+  `a_long_run_does_not_hold_an_async_worker`.
+- **Logged runs hold no read lock** (C2; `calimero_log::Group::propose_led_staged`,
+  `LoggedRun`): each of those proposals is staged. Its read step, under the applied
+  state's read lock, makes the checks, takes the unique ids and an owned `LoggedRun`
+  (`AppMachine::view`, an O(1) `imbl` clone, the blobs, runs provider, secrets,
+  `base_index`); its run step, with the lock released, runs the guest, pushes its files
+  and builds the entry. The proposal lock is held throughout, so calls on one app still
+  take turns and each builds on the one before (no self-conflict). An entry that commits
+  while a run runs (a barrier, a membership change) now applies at once and the app's
+  reads go on, where they waited for the whole run before (a reader queued behind the
+  waiting apply); the run's entry then fails its `base_index` check and `Node::call`
+  runs it again, its synchronous xcalls replayed under their keys. Regressions:
+  `a_logged_run_waiting_in_a_host_call_holds_up_no_apply_or_read_of_its_app` (an entry
+  waited 1.0 s and a read 0.96 s for the run before),
+  `a_call_whose_app_moved_on_while_it_ran_runs_again_and_answers_once`.
 - **Disk work leaves the async workers** (`node/disk.rs`): a store write (a blob, a
   bundle, a file segment, a node row) waits for the disk, and RocksDB writes in
   groups, so even an unsynced one queues behind another group's fsync. The node
@@ -2488,7 +2531,7 @@ API and system group:
   D27 key and `CallRequest::action`, which alone reaches `allow(action)` methods), run on
   the runtime while the action's thread waits; `NodeHttp` sends through `outbound_for`
   (the signed release's prefixes, the owner's approval, the operator's hosts,
-  `{{secret:..}}`, at most `MAX_HTTP_REQUESTS` (8) per run). The end is logged as `componentActionEnd`: a
+  the credentials the release binds, attached by the gate, at most `MAX_HTTP_REQUESTS` (8) per run). The end is logged as `componentActionEnd`: a
   timeout retries (`action_retry`, `retry_after_ms`) until `MAX_ATTEMPTS`, an app error,
   trap or removed method fails at once; a failure sends `ActionFailed { actionId,
   method, reason }` to the starter (an event with an `Accounts` audience) and runs
