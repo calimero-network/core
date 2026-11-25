@@ -10,10 +10,7 @@
 use super::*;
 
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     let _ = (proofs, cmd);
     Ok(None)
 }
@@ -21,7 +18,7 @@ pub(super) fn authorize(
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let s = &mut m.state;
     match cmd {
         SystemCmd::ChargeFileBytes { app_id, delta } => {
@@ -32,7 +29,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 if s.file_bytes(&payer).saturating_add(delta.unsigned_abs())
                     > s.payer_quotas(&payer).2
                 {
-                    return Err("quota exceeded: file bytes");
+                    return Err(Rejection::quota("file bytes"));
                 }
                 held.saturating_add(delta.unsigned_abs())
             } else {

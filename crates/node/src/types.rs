@@ -949,6 +949,67 @@ pub struct ApiKeyRecord {
     pub upgrades: Option<UpgradeScope>,
 }
 
+/// A confirm call approved with the passkey consent that makes an API key
+/// (`POST /auth/apikeys { then }`), run before the key exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeyFollowUp {
+    pub app: AppId,
+    pub method: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+}
+
+impl KeyFollowUp {
+    /// The follow-up as the key's consent and the system log state it, its
+    /// arguments hashed under `salt` so a guess at them cannot be checked.
+    #[must_use]
+    pub fn signed(&self, salt: &[u8]) -> SignedFollowUp {
+        let mut bytes = salt.to_vec();
+        bytes.extend_from_slice(self.args_bytes().as_bytes());
+        SignedFollowUp {
+            app: self.app.clone(),
+            method: self.method.clone(),
+            args_hash: hex::encode(calimero_identity::sha256(&bytes)),
+        }
+    }
+
+    /// The arguments with every object's keys sorted by UTF-8 bytes, in compact
+    /// `serde_json` output (numbers as parsed, not as sent): one
+    /// form for equal arguments, another for any two that differ.
+    fn args_bytes(&self) -> String {
+        fn sorted(v: &serde_json::Value) -> serde_json::Value {
+            match v {
+                serde_json::Value::Object(fields) => {
+                    let mut keys: Vec<&String> = fields.keys().collect();
+                    keys.sort();
+                    serde_json::Value::Object(
+                        keys.into_iter()
+                            .map(|k| (k.clone(), sorted(&fields[k])))
+                            .collect(),
+                    )
+                }
+                serde_json::Value::Array(items) => {
+                    serde_json::Value::Array(items.iter().map(sorted).collect())
+                }
+                other => other.clone(),
+            }
+        }
+        sorted(&self.args).to_string()
+    }
+}
+
+/// A follow-up with its arguments only by a salted hash (hex SHA-256 of the
+/// salt, then [`KeyFollowUp::args_bytes`]): the system log reaches nodes
+/// the app's organization never approved, so it holds none of an app's data.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignedFollowUp {
+    pub app: AppId,
+    pub method: String,
+    pub args_hash: String,
+}
+
 /// What an upgrade key ([`ApiKeyRecord::upgrades`]) may do: upgrade `app`
 /// to a release of `package` signed by `signer`, proving each upgrade with
 /// the Ed25519 key its secret stands for (`proof::api_key_public`), so a
@@ -1282,7 +1343,7 @@ impl Default for UpgradePolicy {
 impl UpgradePolicy {
     /// `Err` with the apply error when `hold_hours` is outside
     /// [`MIN_HOLD_HOURS`]..=[`MAX_HOLD_HOURS`].
-    pub fn check(&self) -> Result<(), &'static str> {
+    pub fn check(&self) -> Result<(), crate::system::Rejection> {
         if (MIN_HOLD_HOURS..=MAX_HOLD_HOURS).contains(&self.hold_hours) {
             Ok(())
         } else {
