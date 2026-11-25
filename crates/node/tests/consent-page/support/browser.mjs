@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { chromium } from '@playwright/test';
+import { chromium, expect } from '@playwright/test';
 import { SCREENSHOTS, SUITE, ports, runDir } from './env.mjs';
 import { bump } from './counter.mjs';
+
+const MAX_PROMPT_DELAY_MS = 1000; // later than this after its click, a browser may refuse a passkey prompt
 
 // Chromium's Local Network Access check would stop a `<label>.localhost` page from calling the node.
 const FLAGS =
@@ -177,4 +179,71 @@ export async function shoot(p, name) {
     await p.page.screenshot({ path: path.join(SCREENSHOTS, `${name}-${colorScheme}.png`), fullPage: true });
   }
   await p.page.emulateMedia({ colorScheme: null, reducedMotion: null });
+}
+
+/**
+ * Record every passkey prompt `p`'s pages ask: ms since the last trusted click, and the requests
+ * sent in between. The first `refuse` prompts fail at once with `NotAllowedError`, as a browser
+ * refuses one asked too long after its click.
+ */
+export async function guardPrompts(p, { refuse = 0 } = {}) {
+  const calls = [];
+  await p.ctx.exposeFunction('__passkeyCall', (c) => calls.push(c));
+  await p.ctx.addInitScript(recordPrompts, refuse);
+  return calls;
+}
+
+/** Every prompt in `calls` was asked on its click: soon enough, and with no request in between. */
+export function expectPromptsOnClick(calls, count) {
+  expect(calls).toHaveLength(count);
+  for (const c of calls) {
+    expect(c.requests, `requests between "${c.click}" and its passkey prompt`).toEqual([]);
+    expect(c.delayMs, `ms from "${c.click}" to its passkey prompt`).toBeLessThanOrEqual(MAX_PROMPT_DELAY_MS);
+  }
+}
+
+function recordPrompts(refuse) {
+  let click = null;
+  document.addEventListener(
+    'click',
+    (e) => {
+      if (!e.isTrusted) return;
+      const el = e.target instanceof Element ? e.target.closest('button') : null;
+      click = { at: performance.now(), label: (el?.textContent || '').trim(), requests: [] };
+    },
+    true,
+  );
+  const note = (method, url) => {
+    if (click)
+      click.requests.push(
+        `${(method || 'GET').toUpperCase()} ${new URL(String(url), location.href).pathname}`,
+      );
+  };
+  const fetch0 = window.fetch;
+  window.fetch = function (input, init) {
+    note(init?.method || input?.method, input?.url ?? input);
+    return fetch0.apply(this, arguments);
+  };
+  const open0 = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    note(method, url);
+    return open0.apply(this, arguments);
+  };
+  for (const kind of ['create', 'get']) {
+    const call = CredentialsContainer.prototype[kind];
+    CredentialsContainer.prototype[kind] = function (options) {
+      if (!options?.publicKey) return call.call(this, options);
+      window.__passkeyCall({
+        kind,
+        click: click?.label ?? null,
+        delayMs: click ? Math.round(performance.now() - click.at) : null,
+        requests: click ? [...click.requests] : [],
+      });
+      if (refuse > 0) {
+        refuse -= 1;
+        return Promise.reject(new DOMException('The request is not allowed.', 'NotAllowedError'));
+      }
+      return call.call(this, options);
+    };
+  }
 }

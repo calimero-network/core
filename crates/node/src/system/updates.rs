@@ -603,23 +603,50 @@ impl SystemState {
             let runs = self.apps.get(id).and_then(|m| self.running(m));
             let resolved = uses
                 .and_then(|u| u.get(name))
-                .and_then(|u| self.release_of_use(u));
+                .and_then(|u| self.release_of_use(u, app, &to.package));
             !matches!((runs, resolved), (Some(r), Some((p, v))) if r.package == p && r.version == v)
         })
     }
 
-    /// The release a `uses` reference creates an app at, as creating an instance picks it:
-    /// the one its lock pinned, else the newest installed inside its range; `None` when
-    /// that release is not installed.
-    pub fn release_of_use(&self, u: &ReleaseUse) -> Option<(String, String)> {
+    /// The release a `uses` reference of a release of `parent` creates an app at for `app`, as
+    /// creating an instance picks it: the one its lock pinned, else the newest installed
+    /// inside its range, among those `app`'s owner may use, `parent`'s signer signs, or
+    /// `app`'s deployment offers (`unit_members`); `None` when no such release is installed.
+    pub fn release_of_use(
+        &self,
+        u: &ReleaseUse,
+        app: &AppRecord,
+        parent: &str,
+    ) -> Option<(String, String)> {
+        let private = self.cluster_brings(cluster_version::Feature::PrivateReleases);
+        let same_signer = self.same_signer(parent, &u.package);
+        let offers = app
+            .deployment
+            .as_ref()
+            .and_then(|d| self.deployments.get(d));
+        let usable = |version: &str, v: &PackageVersion| {
+            !private
+                || same_signer
+                || self.sees_release(v, &app.owner)
+                || offers.is_some_and(|d| {
+                    self.offer_serves(d, v)
+                        && d.apps
+                            .values()
+                            .any(|o| o.package == u.package && o.version == version)
+                })
+        };
         let installed = &self.packages.get(&u.package)?.versions;
         let version = match &u.version {
-            Some(v) => installed.contains_key(v).then(|| v.clone())?,
+            Some(v) => installed
+                .get(v)
+                .is_some_and(|r| usable(v, r))
+                .then(|| v.clone())?,
             None => {
                 let range = semver::VersionReq::parse(&u.range).ok()?;
                 installed
-                    .keys()
-                    .filter_map(|v| semver::Version::parse(v).ok().map(|p| (p, v)))
+                    .iter()
+                    .filter(|(k, v)| usable(k, v))
+                    .filter_map(|(v, _)| semver::Version::parse(v).ok().map(|p| (p, v)))
                     .filter(|(p, _)| range.matches(p))
                     .max_by(|a, b| a.0.cmp(&b.0))
                     .map(|(_, v)| v.clone())?

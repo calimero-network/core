@@ -254,10 +254,7 @@ impl Node {
         match Self::fetch_raw(self.registry(false)?, package, version).await {
             Ok(Some(mpk)) => return Ok((mpk, Visibility::Public)),
             Ok(None) => {}
-            Err(e)
-                if e.downcast_ref::<RegistryStatus>().is_some_and(|r| {
-                    matches!(r.status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-                }) => {}
+            Err(e) if asks_sign_in(&e) => {}
             Err(e) => return Err(unreachable_registry(e)),
         }
         let url = self.registry_url()?;
@@ -291,10 +288,15 @@ impl Node {
         if actor == OPERATOR {
             return Ok(None);
         }
+        let _caught_up = self.sys_fresh().await;
+        // Below the feature `record_release` drops the org, so none is asked for.
+        if !self.sys(|s| s.cluster_brings(crate::system::cluster_version::Feature::PrivateReleases))
+        {
+            return Ok(None);
+        }
         let Some(org) = named else {
             return crate::api::apps::only_org(self, actor).await;
         };
-        let _caught_up = self.sys_fresh().await;
         if !self.sys(|s| s.member_of(org, actor)) {
             return Err(ApiError::not_found("no such organization"));
         }
@@ -794,15 +796,27 @@ impl Node {
         v: &PackageVersion,
     ) -> Result<Arc<[u8]>, ApiError> {
         let mpk: Arc<[u8]> = match v.source {
-            // Public: served to anyone. Private, or recorded before: with the credential,
-            // naming no account, pinned by the recorded hash below.
+            // Public: served to anyone, else (the publisher made it private since) with the
+            // credential. Private, or recorded before: with it, naming no account. Pinned by the
+            // recorded hash below.
             BundleSource::Registry => {
                 let public = v.visibility == Some(Visibility::Public);
-                Self::fetch_from(self.registry(!public)?, package, &v.version)
-                    .await?
-                    .ok_or_else(|| {
-                        ApiError::not_found(&format!("the registry has no {package}@{}", v.version))
-                    })?
+                let anonymous = if public {
+                    match Self::fetch_raw(self.registry(false)?, package, &v.version).await {
+                        Ok(found) => found,
+                        Err(e) if asks_sign_in(&e) => None,
+                        Err(e) => return Err(unreachable_registry(e)),
+                    }
+                } else {
+                    None
+                };
+                match anonymous {
+                    Some(mpk) => Some(mpk),
+                    None => Self::fetch_from(self.registry(true)?, package, &v.version).await?,
+                }
+                .ok_or_else(|| {
+                    ApiError::not_found(&format!("the registry has no {package}@{}", v.version))
+                })?
             }
             BundleSource::Upload => match self.engine.get_blob(&v.mpk) {
                 Ok(Some(b)) => b.into(),
@@ -929,6 +943,12 @@ fn account_not_linked() -> ApiError {
         ACCOUNT_NOT_LINKED,
         "the registry installs private packages only for a node account linked to a Calimero Cloud developer: link this account in Calimero Cloud, under your node accounts, then install again",
     )
+}
+
+/// A registry's `401` or `403`: it serves nothing without a sign-in.
+fn asks_sign_in(e: &eyre::Report) -> bool {
+    e.downcast_ref::<RegistryStatus>()
+        .is_some_and(|r| matches!(r.status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN))
 }
 
 /// `503`: the registry did not serve a fetch.

@@ -2464,8 +2464,10 @@ impl SystemState {
 
     /// Whether `who` may name the bundle `hash` for an app: it must be
     /// recorded, and if a package release ships it, one such release must be
-    /// visible to `who`; `uploaded_by` counts only beside a release recorded before
-    /// `visibility`, as a release's first installer is recorded there too.
+    /// visible to `who`; the uploader of a raw bundle always names it, while a release's
+    /// first installer, recorded as `uploaded_by` too, counts only beside a release recorded
+    /// before `visibility`. An uploader is told from an installer by not being one of the
+    /// installers of the release the row names.
     #[must_use]
     pub fn sees_bundle(&self, hash: &str, who: &str) -> bool {
         let Some(b) = self.bundles.get(hash) else {
@@ -2480,7 +2482,15 @@ impl SystemState {
             .flat_map(|p| p.versions.values())
             .filter(|v| v.app_parts().values().any(|h| h == hash))
             .peekable();
-        shipped.peek().is_none()
+        let uploaded_raw = b.uploaded_by == who
+            && !b.package.as_ref().is_some_and(|r| {
+                self.packages
+                    .get(&r.package)
+                    .and_then(|p| p.versions.get(&r.version))
+                    .is_some_and(|v| v.installed_by_any(who))
+            });
+        uploaded_raw
+            || shipped.peek().is_none()
             || shipped.any(|v| {
                 self.sees_release(v, who) || (v.visibility.is_none() && b.uploaded_by == who)
             })
@@ -2989,15 +2999,23 @@ impl SystemState {
     }
 
     /// Whether `d`'s offer of `v` still serves: someone who acts for its owner may use `v`.
+    /// A release every member of the owning organization may use is answered by whether one
+    /// of them acts for it; only a release recorded before `visibility` is judged member by
+    /// member.
     #[must_use]
     pub fn offer_serves(&self, d: &Deployment, v: &PackageVersion) -> bool {
         let candidates: Vec<&str> = match &d.owner {
             Deployer::Account(a) => vec![a],
-            Deployer::Org(o) => self
-                .orgs
-                .get(o)
-                .map(|o| o.members.keys().map(String::as_str).collect())
-                .unwrap_or_default(),
+            Deployer::Org(o) => {
+                let mut members = self.orgs.get(o).into_iter().flat_map(|o| o.members.keys());
+                let for_all = v.installed_by_any(OPERATOR)
+                    || v.visibility == Some(Visibility::Public)
+                    || (v.visibility == Some(Visibility::Private) && v.orgs.contains(o));
+                if for_all {
+                    return members.any(|m| self.acts_for(&d.owner, m));
+                }
+                members.map(String::as_str).collect()
+            }
         };
         candidates
             .into_iter()

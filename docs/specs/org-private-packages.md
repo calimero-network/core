@@ -55,7 +55,7 @@ Not exposed (verified): another org reading the victim's own instance, its state
   Drop the `bound_app() == Some(package)` grant from `package_json`, the pipelines and capabilities routes, `resolve_release_parts` (`frontend`), `bundle_named`, the consent page's `requested_release` and `app_update`'s `sees`.
 - **C2. An install names its organization.**
   `POST /packages/install { package, version, org }` and `POST /apps { package }` (which installs first, into the instance's org) record `PackageVersion::orgs`, added to on each install for another org.
-  The caller is a member of `org` (judged again at apply); `org` is required when the caller belongs to more than one.
+  The caller is a member of `org` (judged again at apply); `org` is required when the caller belongs to more than one. Below the logged cluster version that brings `Feature::PrivateReleases` no organization is asked for or recorded, so a rolling upgrade breaks no multi-org install.
   A caller in no organization installs for none: the release is recorded private with no `orgs` and is its installing accounts' alone, so development flows (`meroctl local dev`, pushes) keep working; an install for an organization later adds it, and the organization rule then holds.
   A member of the package's Cloud org may install it for any cluster org they belong to: nothing maps Cloud orgs to cluster orgs, and that is the member's own deliberate share.
   When the frontend names no organization, the consent page's install sheet creates a private release's instance in the one organization of the person's it is for, or offers the person's organizations it is for by name; a public, catalog or earlier release, or a private one in none of theirs, offers all of theirs when several.
@@ -78,7 +78,8 @@ Not exposed (verified): another org reading the victim's own instance, its state
 - **C4. The registry learns who installs.**
   A private install's fetch sends the installing account (`x-calimero-install-account: <account id>`) with the cluster credential; `calimero-app-downloader`'s `HttpRegistry` takes the header.
   The registry refusing that fetch `403 { "error": "account_not_linked" }` (M1, for any package name) answers `403 ACCOUNT_NOT_LINKED` with a message to link the node account in Calimero Cloud; every other refusal answers as before.
-  A re-fetch of a release the log already records (`release_mpk`: other nodes, `release_wasm`, frontends) sends none and is pinned by the recorded hash.
+  A re-fetch of a release the log already records (`release_mpk`: other nodes, `release_wasm`, frontends) sends no account and is pinned by the recorded hash.
+  A release recorded public is fetched without the credential first; if the registry then answers `404`, `401` or `403` (the publisher made it private since), it is fetched once more with the credential.
 - **C5. Unit members follow the creator.**
   `unit_members` picks only releases the creator may use, ones signed by the same signer as the instance's release (a publisher composing its own packages), or, for an instance from a deployment, ones that deployment offers.
   The rule is the same for every unit, from a deployment or not, and for a unit's preview and upgrade; the member's create runs exactly the release it chose.

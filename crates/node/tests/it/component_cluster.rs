@@ -6253,6 +6253,188 @@ async fn a_release_gets_only_the_credentials_it_binds_attached_by_the_node() {
     );
 }
 
+/// An instance's outbound audit (#5347): its owner reads the requests its runs made, sent
+/// and refused, with the host, the path without its query, the secret's name and the
+/// sizes, never the secret's value, the query string or a header; a member of its
+/// organization who is no admin is refused (403), an outsider learns nothing (404).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_instances_owner_reads_its_outbound_requests_without_values() {
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const HOST: &str = "echo.outbound.test";
+    const PACKAGE: &str = "com.calimero.audited-echo";
+    const VALUE: &str = "s3cret-audited-value";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            turnstile: false,
+            secrets: [(
+                "ECHO_KEY".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    value: VALUE.to_owned(),
+                    packages: vec![PACKAGE.to_owned()],
+                    signers: vec![signer],
+                    hosts: vec![HOST.to_owned()],
+                },
+            )]
+            .into(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let (carol, _c) = signed_up(&c, 1, "carol").await;
+    let (eve, _e) = signed_up(&c, 2, "eve").await;
+    let (dave, _d) = signed_up(&c, 2, "dave").await;
+    let org = home_org(&alice).await;
+    join_org(&alice, &mut pk, &carol, &org, "member").await;
+    join_org(&alice, &mut pk, &dave, &org, "admin").await;
+    let _ = alice
+        .packages()
+        .upload(
+            mpk_with_secrets(
+                PACKAGE,
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[PREFIX],
+                Some(&[("ECHO_KEY", HOST)]),
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let _ = alice
+        .orgs()
+        .outbound_approval(
+            &org,
+            PACKAGE,
+            Some(typed(json!("manifest"))),
+            Some(false),
+            Some(&mut pk),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "audited", "package": PACKAGE, "org": org }),
+        ))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // The app sends `GET .../v1/enrich?v=acme.com`; the node attaches ECHO_KEY in
+    // `Authorization: Bearer …` through the release's binding, so the audit lists it.
+    let mut round = 0;
+    let _sent = echoed_secret(&alice, &app, &mut round).await;
+
+    // The approval revoked (replaced by none): the next request is refused, and recorded as such.
+    let _ = alice
+        .orgs()
+        .outbound_approval(
+            &org,
+            PACKAGE,
+            Some(typed(json!([]))),
+            Some(true),
+            Some(&mut pk),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let _r = alice
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "late", "value": "acme.com" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let _r = alice
+        .apps()
+        .call(
+            &app,
+            "startEnrich",
+            Some(json!({ "key": "late" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let failures = eventually(&alice, &app, "actionFailures", json!({}), |f| {
+        f["enrich"].is_string()
+    })
+    .await;
+    assert!(
+        failures["enrich"].as_str().unwrap().contains("NotApproved"),
+        "{failures}"
+    );
+
+    let log = alice.apps().outbound_log(&app).await.map(wire).unwrap();
+    assert_eq!(log["partial"], json!(false), "{log}");
+    let entries = log["entries"].as_array().unwrap();
+    assert_eq!(
+        entries[0]["failure"],
+        json!("notApproved"),
+        "newest first: {log}"
+    );
+    let sent = entries
+        .iter()
+        .find(|e| e["status"] == json!(200))
+        .unwrap_or_else(|| panic!("the sent request: {log}"));
+    assert_eq!(sent["method"], json!("GET"), "{log}");
+    assert_eq!(sent["host"], json!(HOST), "{log}");
+    assert_eq!(sent["path"], json!("/v1/enrich"), "{log}");
+    assert!(sent.get("failure").is_none(), "{log}");
+    assert_eq!(sent["secrets"], json!(["ECHO_KEY"]), "{log}");
+    assert_eq!(sent["requestBytes"], json!(0), "{log}");
+    assert!(sent["responseBytes"].as_u64().unwrap() > 0, "{log}");
+    let text = log.to_string();
+    for leak in [
+        VALUE,
+        "acme.com",
+        "v=",
+        "?",
+        "Bearer",
+        "Idempotency",
+        "redacted",
+    ] {
+        assert!(!text.contains(leak), "{leak:?} in {text}");
+    }
+
+    // An admin of its organization reads it, from another node; made a member, no
+    // longer (judged fresh). A member who is no admin is refused; someone who doesn't
+    // reach it learns nothing.
+    let theirs = dave.apps().outbound_log(&app).await.map(wire).unwrap();
+    assert_eq!(theirs["entries"], log["entries"], "{theirs}");
+    let dave_id = dave.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .orgs()
+        .set_member(&org, &dave_id, OrgRole::Member, Some(&mut pk))
+        .await
+        .unwrap();
+    for who in [&dave, &carol] {
+        let err = who.apps().outbound_log(&app).await.unwrap_err();
+        assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+    }
+    let err = eve.apps().outbound_log(&app).await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+}
+
 /// A release names the apps it calls in its signed manifest (`uses`): a node refuses one
 /// that breaks the rules before anything is recorded (`400 BAD_USES`), and the release's
 /// capability card lists the references of one it took, before any instance exists.
@@ -7651,50 +7833,43 @@ async fn a_deployments_unit_never_creates_a_member_from_a_private_release_it_doe
     assert!(mine["apps"].as_array().unwrap().is_empty(), "{mine}");
 }
 
-/// A deployment's unit takes a member from a release the same deployment offers, though
-/// its customer may not use that release otherwise; until it offers it, the customer's
-/// create is `409 USES_NOT_INSTALLED`.
+/// A deployment's unit takes a member its owner may use though the deployment does not
+/// offer it: Q, signed by another publisher and private to Acme (the owner's org), is
+/// created for Bob of Bobco from Acme's offer of P. A Q private to a third org the owner is
+/// not in is still refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_deployments_unit_creates_a_member_from_a_release_the_deployment_offers() {
-    let acme_key = ed25519_dalek::SigningKey::from_bytes(&[48; 32]);
-    let other_key = ed25519_dalek::SigningKey::from_bytes(&[49; 32]);
+async fn a_deployments_unit_creates_a_member_its_owner_may_use_without_offering_it() {
+    let q_key = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+    let p_key = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
     let c = Cluster::start(3).await;
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
-    let _acme = new_org(&alice, "Acme").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let acme = new_org(&alice, "Acme").await;
     let _bobco = new_org(&bob, "Bobco").await;
-    let vault = "com.acme.vault";
-    upload_release(&alice, None, vault, &acme_key, "vault", Value::Null).await;
-    let notes = "com.other.notes";
-    upload_release(
-        &alice,
-        None,
-        notes,
-        &other_key,
-        "notes",
-        creates_vault(vault, false),
-    )
-    .await;
+    let third = new_org(&carol, "Third").await;
+    let (q, r) = ("com.acme.q", "com.third.r");
+    upload_release(&alice, Some(&acme), q, &q_key, "q", Value::Null).await;
+    upload_release(&carol, Some(&third), r, &q_key, "r", Value::Null).await;
+    let (p, w) = ("com.other.p", "com.other.w");
+    upload_release(&alice, None, p, &p_key, "p", creates_vault(q, false)).await;
+    upload_release(&alice, None, w, &p_key, "w", creates_vault(r, false)).await;
     let d = own_deployment(&alice, &mut a).await;
-    let _ = alice
-        .deployments()
-        .offer(&d, "notes", notes, "0.1.0", Some(&mut a))
-        .await
-        .unwrap();
+    for (name, package) in [("p", p), ("w", w)] {
+        let _ = alice
+            .deployments()
+            .offer(&d, name, package, "0.1.0", Some(&mut a))
+            .await
+            .unwrap();
+    }
 
-    let e = from_offer(&bob, &d, notes).await.unwrap_err();
-    assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
-
-    let _ = alice
-        .deployments()
-        .offer(&d, "vault", vault, "0.1.0", Some(&mut a))
-        .await
-        .unwrap();
-    let made = from_offer(&bob, &d, notes).await.unwrap();
+    let made = from_offer(&bob, &d, p).await.unwrap();
     let member = made["links"]["vault"].as_str().unwrap();
     let record = bob.apps().get(member).await.map(wire).unwrap();
-    assert_eq!(record["release"]["package"], json!(vault));
-    assert_eq!(record["deployment"], json!(d));
+    assert_eq!(record["release"]["package"], json!(q));
+
+    let e = from_offer(&bob, &d, w).await.unwrap_err();
+    assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
 }
 
 /// An offer that no longer serves is no source for a member: once Mal, whose account owns

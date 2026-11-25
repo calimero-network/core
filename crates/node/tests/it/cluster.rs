@@ -6143,6 +6143,77 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
     assert!(e.to_string().starts_with("409"), "{e}");
 }
 
+/// A publisher's run judges each instance's target by the instance's owner: Pam, an admin
+/// of Cora's organization, installs 1.1.0 private to her own, and her run does not move Cora's
+/// instance onto a release Cora may not use.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_publisher_run_never_moves_another_orgs_app_onto_a_release_it_may_not_use() {
+    use calimero_bundle::UpgradeAuthority::Publisher;
+    let c = Cluster::start(3).await;
+    let (pam, mut pam_pk) = signed_up(&c, 0, "pam").await;
+    let (cora, mut cora_pk) = signed_up(&c, 1, "cora").await;
+    let publisher = new_org(&pam, "Publisher").await;
+    let customer = new_org(&cora, "Customer").await;
+    join((&cora, &mut cora_pk), &pam, &customer, "admin").await;
+    let key = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
+    let release = |version: &str, wasm: &[u8]| {
+        mpk_full(
+            "com.test.pub",
+            version,
+            wasm,
+            &key,
+            &[],
+            &[],
+            Some(Publisher),
+        )
+    };
+    let kv = kv_wasm();
+    let _ok = pam
+        .packages()
+        .upload(release("1.0.0", &kv), Some(&publisher))
+        .await
+        .unwrap();
+    let _ok = cora
+        .packages()
+        .upload(release("1.0.0", &kv), Some(&customer))
+        .await
+        .unwrap();
+    let inst = cora
+        .apps()
+        .create(typed(
+            json!({ "name": "i", "package": "com.test.pub", "org": customer }),
+        ))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let _ok = pam
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{publisher}/publishers"))
+                .json(publisher_binding(&pam, &key, &publisher).await),
+            &mut pam_pk,
+        )
+        .await
+        .unwrap();
+    let _ok = pam
+        .packages()
+        .upload(release("1.1.0", &variant(&kv, "v2")), Some(&publisher))
+        .await
+        .unwrap();
+
+    let run = pam
+        .orgs()
+        .publisher_upgrade(&publisher, "com.test.pub", "1.1.0", None, Some(&mut pam_pk))
+        .await
+        .map(wire)
+        .unwrap();
+    let run = finished_run(&pam, &publisher, run["runId"].as_str().unwrap()).await;
+    assert_eq!(run["done"], json!([]), "{run}");
+    assert!(run["failed"].get(&inst).is_some(), "{run}");
+    let running = cora.apps().get(&inst).await.map(wire).unwrap();
+    assert_eq!(running["release"]["version"], json!("1.0.0"), "{running}");
+}
+
 // ---------------------------------------------------------------- version and approval reports
 
 /// The report that holds `app` for its owner: its organization's
@@ -8027,4 +8098,51 @@ async fn a_strangers_frontend_session_creates_from_a_public_release_another_org_
         .map(wire)
         .unwrap();
     assert!(made["appId"].is_string(), "{made}");
+}
+
+/// An account in several organizations names one for an install only once the logged cluster
+/// version brings `Feature::PrivateReleases`; below it the org is dropped anyway, so an
+/// upload without `org` goes through and, once it is on, answers `ORG_REQUIRED`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_install_names_its_organization_only_once_private_releases_are_on() {
+    let c = Cluster::start_with(3, |cfg| {
+        if cfg.node_id == 3 {
+            calimero_node::testing::advertise_cluster_version(&cfg.public_url, Some("1.0.0-rc.37"));
+        }
+    })
+    .await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let _acme = new_org(&alice, "Acme").await;
+    let bobco = new_org(&bob, "Bobco").await;
+    join((&bob, &mut b), &alice, &bobco, "member").await;
+    let tool = |v: &str| mpk("com.bob.tool", v, &variant(&kv_wasm(), v), &publisher);
+
+    let feature = calimero_node::system::cluster_version::Feature::PrivateReleases;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    assert!(!node.sys(|s| s.cluster_brings(feature)), "held below rc.38");
+    let _ok = alice
+        .packages()
+        .upload(tool("1.0.0"), None)
+        .await
+        .unwrap_or_else(|e| panic!("below the feature: {e}"));
+
+    calimero_node::testing::advertise_cluster_version(&c.urls[2], None);
+    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
+    while !node.sys(|s| s.cluster_brings(feature)) {
+        assert!(tokio::time::Instant::now() < deadline, "never raised");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let e = alice
+        .packages()
+        .upload(tool("2.0.0"), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("ORG_REQUIRED"), "{e}");
+    let _ok = alice
+        .packages()
+        .upload(tool("2.0.0"), Some(&bobco))
+        .await
+        .unwrap();
 }

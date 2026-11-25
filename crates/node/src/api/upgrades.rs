@@ -925,7 +925,16 @@ fn target_bundle(
         // creating from the offer needs none; any other move does.
         let v = s
             .release_offered_to(app, &release, who.run.as_deref())
-            .or_else(|| upgrade_release(s, &release, app, &who.actor, who.by_operator))?;
+            .or_else(|| {
+                upgrade_release(
+                    s,
+                    &release,
+                    app,
+                    &who.actor,
+                    who.by_operator,
+                    who.run.is_some(),
+                )
+            })?;
         let bundle = v.app_parts().get(&service).cloned()?;
         Some(Target {
             bundle,
@@ -936,20 +945,24 @@ fn target_bundle(
 }
 
 /// The release `to` an upgrade may move `app` to: one the upgrading account may use, or,
-/// for the operator, one it installed or one the app's owner may use. A release of
-/// another organization never reaches an app.
+/// for the operator, one it installed or one the app's owner may use. A run moves an app
+/// only to one its owner may use, whoever starts it. A release of another organization
+/// never reaches an app.
 fn upgrade_release<'s>(
     s: &'s SystemState,
     to: &PackageRef,
     app: &crate::types::AppRecord,
     actor: &str,
     by_operator: bool,
+    in_run: bool,
 ) -> Option<&'s crate::system::PackageVersion> {
+    let used = |by: &str| s.release_used(&to.package, &to.version, by);
     if by_operator {
-        s.release_used(&to.package, &to.version, crate::system::OPERATOR)
-            .or_else(|| s.release_used(&to.package, &to.version, &app.owner))
+        used(crate::system::OPERATOR).or_else(|| used(&app.owner))
+    } else if in_run {
+        used(&app.owner)
     } else {
-        s.release_used(&to.package, &to.version, actor)
+        used(actor)
     }
 }
 
@@ -1482,7 +1495,7 @@ async fn ops_upgrade(
                     service: (!service.is_empty()).then(|| service.clone()),
                     compute: false,
                 };
-                let v = upgrade_release(s, &release, &app, crate::system::OPERATOR, true)?;
+                let v = upgrade_release(s, &release, &app, crate::system::OPERATOR, true, false)?;
                 Some(Target {
                     bundle: v.app_parts().get(&service).cloned()?,
                     compute_bundle: v.compute.get(&service).cloned(),

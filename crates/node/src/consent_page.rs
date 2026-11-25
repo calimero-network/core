@@ -33,7 +33,8 @@
 //!    No app code runs there. The page reads the model
 //!    (`GET /consent/{id}/model`) and renders it: what is approved, for
 //!    whom, what changes and what stays as it is until the person approves.
-//! 3. **Passkey.** On *Approve*, the page posts `POST /consent/{id}/approve`.
+//! 3. **Passkey.** The page posts `POST /consent/{id}/approve` before the
+//!    click, so *Approve* asks the authenticator inside it.
 //!    The node runs the same route code a signed-in client would
 //!    (`api::set_release_approval`, `api::upgrade_app`,
 //!    `api::set_outbound_approval`) with the arguments frozen in the
@@ -99,9 +100,9 @@ use serde_json::{json, Value};
 use url::Url;
 
 use crate::api::{
-    consent, create_invite, create_org, owner_holds, peer_only, person, redeem_invite,
-    set_outbound_approval, set_release_approval, signed_in, upgrade_app, ConfirmBody, InviteBody,
-    OutboundApprovalBody, Principal, ReleaseApprovalBody, UpgradeBody,
+    consent, create_invite, create_org, outbound_release, owner_holds, peer_only, person,
+    redeem_invite, set_outbound_approval, set_release_approval, signed_in, upgrade_app,
+    ConfirmBody, InviteBody, OutboundApprovalBody, Principal, ReleaseApprovalBody, UpgradeBody,
 };
 use crate::error::ApiError;
 use crate::node::Node;
@@ -2480,17 +2481,6 @@ async fn delegate_request(
     ))
 }
 
-/// The release whose prefixes an outbound approval of `package` by `account` (a session
-/// bound to `bound`) shows: the newest one it reads.
-fn outbound_release<'s>(
-    s: &'s crate::system::SystemState,
-    package: &str,
-    account: &str,
-    bound: Option<&str>,
-) -> Option<&'s crate::system::PackageVersion> {
-    s.newest_read(package, account, bound == Some(package))
-}
-
 async fn outbound_request(
     node: &Node,
     account: &str,
@@ -2515,7 +2505,7 @@ async fn outbound_request(
         }
     };
     let latest = node
-        .sys(|s| outbound_release(s, &package, account, bound).cloned())
+        .sys(|s| outbound_release(s, &package, account).cloned())
         .ok_or_else(|| ApiError::not_found("no such package"))?;
     let (scope, scope_json) = scope_of(node, account, scope)?;
     if let ReleaseScope::Org { org } = &scope {
@@ -3503,10 +3493,8 @@ fn still_current(node: &Node, req: &ConsentRequest) -> Result<(), ApiError> {
             latest_mpk,
             ..
         } => {
-            let latest = node.sys(|s| {
-                outbound_release(s, package, &req.account, req.package.as_deref())
-                    .map(|v| v.mpk.clone())
-            });
+            let latest =
+                node.sys(|s| outbound_release(s, package, &req.account).map(|v| v.mpk.clone()));
             if latest.as_ref() == Some(latest_mpk) {
                 Ok(())
             } else {
@@ -3880,6 +3868,33 @@ mod tests {
             "services": services, "installedBy": "alice", "installedAt": 1
         }))
         .unwrap()
+    }
+
+    fn state_of(package: &str, releases: Value) -> crate::system::SystemState {
+        let mut s = crate::system::SystemState::default();
+        let record = serde_json::from_value(json!({
+            "name": package, "signerId": "did:key:z", "owner": "alice", "versions": releases
+        }))
+        .unwrap();
+        let _prev = s.packages.insert(package.to_owned(), record);
+        s
+    }
+
+    #[test]
+    fn the_outbound_page_picks_the_release_the_approval_applies_to() {
+        // v1 is public; v2 predates `visibility` and Bob shares no organization with its installer.
+        let s = state_of(
+            "p",
+            json!({
+                "1.0.0": { "version": "1.0.0", "mpk": "a", "mpkSize": 1, "source": "registry",
+                    "services": { "": "b1" }, "installedBy": "alice", "installedAt": 1,
+                    "visibility": "public" },
+                "2.0.0": { "version": "2.0.0", "mpk": "b", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b2" }, "installedBy": "alice", "installedAt": 2 },
+            }),
+        );
+        let shown = outbound_release(&s, "p", "bob").map(|v| v.version.clone());
+        assert_eq!(shown.as_deref(), Some("1.0.0"));
     }
 
     #[test]

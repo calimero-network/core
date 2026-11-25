@@ -129,6 +129,16 @@ pub(crate) struct OutboundApprovalBody {
     pub(crate) confirm: Option<ConfirmBody>,
 }
 
+/// The release whose prefixes an outbound approval of `package` by `account` covers, shown
+/// on the consent page and approved by the route alike: the newest one the account reads.
+pub(crate) fn outbound_release<'s>(
+    s: &'s crate::system::SystemState,
+    package: &str,
+    account: &str,
+) -> Option<&'s crate::system::PackageVersion> {
+    s.newest_read(package, account, false)
+}
+
 /// Approve URL prefixes a package's publisher may call out to from the apps
 /// of `scope`, with a passkey assertion over the exact change. The owner
 /// decides, never the operator: the operator only bounds the hosts.
@@ -142,7 +152,7 @@ pub(crate) async fn set_outbound_approval(
     // Apply approves the prefixes of the newest release the caller reads: with none, it is
     // answered before the passkey, as for a package that is not installed.
     node.sys_fresh_from(p.sys_index).await;
-    if node.sys(|s| s.newest_read(&body.package, &account, false).is_none()) {
+    if node.sys(|s| outbound_release(s, &body.package, &account).is_none()) {
         return Err(ApiError::not_found("no such package"));
     }
     let subject = match &scope {

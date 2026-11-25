@@ -820,8 +820,8 @@ fn chosen_parts(node: &Node, r: &PackageRef) -> Result<(String, Option<String>),
 /// The [`Unit`] of `release`, read from its verified manifest and embedded ABI. Each
 /// member's release is the one its lock pinned (`uses.version`), else the newest installed
 /// release of the package inside its range, among those `creator` may use, the release's
-/// own signer published, or `deployment` (the instance's) offers; a package with none is
-/// `409 USES_NOT_INSTALLED`, naming what to install.
+/// own signer published, or someone acting for the owner of `deployment` (the instance's)
+/// may use; a package with none is `409 USES_NOT_INSTALLED`, naming what to install.
 pub(crate) async fn unit_members(
     node: &Node,
     release: &crate::system::PackageRef,
@@ -865,21 +865,17 @@ pub(crate) async fn unit_members(
             .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
         let installed: Vec<String> = node.sys(|s| {
             let same_signer = s.same_signer(&release.package, &u.package);
-            let offers = deployment.and_then(|d| s.deployments.get(d));
-            let offered = |version: &str, v: &crate::system::PackageVersion| {
-                offers.is_some_and(|d| {
-                    s.offer_serves(d, v)
-                        && d.apps
-                            .values()
-                            .any(|o| o.package == u.package && o.version == version)
-                })
+            let serves = |v: &crate::system::PackageVersion| {
+                deployment
+                    .and_then(|d| s.deployments.get(d))
+                    .is_some_and(|d| s.offer_serves(d, v))
             };
             s.packages
                 .get(&u.package)
                 .map(|p| {
                     p.versions
                         .iter()
-                        .filter(|(k, v)| same_signer || s.sees_release(v, creator) || offered(k, v))
+                        .filter(|(_, v)| same_signer || s.sees_release(v, creator) || serves(v))
                         .map(|(k, _)| k.clone())
                         .collect()
                 })
@@ -1638,6 +1634,28 @@ async fn app_usage(
     })))
 }
 
+/// The outbound requests the instance's runs made (#5347), newest first, for its
+/// owner and the admins of its organization only: when, the method, host and path
+/// (no query), the status or why it failed, the secret names asked for, and the
+/// sizes; never a value, a body, a query string or a header. Each replica keeps
+/// what its own runs sent, in memory ([`calimero_outbound::OutboundAudit`]).
+async fn app_outbound_log(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let p = gate(&node, &headers, &app, "*", false).await?;
+    // After the gate: one who can't reach the app learns nothing of it (404).
+    if !manages_app(&node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner or an org admin reads its outbound log",
+        ));
+    }
+    Ok(Json(node.outbound_log(&app).await))
+}
+
 /// This area's routes, merged into [`super::router`].
 /// The methods of `target` that the release `source` runs lists for its package in its
 /// signed `uses` (`BundleUse::methods`): what a person is asked to let it call as them.
@@ -2231,6 +2249,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/metadata", post(app_metadata))
         .route("/apps/{app}/storage", get(app_storage))
         .route("/apps/{app}/usage", get(app_usage))
+        .route("/apps/{app}/outbound-log", get(app_outbound_log))
         .route("/apps/{app}/abi", get(app_abi))
         .route("/apps/{app}/openapi.json", get(app_openapi))
         .route("/apps/{app}/attestation", get(app_attestation))

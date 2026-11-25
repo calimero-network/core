@@ -69,24 +69,26 @@ pub(super) fn cluster_tag(node: &Node) -> String {
 }
 
 /// The name of `package` a person recognizes: the display name of its newest release
-/// open to anyone (public, or the operator's), else the package id: a sign-up is no
+/// open to anyone (public, the operator's, or recorded before `visibility`), else the package id: a sign-up is no
 /// account yet.
 pub(super) fn app_name(node: &Node, package: &str) -> String {
-    node.sys(|s| {
-        s.packages
-            .get(package)?
-            .latest_where(|v| {
-                v.installed_by_any(crate::system::OPERATOR)
-                    || v.visibility == Some(crate::system::Visibility::Public)
-            })?
-            .metadata
-            .get("name")?
-            .as_str()
-            .map(str::trim)
-            .filter(|n| !n.is_empty())
-            .map(str::to_owned)
-    })
-    .unwrap_or_else(|| package.to_owned())
+    node.sys(|s| open_name(s, package))
+        .unwrap_or_else(|| package.to_owned())
+}
+
+fn open_name(s: &crate::system::SystemState, package: &str) -> Option<String> {
+    s.packages
+        .get(package)?
+        .latest_where(|v| {
+            v.installed_by_any(crate::system::OPERATOR)
+                || v.visibility != Some(crate::system::Visibility::Private)
+        })?
+        .metadata
+        .get("name")?
+        .as_str()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
 }
 
 fn clip(s: &str) -> String {
@@ -101,7 +103,8 @@ fn clip(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{passkey_user_name, unknown_here, MAX_PASSKEY_NAME_PART_CHARS};
+    use super::{open_name, passkey_user_name, unknown_here, MAX_PASSKEY_NAME_PART_CHARS};
+    use serde_json::json;
 
     #[test]
     fn a_passkey_is_named_by_its_cluster_and_app() {
@@ -136,5 +139,36 @@ mod tests {
         assert_eq!((e.status, e.code.as_str()), (401, "PASSKEY_UNKNOWN_HERE"));
         assert!(e.message.contains("another Calimero cluster"), "{e}");
         assert!(e.details.is_null(), "{e}");
+    }
+
+    #[test]
+    fn a_sign_up_names_a_release_from_before_visibility_but_never_a_private_one() {
+        let release = |v: &str, visibility: Option<&str>, name: &str| {
+            let mut r = json!({ "version": v, "mpk": v, "mpkSize": 1, "source": "upload",
+                "services": { "": "b" }, "installedBy": "alice", "installedAt": 1,
+                "metadata": { "name": name } });
+            if let Some(vis) = visibility {
+                r["visibility"] = json!(vis);
+            }
+            r
+        };
+        let state = |versions: serde_json::Value| {
+            let mut s = crate::system::SystemState::default();
+            let record = serde_json::from_value(json!({
+                "name": "p", "signerId": "did:key:z", "owner": "alice", "versions": versions
+            }))
+            .unwrap();
+            let _prev = s.packages.insert("p".into(), record);
+            s
+        };
+        let old = state(json!({ "1.0.0": release("1.0.0", None, "Notes") }));
+        assert_eq!(open_name(&old, "p").as_deref(), Some("Notes"));
+        let private = state(json!({ "1.0.0": release("1.0.0", Some("private"), "Secret") }));
+        assert_eq!(open_name(&private, "p"), None);
+        let mixed = state(json!({
+            "1.0.0": release("1.0.0", None, "Notes"),
+            "2.0.0": release("2.0.0", Some("private"), "Secret"),
+        }));
+        assert_eq!(open_name(&mixed, "p").as_deref(), Some("Notes"));
     }
 }

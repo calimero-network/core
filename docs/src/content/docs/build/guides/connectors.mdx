@@ -36,6 +36,12 @@ an operation and passes JSON; the node builds the HTTP request.
   connector this app declares, never by a raw request`): the connector is the
   only way there, so a key bound to that host is used only for the declared
   operations.
+- Each call, sent or refused, is in the instance's
+  [outbound audit](/build/guides/outbound/#what-the-owner-sees) as the
+  connector's host and the operation's declared path
+  (`/v1/payment_intents/{id}`, never the id the input filled in), with the
+  connector's secret name once attached; a raw request to the connector's host
+  is there as `refused`.
 
 <Aside type="caution" title="What ships so far">
 The node's connector framework and the two connectors below ship first. The
