@@ -9,3 +9,6 @@
 //!
 //! The library itself is intentionally empty; it exists only so the build
 //! script runs as part of a normal `cargo build`/`cargo test`.
+//!
+//! Spec: [Development workflow](https://calimero-network.github.io/core/contribute/development/).
+//! Crate guide: [`crates/git-hooks/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/git-hooks/AGENTS.md).

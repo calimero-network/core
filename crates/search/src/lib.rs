@@ -7,6 +7,9 @@
 //! - [`records`]: a component app's table records as documents, shared by the node and
 //!   the SDK's test harness; [`records::TableSearch`] is one table's index over one state.
 //! - [`tokenize`]: Unicode words, accent/case folding, CJK bigrams, trigrams.
+//!
+//! Spec: [Search your app's data](https://calimero-network.github.io/core/build/guides/search/).
+//! Crate guide: [`crates/search/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/search/AGENTS.md).
 
 pub mod index;
 pub mod records;

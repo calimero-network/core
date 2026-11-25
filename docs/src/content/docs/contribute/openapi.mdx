@@ -1,0 +1,135 @@
+---
+title: The OpenAPI document
+description: How the node's OpenAPI document is made today (a hand-written registry held to the code by tests), and what a trial of generating one route group with utoipa showed.
+sidebar:
+  label: The OpenAPI document
+---
+
+The node's API document, `docs/public/openapi.json`, is the source of every SDK
+client (mero-js, mero-py, mero-kotlin, mero-swift and the Rust client's route
+layer). It is built from a registry written by hand beside the router,
+`crates/node/src/api/openapi.rs`, whose tests hold it to the code
+([API reference](/core/operate/api-reference/) lists what they check). Review
+finding E7 asked whether the document should be generated from the handlers
+instead. This page records the trial and its result.
+
+## The trial
+
+One route group was generated with [utoipa](https://github.com/juhaku/utoipa)
+6 and compared with the registry: the public links of an instance
+(`api/public_links.rs`: `POST` and `GET /apps/{app}/public-links`, `DELETE
+/apps/{app}/public-links/{link}`). It was chosen because it is small (three
+operations, one module) yet carries every kind of entry the registry has: a
+closed request body with a passkey step-up (`confirm`), an optional body, a
+typed list answer with nullable fields, an empty answer, path parameters,
+eight error statuses and the `x-calimero-*` extensions.
+
+The trial is test-only. utoipa is a dev-dependency of `calimero-node`; the
+derives are `#[cfg_attr(test, derive(utoipa::ToSchema))]` on the request and
+answer types and `#[cfg_attr(test, utoipa::path(..))]` on the three handlers,
+so a release build compiles none of it. `api/openapi/generated.rs` builds the
+group's document with `#[derive(OpenApi)]` and its tests compare it with the
+registry's:
+
+- `public_links_generated_from_their_handlers_match_the_registry`: each
+  operation's id, path parameters, request body (required or not, and its
+  schema) and success answer, and the components both documents name
+  (`Confirm`, `ConfirmOnly`, `Assertion`), compared in a canonical form that
+  keeps what a client reads (properties, required, nullable, closed objects,
+  integer sign, item types, references by name) and drops prose and formats.
+  They agree except where the test's `KNOWN` list says (one item, below).
+- `what_the_registry_adds_is_what_no_handler_says`: the keys only the
+  registry's entries carry, pinned as a list.
+- `the_typed_link_answers_write_what_they_wrote_before` (in
+  `api/public_links.rs`): the group's answers were typed first, and write the
+  bytes the `json!` they replaced wrote.
+
+## What fit
+
+- **Typed answers.** Once a handler answers a struct (`PublicLinks`,
+  `LinkView`, `PublicLinkMade`) the derive reads the same serde attributes the
+  answer is written with (`rename_all = "camelCase"`, `Option` as nullable), so
+  the generated schema follows the bytes clients receive. This is the part the
+  registry cannot check for answers built with `json!`.
+- **Request bodies** derived from the `Deserialize` types the handlers already
+  extract, `deny_unknown_fields` included.
+- **axum 0.8.** utoipa needs no axum integration for this: `utoipa::path`
+  takes the method, path and parameters as arguments, so the handlers keep
+  their signatures. (`utoipa-axum` 0.3 exists for routers built through it; the
+  node's router stays as it is.)
+- **Dependencies.** utoipa 6 with only its `macros` feature adds `utoipa` and
+  `utoipa-gen`, whose dependencies (`indexmap`, `serde`, `serde_json`,
+  `proc-macro2`, `quote`, `syn` 3) are already in the tree at the same versions:
+  `cargo deny check bans` passes with no new skip.
+
+## What did not fit
+
+- **`Option` means two things.** The derive writes every `Option<T>` field as
+  nullable and not required. A request body's optional field is absent or `T`
+  to the registry (the handler never needs `null`), and an answer's
+  `Option<T>` field is always written, `null` when none, so it is required and
+  nullable. Matching the registry took an attribute on each such field
+  (`schema(nullable = false)` on the request's four, `schema(required = true)` on
+  the answer's two), and nothing checks a new field gets one. An optional body
+  (`Option<Json<T>>`) is written as `T | null` and could not be said otherwise:
+  the one difference the test keeps (`KNOWN`).
+
+- **Everything that is not in a signature.** Who may call a route (`security`,
+  `x-calimero-who`), the step-up (`x-calimero-step-up`,
+  `x-calimero-user-verification`), the sealed channel (`x-calimero-sealed`), the
+  group the SDK generators split clients by (`x-calimero-group`; utoipa makes
+  its own `tags` and `summary` from the module and doc comment, which are not
+  the registry's), the prose, and every error answer
+  with its codes and `details` (`x-calimero-codes`, `x-calimero-details`) come
+  from the handler's body (`holder`, `consent`, `ApiError::new`), not its types.
+  The registry derives them from `Who`, `.step_up()` and `.errors(..)` and its
+  tests read the codes from the handler's source. utoipa can be told each of
+  them by hand in the attribute, which is the registry again, spread over the
+  handlers and unchecked.
+- **Foreign types.** A request type that holds a type from another crate
+  (`calimero_identity::Assertion` in `confirm`) needs a `ToSchema` there, which
+  would make utoipa a dependency of that crate, or a stand-in schema type in the
+  node (`generated::Assertion`) that nothing holds to the real one.
+- **Our integer schemas.** The registry writes every unsigned integer as
+  `uint` (`int64`, minimum 0); utoipa writes a `u32` as `int32`. The comparison
+  ignores formats; the generated document would change the format for clients.
+- **Decimal-string `u64`s (D20).** A field the node serializes as a decimal
+  string through `#[serde(with = ..)]` is an integer to the derive unless each
+  such field carries `#[schema(value_type = String)]`; nothing checks that it does.
+- **Answers that are not one type.** Many answers are built from the system
+  log's own answer (`sys_write`'s `Value`), from an app's view, or spliced
+  (`out["token"] = ..`); they need a type first, which is the work of the typed
+  answers (E7's first part) whatever generates the document.
+
+## Cost
+
+- **Compile time:** utoipa and utoipa-gen build in about 8 s on one core once
+  their dependencies are built (27 s from nothing), and only for the node's
+  tests: they are dev-dependencies. The derives add little to the node's test
+  build next to its own size; a non-test build is unchanged.
+- **Lockfile:** adding the dependency made `cargo` re-resolve unrelated entries
+  of `Cargo.lock` (itertools, windows-sys, base64), which `cargo deny check bans`
+  then refused as new duplicates; the committed lock adds only `utoipa` and
+  `utoipa-gen`, which passes.
+- **Source:** about 35 lines of attributes for three operations (the paths, the
+  derives and the per-field nullability), against about 20 lines of registry
+  entries, and the registry entries stay for everything the attributes do not
+  say.
+
+## Recommendation
+
+Keep the registry as the document's source, and do not migrate the routes to
+utoipa. What the trial shows generation would add is already the registry's
+response check, once a handler answers a type: bind the type to its component
+(`Component::of`) and `response_shapes_match_their_types` holds the shape to it,
+field by field, in both directions, with no new dependency. Generation would
+move the half of each entry that comes from types into derives and leave the
+other half (access, step-up, errors, extensions) in hand-written attributes
+that no test checks, so the document would become less checked, not more.
+
+So the way to close E7 is to finish typing the answers: give each handler that
+answers `json!` a `Serialize` type and bind it to its schema, the registry's
+`every_component_answered_whole_is_a_types` test (added with the typed answers, #5387) keeping named answers typed.
+The utoipa trial stays as a test while it costs nothing to keep, so a later
+version (one that reads `security` and errors from something the code states)
+can be judged against it.

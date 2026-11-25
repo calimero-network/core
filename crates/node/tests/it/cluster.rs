@@ -3827,6 +3827,8 @@ async fn a_feature_is_admitted_only_once_its_version_is_logged() {
     );
 }
 
+/// The system leader logs the cluster version every node's `/health` supports, and every node
+/// applies it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_cluster_version_rises_to_what_every_node_supports() {
     let mut c = Cluster::start(3).await;
@@ -5195,6 +5197,9 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
 
 /// `merod inspect`: a stopped node's data directory, read
 /// offline. The raw layout without the key; with it, each group's metadata.
+/// It also guards `Running::stop` waiting until the store is closed: a task
+/// still running held the RocksDB lock that `inspect` needs (about 1 run in 32
+/// failed under load).
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_stopped_nodes_store_can_be_inspected() {
     let mut c = Cluster::start(3).await;

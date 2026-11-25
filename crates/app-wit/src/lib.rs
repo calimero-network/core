@@ -1,4 +1,8 @@
 //! The `calimero:app` WIT world and the allow-list of imports an app may use.
+//!
+//! Spec: [Application execution](https://calimero-network.github.io/core/protocol/execution/),
+//! [The env API](https://calimero-network.github.io/core/build/host-functions/).
+//! Crate guide: [`crates/app-wit/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-wit/AGENTS.md).
 
 /// Absolute path of the `wit/` directory holding the world and its WASI deps.
 pub const WIT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/wit");

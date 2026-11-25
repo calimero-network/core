@@ -182,3 +182,55 @@ Creating an organization, adding a member, installing a package or changing an
 app's access are not app calls: the API builds a `SystemCmd` and appends it to
 the [system group](/protocol/system-group/), whose state machine checks the
 actor's authority when it applies.
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Leader races
+
+`Group::propose` takes no leadership round before a call's append, so a deposed leader may run a
+call on stale state; its entry never commits, or commits as a no-op (`base_index` ≠ the app's last
+entry, `AppState::last_index`: `conflict`, no idempotency record), and `Node::call` re-runs it
+instead of failing.
+The base is the app's last entry, never the log's applied index, which counts blank and membership
+entries too: with it the first call after every election conflicted once.
+Replies without an append (idempotent replays) are confirmed first.
+The component is prepared from the bundle read before the lock, so the call also answers a conflict
+when the state names another bundle by then (an upgrade applied in between; `call_component`
+compares `AppState::bundle`).
+
+### Forwards are bounded
+
+A call or read forwarded to an app's leader waits at most `FORWARD_TIMEOUT` (5 s, `peer_forward`),
+then retries at whoever leads now; a frozen leader would otherwise hold a write for the 30 s HTTP
+timeout.
+Calls without a client key get a node key (`node:…`, kept 10 min) first, so a retry replays a call
+that did commit.
+System-log forwards keep the long timeout: some system commands are not idempotent yet.
+
+### Runs leave the async workers
+
+Code: `node::off_workers`.
+
+A logged WASM run (call, timer tick, init, a compute run's result method) happens inside the group's
+proposal lock, so it cannot move to `spawn_blocking`; it goes through `block_in_place`, which hands
+the worker's other tasks (Raft heartbeats, the system group, HTTP) to another worker meanwhile.
+
+### Logged runs hold no read lock
+
+(C2; `calimero_log::Group::propose_led_staged`, `LoggedRun`.)
+
+Each of those proposals is staged.
+Its read step, under the applied state's read lock, makes the checks, takes the unique ids and an
+owned `LoggedRun` (`AppMachine::view`, an O(1) `imbl` clone, the blobs, runs provider, secrets,
+`base_index`); its run step, with the lock released, runs the guest, pushes its files and builds the
+entry.
+The proposal lock is held throughout, so calls on one app still take turns and each builds on the
+one before (no self-conflict).
+An entry that commits while a run runs (a barrier, a membership change) now applies at once and the
+app's reads go on, where they waited for the whole run before (a reader queued behind the waiting
+apply); the run's entry then fails its `base_index` check and `Node::call` runs it again, its
+synchronous xcalls replayed under their keys.
