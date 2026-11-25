@@ -837,7 +837,7 @@ export interface paths {
         put?: never;
         /**
          * Retry a pipeline run
-         * @description The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.
+         * @description The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -881,7 +881,7 @@ export interface paths {
         put?: never;
         /**
          * Start a pipeline run
-         * @description The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+         * @description The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -8721,8 +8721,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Accepted */
-            202: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8935,8 +8935,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Accepted */
-            202: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

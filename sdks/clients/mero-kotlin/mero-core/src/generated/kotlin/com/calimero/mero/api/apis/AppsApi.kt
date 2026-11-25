@@ -90,9 +90,9 @@ import com.calimero.mero.api.models.PipelineReceiptReceipt200Response
 import com.calimero.mero.api.models.PipelinesCancel200Response
 import com.calimero.mero.api.models.PipelinesEstimateRun200Response
 import com.calimero.mero.api.models.PipelinesEstimateRunRequest
-import com.calimero.mero.api.models.PipelinesRetry202Response
+import com.calimero.mero.api.models.PipelinesRetry200Response
 import com.calimero.mero.api.models.PipelinesRetryRequest
-import com.calimero.mero.api.models.PipelinesStart202Response
+import com.calimero.mero.api.models.PipelinesStart200Response
 import com.calimero.mero.api.models.PipelinesStartRequest
 import com.calimero.mero.api.models.PipelinesValidate200Response
 import com.calimero.mero.api.models.PipelinesValidateRequest
@@ -4681,11 +4681,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipeline-runs/{run}/retry
      * Retry a pipeline run
-     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
      * @param pipelinesRetryRequest 
-     * @return PipelinesRetry202Response
+     * @return PipelinesRetry200Response
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4694,11 +4694,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun pipelinesRetry(app: kotlin.String, run: kotlin.String, pipelinesRetryRequest: PipelinesRetryRequest) : PipelinesRetry202Response = withContext(Dispatchers.IO) {
+    suspend fun pipelinesRetry(app: kotlin.String, run: kotlin.String, pipelinesRetryRequest: PipelinesRetryRequest) : PipelinesRetry200Response = withContext(Dispatchers.IO) {
         val localVarResponse = pipelinesRetryWithHttpInfo(app = app, run = run, pipelinesRetryRequest = pipelinesRetryRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelinesRetry202Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelinesRetry200Response
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4715,20 +4715,20 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipeline-runs/{run}/retry
      * Retry a pipeline run
-     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
      * @param pipelinesRetryRequest 
-     * @return ApiResponse<PipelinesRetry202Response?>
+     * @return ApiResponse<PipelinesRetry200Response?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun pipelinesRetryWithHttpInfo(app: kotlin.String, run: kotlin.String, pipelinesRetryRequest: PipelinesRetryRequest) : ApiResponse<PipelinesRetry202Response?> = withContext(Dispatchers.IO) {
+    suspend fun pipelinesRetryWithHttpInfo(app: kotlin.String, run: kotlin.String, pipelinesRetryRequest: PipelinesRetryRequest) : ApiResponse<PipelinesRetry200Response?> = withContext(Dispatchers.IO) {
         val localVariableConfig = pipelinesRetryRequestConfig(app = app, run = run, pipelinesRetryRequest = pipelinesRetryRequest)
 
-        return@withContext request<PipelinesRetryRequest, PipelinesRetry202Response>(
+        return@withContext request<PipelinesRetryRequest, PipelinesRetry200Response>(
             localVariableConfig
         )
     }
@@ -4761,11 +4761,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipelines/{name}/runs
      * Start a pipeline run
-     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param name 
      * @param pipelinesStartRequest 
-     * @return PipelinesStart202Response
+     * @return PipelinesStart200Response
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -4774,11 +4774,11 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun pipelinesStart(app: kotlin.String, name: kotlin.String, pipelinesStartRequest: PipelinesStartRequest) : PipelinesStart202Response = withContext(Dispatchers.IO) {
+    suspend fun pipelinesStart(app: kotlin.String, name: kotlin.String, pipelinesStartRequest: PipelinesStartRequest) : PipelinesStart200Response = withContext(Dispatchers.IO) {
         val localVarResponse = pipelinesStartWithHttpInfo(app = app, name = name, pipelinesStartRequest = pipelinesStartRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelinesStart202Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PipelinesStart200Response
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -4795,20 +4795,20 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipelines/{name}/runs
      * Start a pipeline run
-     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. &#x60;202&#x60;.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param name 
      * @param pipelinesStartRequest 
-     * @return ApiResponse<PipelinesStart202Response?>
+     * @return ApiResponse<PipelinesStart200Response?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun pipelinesStartWithHttpInfo(app: kotlin.String, name: kotlin.String, pipelinesStartRequest: PipelinesStartRequest) : ApiResponse<PipelinesStart202Response?> = withContext(Dispatchers.IO) {
+    suspend fun pipelinesStartWithHttpInfo(app: kotlin.String, name: kotlin.String, pipelinesStartRequest: PipelinesStartRequest) : ApiResponse<PipelinesStart200Response?> = withContext(Dispatchers.IO) {
         val localVariableConfig = pipelinesStartRequestConfig(app = app, name = name, pipelinesStartRequest = pipelinesStartRequest)
 
-        return@withContext request<PipelinesStartRequest, PipelinesStart202Response>(
+        return@withContext request<PipelinesStartRequest, PipelinesStart200Response>(
             localVariableConfig
         )
     }

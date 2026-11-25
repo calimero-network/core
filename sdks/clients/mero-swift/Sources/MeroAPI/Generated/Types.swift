@@ -414,7 +414,7 @@ public protocol APIProtocol: Sendable {
     func pipelineReceiptReceipt(_ input: Operations.PipelineReceiptReceipt.Input) async throws -> Operations.PipelineReceiptReceipt.Output
     /// Retry a pipeline run
     ///
-    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.
+    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -432,7 +432,7 @@ public protocol APIProtocol: Sendable {
     func pipelinesEstimateRun(_ input: Operations.PipelinesEstimateRun.Input) async throws -> Operations.PipelinesEstimateRun.Output
     /// Start a pipeline run
     ///
-    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -2501,7 +2501,7 @@ extension APIProtocol {
     }
     /// Retry a pipeline run
     ///
-    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.
+    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -2539,7 +2539,7 @@ extension APIProtocol {
     }
     /// Start a pipeline run
     ///
-    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -20584,7 +20584,7 @@ public enum Operations {
     }
     /// Retry a pipeline run
     ///
-    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.
+    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -20733,16 +20733,16 @@ public enum Operations {
             }
         }
         @frozen public enum Output: Sendable, Hashable {
-            public struct Accepted: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/202/content`.
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/202/content/json`.
+                    /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content/json`.
                     public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/202/content/json/run`.
+                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content/json/run`.
                         public var run: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/202/content/json/retryOf`.
+                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content/json/retryOf`.
                         public var retryOf: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/202/content/json/worstCase`.
+                        /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content/json/worstCase`.
                         public var worstCase: Swift.String?
                         /// Creates a new `JsonPayload`.
                         ///
@@ -20765,13 +20765,13 @@ public enum Operations {
                             case worstCase
                         }
                     }
-                    /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/202/content/application\/json`.
-                    case json(Operations.PipelinesRetry.Output.Accepted.Body.JsonPayload)
+                    /// - Remark: Generated from `#/paths/apps/{app}/pipeline-runs/{run}/retry/POST/responses/200/content/application\/json`.
+                    case json(Operations.PipelinesRetry.Output.Ok.Body.JsonPayload)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PipelinesRetry.Output.Accepted.Body.JsonPayload {
+                    public var json: Operations.PipelinesRetry.Output.Ok.Body.JsonPayload {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -20781,33 +20781,33 @@ public enum Operations {
                     }
                 }
                 /// Received HTTP response body
-                public var body: Operations.PipelinesRetry.Output.Accepted.Body
-                /// Creates a new `Accepted`.
+                public var body: Operations.PipelinesRetry.Output.Ok.Body
+                /// Creates a new `Ok`.
                 ///
                 /// - Parameters:
                 ///   - body: Received HTTP response body
-                public init(body: Operations.PipelinesRetry.Output.Accepted.Body) {
+                public init(body: Operations.PipelinesRetry.Output.Ok.Body) {
                     self.body = body
                 }
             }
-            /// Accepted
+            /// OK
             ///
-            /// - Remark: Generated from `#/paths//apps/{app}/pipeline-runs/{run}/retry/post(pipelines_retry)/responses/202`.
+            /// - Remark: Generated from `#/paths//apps/{app}/pipeline-runs/{run}/retry/post(pipelines_retry)/responses/200`.
             ///
-            /// HTTP response code: `202 accepted`.
-            case accepted(Operations.PipelinesRetry.Output.Accepted)
-            /// The associated value of the enum case if `self` is `.accepted`.
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.PipelinesRetry.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
             ///
-            /// - Throws: An error if `self` is not `.accepted`.
-            /// - SeeAlso: `.accepted`.
-            public var accepted: Operations.PipelinesRetry.Output.Accepted {
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.PipelinesRetry.Output.Ok {
                 get throws {
                     switch self {
-                    case let .accepted(response):
+                    case let .ok(response):
                         return response
                     default:
                         try throwUnexpectedResponseStatus(
-                            expectedStatus: "accepted",
+                            expectedStatus: "ok",
                             response: self
                         )
                     }
@@ -21179,7 +21179,7 @@ public enum Operations {
     }
     /// Start a pipeline run
     ///
-    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -21328,14 +21328,14 @@ public enum Operations {
             }
         }
         @frozen public enum Output: Sendable, Hashable {
-            public struct Accepted: Sendable, Hashable {
-                /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/202/content`.
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/200/content`.
                 @frozen public enum Body: Sendable, Hashable {
-                    /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/202/content/json`.
+                    /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/200/content/json`.
                     public struct JsonPayload: Codable, Hashable, Sendable {
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/202/content/json/run`.
+                        /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/200/content/json/run`.
                         public var run: Swift.String
-                        /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/202/content/json/worstCase`.
+                        /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/200/content/json/worstCase`.
                         public var worstCase: Swift.String?
                         /// Creates a new `JsonPayload`.
                         ///
@@ -21354,13 +21354,13 @@ public enum Operations {
                             case worstCase
                         }
                     }
-                    /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/202/content/application\/json`.
-                    case json(Operations.PipelinesStart.Output.Accepted.Body.JsonPayload)
+                    /// - Remark: Generated from `#/paths/apps/{app}/pipelines/{name}/runs/POST/responses/200/content/application\/json`.
+                    case json(Operations.PipelinesStart.Output.Ok.Body.JsonPayload)
                     /// The associated value of the enum case if `self` is `.json`.
                     ///
                     /// - Throws: An error if `self` is not `.json`.
                     /// - SeeAlso: `.json`.
-                    public var json: Operations.PipelinesStart.Output.Accepted.Body.JsonPayload {
+                    public var json: Operations.PipelinesStart.Output.Ok.Body.JsonPayload {
                         get throws {
                             switch self {
                             case let .json(body):
@@ -21370,33 +21370,33 @@ public enum Operations {
                     }
                 }
                 /// Received HTTP response body
-                public var body: Operations.PipelinesStart.Output.Accepted.Body
-                /// Creates a new `Accepted`.
+                public var body: Operations.PipelinesStart.Output.Ok.Body
+                /// Creates a new `Ok`.
                 ///
                 /// - Parameters:
                 ///   - body: Received HTTP response body
-                public init(body: Operations.PipelinesStart.Output.Accepted.Body) {
+                public init(body: Operations.PipelinesStart.Output.Ok.Body) {
                     self.body = body
                 }
             }
-            /// Accepted
+            /// OK
             ///
-            /// - Remark: Generated from `#/paths//apps/{app}/pipelines/{name}/runs/post(pipelines_start)/responses/202`.
+            /// - Remark: Generated from `#/paths//apps/{app}/pipelines/{name}/runs/post(pipelines_start)/responses/200`.
             ///
-            /// HTTP response code: `202 accepted`.
-            case accepted(Operations.PipelinesStart.Output.Accepted)
-            /// The associated value of the enum case if `self` is `.accepted`.
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.PipelinesStart.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
             ///
-            /// - Throws: An error if `self` is not `.accepted`.
-            /// - SeeAlso: `.accepted`.
-            public var accepted: Operations.PipelinesStart.Output.Accepted {
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.PipelinesStart.Output.Ok {
                 get throws {
                     switch self {
-                    case let .accepted(response):
+                    case let .ok(response):
                         return response
                     default:
                         try throwUnexpectedResponseStatus(
-                            expectedStatus: "accepted",
+                            expectedStatus: "ok",
                             response: self
                         )
                     }

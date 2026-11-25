@@ -1086,7 +1086,7 @@ class AppsFacade internal constructor(
     /**
      * Retry a pipeline run
      *
-     * The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.
+     * The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -1099,13 +1099,13 @@ class AppsFacade internal constructor(
         run: kotlin.String,
         limits: kotlin.collections.Map<kotlin.String, PipelinesRetryRequestLimitsValue>? = null,
         maxCost: kotlin.String? = null,
-    ): PipelinesRetry202Response =
+    ): PipelinesRetry200Response =
         api(null, null, emptySet()).apps.pipelinesRetry(app = app, run = run, pipelinesRetryRequest = PipelinesRetryRequest(limits = limits, maxCost = maxCost))
 
     /**
      * Start a pipeline run
      *
-     * The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+     * The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -1119,7 +1119,7 @@ class AppsFacade internal constructor(
         inputs: kotlin.collections.Map<kotlin.String, kotlin.collections.List<kotlin.String>>? = null,
         params: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>? = null,
         maxCost: kotlin.String? = null,
-    ): PipelinesStart202Response =
+    ): PipelinesStart200Response =
         api(null, null, emptySet()).apps.pipelinesStart(app = app, name = name, pipelinesStartRequest = PipelinesStartRequest(inputs = inputs, params = params, maxCost = maxCost))
 
     /**

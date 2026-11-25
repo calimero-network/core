@@ -32,18 +32,14 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param run 
- * @param retryOf 
  * @param worstCase 
  */
 @Serializable
 
-data class PipelinesRetry202Response (
+data class PipelinesStart200Response (
 
     @SerialName(value = "run")
     val run: kotlin.String,
-
-    @SerialName(value = "retryOf")
-    val retryOf: kotlin.String,
 
     @SerialName(value = "worstCase")
     val worstCase: kotlin.String? = null

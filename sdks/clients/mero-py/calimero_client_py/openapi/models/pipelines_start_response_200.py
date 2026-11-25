@@ -9,11 +9,11 @@ from ..types import UNSET, Unset
 from ..types import UNSET, Unset
 from typing import Union
 
-T = TypeVar("T", bound="PipelinesStartResponse202")
+T = TypeVar("T", bound="PipelinesStartResponse200")
 
 
 @_attrs_define
-class PipelinesStartResponse202:
+class PipelinesStartResponse200:
     """
     Attributes:
         run (str):
@@ -48,13 +48,13 @@ class PipelinesStartResponse202:
 
         worst_case = d.pop("worstCase", UNSET)
 
-        pipelines_start_response_202 = cls(
+        pipelines_start_response_200 = cls(
             run=run,
             worst_case=worst_case,
         )
 
-        pipelines_start_response_202.additional_properties = d
-        return pipelines_start_response_202
+        pipelines_start_response_200.additional_properties = d
+        return pipelines_start_response_200
 
     @property
     def additional_keys(self) -> list[str]:
