@@ -1,4 +1,4 @@
-//! Organization recovery (core `docs/specs/org-recovery.md`): an
+//! Organization recovery ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)): an
 //! organization's recovery key is an Ed25519 key whose seed the owner keeps
 //! offline; the node stores the public half. The seed signs here, never on a
 //! node, byte-for-byte with core's `calimero_identity::recovery` (pinned in

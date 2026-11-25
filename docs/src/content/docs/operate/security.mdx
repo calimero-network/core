@@ -72,7 +72,7 @@ signature is used once.
 **If the seed leaks**, the owner rotates the key: a recovery under way is
 cancelled and the old seed is refused from then on. An owner who has lost both
 every passkey and the seed cannot recover the organization; neither can anyone
-else. Design: [`docs/specs/org-recovery.md`](https://github.com/calimero-network/core/blob/master/docs/specs/org-recovery.md).
+else. See [Recovery](/protocol/organizations/#recovery).
 
 ## Recovering an account
 
@@ -96,8 +96,8 @@ it), and signs the new passkey in; machines that used a key need a new one. Nobo
 nodes never hold the code, the start names the one passkey it may add, and the
 finish needs that passkey. One recovery runs at a time, and a code starts only
 one. Someone who steals the code is stopped by any of the account's passkeys
-within the 72 hours. Design:
-[`docs/specs/account-recovery.md`](https://github.com/calimero-network/core/blob/master/docs/specs/account-recovery.md).
+within the 72 hours. See
+[Account recovery](/protocol/identities/#account-recovery).
 
 ## The recovery disk
 
@@ -276,13 +276,14 @@ declares.
 
 A host can stop a node, copy its disk and start it later on the copy; sealing
 hides the content, not its age. A node whose key comes from a mero-kms that keeps
-rollback counters (`docs/specs/rollback-protection.md`) keeps a counter in its
-sealed store and in mero-kms, raises both every second, and refuses to start on
-a store behind mero-kms's: a restored older copy, an empty store under a node id
-that ran before, or another node's store.
+rollback counters keeps a counter in its sealed store and in mero-kms, raises
+both every second, and refuses to start on a store behind mero-kms's: a restored
+older copy, an empty store under a node id that ran before, or another node's
+store ([Rollback protection](/protocol/encryption/#rollback-protection)).
 
 - **One node behind:** wipe its data directory, remove it (`DELETE /ops/nodes/{id}`)
-  and register it under a new node id; it joins empty and catches up.
+  and register it under a new node id; it joins empty and catches up
+  ([A node refuses to start as rolled back](/operate/runbooks/#a-node-refuses-to-start-as-rolled-back)).
 - **Every node behind, or the newest disks lost:** start each node once with
   `merod run --accept-rollback`. mero-kms raises the cluster's rollback epoch,
   which `/health` (`rollbackEpoch`) and `/ops/status` report: a forced rollback is

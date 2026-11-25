@@ -11,7 +11,9 @@ import { Aside } from '@astrojs/starlight/components';
 state. In a component every function reaches the host through the
 `calimero:app` world's imports ([below](#the-world-underneath)); in host-target
 tests they read a thread-local stand-in (`env::mock`). Source:
-`crates/sdk/src/env.rs`.
+`crates/sdk/src/env.rs`. A function the kind of run does not allow (an event
+from a view, state from an action) traps `HostDenied`; which kind may do what
+is in [Kinds of run](/protocol/execution/#kinds-of-run).
 
 ## The caller and the org
 
@@ -57,9 +59,9 @@ See [Access control](/build/guides/access-control/) for the full pattern.
 
 | Function | Returns |
 | --- | --- |
-| `env::time_now()` | Milliseconds since the epoch. A logged run sees its entry's timestamp, so every replica agrees. |
-| `env::random_bytes(len)` | `len` bytes, seeded per logged run: deterministic when replayed. |
-| `env::unique_id()` | `<leader term>.<call seq>.<n>`, unique across the app. Prefer it to counting with a `Counter`. |
+| `env::time_now()` | Milliseconds since the epoch. A logged run sees its entry's timestamp, so every replica agrees; a view sees the newest applied entry's, an action the node's clock rounded down to the second ([Time and randomness](/protocol/execution/#time-and-randomness)). `std::time` reads the same clock. |
+| `env::random_bytes(len)` | `len` bytes, seeded per logged run: deterministic when replayed. A view or an action draws from the node's CSPRNG, unrecorded. |
+| `env::unique_id()` | `<leader term>.<call seq>.<n>`: the leader's Raft term, its execution counter in that term and the id's position in the run, unique across the app. Built from the term, not the log index, which is assigned only when the entry is proposed. In `init`, calls, timers and deliveries only. Prefer it to counting with a `Counter`. |
 | `env::applied_index()` | The log index this run applies on top of. |
 | `env::timer()` | In an `#[app::every]` method, the tick (`scheduled`, `previous`); otherwise `None`. |
 
