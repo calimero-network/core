@@ -30,6 +30,10 @@ pub const IDEMPOTENCY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 /// retries, so they are kept briefly.
 pub const NODE_KEY_PREFIX: &str = "node:";
 
+/// The keys an API key's follow-ups run under (`node:apikey:<keyId>:<index>:<hash>`);
+/// a client's own key never starts with it.
+pub const FOLLOW_UP_KEY_PREFIX: &str = "node:apikey:";
+
 /// How long a `node:` key is remembered (D74).
 pub const NODE_KEY_TTL_MS: u64 = 10 * 60 * 1000;
 

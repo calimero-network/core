@@ -4,9 +4,10 @@ operator's state (quotas, per-organization overrides, pools, sign-up invites, co
 from __future__ import annotations
 
 import json
+import time
 
-from upgrade_deep import (DeepCase, anyone, check, decision, eq, new_org, ops, person, same_read, scrub,
-                          snap, subset)
+from upgrade_deep import (DeepCase, anyone, check, decision, eq, kv_wasm, new_org, ops, ops_text, person,
+                          same_read, scrub, snap, subset, until)
 from upgrade_path import case
 
 
@@ -160,3 +161,87 @@ class BackupKeys(DeepCase):
         rae = person(w, "rae")
         subset(scrub(rae.get(f"orgs/{s['org']}/backup-key")), s["org_key"], "the organization's backup key")
         subset(scrub(rae.get("auth/backup-key")), s["own_key"], "the account's backup key")
+
+
+DIGEST_COMPARE_SECS = 60  # `DIGEST_COMPARE_EVERY`: how often an app's leader compares its replicas' digests
+DIVERGED = "calimero_group_diverged{"  # a series present only while a replica's digest differs
+DIVERGENCES = "calimero_group_divergences_total"
+COMPARISONS = "calimero_group_digest_comparisons_total{"  # a release before this one does not count them
+COMPARISONS_HELP = "# HELP calimero_group_digest_comparisons_total"
+
+
+def _divergences(w):
+    """`{node: times it found a replica diverge}`, failing while any node shows a differing replica now."""
+    found = {}
+    for node in w.members():
+        text = ops_text(w, "ops/metrics", node)
+        lines = text.splitlines()
+        check(not [x for x in lines if x.startswith(DIVERGED)], f"node {node} reports a diverged replica: "
+              f"{[x for x in lines if x.startswith(DIVERGED)]}")
+        counts = [x.split()[-1] for x in lines if x.startswith(DIVERGENCES + " ")]
+        check(len(counts) == 1, f"node {node}: {len(counts)} {DIVERGENCES} samples")
+        found[node] = int(counts[0])
+    return found
+
+
+def _comparisons(w, apps):
+    """`{app: comparisons that could tell, over every node}` (the leader of a group counts them), or `None`
+    while no node is on a release that counts them."""
+    texts = [ops_text(w, "ops/metrics", node) for node in w.members()]
+    if not any(COMPARISONS_HELP in t for t in texts):
+        return None
+    groups = {a["app"]: a["group"] for a in w.fleet.placement()["apps"]}
+    total = {a: 0 for a in apps}
+    for text in texts:
+        for line in text.splitlines():
+            if line.startswith(COMPARISONS):
+                for app in apps:
+                    if line.startswith(f'{COMPARISONS}group="{groups[app]}"}}'):
+                        total[app] += int(line.split()[-1])
+    return total
+
+
+@case
+class StateDigests(DeepCase):
+    name = "state-digests"
+    area = "Ops"
+    since = "1.0.0-rc.31"
+    seeds = "two apps with data written, replicated on the old nodes (each leader compares its replicas' state digests)"
+    verifies = ("on every node no replica is reported diverged and none ever was (`calimero_group_diverged`, "
+                "`calimero_group_divergences_total`), in the mixed cluster, after the roll and after a restart; "
+                "once every node runs the new release each app's leader has compared its replicas "
+                "(`calimero_group_digest_comparisons_total` above zero for both groups) and compares again after "
+                "new writes and after a restart, which tells a comparison that agreed from one that never ran")
+
+    def populate(self, w):
+        dax = person(w, "dax")
+        s = {"apps": [dax.deploy(kv_wasm(w), f"digest-{i}") for i in range(2)]}
+        for a in s["apps"]:
+            for i in range(20):
+                dax.call(a, "set", {"key": f"k{i:02}", "value": f"v{i}"})
+        eq(_divergences(w), {n: 0 for n in w.members()}, "divergences while seeding")
+        return s
+
+    def during_mix(self, w, s):
+        eq(_divergences(w), {n: 0 for n in w.members()}, "divergences while the cluster is mixed")
+
+    def check(self, w, s):
+        self.during_mix(w, s)
+
+        def compared():
+            seen = _comparisons(w, s["apps"])
+            check(seen is None or all(seen.values()), f"no digest comparison has run for every app yet: {seen}")
+
+        until("each app's leader has compared its replicas", compared, DIGEST_COMPARE_SECS + 45)
+
+    def exercise(self, w, s):
+        dax = person(w, "dax")
+        before = _comparisons(w, s["apps"])
+        for a in s["apps"]:
+            for i in range(20):
+                dax.call(a, "set", {"key": f"new{i:02}", "value": f"n{i}"})
+        time.sleep(DIGEST_COMPARE_SECS + 15)
+        after = _comparisons(w, s["apps"])
+        check(all(after[a] > before[a] for a in s["apps"]), f"a leader did not compare again: {before} then {after}")
+        self.check(w, s)
+

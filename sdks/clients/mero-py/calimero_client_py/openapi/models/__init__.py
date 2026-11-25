@@ -27,8 +27,10 @@ from .alias_set_response_200 import AliasSetResponse200
 from .api_key import ApiKey
 from .api_key_upgrades import ApiKeyUpgrades
 from .apikey_create_body import ApikeyCreateBody
+from .apikey_create_body_then_item import ApikeyCreateBodyThenItem
 from .apikey_create_body_upgrades import ApikeyCreateBodyUpgrades
 from .apikey_create_response_200 import ApikeyCreateResponse200
+from .apikey_create_response_200_then_item import ApikeyCreateResponse200ThenItem
 from .apikey_list_response_200 import ApikeyListResponse200
 from .apikey_revoke_response_200 import ApikeyRevokeResponse200
 from .app import App
@@ -181,6 +183,7 @@ from .cluster_release import ClusterRelease
 from .confirm import Confirm
 from .confirm_only import ConfirmOnly
 from .confirm_required import ConfirmRequired
+from .confirm_required_then_item import ConfirmRequiredThenItem
 from .consent_page_create_body_type_0 import ConsentPageCreateBodyType0
 from .consent_page_create_body_type_0_kind import ConsentPageCreateBodyType0Kind
 from .consent_page_create_body_type_0_scope_type_0 import (
@@ -345,6 +348,8 @@ from .file_info_response_200 import FileInfoResponse200
 from .files_list_response_200 import FilesListResponse200
 from .files_list_response_200_files_item import FilesListResponse200FilesItem
 from .files_upload_response_200 import FilesUploadResponse200
+from .follow_up_failed import FollowUpFailed
+from .follow_up_failed_error import FollowUpFailedError
 from .governance import Governance
 from .governance_app_upgrades import GovernanceAppUpgrades
 from .governance_deployers import GovernanceDeployers
@@ -829,8 +834,10 @@ __all__ = (
     "AliasSetResponse200",
     "ApiKey",
     "ApikeyCreateBody",
+    "ApikeyCreateBodyThenItem",
     "ApikeyCreateBodyUpgrades",
     "ApikeyCreateResponse200",
+    "ApikeyCreateResponse200ThenItem",
     "ApikeyListResponse200",
     "ApikeyRevokeResponse200",
     "ApiKeyUpgrades",
@@ -960,6 +967,7 @@ __all__ = (
     "Confirm",
     "ConfirmOnly",
     "ConfirmRequired",
+    "ConfirmRequiredThenItem",
     "ConsentPageCreateBodyType0",
     "ConsentPageCreateBodyType0Kind",
     "ConsentPageCreateBodyType0ScopeType0",
@@ -1090,6 +1098,8 @@ __all__ = (
     "FilesListResponse200",
     "FilesListResponse200FilesItem",
     "FilesUploadResponse200",
+    "FollowUpFailed",
+    "FollowUpFailedError",
     "Governance",
     "GovernanceAppUpgrades",
     "GovernanceDeployers",

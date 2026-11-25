@@ -474,6 +474,7 @@ const ERROR_DETAILS: &[(&str, &str)] = &[
     ("COMPUTE_ABI_MISMATCH", "ServiceRefused"),
     ("CONFIRM_REQUIRED", "ConfirmRequired"),
     ("FEATURE_NOT_ACTIVE", "FeatureNotActive"),
+    ("FOLLOW_UP_FAILED", "FollowUpFailed"),
     ("FILES_UNAVAILABLE", "RetryAfter"),
     ("INIT_FAILED", "InitFailed"),
     ("NOT_LEADER", "NotLeader"),
@@ -608,8 +609,8 @@ fn components() -> Vec<Component> {
         ),
         component(
             "ConfirmRequired",
-            "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it.",
-            "{ challengeId: string, challenge: b64url, rpId: string, allowCredentials: string[], apps?: string[] }",
+            "`details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it. `then`: making an API key with follow-ups, the calls the passkey approves, `key:<keyId>` written in.",
+            "{ challengeId: string, challenge: b64url, rpId: string, allowCredentials: string[], apps?: string[], then?: { app: string, method: string, args: any }[] }",
         ),
         component(
             "OperatorProof",
@@ -652,6 +653,11 @@ fn components() -> Vec<Component> {
             "NotLeader",
             "`details` of a `421 NOT_LEADER`: the leader's URL to send the same request to, and its node id where known.",
             "{ leaderUrl: string, leader?: uint }",
+        ),
+        component(
+            "FollowUpFailed",
+            "`details` of a `422 FOLLOW_UP_FAILED`: the API key's follow-up that failed (`index` in `then`, its app and method) and the error it answered, the follow-ups before it, which applied (`applied`, their indexes), and the failed one again in `unknown` when its answer (a 5xx, after it was sent again under its own key) could not say whether it applied; no key was made.",
+            "{ index: uint, app: string, method: string, error: { status: uint, error: string, message: string, details?: any }, applied: uint[], unknown: uint[] }",
         ),
         component(
             "FeatureNotActive",
@@ -1287,11 +1293,11 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         delete("/auth/aliases/{alias}", "alias_delete", SignedIn, "Remove an alias").ok("{}"),
         post("/auth/apikeys", "apikey_create", AccountHolder, "Make an API key")
-            .about("Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `412` first. The key is shown once.")
-            .json::<super::ApiKeyBody>("{ label?: string, apps?: string[], methods?: string[], readOnly?: bool, allowConfirm?: bool, ttlSecs?: uint, upgrades?: { app: string, package?: string }, confirm?: #Confirm }")
-            .ok("{ keyId: string, key: string }")
+            .about("Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key, which signs upgrades of one app in place of a passkey; only an owner or admin of the app's organization makes one (`403 FORBIDDEN`), and its upgrades are judged by that rule again where they apply. `then` (at most 4, 64 KiB as JSON; not with `upgrades`) names confirm call methods of the key's own `apps` that the same passkey approves, each naming the new key: every string argument exactly `key:$key` is written `key:<keyId>` (a follow-up without one is `400 BAD_FOLLOW_UP`), the consent and the system log state each call's arguments only by hash (`argsHash`: SHA-256 of a 16-byte salt, then the arguments as the `412` echoes them, keys sorted by UTF-8 bytes, in compact JSON), the `412` details list them so (`then`), and the retry runs them in order before making the key; the first that fails answers `422 FOLLOW_UP_FAILED` (`details: { index, app, method, error, applied }`) and no key is made. A key write that fails after follow-ups ran adds `applied` and `keyWrite` (`refused`, or `unknown` when it may still land: list the keys and revoke it if unwanted) to its error's `details`. A node before 1.0.0-rc.36 ignores `then` and makes a plain key: a client checks that the `412` lists `then` and that the answer's `then` is as long as its own. `412` first. The key is shown once.")
+            .json::<super::ApiKeyBody>("{ label?: string, apps?: string[], methods?: string[], readOnly?: bool, allowConfirm?: bool, ttlSecs?: uint, upgrades?: { app: string, package?: string }, then?: { app: string, method: string, args?: any }[], confirm?: #Confirm }")
+            .ok("{ keyId: string, key: string, then?: { index: uint, result: any, receipt: #Receipt }[] }")
             .step_up()
-            .errors(&[(400, "BAD_UPGRADE_KEY"), (400, "WRONG_CHALLENGE"), (429, "QUOTA_EXCEEDED")]),
+            .errors(&[(400, "BAD_FOLLOW_UP"), (400, "BAD_UPGRADE_KEY"), (400, "RESERVED_METHOD"), (400, "WRONG_CHALLENGE"), (409, "FEATURE_NOT_ACTIVE"), (413, "ARGS_TOO_LARGE"), (422, "FOLLOW_UP_FAILED"), (429, "QUOTA_EXCEEDED")]),
         get("/auth/apikeys", "apikey_list", AccountHolder, "The account's API keys").ok("{ keys: #ApiKey[] }"),
         delete("/auth/apikeys/{key}", "apikey_revoke", AccountHolder, "Revoke an API key")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
@@ -1400,10 +1406,10 @@ fn operations() -> Vec<Op> {
         get("/apps/{app}/presence/stream", "presence_stream", AppAccess, "Presence as server-sent events")
             .events("a `snapshot`, then `presence` diffs"),
         post("/apps/{app}/intents", "intents", AppAccess, "Call a method")
-            .about("A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.")
+            .about("A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them. An `idempotencyKey` starting `node:apikey:` is the node's own (an API key's follow-ups): `400 RESERVED_IDEMPOTENCY_KEY`.")
             .json::<super::IntentBody>("{ method: string, args?: any, idempotencyKey?: string, confirm?: #Confirm }")
             .ok("{ index: uint, result: any, events: { kind: string, data: any }[], receipt: #Receipt }")
-            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
+            .errors(&[(400, "RESERVED_IDEMPOTENCY_KEY"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
             .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/attestation", "app_attestation", AppAccess, "Every replica's receipt-key attestation")
@@ -1420,7 +1426,7 @@ fn operations() -> Vec<Op> {
             .about("The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.")
             .json::<super::MethodBody>(r#"{ args?: any, idempotencyKey?: string, confirm?: #Confirm, consistency?: "strong" | "stale", minIndex?: uint }"#)
             .ok("{ index: uint, result: any, events?: { kind: string, data: any }[], receipt: #Receipt }")
-            .errors(&[(400, "RESERVED_METHOD"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "NOT_CAUGHT_UP"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
+            .errors(&[(400, "RESERVED_IDEMPOTENCY_KEY"), (400, "RESERVED_METHOD"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RELEASE_DEADLINE"), (412, "CONFIRM_REQUIRED"), (413, "ARGS_TOO_LARGE"), (422, "APP_ERROR"), (422, "TRAP"), (429, "QUOTA_EXCEEDED"), (503, "NOT_CAUGHT_UP"), (503, "TIMEOUT"), (503, "UNAVAILABLE")])
             .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/events", "events", AppAccess, "An app's events as server-sent events")
@@ -3370,6 +3376,20 @@ mod tests {
         vec![
             confirm(),
             super::super::orgs::with_detail(confirm(), "apps", json!(["app"])),
+            super::super::orgs::with_detail(
+                confirm(),
+                "then",
+                json!([{ "app": "a", "method": "m", "args": { "principal": "key:k" } }]),
+            ),
+            super::super::auth::follow_up_failed(
+                1,
+                &crate::types::KeyFollowUp {
+                    app: "a".to_owned(),
+                    method: "m".to_owned(),
+                    args: Value::Null,
+                },
+                &failure(&Status::AppError, &app_error, false),
+            ),
             super::super::operator_signature_required(
                 &crate::proof::Statement::new("cluster", "__set_quotas", &json!({ "a": 1 })),
                 "c1",
