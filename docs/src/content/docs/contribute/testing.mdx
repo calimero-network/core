@@ -850,7 +850,7 @@ each. The apps are found by their `calimero-sdk` dependency. It runs only when
 the change reaches an app: `apps/`, or the SDK crates the apps build against
 and what those depend on (`scripts/ci-scope.py`, `standalone_apps`); each
 shard caches its apps' target dir and the cargo registry, saved from master.
-`App lockfiles` keeps each app's own `Cargo.lock` matching its manifests
+`App lockfiles` keeps each app's and Rust client's own `Cargo.lock` (`apps/`, `sdks/clients/`) matching its manifests
 (`cargo update --workspace --locked`) and refuses a change to one the base's
 copy did not need (`scripts/check-app-lockfiles.py`).
 `Rust lint` keeps a cache group of its own (`ci-lint`; clippy's check-mode

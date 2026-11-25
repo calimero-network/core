@@ -25,6 +25,21 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   restored into its old term (a restart, no election) can hold entries it
   appended past the commit index it saved, which is not synced. The node's
   component apps take their unique ids (D52, `term.seq.n`) from it.
+- `Group::propose_led_staged` (C2) is `propose_led` in two steps, for a build that is slow
+  (the node's logged runs: a guest that may wait in its host calls). The builder gets
+  `Stage::Read(&M, applied)` under the applied state's read lock and answers
+  `Staged::Done(Proposal)` or `Staged::Run(P)`; the lock is released and it gets
+  `Stage::Run(P)` and answers the proposal. `P` is owned (it carries no borrow of the
+  machine), so the compiler keeps the slow part off the lock. **The contract:** the
+  proposal lock is held from the read step through the commit, so proposals on a group
+  still run one at a time and a read step sees every earlier proposal of this node applied;
+  an entry from elsewhere (a barrier through `Group::write`, a membership change, an earlier
+  leader's) may now apply while the run step runs, and since it is before the run's entry in
+  the log either way, the machine's base check refuses the run's entry (`conflict`) and the
+  caller builds again, as before; what changes is that it no longer waits, nor do the
+  group's readers (std's `RwLock` queued every read behind a waiting apply). `propose` and
+  `propose_led` are the one-step form (`at_once`). Regression:
+  `a_staged_build_runs_off_the_read_lock_and_the_next_proposal_sees_it_applied`.
 - A stopped Raft core restarts (`supervise`, one task per group, ended with it):
   openraft stops a group's core for good on a storage error, a failed apply or a
   panic, so as it stops `StateMachine::apply` drops what it applied in memory and
