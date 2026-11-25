@@ -6,6 +6,19 @@
 )]
 use super::*;
 
+/// The most confirm calls one API key's consent approves with it (`then`).
+const MAX_KEY_FOLLOW_UPS: usize = 4;
+/// The most bytes those calls take as JSON, so the key's entry and each call's stay small.
+const MAX_KEY_FOLLOW_UP_BYTES: usize = 64 * 1024;
+/// What a follow-up's arguments write for the key being made: `key:<its id>`.
+const KEY_PLACEHOLDER: &str = "key:$key";
+/// The bytes of each follow-up's salt.
+const FOLLOW_UP_SALT_BYTES: usize = 16;
+/// How often a follow-up whose outcome is unknown (a 5xx) is sent again under its key.
+const MAX_FOLLOW_UP_TRIES: usize = 3;
+/// The wait before sending such a follow-up again.
+const FOLLOW_UP_RETRY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// A sign-in's session: its refresh token logged with the sign-in's
 /// assertion, then the session token.
 async fn new_session(
@@ -1052,6 +1065,9 @@ pub(super) struct ApiKeyBody {
     /// An upgrade key: upgrades this app, and nothing else.
     #[serde(default)]
     upgrades: Option<UpgradesBody>,
+    /// Confirm calls approved with the key, in one passkey prompt.
+    #[serde(default)]
+    then: Vec<crate::types::KeyFollowUp>,
     #[serde(default)]
     confirm: Option<ConfirmBody>,
 }
@@ -1111,10 +1127,354 @@ async fn upgrade_scope(
 /// The longest an API key lives.
 const MAX_API_KEY_TTL: u64 = 365 * 24 * 3600;
 
+/// `400 BAD_FOLLOW_UP`: a `then` the key cannot be made with.
+fn bad_follow_up(message: &str) -> ApiError {
+    ApiError::bad_request("BAD_FOLLOW_UP", message)
+}
+
+/// The follow-ups `body` asks for, each judged as `POST /apps/{app}/intents`
+/// judges its caller, and refused unless it is a confirm method of an app in
+/// the key's own `apps`. The app ids are canonical; the arguments as sent.
+async fn follow_ups(
+    node: &Node,
+    headers: &HeaderMap,
+    body: &ApiKeyBody,
+) -> Result<Vec<crate::types::KeyFollowUp>, ApiError> {
+    if body.then.is_empty() {
+        return Ok(Vec::new());
+    }
+    if body.then.len() > MAX_KEY_FOLLOW_UPS {
+        return Err(bad_follow_up(&format!(
+            "a key takes at most {MAX_KEY_FOLLOW_UPS} follow-ups"
+        )));
+    }
+    follow_ups_fit(&body.then)?;
+    if body.upgrades.is_some() {
+        return Err(bad_follow_up("an upgrade key takes no follow-ups"));
+    }
+    let Some(apps) = &body.apps else {
+        return Err(bad_follow_up(
+            "follow-ups need a key scoped to apps: name them in `apps`",
+        ));
+    };
+    node.require_features(&[crate::system::cluster_version::Feature::KeyFollowUps])
+        .await?;
+    let mut out = Vec::with_capacity(body.then.len());
+    for f in &body.then {
+        super::calls::not_reserved(&f.method)?;
+        let app_id = node.canonical_app_id(&f.app);
+        if !apps.contains(&app_id) {
+            return Err(bad_follow_up(&format!(
+                "{} is not one of the key's apps",
+                f.app
+            )));
+        }
+        let app = node.app(&app_id).await?;
+        let p = gate(node, headers, &app, &f.method, true).await?;
+        if read_only_in(node, &app, p.caller.account(), p.sys_index).await {
+            return Err(ApiError::forbidden("read-only in this team"));
+        }
+        app.require_app_component()?;
+        let confirm = node
+            .prepared_for(&node.running_bundle(&app))
+            .await?
+            .abi
+            .methods
+            .get(&f.method)
+            .is_some_and(takes_follow_up);
+        if !confirm {
+            return Err(bad_follow_up(&format!(
+                "{} is not a confirm method of {}",
+                f.method, f.app
+            )));
+        }
+        if !names_key(&f.args) {
+            return Err(bad_follow_up(&format!(
+                "a follow-up must name the new key: {} on {} has no `{KEY_PLACEHOLDER}`",
+                f.method, f.app
+            )));
+        }
+        out.push(crate::types::KeyFollowUp {
+            app: app_id,
+            ..f.clone()
+        });
+    }
+    Ok(out)
+}
+
+/// Whether some string value of `args` is exactly [`KEY_PLACEHOLDER`].
+fn names_key(args: &Value) -> bool {
+    match args {
+        Value::String(s) => s == KEY_PLACEHOLDER,
+        Value::Array(items) => items.iter().any(names_key),
+        Value::Object(fields) => fields.values().any(names_key),
+        _ => false,
+    }
+}
+
+/// `413 ARGS_TOO_LARGE` for follow-ups past [`MAX_KEY_FOLLOW_UP_BYTES`] as JSON.
+fn follow_ups_fit(then: &[crate::types::KeyFollowUp]) -> Result<(), ApiError> {
+    if serde_json::to_vec(then).map_or(usize::MAX, |b| b.len()) > MAX_KEY_FOLLOW_UP_BYTES {
+        return Err(ApiError::new(
+            413,
+            "ARGS_TOO_LARGE",
+            &format!("follow-ups are limited to {MAX_KEY_FOLLOW_UP_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a follow-up may name `m`: a confirm method a client calls and that
+/// applies in its own entry (an action answers before it runs).
+fn takes_follow_up(m: &calimero_app_host::MethodAbi) -> bool {
+    m.confirm
+        && m.kind == calimero_app_host::MethodKind::Call
+        && !m.compute_result
+        && !m.action_only
+}
+
+/// What a follow-up's app entry logs as its consent: which approval it ran under,
+/// its place and its salt (so the app's auditors can check its `argsHash`),
+/// never the approval itself.
+fn follow_up_consent(approval: &Value, index: usize, salt: &str) -> Result<Value, ApiError> {
+    let used = serde_json::from_value::<crate::proof::Consent>(approval.clone())
+        .ok()
+        .and_then(|c| c.used().ok())
+        .ok_or_else(|| ApiError::internal("the approval is not a consent"))?;
+    Ok(json!({ "followUpOf": used, "index": index, "salt": salt }))
+}
+
+/// What a key's challenge keeps for its retry (`Pending::Confirm::carry`): the
+/// key, and with follow-ups each one's salt. A plain key's is the key alone, as
+/// before follow-ups.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum KeyCarry {
+    Key(String),
+    WithSalts { key: String, salts: Vec<String> },
+}
+
+/// A follow-up as it runs: the call, its salt, and what the consent states of it.
+struct Approved {
+    call: crate::types::KeyFollowUp,
+    salt: String,
+    stated: crate::types::SignedFollowUp,
+}
+
+/// `then` with the salts the challenge carries, one each; another count, or a
+/// salt that is not [`FOLLOW_UP_SALT_BYTES`] of base64url, is a different approval.
+fn approved(
+    then: Vec<crate::types::KeyFollowUp>,
+    salts: &[String],
+) -> Result<Vec<Approved>, ApiError> {
+    let wrong =
+        || ApiError::bad_request("WRONG_CHALLENGE", "the approval was for a different call");
+    if then.len() != salts.len() {
+        return Err(wrong());
+    }
+    then.into_iter()
+        .zip(salts)
+        .map(|(call, salt)| {
+            let bytes = calimero_identity::from_b64url(salt)
+                .ok()
+                .filter(|b| b.len() == FOLLOW_UP_SALT_BYTES)
+                .ok_or_else(wrong)?;
+            Ok(Approved {
+                stated: call.signed(&bytes),
+                salt: salt.clone(),
+                call,
+            })
+        })
+        .collect()
+}
+
+/// What the key's consent states of `approved`.
+fn stated(approved: &[Approved]) -> Vec<crate::types::SignedFollowUp> {
+    approved.iter().map(|a| a.stated.clone()).collect()
+}
+
+/// `follow_ups` as signed for the key `key_id`: every string value that is
+/// exactly [`KEY_PLACEHOLDER`] becomes `key:<key_id>`.
+fn for_key(
+    follow_ups: &[crate::types::KeyFollowUp],
+    key_id: &str,
+) -> Vec<crate::types::KeyFollowUp> {
+    fn substitute(v: &mut Value, principal: &str) {
+        match v {
+            Value::String(s) if s == KEY_PLACEHOLDER => principal.clone_into(s),
+            Value::Array(items) => items.iter_mut().for_each(|i| substitute(i, principal)),
+            Value::Object(fields) => fields.values_mut().for_each(|f| substitute(f, principal)),
+            _ => {}
+        }
+    }
+    let principal = format!("key:{key_id}");
+    follow_ups
+        .iter()
+        .map(|f| {
+            let mut f = f.clone();
+            substitute(&mut f.args, &principal);
+            f
+        })
+        .collect()
+}
+
+/// Whether a call that answered `e` may still have applied: a node that
+/// failed or timed out, a leader race, a forward that got no answer.
+fn outcome_unknown(e: &ApiError) -> bool {
+    e.status >= 500
+}
+
+/// `422 FOLLOW_UP_FAILED`: follow-up `index` answered `e`, so no key was made;
+/// the ones before it applied (`applied`), and it may have (`unknown`) when
+/// its answer could not say.
+pub(super) fn follow_up_failed(
+    index: usize,
+    f: &crate::types::KeyFollowUp,
+    e: &ApiError,
+) -> ApiError {
+    let unknown: Vec<usize> = if outcome_unknown(e) {
+        vec![index]
+    } else {
+        Vec::new()
+    };
+    ApiError::new(
+        422,
+        "FOLLOW_UP_FAILED",
+        &format!(
+            "follow-up {index} ({} on {}) failed, so the key was not created: {}",
+            f.method, f.app, e.message
+        ),
+    )
+    .with_details(json!({
+        "index": index,
+        "app": f.app,
+        "method": f.method,
+        "error": e,
+        "applied": (0..index).collect::<Vec<_>>(),
+        "unknown": unknown,
+    }))
+}
+
+/// The idempotency key follow-up `index` of `key_id` runs under: its arguments'
+/// hash in it, so a key another session took cannot stand for this call.
+fn follow_up_key(key_id: &str, index: usize, f: &crate::types::SignedFollowUp) -> String {
+    format!(
+        "{}{key_id}:{index}:{}",
+        crate::idempotency::FOLLOW_UP_KEY_PREFIX,
+        f.args_hash
+    )
+}
+
+/// What a key write that failed after `applied` follow-ups answers: whether the
+/// write may still land (`keyWrite: unknown`, a 5xx) or was refused.
+fn key_write_failed(e: ApiError, applied: usize) -> ApiError {
+    if applied == 0 {
+        return e;
+    }
+    let outcome = if outcome_unknown(&e) {
+        "unknown"
+    } else {
+        "refused"
+    };
+    let e = super::orgs::with_detail(e, "applied", json!((0..applied).collect::<Vec<_>>()));
+    super::orgs::with_detail(e, "keyWrite", json!(outcome))
+}
+
+/// What a key made with `follow_ups` answers when its task ended without an
+/// answer: any of its follow-ups and the key itself may have applied.
+fn interrupted(follow_ups: usize) -> ApiError {
+    ApiError::internal(
+        "making the key stopped before it answered: list the account's keys, revoke one you do not want, and check the apps",
+    )
+    .with_details(json!({
+        "applied": [],
+        "unknown": (0..follow_ups).collect::<Vec<_>>(),
+        "keyWrite": "unknown",
+    }))
+}
+
+/// Run the approved follow-ups in order as `p`, each under an idempotency key
+/// of its own, so one sent again after an unknown outcome replays; stop at the
+/// first that fails. Each answer carries the call's receipt, as `/intents` does.
+async fn run_follow_ups(
+    node: &Node,
+    p: &Principal,
+    then: &[Approved],
+    key_id: &str,
+    approval: &Value,
+) -> Result<Vec<Value>, ApiError> {
+    let mut results = Vec::with_capacity(then.len());
+    for (index, a) in then.iter().enumerate() {
+        let f = &a.call;
+        let consent = follow_up_consent(approval, index, &a.salt)?;
+        let key = follow_up_key(key_id, index, &a.stated);
+        let mut tries = 1;
+        let answer = loop {
+            match super::calls::call_consented(node, p, f, key.clone(), consent.clone()).await {
+                Err(e) if outcome_unknown(&e) && tries < MAX_FOLLOW_UP_TRIES => {
+                    tries += 1;
+                    tokio::time::sleep(FOLLOW_UP_RETRY_WAIT).await;
+                }
+                other => break other,
+            }
+        };
+        let (log_index, result) = answer.map_err(|e| follow_up_failed(index, f, &e))?;
+        let receipt = node.receipt(&f.app, log_index, &result);
+        results.push(json!({ "index": index, "result": result, "receipt": receipt }));
+    }
+    Ok(results)
+}
+
+/// In `record.account`'s turn on this node: check its key quota again, run the
+/// follow-ups, then write the key, so no other key of the account lands between.
+async fn make_key(
+    node: Arc<Node>,
+    p: Principal,
+    hash: String,
+    record: ApiKeyRecord,
+    consent: Value,
+    owner_approves: bool,
+    then: Vec<Approved>,
+) -> Result<Vec<Value>, ApiError> {
+    let _turn = node.api_key_turn(&record.account).await;
+    // The last key this account made may have applied on the leader alone.
+    if !node.sys_caught_up().await {
+        return Err(ApiError::unavailable(
+            "this node could not read the account's keys; the approval is spent: approve it again",
+        ));
+    }
+    key_room(&node, &record.account).map_err(|e| ApiError {
+        message: format!("{}; the approval is spent: approve it again", e.message),
+        ..e
+    })?;
+    let follow_ups = stated(&then);
+    let results = run_follow_ups(&node, &p, &then, &record.key_id, &consent).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::CreateApiKey {
+            hash,
+            record,
+            consent,
+            owner_in_org: true,
+            owner_in_team: true,
+            owner_approves,
+            then: follow_ups,
+        })
+        .await
+        .map_err(|e| key_write_failed(e, then.len()))?;
+    Ok(results)
+}
+
+/// `account`'s room for another key, judged as `CreateApiKey` judges it.
+fn key_room(node: &Node, account: &str) -> Result<(), ApiError> {
+    node.sys(|s| s.api_key_room(account))
+        .map_err(crate::node::rejected)
+}
+
 /// Create an API key: the account's, approved with a passkey over the key's
 /// record and hash (412 first). The first request makes the key, its id and
 /// expiry and keeps them with the challenge; the retry logs what was
 /// approved. A passkey session only: an API key cannot make another.
+/// `then`: confirm calls the same passkey approves, run before the key is made.
 async fn apikey_create(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -1122,6 +1482,7 @@ async fn apikey_create(
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
+    let follow_ups = follow_ups(&node, &headers, &body).await?;
     let (key, hash) = calimero_identity::new_api_key();
     // An upgrade key is made, and used, only by whom the rule in force lets upgrade
     // the app: from `Feature::OwnerApprovedUpgrades` on, an owner or admin of its
@@ -1156,25 +1517,49 @@ async fn apikey_create(
         node.sys(|s| s.upgrade_key_fits(&record, scope, owner_approves))
             .map_err(|e| ApiError::bad_request("BAD_UPGRADE_KEY", e))?;
     }
-    let args = crate::system::api_key_args(&hash, &record);
+    let then = for_key(&follow_ups, &record.key_id);
+    follow_ups_fit(&then)?;
+    // Judged on both requests, so the retry runs no follow-up for a key
+    // the log would refuse.
+    key_room(&node, &account)?;
+    let salts: Vec<String> = then
+        .iter()
+        .map(|_| b64url(&random::<FOLLOW_UP_SALT_BYTES>()))
+        .collect();
+    let shown = approved(then.clone(), &salts)?;
+    let args = crate::system::api_key_args(&hash, &record, &stated(&shown));
+    let carry = if salts.is_empty() {
+        KeyCarry::Key(key)
+    } else {
+        KeyCarry::WithSalts { key, salts }
+    };
     let c = consent_minted(
         &node,
         &p,
         &format!("account:{account}"),
         "__create_api_key",
         &args,
-        Some(json!(key)),
+        serde_json::to_value(carry).ok(),
         body.confirm,
     )
-    .await?;
+    .await
+    .map_err(|e| match e.code.as_str() {
+        // The 412 shows the calls the passkey approves, with the key's id in them.
+        "CONFIRM_REQUIRED" if !then.is_empty() => super::orgs::with_detail(e, "then", json!(then)),
+        _ => e,
+    })?;
     // The retry logs the key the approval names, made by the first request;
     // its scope must be the one this request asks for.
-    let key = c
-        .carry
-        .as_ref()
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| ApiError::bad_request("WRONG_CHALLENGE", "not an API key approval"))?;
+    let (key, salts) = match c.carry.clone().map(serde_json::from_value::<KeyCarry>) {
+        Some(Ok(KeyCarry::Key(key))) => (key, Vec::new()),
+        Some(Ok(KeyCarry::WithSalts { key, salts })) => (key, salts),
+        _ => {
+            return Err(ApiError::bad_request(
+                "WRONG_CHALLENGE",
+                "not an API key approval",
+            ))
+        }
+    };
     let hash = calimero_identity::api_key_hash(&key);
     let signed = |f: &str| c.args.get(f).cloned().unwrap_or(Value::Null);
     let record = ApiKeyRecord {
@@ -1183,7 +1568,8 @@ async fn apikey_create(
         upgrades: with_key(&key),
         ..record
     };
-    if crate::system::api_key_args(&hash, &record) != c.args
+    let then = approved(for_key(&follow_ups, &record.key_id), &salts)?;
+    if crate::system::api_key_args(&hash, &record, &stated(&then)) != c.args
         || record.expires_at > now_secs() + MAX_API_KEY_TTL
     {
         return Err(ApiError::bad_request(
@@ -1192,17 +1578,23 @@ async fn apikey_create(
         ));
     }
     let key_id = record.key_id.clone();
-    let _ok = node
-        .sys_write(&SystemCmd::CreateApiKey {
-            hash,
-            record,
-            consent: c.consent,
-            owner_in_org: true,
-            owner_in_team: true,
-            owner_approves,
-        })
-        .await?;
-    Ok(Json(json!({ "keyId": key_id, "key": key })))
+    // The calls first: one that fails leaves no key, and those before it name
+    // a key id that never exists. In a task of its own, so a caller that
+    // disconnects does not stop it between a committed call and the key.
+    let made = make_key(
+        Arc::clone(&node),
+        p,
+        hash,
+        record,
+        c.consent,
+        owner_approves,
+        then,
+    );
+    let count = follow_ups.len();
+    let results = tokio::spawn(made).await.map_err(|_| interrupted(count))??;
+    Ok(Json(
+        json!({ "keyId": key_id, "key": key, "then": results }),
+    ))
 }
 
 async fn apikey_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -1438,4 +1830,149 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         )
         .route("/auth/apikeys", post(apikey_create).get(apikey_list))
         .route("/auth/apikeys/{key}", delete(apikey_revoke))
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_app_host::{MethodAbi, MethodKind};
+
+    use super::*;
+
+    fn method(kind: MethodKind, confirm: bool) -> MethodAbi {
+        MethodAbi {
+            kind,
+            confirm,
+            public: false,
+            every: None,
+            allow_system: false,
+            allow_apps: Vec::new(),
+            action_only: false,
+            compute_result: false,
+        }
+    }
+
+    /// Only a confirm call that applies in its own entry: an action answers
+    /// before it runs, so a later failure could not undo the key.
+    #[test]
+    fn a_follow_up_is_a_confirm_call_a_client_makes() {
+        assert!(takes_follow_up(&method(MethodKind::Call, true)));
+        assert!(!takes_follow_up(&method(MethodKind::Call, false)));
+        assert!(!takes_follow_up(&method(MethodKind::Action, true)));
+        assert!(!takes_follow_up(&method(MethodKind::View, true)));
+        let action_only = MethodAbi {
+            action_only: true,
+            ..method(MethodKind::Call, true)
+        };
+        assert!(!takes_follow_up(&action_only));
+        let compute_result = MethodAbi {
+            compute_result: true,
+            ..method(MethodKind::Call, true)
+        };
+        assert!(!takes_follow_up(&compute_result));
+    }
+
+    /// A call that failed or timed out on a node may have applied: it is sent
+    /// again and, if still unknown, reported as such, never as not applied.
+    #[test]
+    fn a_follow_up_whose_answer_could_not_say_is_reported_unknown() {
+        let f = crate::types::KeyFollowUp {
+            app: "a".into(),
+            method: "m".into(),
+            args: Value::Null,
+        };
+        let refused = ApiError::new(422, "APP_ERROR", "the app refused the call");
+        let failed = follow_up_failed(1, &f, &refused);
+        assert_eq!(
+            (&failed.details["applied"], &failed.details["unknown"]),
+            (&json!([0]), &json!([]))
+        );
+        let unanswered = ApiError::unavailable("the call raced a leader change");
+        let failed = follow_up_failed(1, &f, &unanswered);
+        assert_eq!(
+            (&failed.details["applied"], &failed.details["unknown"]),
+            (&json!([0]), &json!([1]))
+        );
+        assert!(outcome_unknown(&crate::node::timeout_error()));
+        assert!(!outcome_unknown(&ApiError::forbidden("read-only")));
+    }
+
+    /// Each follow-up takes one salt of exactly its size, else the approval is
+    /// another's.
+    #[test]
+    fn a_follow_ups_salt_is_its_exact_size() {
+        let call = || crate::types::KeyFollowUp {
+            app: "a".into(),
+            method: "m".into(),
+            args: json!({ "p": "key:k" }),
+        };
+        let salt = |n: usize| b64url(&vec![7; n]);
+        assert!(approved(vec![call()], &[salt(FOLLOW_UP_SALT_BYTES)]).is_ok());
+        for wrong in [
+            vec![salt(FOLLOW_UP_SALT_BYTES - 1)],
+            vec![salt(FOLLOW_UP_SALT_BYTES + 1)],
+            vec![String::new()],
+            vec!["not base64url!".to_owned()],
+            vec![],
+        ] {
+            let e = approved(vec![call()], &wrong).err().map(|e| e.code);
+            assert_eq!(e.as_deref(), Some("WRONG_CHALLENGE"), "{wrong:?}");
+        }
+    }
+
+    /// A key write that failed after follow-ups ran says which applied and
+    /// whether the key may still land; a task that ended unanswered says
+    /// nothing is known.
+    #[test]
+    fn a_key_write_after_follow_ups_says_what_is_known() {
+        let stalled = follow_up_details(key_write_failed(
+            ApiError::unavailable("the system group did not commit this write"),
+            2,
+        ));
+        assert_eq!(stalled, (json!([0, 1]), Value::Null, json!("unknown")));
+        let refused = follow_up_details(key_write_failed(
+            ApiError::new(429, "QUOTA_EXCEEDED", "quota exceeded: API keys"),
+            1,
+        ));
+        assert_eq!(refused, (json!([0]), Value::Null, json!("refused")));
+        let plain = key_write_failed(ApiError::unavailable("x"), 0);
+        assert!(plain.details.is_null());
+        let gone = interrupted(2);
+        assert_eq!(gone.message, interrupted(2).message);
+        assert_eq!(
+            follow_up_details(gone),
+            (json!([]), json!([0, 1]), json!("unknown"))
+        );
+    }
+
+    fn follow_up_details(e: ApiError) -> (Value, Value, Value) {
+        (
+            e.details["applied"].clone(),
+            e.details["unknown"].clone(),
+            e.details["keyWrite"].clone(),
+        )
+    }
+
+    /// An app's log names the approval a follow-up ran under, never the
+    /// assertion, the key's hash or the other calls.
+    #[test]
+    fn a_follow_ups_app_entry_logs_only_which_approval_it_ran_under() {
+        let mut pk =
+            calimero_identity::testing::SoftAuthenticator::new("localhost", "https://localhost");
+        let statement = crate::proof::Statement::new(
+            "account:a",
+            "__create_api_key",
+            &json!({ "hash": "h", "then": [{ "app": "x", "method": "m", "args": { "s": 1 } }] }),
+        );
+        let consent = crate::proof::Consent {
+            assertion: pk.assert(&statement.challenge().unwrap()),
+            statement,
+            at: 1,
+        };
+        let logged =
+            follow_up_consent(&serde_json::to_value(&consent).unwrap(), 2, "c2FsdA").unwrap();
+        assert_eq!(
+            logged,
+            json!({ "followUpOf": consent.used().unwrap(), "index": 2, "salt": "c2FsdA" })
+        );
+    }
 }
