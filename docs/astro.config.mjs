@@ -300,7 +300,7 @@ export default defineConfig({
             },
             {
               label: 'Working on core',
-              items: ['contribute/development', 'contribute/testing', 'contribute/docs'],
+              items: ['contribute/development', 'contribute/testing', 'contribute/docs', 'contribute/openapi'],
             },
           ],
         },

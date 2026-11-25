@@ -30,6 +30,7 @@ use serde::de::{self, DeserializeOwned, Deserializer, Visitor};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
+pub(super) mod generated;
 mod shape;
 mod trace;
 
