@@ -222,9 +222,6 @@ Neither `/intents` nor `/views` reaches a result method, for any caller, and the
 A compromised leader can still forge a run's final, because the final is the leader's entry.
 It gains nothing a leader does not hold already: it has the cluster key and the plaintext of every file it serves.
 The signed report protects against a job node and against a replica applying a job outcome nobody signed, not against the leader.
-A compromised leader can still forge a run's final, because the final is the leader's entry.
-It gains nothing a leader does not hold already: it has the cluster key and the plaintext of every file it serves.
-The signed report protects against a job node and against a replica applying a job outcome nobody signed, not against the leader.
 
 `GET /apps/{app}/runs/{run}` answers, for anyone who can reach the app, the run's method, state, `cancelRequested`, `startTsMs`, attempts with their nodes, input and output ids, usage and reason, its `caps` (`fuel`, `memoryMib`, `wallSecs`), and `progress` while it runs.
 To those who may list the app's files it also shows, while the run is queued, `queue: { state, pool, capacity, reason? }`: `state` is `unplaced` (the queue has no slot for it yet), `waiting` or `granted` (a place is held and no job node has taken it), and a waiting run's `reason` is `NO_CAPACITY` (no job node in its pool), `POOL_FULL`, `PAYER_AT_RUN_QUOTA` or `PAYER_AT_FUEL_QUOTA`.
@@ -414,7 +411,7 @@ A job node exposes no usage series.
 | Concurrent runs per organization | 4 | `Quotas.maxConcurrentRunsPerOrg` |
 | Reserved fuel per organization | 10 times the fuel cap | `Quotas.computeFuelPerOrg` |
 | Stored file bytes per organization | 50 GB | `Quotas.maxFileBytesPerOrg` |
-| One assignment request | 1 MiB | `MAX_ASSIGNMENT_BYTES` |
+| One assignment request | 8 MiB | `MAX_ASSIGNMENT_BYTES` |
 | A finished run kept for its leader | 1 hour | `JOB_RESULT_TTL` |
 | A run waiting for its inputs | 10 minutes | `AWAITING_INPUTS_TTL` |
 | Sealed bytes a job node holds | 8 GiB | `MAX_FINISHED_BYTES` |
