@@ -1,14 +1,5 @@
 //! The node: hosts the system group and its app groups, routes calls to each
 //! group's leader, and talks to peers over attested sealed channels.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
-//! security rules in section 9, R requirements in section 8): D12 (outbound HTTP only in
-//! actions, outside the log), D17 (actions are durable, logged when started and when done), D19
-//! (the time and randomness each kind of run sees), D22 (a failed action retries with backoff,
-//! then ends `ActionFailed`), D25 (xcalls are deduplicated by a per-source watermark), D29 (a
-//! stuck xcall is retried for up to an hour, then dead-lettered), D36 (a deadline answers
-//! `503 TIMEOUT`, never `422 TRAP`), D52 (unique ids are `<leader term>.<call seq>.<n>`), S8
-//! (compiled artifacts are checked before they load), R8 (the blob API and its lifecycle).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -223,7 +214,7 @@ pub struct Config {
     /// The operator's outbound HTTPS policy (`[outbound]` in `--settings`);
     /// `None`: `http_request` traps in every run.
     pub outbound: Option<Arc<calimero_outbound::OutboundService>>,
-    /// Where app time starts relative to this host's clock, in ms (D19), for
+    /// Where app time starts relative to this host's clock, in ms, for
     /// component apps. `0` in production; tests move a node's app clock with it.
     pub clock_offset_ms: i64,
     /// The limits of every component call and view; `None` is `Budget::call()`.
@@ -322,11 +313,11 @@ pub struct CallRequest {
     /// client's request; peers pass it along on `internal/call`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub host: bool,
-    /// A component app's delivered xcall (D25): which message of which source. Set only
+    /// A component app's delivered xcall: which message of which source. Set only
     /// by the source's leader; peers pass it along on `internal/call`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xcall: Option<crate::component::xcall::XcallFrom>,
-    /// A component app's call made by one of its actions (D12): the action's key. Set only
+    /// A component app's call made by one of its actions: the action's key. Set only
     /// by the node's action runner; reaches `allow(action)` methods.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
@@ -435,7 +426,7 @@ pub struct ViewAnswer {
     pub status: Status,
     pub result: Value,
     pub error: Value,
-    /// A component's view hit its deadline: answered `503 TIMEOUT` (D36).
+    /// A component's view hit its deadline: answered `503 TIMEOUT`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub timeout: bool,
 }
@@ -544,7 +535,7 @@ pub struct Node {
     apps: RwLock<HashMap<GroupId, Arc<Group<AppMachine>>>>,
     /// Runs the apps whose bundle is a `calimero:app` component (one wasmtime
     /// engine for all of them, spec section 5); compiled artifacts cached under
-    /// `<data_dir>/components`, each with a MAC under a key derived from K_c (S8).
+    /// `<data_dir>/components`, each with a MAC under a key derived from K_c.
     wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepares a release's compute components at install; no run ever goes through it.
     compute_wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
@@ -582,7 +573,7 @@ pub struct Node {
     /// App time of component apps ([`Clock`]).
     clock: Clock,
     /// Per component app group: the term this node last led it in, and its
-    /// execution counter in that term (`id_seq`, D52).
+    /// execution counter in that term (`id_seq`).
     id_seqs: Mutex<HashMap<GroupId, (u64, u64)>>,
     /// Component app groups whose timer ticks are being run now (one round per
     /// app at a time).
@@ -590,12 +581,12 @@ pub struct Node {
     /// What each peer's replicas last said its apps used today, for the fuel cap
     /// (`component::USAGE_REFRESH`).
     peer_usage: Mutex<component::PeerUsage>,
-    /// Outbox messages this node failed to deliver as a source's leader (D29): per
+    /// Outbox messages this node failed to deliver as a source's leader: per
     /// (source app, seq), the attempts and the app time of the next one.
     xcall_retry: Mutex<HashMap<(String, u64), (u32, u64)>>,
-    /// Actions this node is running as their app's leader, by (app, action key) (D17).
+    /// Actions this node is running as their app's leader, by (app, action key).
     actions_running: Mutex<HashSet<(String, String)>>,
-    /// When an action that timed out may run again, app time (D22).
+    /// When an action that timed out may run again, app time.
     action_retry: Mutex<HashMap<(String, String), u64>>,
     /// The action worker pool: at most `MAX_ACTION_WORKERS` runs at once.
     action_slots: Arc<tokio::sync::Semaphore>,
@@ -854,7 +845,7 @@ impl Transport for PeerTransport {
 
 /// What the node answers a component app's call that reaches its own commands
 /// path: a component's calls are `call_component`'s, its blobs its own host
-/// records (R8).
+/// records.
 pub const COMPONENT_REFUSES: &str =
     "this app is a component: its calls are not the node's own commands";
 
@@ -1099,7 +1090,7 @@ impl Node {
         ));
         // Compiled components live in the node's data directory, which the host can
         // write: each artifact carries a MAC under a key derived from K_c, so only this
-        // cluster's own compilations are ever loaded (S8).
+        // cluster's own compilations are ever loaded.
         let wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::new(
             config.data_dir.join("components"),
             &component::component_cache_key(&cluster_key),
@@ -3119,7 +3110,7 @@ impl Node {
         furthest_progress(&answers, app.replicas.len())
     }
 
-    /// A component app's xcalls (D25, D29), `{ pending, deadLetters }`: this node's
+    /// A component app's xcalls, `{ pending, deadLetters }`: this node's
     /// replica's if it hosts the app, else the first replica that answers
     /// `internal/xcalls`, as [`Self::storage_stats`].
     pub async fn app_xcalls(&self, app: &AppRecord) -> Result<Value, ApiError> {

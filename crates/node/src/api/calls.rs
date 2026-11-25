@@ -1,10 +1,4 @@
 //! The API's routes for calls, views, events, compute runs and presence.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
-//! security rules in section 9, R requirements in section 8): D23 (a timeout is not logged and
-//! does not spend the idempotency key), D36 (a deadline answers `503 TIMEOUT`, never
-//! `422 TRAP`), S5 (views are read-only and never run confirm methods), R9 (team and org audiences,
-//! resolved at delivery).
 
 #[allow(
     clippy::wildcard_imports,
@@ -25,7 +19,7 @@ pub(super) struct IntentBody {
     confirm: Option<ConfirmBody>,
 }
 
-/// The 422/503 of a component's run that did not end `Ok` (spec section 5, D23, D36).
+/// The 422/503 of a component's run that did not end `Ok` (spec section 5).
 pub(super) fn component_failure(
     index: u64,
     status: &Status,
@@ -71,7 +65,7 @@ fn applied_refusal(a: &crate::component::Applied) -> Option<ApiError> {
 }
 
 /// A component call's answer. Its events are the ones the caller is in the
-/// audience of (R9).
+/// audience of.
 fn component_answer(
     node: &Node,
     app_id: &str,
@@ -148,7 +142,7 @@ async fn component_intents(
             },
         ));
     }
-    // Confirm flags come from the running bundle's ABI (S5), never from the app record.
+    // Confirm flags come from the running bundle's ABI, never from the app record.
     let consent_value = if method.as_ref().is_some_and(|m| m.confirm) {
         Some(consent(node, &p, &app_id, &body.method, &body.args, body.confirm).await?)
     } else {

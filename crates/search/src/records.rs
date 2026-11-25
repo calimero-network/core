@@ -8,9 +8,6 @@
 //! encoding (`crates/sdk`, encoding contract); each becomes one document, its id the SHA-256
 //! of the stored key, its fields the declared ones that hold text (a list of strings is
 //! joined), each cut at [`MAX_FIELD_TEXT_BYTES`].
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D39
-//! (app data is keyed by generation; host records sit outside it).
 
 use std::collections::HashMap;
 
@@ -23,7 +20,7 @@ use sha2::{Digest, Sha256};
 
 use crate::index::{ContextIndex, SchemaOptions};
 
-/// Bytes of the generation prefix on a stored key (D39).
+/// Bytes of the generation prefix on a stored key.
 pub const GENERATION_PREFIX: usize = 8;
 /// Bytes of text one document field is indexed from at most; the rest is cut.
 pub const MAX_FIELD_TEXT_BYTES: usize = 64 * 1024;

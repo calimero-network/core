@@ -1,4 +1,4 @@
-//! Blobs (R8): a typed reference to an uploaded blob, kept in state like any value.
+//! Blobs: a typed reference to an uploaded blob, kept in state like any value.
 //!
 //! Clients upload a blob's bytes to the node (`POST /apps/{app}/blobs`) and pass its id to a
 //! method, which stores a [`BlobRef`]. The host finds every `BlobRef` in stored values and
@@ -10,9 +10,6 @@
 //! Encoding (the TypeScript SDK must match): in stored CBOR a `BlobRef` is tag 51,739
 //! (`0xCA1B`) around a 32-byte byte string, the blob's SHA-256; in JSON (arguments, results,
 //! events) it is the blob id, 64 lowercase hex digits.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (R requirements in section 8):
-//! R8 (the blob API and its lifecycle).
 
 use std::fmt;
 

@@ -151,7 +151,7 @@ One round per request: `principal` (or `gate`, anonymous) keeps the index its ro
 (`CallRequest::sys_index`, carried on `internal/call`) wait to apply it (`Node::sys_fresh_from`,
 whose doc is the argument that this is as fresh as a round of their own) instead of running another.
 Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
-A credential that cannot be valid costs no round (`api::credential`, D4): an API key not of
+A credential that cannot be valid costs no round (`api::credential`): an API key not of
 `new_api_key`'s shape, or one a caught-up read found missing in the last `UNKNOWN_API_KEY_TTL`
 (`UnknownApiKeys`, `MAX_UNKNOWN_API_KEYS`), a visitor credential whose signature fails, a session
 token its issuer did not sign; a missing key waits (`sys_until`) only when the round did not catch
@@ -200,7 +200,7 @@ view on an older state than the indexes hold) each index is compared with the st
 (`TableIndex::reconcile`: every record's document digest, `calimero_search::index::doc_digest`,
 against the one the index holds) and only what differs is indexed again.
 A view that never searches indexes nothing.
-A view searches the state it reads and no other (C4): once the indexes reach its state it keeps a
+A view searches the state it reads and no other: once the indexes reach its state it keeps a
 point-in-time snapshot of them (a tantivy `Searcher` and the document keys per table,
 `AppIndexes::snapshot`) for all its searches, and the views queued on earlier states
 (`AppEntry::waiting`, weak) are brought up first, in order (`AppEntry::due`), so the shared indexes

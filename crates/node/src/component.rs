@@ -11,33 +11,20 @@
 //! applies a component's diff to an SDK 0.12 app's state (which no longer runs,
 //! [`crate::app::WASMER_GONE`]) or the other way round.
 //!
-//! Storage (D46): the component's keys are hidden rows of the group's state (sealed,
+//! Storage: the component's keys are hidden rows of the group's state (sealed,
 //! keyed by an HMAC), and a replica keeps them in memory too,
 //! ordered, as a persistent map ([`Kv`]): a run gets the current version as its
 //! `StateView` (ordered `range` scans), and `apply` writes the next one sharing
 //! everything it does not change, so a run holding the previous one costs a write
 //! O(log n) copied nodes, never a copy of the whole state (B7). The map is rebuilt from the rows on a restart and after a
 //! snapshot install. Host records (`last_id`, `timers`, `install_ts_ms`,
-//! `last_ts_ms`, idempotency, blob records, the usage book) are never keys the app sees (D39).
+//! `last_ts_ms`, idempotency, blob records, the usage book) are never keys the app sees.
 //!
 //! Usage: every logged `init`, call and tick carries what its run cost
 //! ([`RunUsage`]), measured by the leader. A replica adds the entry's figures to the
 //! app's usage book ([`ComponentHead::usage`], a [`UsageBook`], per UTC day of the entry's timestamp)
 //! as it applies the entry and never measures anything itself, so every replica holds
 //! the same totals, wall-clock time included.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, R
-//! requirements in section 8): D16 (entry timestamps never decrease), D17 (actions are durable,
-//! logged when started and when done), D19 (the time and randomness each kind of run sees), D22
-//! (a failed action retries with backoff, then ends `ActionFailed`), D23 (a timeout is not
-//! logged and does not spend the idempotency key), D25 (xcalls are deduplicated by a per-source
-//! watermark), D29 (a stuck xcall is retried for up to an hour, then dead-lettered), D34 (timer
-//! ticks are proposed by the leader and keyed by slot), D38 (a migration is a rebuild into a
-//! separate keyspace), D39 (app data is keyed by generation; host records sit outside it), D46
-//! (the host core reads state through `StateView`), D50 (per-run limits on events, keys,
-//! cursors and logs), D52 (unique ids are `<leader term>.<call seq>.<n>`), D76 (calls, timers
-//! and deliveries may send outbound HTTP, recorded in the entry), R8 (the blob API and its
-//! lifecycle), R9 (team and org audiences, resolved at delivery).
 
 pub mod action;
 pub mod blobs;
@@ -81,7 +68,7 @@ pub use step_cache::{
     MAX_CACHE_ENTRIES,
 };
 
-/// An event a run emitted, with its audience (R9).
+/// An event a run emitted, with its audience.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EventOut {
     pub kind: String,
@@ -106,13 +93,13 @@ pub struct Outcome {
     // No app log: the run's log lines (`env::log`, stdout, stderr) may hold user data, so the
     // entry keeps none, and apply never read them. An entry an earlier release logged carries a
     // `logs` key, which is ignored on read (`a_runs_log_lines_never_reach_its_entry`).
-    /// The xcalls the run sent (D25); empty unless `Ok`.
+    /// The xcalls the run sent; empty unless `Ok`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub xcalls: Vec<XcallOut>,
-    /// The actions the run started (D17); empty unless `Ok`.
+    /// The actions the run started; empty unless `Ok`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ActionOut>,
-    /// The run's outbound requests and what came back (D76), kept whatever the status:
+    /// The run's outbound requests and what came back, kept whatever the status:
     /// the entry is their record, so followers and replays never fetch again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub http: Vec<HttpRecord>,
@@ -135,7 +122,7 @@ pub struct Outcome {
     pub compute_cancels: Vec<String>,
 }
 
-/// One outbound request of a logged run and its response (D76), as the entry records it:
+/// One outbound request of a logged run and its response, as the entry records it:
 /// the request as the app made it (secret placeholders, never secrets), the response as
 /// the outbound gate handed it back (secrets redacted); bodies cut to
 /// `calimero_app_host::MAX_RECORDED_BODY_BYTES`, with their full lengths.
@@ -397,7 +384,7 @@ impl Outcome {
         outcome
     }
 
-    /// `self` replaced by a `HostDenied` trap (an entry too large for the log, D50):
+    /// `self` replaced by a `HostDenied` trap (an entry too large for the log):
     /// nothing of it applies, but the run's cost stays on the entry.
     #[must_use]
     pub fn denied(&self, detail: &str) -> Self {
@@ -494,7 +481,7 @@ impl Outcome {
     }
 
     /// Whether the run hit its wall-clock deadline or the node could not serve it (no
-    /// instance, memory or file bytes): never logged, the idempotency key not spent (D23).
+    /// instance, memory or file bytes): never logged, the idempotency key not spent.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         self.status == Status::Trap
@@ -538,22 +525,22 @@ pub struct CallEntry {
     /// The passkey assertion that approved this call, for confirm methods.
     #[serde(default)]
     pub consent: Option<Value>,
-    /// The entry timestamp the run saw (D16, D19).
+    /// The entry timestamp the run saw.
     pub ts_ms: u64,
     /// The index of the app's last entry when the leader ran it
     /// (`AppState::last_index`); `apply` refuses it on any other state.
     pub base_index: u64,
     /// The leader's term and per-term execution counter the run's unique ids
-    /// were made from (D52).
+    /// were made from.
     pub id_term: u64,
     pub id_seq: u64,
     pub outcome: Outcome,
-    /// A delivered xcall (D25): which message of which source app it is.
+    /// A delivered xcall: which message of which source app it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xcall: Option<XcallFrom>,
 }
 
-/// A timer tick as recorded in the log (D34).
+/// A timer tick as recorded in the log.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TickEntry {
@@ -564,10 +551,10 @@ pub struct TickEntry {
     /// The timer's last applied slot when the leader ran the tick.
     #[serde(default)]
     pub previous_ms: Option<u64>,
-    /// The entry timestamp (app clock, D16), at or after the slot.
+    /// The entry timestamp (app clock), at or after the slot.
     pub ts_ms: u64,
     pub base_index: u64,
-    /// The ids the tick ran with (D52), as for a call.
+    /// The ids the tick ran with, as for a call.
     pub id_term: u64,
     pub id_seq: u64,
     pub outcome: Outcome,
@@ -607,20 +594,20 @@ pub enum ComponentCmd {
         compute_bundle: Option<String>,
         base_index: u64,
         ts_ms: u64,
-        /// The ids `init` ran with (D52), as for a call.
+        /// The ids `init` ran with, as for a call.
         id_term: u64,
         id_seq: u64,
         outcome: Box<Outcome>,
     },
     #[serde(rename = "componentCall")]
     Call(Box<CallEntry>),
-    /// A timer tick (D34), run by the leader as `System` for the slot
+    /// A timer tick, run by the leader as `System` for the slot
     /// `scheduled_ms`. Applied only if that slot is later than the timer's last
     /// applied one; then recorded whatever its status (a failed tick counts as
     /// applied). A tick that timed out is never proposed.
     #[serde(rename = "componentTick")]
     Tick(Box<TickEntry>),
-    /// Switch to a new bundle, code only (migrations are rebuilds, D38, not in
+    /// Switch to a new bundle, code only (migrations are rebuilds, not in
     /// this milestone). The bundle is a component too: an upgrade across
     /// executors is refused before it is proposed.
     #[serde(rename = "componentUpgrade")]
@@ -631,7 +618,7 @@ pub enum ComponentCmd {
         compute_bundle: Option<String>,
         base_index: u64,
     },
-    /// A blob uploaded for the app (R8; its bytes are in the blob store already): the
+    /// A blob uploaded for the app (its bytes are in the blob store already): the
     /// app holds it, idle until a value refers to it ([`blobs`]).
     #[serde(rename = "componentBlob")]
     Blob {
@@ -639,7 +626,7 @@ pub enum ComponentCmd {
         id: String,
         size: u64,
         mime: String,
-        /// The entry timestamp (D16): its idle time starts here.
+        /// The entry timestamp: its idle time starts here.
         ts_ms: u64,
     },
     /// The app's owner deleted a blob: the app no longer holds it, whatever refers to it.
@@ -653,7 +640,7 @@ pub enum ComponentCmd {
     #[serde(rename = "componentFile")]
     File {
         mark: FileMark,
-        /// The entry timestamp (D16): its idle time starts here.
+        /// The entry timestamp: its idle time starts here.
         ts_ms: u64,
         /// The request's idempotency key: a retry of a committed command replays its answer.
         #[serde(default)]
@@ -676,7 +663,7 @@ pub enum ComponentCmd {
     SecretClear { name: String },
     #[serde(rename = "componentBarrier")]
     Barrier,
-    /// An action's attempt timed out (`retry`, D22), or the action ended: done, or failed
+    /// An action's attempt timed out (`retry`), or the action ended: done, or failed
     /// with `failed`'s reason.
     #[serde(rename = "componentActionEnd")]
     ActionEnd {
@@ -687,7 +674,7 @@ pub enum ComponentCmd {
         retry: bool,
         ts_ms: u64,
     },
-    /// The leader finished with the outbox's head message (D25, D29): delivered, or
+    /// The leader finished with the outbox's head message: delivered, or
     /// dead-lettered with `dead`'s reason.
     #[serde(rename = "componentXcallDone")]
     XcallDone {
@@ -777,7 +764,7 @@ pub struct Applied {
     /// The entry was built on a state that was no longer current; nothing changed.
     #[serde(default)]
     pub conflict: bool,
-    /// The run is retryable (wall clock or node unavailable): nothing was logged (D23); answered
+    /// The run is retryable (wall clock or node unavailable): nothing was logged; answered
     /// `503 TIMEOUT`.
     #[serde(default)]
     pub timeout: bool,
@@ -900,16 +887,16 @@ const fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// A component's host records (D39), kept in the group's `Head`, so a snapshot
+/// A component's host records, kept in the group's `Head`, so a snapshot
 /// carries them like every other row.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComponentHead {
-    /// The newest entry timestamp applied (D16): the next entry is stamped
-    /// after it, and views see it (D19).
+    /// The newest entry timestamp applied: the next entry is stamped
+    /// after it, and views see it.
     #[serde(default)]
     pub last_ts_ms: u64,
-    /// The timestamp (D16) of the newest entry that wrote the app's data: a
+    /// The timestamp of the newest entry that wrote the app's data: a
     /// call that applied with a diff or files, or an uploaded blob or file
     /// the app took. The leader stamps it into the entry, so every replica
     /// keeps the same one. Zero before the first write, and in a state
@@ -917,7 +904,7 @@ pub struct ComponentHead {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub last_write_ms: u64,
     /// The highest `(id_term, id_seq)` any logged run carried, conflicted ones
-    /// included (D52): a node leading the same term again after a
+    /// included: a node leading the same term again after a
     /// restart continues after it instead of reusing an id.
     #[serde(default)]
     pub last_id: (u64, u64),
@@ -928,21 +915,21 @@ pub struct ComponentHead {
     /// Zero for a group never restored, and left out then.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub id_term_base: u64,
-    /// The timestamp of the applied `init` entry: timer slots are aligned to it (D34).
+    /// The timestamp of the applied `init` entry: timer slots are aligned to it.
     #[serde(default)]
     pub install_ts_ms: u64,
     /// The compute component of the release the group's bundle ships in, set with `bundle` by
     /// the same entry, so the pair never mixes releases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute_bundle: Option<String>,
-    /// Each timer's last applied slot (D34).
+    /// Each timer's last applied slot.
     #[serde(default)]
     pub timers: BTreeMap<String, u64>,
     /// The idempotency keys of each class (caller, `node:`) in the order they were
     /// recorded, for retention (`crate::idempotency`).
     #[serde(default)]
     pub idempotency: [idempotency::Ring; 2],
-    /// Blobs the app forgot (idle past their time, R8) whose bytes the leader has yet to
+    /// Blobs the app forgot (idle past their time) whose bytes the leader has yet to
     /// collect, hex; at most [`MAX_COLLECT_QUEUE`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub collect: Vec<String>,
@@ -953,7 +940,7 @@ pub struct ComponentHead {
     /// The xcall outbox, dead letters and the watermarks of the apps that send here.
     #[serde(default)]
     pub xcall: XcallHead,
-    /// The actions started and not ended (D17).
+    /// The actions started and not ended.
     #[serde(default)]
     pub actions: ActionsHead,
     /// The ids of the runs that are queued or running (at most `MAX_ACTIVE_RUNS`).
@@ -973,7 +960,7 @@ pub struct ComponentHead {
     pub step_cache: VecDeque<String>,
     /// The app's usage book: the summed [`RunUsage`] of its applied `init`,
     /// calls and ticks, per UTC day of their entry timestamps ([`utc_day`]).
-    /// Outside the app's keyspace (D39); a snapshot carries it with the rest of the
+    /// Outside the app's keyspace; a snapshot carries it with the rest of the
     /// head.
     #[serde(default, skip_serializing_if = "UsageBook::is_empty")]
     pub usage: UsageBook,
@@ -1037,9 +1024,9 @@ impl ComponentHead {
 pub struct ComponentState {
     pub head: ComponentHead,
     /// The app's data, stored keys (generation prefix included). Shared with
-    /// running calls and views as their `StateView` (D46).
+    /// running calls and views as their `StateView`.
     pub kv: Kv,
-    /// The blobs the app holds (R8), host records.
+    /// The blobs the app holds, host records.
     pub blobs: BlobTable,
 }
 
@@ -1122,13 +1109,13 @@ impl AppMachine {
             .map(|r| r.applied)
     }
 
-    /// The state a component's run reads (D46): the current version, shared.
+    /// The state a component's run reads: the current version, shared.
     #[must_use]
     pub fn view(&self) -> Arc<dyn host::StateView> {
         Arc::new(self.state.component.kv.clone())
     }
 
-    /// The blobs a component's run sees (R8): the current records, shared.
+    /// The blobs a component's run sees: the current records, shared.
     #[must_use]
     pub fn blob_view(&self) -> blobs::Blobs {
         Arc::clone(&self.state.component.blobs.records)
@@ -1145,7 +1132,7 @@ impl AppMachine {
         serde_json::from_slice(&raw).ok()
     }
 
-    /// The pending actions (D17), by id.
+    /// The pending actions, by id.
     #[must_use]
     pub fn pending_actions(&self) -> Vec<ActionRecord> {
         self.state
@@ -1158,7 +1145,7 @@ impl AppMachine {
             .collect()
     }
 
-    /// An action failed for good (D22): an `ActionFailed` event to whoever started it.
+    /// An action failed for good: an `ActionFailed` event to whoever started it.
     fn action_failed(
         &mut self,
         tx: &mut StateTx<'_>,
@@ -1198,7 +1185,7 @@ impl AppMachine {
         serde_json::from_slice(&raw).ok()
     }
 
-    /// The app's dead letters, oldest first (D29).
+    /// The app's dead letters, oldest first.
     #[must_use]
     pub fn dead_letters(&self) -> Vec<xcall::DeadLetter> {
         let h = &self.state.component.head.xcall;
@@ -1274,7 +1261,7 @@ impl AppMachine {
                 }
             }
             if !outcome.diff.is_empty() {
-                // References to blobs move with the values that hold them (R8).
+                // References to blobs move with the values that hold them.
                 let mut deltas = BTreeMap::new();
                 // Copies only the paths a run's view still shares (B7).
                 let kv = &mut c.kv;
@@ -1406,7 +1393,7 @@ impl AppMachine {
 
     /// A tick for a slot at or before the timer's last applied one changes
     /// nothing (two leaders around a failover proposed it); any other is applied
-    /// like a call and its slot recorded, whatever its status (D34).
+    /// like a call and its slot recorded, whatever its status.
     fn apply_tick(&mut self, tx: &mut StateTx<'_>, index: u64, tick: &TickEntry) -> Applied {
         if self.tick_applied(&tick.timer, tick.scheduled_ms) {
             return Applied::conflict(index, "slot already applied");
@@ -1638,7 +1625,7 @@ impl AppMachine {
                 if let (Some(key), false) = (&call.idempotency_key, a.conflict) {
                     self.remember_component(tx, call.ts_ms, &call.caller, key, &a);
                 }
-                // Whatever its status, a delivered xcall was answered (D29).
+                // Whatever its status, a delivered xcall was answered.
                 if let (Some(from), false) = (&call.xcall, a.conflict) {
                     self.state.component.head.xcall.delivered(from);
                 }
@@ -2407,7 +2394,7 @@ mod tests {
         assert!(mark.segment_hashes().is_none());
     }
 
-    /// D76: a logged run's outbound exchange is part of the outcome its entry carries,
+    /// A logged run's outbound exchange is part of the outcome its entry carries,
     /// whatever the status, and reads back from the entry's bytes as it was recorded.
     #[test]
     fn a_runs_outbound_exchange_is_recorded_in_its_entry() {

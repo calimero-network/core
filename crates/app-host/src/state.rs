@@ -1,8 +1,4 @@
-//! Read access to committed app state (D46) and the generation-prefixed key layout (D39).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D38
-//! (a migration is a rebuild into a separate keyspace), D39 (app data is keyed by generation;
-//! host records sit outside it), D46 (the host core reads state through `StateView`).
+//! Read access to committed app state and the generation-prefixed key layout.
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -13,7 +9,7 @@ pub type KeyValue = (Vec<u8>, Vec<u8>);
 /// Lower and upper bounds of a key range.
 pub(crate) type KeyBounds<'k> = (Bound<&'k [u8]>, Bound<&'k [u8]>);
 
-/// The generation every app uses in this milestone; rebuilds allocate new ones (D38, D39).
+/// The generation every app uses in this milestone; rebuilds allocate new ones.
 pub const GENERATION: u64 = 0;
 
 /// The stored key of a key: 8-byte big-endian generation ‖ key.

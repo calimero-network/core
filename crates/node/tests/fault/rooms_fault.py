@@ -16,7 +16,7 @@ Checks per iteration:
   - held slots are bounded: acked <= held <= acked + unknown, and every held slot was attempted
   - each slot, as a register (free / held), is linearizable over the strong reads (WGL)
   - the same key replayed at another node answers with the same booking id and index
-Across all iterations: every acknowledged booking id is distinct (D52: `b<term>.<seq>.<n>`
+Across all iterations: every acknowledged booking id is distinct (unique ids are `b<term>.<seq>.<n>` and
 must not repeat across leader kills).
 
 Usage: python3 -I rooms_fault.py --iterations 200 --seed 1 [--duration 6] [--wasm PATH]
@@ -332,8 +332,8 @@ class Iteration:
         dup = [h for h in failed if h.get("code") == "Duplicate"]
         if dup:
             # A fresh slot's `book` fails `Duplicate` only when the booking id it minted exists:
-            # `unique_id` reissued an id (D52).
-            problems.append(f"booking id REISSUED (D52, Duplicate on a fresh slot): {len(dup)} books, "
+            # `unique_id` reissued an id.
+            problems.append(f"booking id REISSUED (unique id, Duplicate on a fresh slot): {len(dup)} books, "
                             f"first answer: {dup[0]['attempts'][-1][2][:160]}")
         other = [h for h in failed if h.get("code") not in ("Taken", "Duplicate")]
         if other:
@@ -436,7 +436,7 @@ def main():
             for bid, slot, idem in acked:
                 if bid in all_ids:
                     collisions.append({"id": bid, "first": all_ids[bid], "again": (it, slot, idem)})
-                    problems.append(f"booking id {bid} REISSUED (D52): first {all_ids[bid]}, again {(it, slot, idem)}")
+                    problems.append(f"booking id {bid} REISSUED (unique id): first {all_ids[bid]}, again {(it, slot, idem)}")
                 else:
                     all_ids[bid] = (it, slot, idem)
             for k in totals:

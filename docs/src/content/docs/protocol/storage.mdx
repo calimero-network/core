@@ -279,7 +279,7 @@ Operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before th
 (`AppRecord.restore`, so `ensure_app_group` forms it with that seed alone and `reconcile` never
 inits it); the seed `Group::replace_state`s the backup into it (rows opened and sealed again for the
 new group, hidden keys re-hidden), appends `componentRestored` (sets `ComponentHead::id_term_base`
-past every restored id term: the new group's terms restart at 1, D52), `snapshot_through` +
+past every restored id term: the new group's terms restart at 1, and unique ids carry the term), `snapshot_through` +
 `purge_log_through` that entry so the others can only catch up from that snapshot, adds them as
 learners, makes them voters and logs `FinishRestore`.
 Calls and views answer `409 APP_RESTORING` meanwhile (`restore::refuse_while_restoring`).

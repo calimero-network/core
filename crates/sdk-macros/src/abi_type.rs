@@ -3,19 +3,16 @@
 //! The derive reads the `#[serde(..)]` attributes that change the JSON (`rename`,
 //! `rename_all`, `rename_all_fields`, `tag`, `content`, `untagged`, `transparent`, `skip`,
 //! `skip_serializing`, `skip_serializing_if`, `with`) and refuses the ones whose JSON it cannot
-//! know (`flatten`, `into`, `from`, `try_from`, `remote`, a `with` other than the SDK's D20
+//! know (`flatten`, `into`, `from`, `try_from`, `remote`, a `with` other than the SDK's JSON
 //! helpers). A field that `skip_serializing_if` may leave out, or that `default` (on the field
 //! or the struct) lets a caller leave out, is optional in the shape.
 //!
-//! A `u64`, `i64` or `Vec<u8>` field says which JSON it travels as: its D20 form (`#[serde(with =
+//! A `u64`, `i64` or `Vec<u8>` field says which JSON it travels as: its decimal-string or base64url form (`#[serde(with =
 //! "calimero_sdk::json::u64_str")]`, ...: a decimal string, base64url), or, marked
 //! `#[abi(plain)]` (on the field, or on the type for every field), what plain serde writes: a
 //! JSON number (`u64_number`, `i64_number`, which JavaScript reads exactly only up to 2^53) and
 //! an array of numbers (`byte_list`), at any depth (`Vec<u64>` is `list<u64_number>`). Unmarked,
 //! it is refused: the ABI's `u64` and `bytes` mean the strings.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
-//! (64-bit integers travel as decimal strings in JSON).
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -233,8 +230,8 @@ fn plain(attrs: &[Attribute]) -> syn::Result<bool> {
     Ok(plain)
 }
 
-/// The SDK's D20 helpers (`calimero_sdk::json::*`): the JSON form the ABI type says.
-const D20: &[&str] = &[
+/// The SDK's JSON helpers (`calimero_sdk::json::*`): the JSON form the ABI type says.
+const JSON_HELPERS: &[&str] = &[
     "u64_str",
     "i64_str",
     "opt_u64_str",
@@ -263,12 +260,12 @@ fn field_type(
     match &serde.with {
         Some(with) => {
             let module = with.rsplit("::").next().unwrap_or(with);
-            if wire(ty).is_none() || !D20.contains(&module) {
+            if wire(ty).is_none() || !JSON_HELPERS.contains(&module) {
                 return Err(syn::Error::new(
                     span,
                     format!(
                         "{field}: AbiType cannot see what `with = \"{with}\"` writes; only the \
-                         SDK's D20 helpers on u64, i64 and Vec<u8> \
+                         SDK's JSON helpers on u64, i64 and Vec<u8> \
                          (`calimero_sdk::json::u64_str`, ...) are described: implement `AbiType` \
                          by hand"
                     ),
@@ -284,7 +281,7 @@ fn field_type(
                 span,
                 format!(
                     "{field}: plain serde writes u64/i64 as a number that loses precision past \
-                     2^53 and Vec<u8> as an array, where the ABI says a string (D20): add \
+                     2^53 and Vec<u8> as an array, where the ABI says a string: add \
                      `#[serde(with = \"calimero_sdk::json::u64_str\")]` (`i64_str`, \
                      `bytes_b64url`, `opt_..`), or make it a Record; or, if the JSON is meant to \
                      be a number or an array of numbers, mark the field `#[abi(plain)]`"
@@ -588,7 +585,7 @@ mod tests {
             s,
             r#"{"fields":[["views","u64_number"],["deltas","list<i64_number>"],["shots","byte_list"],["peak","option<u64_number>"],["at","u64"]],"kind":"record"}"#
         );
-        // On the type: every field, a D20 `with` still winning; tuple fields too.
+        // On the type: every field, a decimal-string or base64url `with` still winning; tuple fields too.
         let s = shape(parse_quote! {
             #[abi(plain)]
             struct Plain {

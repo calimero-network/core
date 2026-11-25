@@ -192,7 +192,7 @@ the client for mero-tee's private agent gate (`attestAgent`, `provisionAgent`,
 The client is two layers. The **runtime** (`@calimero-network/mero-js/runtime`,
 `src/runtime/`) is everything that is not a route: the node's attestation, the
 sealed channel, the credential and the session's refresh on a `401`, moving on
-`421 WRONG_NODE`, D70 retries and failover, error mapping and server-sent
+`421 WRONG_NODE`, `503` retries and failover, error mapping and server-sent
 events. The **route layer** is generated from core's OpenAPI document
 (the node's `docs/public/openapi.json`, in the same tree) by
 `pnpm gen:api`: `openapi-typescript` writes the types (`src/generated/api.ts`)
@@ -227,7 +227,7 @@ await client.apps.blobUpload({ app, body: bytes, contentType: 'image/png' });
   statement). The client's own `new CalimeroClient(options, { confirm, operatorProof })`
   answers every call that gives none.
 - **Retries**: a route the document marks `x-calimero-retry-safe` (a call, a
-  view, a method by its path) is sent again on a `503` as D70 says; one whose
+  view, a method by its path) is sent again on a `503`; one whose
   retries require an `idempotencyKey` gets one when it has none, which its retries
   and its confirmed retry share. A `421 WRONG_NODE` moves to the next node.
 - **Step-ups** ask the passkey for the route's own user verification
@@ -253,7 +253,7 @@ interface Transport {
   events(path: string, options?: { query?; signal? }): AsyncGenerator<NodeEvent>;
 }
 // RequestOptions: { query?, body? (JSON) | bytes? + contentType?, passkey? (answers a 412),
-//                   userVerification?, retry?: true | 'once' (D70), signal?, promptSignal? }
+//                   userVerification?, retry?: true | 'once', signal?, promptSignal? }
 ```
 
 `NodeTransport` implements it, and `exchange(method, path, options)` answers a

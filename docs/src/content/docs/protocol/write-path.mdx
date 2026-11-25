@@ -221,7 +221,7 @@ the worker's other tasks (Raft heartbeats, the system group, HTTP) to another wo
 
 ### Logged runs hold no read lock
 
-(C2; `calimero_log::Group::propose_led_staged`, `LoggedRun`.)
+(`calimero_log::Group::propose_led_staged`, `LoggedRun`.)
 
 Each of those proposals is staged.
 Its read step, under the applied state's read lock, makes the checks, takes the unique ids and an

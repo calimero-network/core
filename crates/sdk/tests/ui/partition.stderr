@@ -1,4 +1,4 @@
-error: partition is reserved (D48)
+error: partition is reserved for opt-in partitioning later
  --> tests/ui/partition.rs:4:21
   |
 4 | #[table(key = "id", partition = "org")]

@@ -164,7 +164,7 @@ jobs:
         run: ./scripts/check-naming.sh
 
       # Fleet nodes run at INFO and every line ships to the operator, so info!, warn!
-      # and error! must not carry user data or text from outside the node (F6).
+      # and error! must not carry user data or text from outside the node.
       - name: No user data at info level
         if: ${{ !cancelled() }}
         run: python3 scripts/check-no-user-data-at-info.py

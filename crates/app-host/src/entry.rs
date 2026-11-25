@@ -1,15 +1,12 @@
 //! The size of the log entry a node writes for a run, for an embedder that runs apps without a
 //! log (the SDK's test harness): the node refuses an entry over `calimero_log::MAX_ENTRY_BYTES`
-//! and logs the run as a `HostDenied` trap with detail [`crate::ENTRY_TOO_LARGE`] instead (D50), whatever [`crate::MAX_RUN_BYTES`]
+//! and logs the run as a `HostDenied` trap with detail [`crate::ENTRY_TOO_LARGE`] instead, whatever [`crate::MAX_RUN_BYTES`]
 //! let through, because the entry is JSON with keys and values in base64.
 //!
 //! [`entry_bytes`] is the length of `calimero-node`'s `entry_json` for the same run, field by
 //! field (pinned there by `the_host_cores_entry_size_is_the_logs`). It leaves out what only a
 //! node knows: an xcall delivery's source fields, and the marks of files, published outputs
 //! and started compute runs (their keys and segment hashes are the node's).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D50
-//! (per-run limits on events, keys, cursors and logs).
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;

@@ -1,19 +1,13 @@
 //! The wasmtime engine for `calimero:app` components (spec sections 4-5).
 //!
 //! One `wasmtime::Engine` serves every app. `prepare` checks a component's imports
-//! against the world and the D44 stubs, reads its ABI and compiles it through a checked
-//! disk cache; `invoke` runs `handle` in a fresh store per call (D8) under fuel, an epoch
+//! against the world and the refusing WASI stubs, reads its ABI and compiles it through a checked
+//! disk cache; `invoke` runs `handle` in a fresh store per call under fuel, an epoch
 //! deadline, memory, table and stack limits, and maps every failure onto one `TrapKind`.
 //!
 //! Spec: [One run](https://calimero-network.github.io/core/protocol/execution/#one-run),
 //! [Limits](https://calimero-network.github.io/core/protocol/limits/).
 //! Crate guide: [`crates/app-engine-wasmtime/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-engine-wasmtime/AGENTS.md).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
-//! security rules in section 9): D8 (a fresh instance per call), D20 (64-bit integers travel as
-//! decimal strings in JSON), D43 (WASI is pinned to 0.2.12), D44 (nine WASI interfaces are
-//! served by stubs that refuse), S6 (a host panic is `Trap(Fault)`, never a node crash), S8
-//! (compiled artifacts are checked before they load).
 
 use std::panic::catch_unwind;
 use std::panic::AssertUnwindSafe;
@@ -139,7 +133,7 @@ const DISABLED_FEATURES: WasmFeatures = WasmFeatures::THREADS
     .union(WasmFeatures::CM_ERROR_CONTEXT)
     .union(WasmFeatures::CM_GC);
 
-/// Interfaces are pinned to WASI 0.2.12 (D43) and `calimero:app` 0.5.7; an import of an older
+/// Interfaces are pinned to WASI 0.2.12 and `calimero:app` 0.5.7; an import of an older
 /// patch of the same minor links through semver matching, so an app built before
 /// a patch keeps running.
 const PATCHED: [(&str, &str); 2] = [("wasi:", "0.2."), ("calimero:app/", "0.5.")];
@@ -170,7 +164,7 @@ pub struct WasmtimeEngine {
 impl WasmtimeEngine {
     /// One engine for every app, caching compiled components under `cache_dir`, with a
     /// ticker thread advancing the epoch every `EPOCH_TICK`.
-    /// `cache_key` authenticates the cached artifacts (S8): derive it from the node's
+    /// `cache_key` authenticates the cached artifacts: derive it from the node's
     /// storage key, so only this node's own compilations are ever loaded.
     pub fn new(cache_dir: PathBuf, cache_key: &[u8; 32]) -> EyreResult<Self> {
         Self::build(cache_dir, cache_key, POOL_COMPONENT_INSTANCES)
@@ -486,7 +480,7 @@ impl WasmtimeEngine {
         let started = Instant::now();
         let mut phase = Phase::Instantiate;
         let ran = store.set_fuel(budget.fuel).and_then(|()| {
-            // A host panic unwinds out of the wasm frames to here (S6). Asserting unwind
+            // A host panic unwinds out of the wasm frames to here. Asserting unwind
             // safety is sound because a panic always ends the run as `Trap(Fault)`, and
             // `HostCore::finish` drops the diff and the events of any status but `Ok`, so
             // state a panic left half-updated never reaches the log; only the app log,
@@ -593,9 +587,9 @@ fn trap(kind: TrapKind, detail: &str) -> Status {
     }
 }
 
-/// An import is allowed if the engine's world or the D44 stubs list it, or if it is a WASI or
+/// An import is allowed if the engine's world or the refusing WASI stubs list it, or if it is a WASI or
 /// `calimero:app` interface they list at a patch of the same minor no newer than the listed
-/// one (D43).
+/// one.
 fn import_allowed(world: World, import: &str) -> bool {
     let world_imports = match world {
         World::App => allowed_imports(),
@@ -744,7 +738,7 @@ impl ResourceLimiter for Limits {
 }
 
 /// The `args` of a timer tick, as the guest reads them: the slot and the previous applied
-/// slot, in milliseconds, as decimal strings (D20). The host core holds the tick
+/// slot, in milliseconds, as decimal strings. The host core holds the tick
 /// (`Invocation::timer`), so a timer invocation's own `args` are ignored.
 fn timer_args(tick: &TimerCtx) -> Vec<u8> {
     let previous = tick

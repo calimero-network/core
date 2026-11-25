@@ -4,8 +4,8 @@
 //! Everything an app does besides running its code (routing, the API, the system
 //! group, sessions, packages, presence, receipts, upgrades' authority) is the
 //! node's. What is here: preparing components
-//! (single-flight per bundle), the ABI gate, unique ids (D52), app time (D16,
-//! D19), timers (D34), and the calls, views, `init` and code-only upgrades of a
+//! (single-flight per bundle), the ABI gate, unique ids, app time (entry timestamps never
+//! decrease, and views see the time of the entry they read at), timers, and the calls, views, `init` and code-only upgrades of a
 //! component app.
 //!
 //! Where the planned next phases (pipelining, batching, per-key concurrency) will
@@ -14,23 +14,6 @@
 //! with the same field (`AppMachine::apply_component_outcome`); a `base_seq` per
 //! key or per batch replaces both ends at once. `Node::next_id` runs inside the
 //! builder, one id pair per run, so a batch keeps one pair per run it carries.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
-//! security rules in section 9, R requirements in section 8): D12 (outbound HTTP only in
-//! actions, outside the log), D13 (every invocation has an explicit caller), D16 (entry
-//! timestamps never decrease), D17 (actions are durable, logged when started and when done),
-//! D19 (the time and randomness each kind of run sees), D22 (a failed action retries with
-//! backoff, then ends `ActionFailed`), D23 (a timeout is not logged and does not spend the
-//! idempotency key), D25 (xcalls are deduplicated by a per-source watermark), D29 (a stuck
-//! xcall is retried for up to an hour, then dead-lettered), D34 (timer ticks are proposed by
-//! the leader and keyed by slot), D36 (a deadline answers `503 TIMEOUT`, never `422 TRAP`), D38
-//! (a migration is a rebuild into a separate keyspace), D46 (the host core reads state through
-//! `StateView`), D50 (per-run limits on events, keys, cursors and logs), D52 (unique ids are
-//! `<leader term>.<call seq>.<n>`), D76 (calls, timers and deliveries may send outbound HTTP,
-//! recorded in the entry), S5 (views are read-only and never run confirm methods), S8 (compiled
-//! artifacts are checked before they load), S9 (outbound HTTP only from leader runs, to
-//! declared and approved URLs), R8 (the blob API and its lifecycle), R14 (secrets for outbound
-//! calls).
 
 mod compute;
 mod files;
@@ -78,7 +61,7 @@ use crate::metrics::CallPhase;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
 use crate::usage::{Kind as RunKind, Meter};
 
-/// App time (D16, D19): this host's clock plus a shared offset. It stamps a
+/// App time: this host's clock plus a shared offset. It stamps a
 /// component's entries and timer slots, nothing else; sessions, tokens and
 /// challenges use `types::now_ms`/`now_secs`, and Raft timers use `Instant`.
 #[derive(Clone, Debug, Default)]
@@ -120,7 +103,7 @@ pub const RUN_NEEDS_RESULT_METHOD: &str = "RunNeedsResultMethod";
 /// `MAX_ENTRY_BYTES`, so the entry that logs a refused run always fits.
 pub const MAX_ARGS_BYTES: usize = 512 * 1024;
 
-/// How often an app group's leader looks for due timer ticks (D34).
+/// How often an app group's leader looks for due timer ticks.
 pub const TIMER_POLL: Duration = Duration::from_millis(100);
 
 /// How often a node asks every peer, at once, what the apps it replicates used today,
@@ -165,7 +148,7 @@ pub fn args_too_large() -> ApiError {
     )
 }
 
-/// `503 TIMEOUT`: the run hit its deadline; not logged, the key not spent (D23, D36).
+/// `503 TIMEOUT`: the run hit its deadline; not logged, the key not spent.
 #[must_use]
 pub fn timeout_error() -> ApiError {
     ApiError::new(
@@ -223,7 +206,7 @@ impl From<WriteError> for LocalError {
     }
 }
 
-/// The key the compiled-component cache authenticates its artifacts with (S8): HMAC of
+/// The key the compiled-component cache authenticates its artifacts with: HMAC of
 /// K_r over a fixed label, so it changes with the storage key and nothing else.
 #[must_use]
 pub fn component_cache_key(storage_key: &[u8; 32]) -> [u8; 32] {
@@ -232,7 +215,7 @@ pub fn component_cache_key(storage_key: &[u8; 32]) -> [u8; 32] {
 
 /// The latest slot of a timer with interval `every`, installed at `install_ms`,
 /// that is due at `now_ms`: `install_ms + k · every` for the largest `k ≥ 1` not
-/// after `now_ms` (D34). Missed slots collapse into this one.
+/// after `now_ms`. Missed slots collapse into this one.
 #[must_use]
 pub fn due_slot(install_ms: u64, every: Duration, now_ms: u64) -> Option<u64> {
     let every = u64::try_from(every.as_millis()).ok().filter(|e| *e > 0)?;
@@ -255,7 +238,7 @@ fn abi_check(
     let Some(m) = prepared.abi.methods.get(method) else {
         return Err(app_refusal("UnknownMethod"));
     };
-    // A call of an action starts it (D17); an action never runs as a view, nor is it
+    // A call of an action starts it; an action never runs as a view, nor is it
     // started by an action, an xcall or the system.
     let starts_action = m.kind == MethodKind::Action
         && !view
@@ -285,7 +268,7 @@ fn abi_check(
             "a visitor through a public link calls only the app's public methods",
         )),
         Caller::System if !m.allow_system => Err(app_refusal("Forbidden")),
-        // A delivered xcall reaches only a method that allows its source (D13).
+        // A delivered xcall reaches only a method that allows its source.
         Caller::App { app } if !m.allows_app(app) => Err(app_refusal("Forbidden")),
         _ if m.confirm && !view && !consented => Err(app_refusal("ConfirmRequired")),
         _ => Ok(()),
@@ -306,7 +289,7 @@ pub fn final_too_large() -> ApiError {
 }
 
 /// The entry as bytes, and whether it was replaced: one over `MAX_ENTRY_BYTES` becomes the same
-/// call trapped `HostDenied` (D50); a final loses only its result method's outcome.
+/// call trapped `HostDenied`; a final loses only its result method's outcome.
 fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
     let bytes = crate::component::entry_json(cmd);
     if bytes.len() <= calimero_log::MAX_ENTRY_BYTES {
@@ -443,7 +426,7 @@ struct Ran {
 }
 
 impl Node {
-    /// App time: what a component's entry stamps and timer slots read (D16, D19, D34).
+    /// App time: what a component's entry stamps and timer slots read.
     #[must_use]
     pub fn app_clock(&self) -> Clock {
         self.clock.clone()
@@ -892,7 +875,7 @@ impl Node {
         self.config.budget.unwrap_or_else(Budget::call)
     }
 
-    /// The key download grants of every app are MACed with (R8).
+    /// The key download grants of every app are MACed with.
     #[must_use]
     pub fn blob_grant_key(&self) -> [u8; 32] {
         grant_key(self.cluster_key())
@@ -913,7 +896,7 @@ impl Node {
 
     /// [`Self::run_component`], with the app's search index for a view (spec section 7).
     /// `extras` says what else the run reaches: other apps synchronously through
-    /// [`NodeXcall`] (with the run's own key), and the app's outbound gate (D76).
+    /// [`NodeXcall`] (with the run's own key), and the app's outbound gate.
     #[allow(clippy::too_many_arguments)]
     fn run_with(
         &self,
@@ -1165,7 +1148,7 @@ impl Node {
         }
     }
 
-    /// The next `(id_term, id_seq)` for a run this node leads in `term` (D52).
+    /// The next `(id_term, id_seq)` for a run this node leads in `term`.
     /// `term` comes from the leadership check that admitted the
     /// proposal (`calimero_log::Group::propose_led`, no round of its own);
     /// `logged` is the highest pair the app's applied state carries, which, after
@@ -1202,7 +1185,7 @@ impl Node {
         (term, entry.1)
     }
 
-    /// The timestamp of a component's next entry (D16): never before the last one applied.
+    /// The timestamp of a component's next entry: never before the last one applied.
     fn stamp(&self, m: &AppMachine) -> u64 {
         (m.state.component.head.last_ts_ms + 1).max(self.clock.now_ms())
     }
@@ -1293,7 +1276,7 @@ impl Node {
                         };
                         let outcome = ran.outcome;
                         if outcome.is_retryable() {
-                            // Not logged (D23): reconcile runs init again.
+                            // Not logged: reconcile runs init again.
                             timed_out = true;
                             return Staged::Done(Proposal::Reply(Vec::new()));
                         }
@@ -1402,7 +1385,7 @@ impl Node {
         Ok(to_host_applied(a))
     }
 
-    /// One round of timer ticks (D34), every [`TIMER_POLL`]: for each component
+    /// One round of timer ticks, every [`TIMER_POLL`]: for each component
     /// app group this node leads, a task proposes the due ticks, unless the
     /// previous round for that app is still running.
     pub fn tick_timers(self: &Arc<Self>) {
@@ -1487,7 +1470,7 @@ impl Node {
     }
 
     /// Run `timer` for `slot` on this node, the app group's leader, and log it.
-    /// A tick that times out is not logged (D23): the next poll proposes the
+    /// A tick that times out is not logged: the next poll proposes the
     /// same slot again, unless a later one is due by then.
     async fn tick(
         &self,
@@ -1723,7 +1706,7 @@ impl Node {
                             .get(&req.method)
                             .is_some_and(|m| m.kind == MethodKind::Action);
                         let ran = if starts_action {
-                            // Started, not run here: logged as started, run by the runner (D17).
+                            // Started, not run here: logged as started, run by the runner.
                             let id = format!("a.{id_term}.{id_seq}.0");
                             Ran {
                                 outcome: Outcome {
@@ -1785,7 +1768,7 @@ impl Node {
                         };
                         let outcome = ran.outcome;
                         // A retryable run (wall clock or node unavailable) is not logged and does not spend the
-                        // key (D23).
+                        // key.
                         if outcome.is_retryable() {
                             let a = Applied::unlogged(applied, outcome);
                             return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
@@ -1849,7 +1832,7 @@ impl Node {
                         )));
                     }
                 }
-                // A message applied here already answers as delivered (D25).
+                // A message applied here already answers as delivered.
                 if let Some(from) = &req.xcall {
                     if m.state.component.head.xcall.seen(from) {
                         let seen = Applied::unlogged(
@@ -2122,7 +2105,7 @@ impl Node {
         })
     }
 
-    /// The ABI checks the host makes before invoking a component (S5, D13), from
+    /// The ABI checks the host makes before invoking a component, from
     /// the bundle's own ABI, default-deny: a method the ABI does not
     /// name is `UnknownMethod`; `init` and timers are never reached this way
     /// (`WrongKind`); a `confirm` method never runs as a view (`ConfirmNotAView`)
@@ -2267,9 +2250,9 @@ impl Node {
         }
     }
 
-    /// A component's view on this replica: it holds its version of the state (D46)
-    /// and runs outside the machine's lock; it sees the last applied entry's time
-    /// (D19), and runs the bundle that state belongs to, whose ABI it is checked
+    /// A component's view on this replica: it holds its version of the state
+    /// and runs outside the machine's lock; it sees the last applied entry's time,
+    /// and runs the bundle that state belongs to, whose ABI it is checked
     /// against.
     pub(super) async fn view_local_component(
         &self,
@@ -2383,7 +2366,7 @@ impl Node {
         })
     }
 
-    /// A component's blob command (R8) on its leader: `__blob { id, size, mime }` (an upload),
+    /// A component's blob command on its leader: `__blob { id, size, mime }` (an upload),
     /// `__blob_forget` or `__blob_revoke` (`{ id }`, the owner's), built by the API after judging who may.
     pub(super) async fn component_blob_cmd(
         &self,
@@ -2447,7 +2430,7 @@ impl Node {
     }
 
     /// Start the app's pending actions this node is not running yet, as its leader, in the
-    /// node's worker pool (D17): each runs off the async workers and logs its end.
+    /// node's worker pool: each runs off the async workers and logs its end.
     fn run_actions(&self, g: &Arc<Group<AppMachine>>, app_id: &str, prepared: &Prepared) {
         let Some(node) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
             return;
@@ -2488,7 +2471,7 @@ impl Node {
         }
     }
 
-    /// One attempt at an action (D12, D22), then its end logged: done; an attempt that
+    /// One attempt at an action, then its end logged: done; an attempt that
     /// timed out (retried later, `MAX_ATTEMPTS` in all); or failed, which also runs the
     /// app's `onActionFailed`.
     async fn run_action(
@@ -2548,7 +2531,7 @@ impl Node {
 
     /// Run `record` once on the engine, off the async workers, as `kind = action` with
     /// the starter's caller, storage off, views and calls through this node and outbound
-    /// HTTP through the gate (S9).
+    /// HTTP through the gate.
     async fn attempt_action(
         self: &Arc<Self>,
         app_id: &str,
@@ -2577,7 +2560,7 @@ impl Node {
             key: format!("action:{}", record.id),
             handle: tokio::runtime::Handle::current(),
             read_only: false,
-            // An action serves no one when it runs (D12): its calls name no person.
+            // An action serves no one when it runs: its calls name no person.
             person: None,
             deadline,
         });
@@ -2651,7 +2634,7 @@ impl Node {
     }
 
     /// The app's `onActionFailed`, if its ABI has a call by that name: told which action
-    /// failed and why, as the action's caller (D22). Best effort, once.
+    /// failed and why, as the action's caller. Best effort, once.
     async fn on_action_failed(
         &self,
         app_id: &str,
@@ -2687,7 +2670,7 @@ impl Node {
     }
 
     /// Deliver the head of `source`'s outbox, in order, at most [`DELIVER_BATCH`] messages
-    /// a round (D25, D29). A message that cannot be delivered yet waits its backoff and
+    /// a round. A message that cannot be delivered yet waits its backoff and
     /// blocks the ones after it; past [`XCALL_WINDOW_MS`] it is dead-lettered.
     async fn deliver_xcalls(&self, g: &Group<AppMachine>, source: &str, prepared: &Prepared) {
         for _ in 0..DELIVER_BATCH {
@@ -2788,13 +2771,13 @@ impl Node {
             Ok(_) => Ok(None),
             Err(e) if e.status >= 500 => Err(e.message),
             // A refusal (an unknown method, a method that does not allow the source) is
-            // the target's final answer, like an app error (D29).
+            // the target's final answer, like an app error.
             Err(_) => Ok(None),
         }
     }
 
     /// The source's `onXcallFailed`, if its ABI has one the system may call: told which
-    /// message was dead-lettered and why (D29). Best effort, once.
+    /// message was dead-lettered and why. Best effort, once.
     async fn on_xcall_failed(
         &self,
         source: &str,
@@ -2847,7 +2830,7 @@ impl Node {
         })
     }
 
-    /// Collect the bytes of blobs the app forgot (idle past their time, R8), at most
+    /// Collect the bytes of blobs the app forgot (idle past their time), at most
     /// [`COLLECT_BATCH`] a round, and log that they are done. `collect_blob` keeps the bytes
     /// another app still holds.
     async fn collect_component_blobs(&self, g: &Group<AppMachine>, queued: Vec<String>) {
@@ -2877,8 +2860,8 @@ impl Node {
     }
 
     /// Switch a component app to another component, code only, on this node, the
-    /// app group's leader. A named migration is refused: migrations are rebuilds
-    /// (D38), not in this milestone. Who may upgrade was judged by the API.
+    /// app group's leader. A named migration is refused: migrations are rebuilds,
+    /// not in this milestone. Who may upgrade was judged by the API.
     pub(super) async fn upgrade_component(
         &self,
         g: &Group<AppMachine>,
@@ -2897,7 +2880,7 @@ impl Node {
         if migrate.is_some() {
             return Ok(refuse(
                 "MigrationsNotSupported",
-                "migrations are rebuilds (D38), not in this milestone",
+                "migrations are rebuilds, not in this milestone",
             ));
         }
         let target = match self.prepared_for(bundle).await {
@@ -2954,7 +2937,7 @@ fn read_only_refusal(applied: u64) -> Applied {
     )
 }
 
-/// What an action reaches through the node (D12): views and calls of its own app, as
+/// What an action reaches through the node: views and calls of its own app, as
 /// its caller, run on the async runtime while the action's thread waits.
 struct NodeAction {
     node: Arc<Node>,
@@ -3145,7 +3128,7 @@ struct RunExtras {
     /// The run's own key (a call's caller and idempotency key, a tick's slot, a view's
     /// placeholder): with one, the run reaches other apps synchronously ([`NodeXcall`]).
     key: Option<String>,
-    /// The app's outbound gate (D76): calls (but a read-only member's), timers and
+    /// The app's outbound gate: calls (but a read-only member's), timers and
     /// deliveries; never views or `init`.
     outbound: bool,
     /// The app's active runs: with them, a logged run starts and cancels compute runs.
@@ -3163,7 +3146,7 @@ struct RunExtras {
     secrets: crate::component::InstanceSecrets,
 }
 
-/// How long a call, timer or delivery waits for one outbound response (D76): within the
+/// How long a call, timer or delivery waits for one outbound response: within the
 /// 2 s call budget (`calimero_app_host::Budget::call`), so a slow host costs the run an
 /// error it handles, not the log a stalled entry; never past the run's own deadline.
 pub const CALL_FETCH_TIMEOUT: Duration = Duration::from_millis(1_500);
@@ -3401,7 +3384,7 @@ fn parse_args(args: &[u8]) -> Result<Value, String> {
     serde_json::from_slice(args).map_err(|e| format!("arguments are not JSON: {e}"))
 }
 
-/// An action's outbound HTTP through the node's gate (S9, R14): the signed release's
+/// An action's outbound HTTP through the node's gate: the signed release's
 /// declared prefixes, the owner's approval, the operator's hosts, secrets filled in.
 struct NodeHttp(Option<Arc<dyn calimero_outbound::OutboundHost>>);
 

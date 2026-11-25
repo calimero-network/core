@@ -7,12 +7,6 @@
 //!   router, on the node's own origin.
 //! - Internal (peers, cluster secret): `/internal/*`.
 //! - Ops (mdma, operator token): `/ops/*`.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (R requirements in section 8):
-//! R9 (team and org audiences, resolved at delivery).
-//!
-//! F-numbers cite the findings of `docs/specs/gate-system-group.md`, section 1.2: F1 (any node
-//! could mint a session).
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -803,7 +797,7 @@ impl Principal {
     ) -> Result<(), ApiError> {
         // A session vouches for its account only where the node that signed
         // it may hold the data: a node on an unapproved release cannot mint
-        // its way into an app (F1).
+        // its way into an app.
         if let Some(release) = &self.issuer_release {
             if !node.sys(|s| s.release_may_hold(app, Some(release))) {
                 return Err(ApiError::unauthenticated(
@@ -1895,7 +1889,7 @@ pub(crate) async fn still_admitted(node: &Node, p: &Principal, app_id: &str) -> 
 pub const MAX_EVENT_BATCH: usize = 256;
 
 /// The app's events from `from`, then live. A component's event carries its
-/// audience (R9) and goes to `subscriber` (`None`: anonymous) only if the system
+/// audience and goes to `subscriber` (`None`: anonymous) only if the system
 /// state says it still reaches the app and is in the audience, so a member removed
 /// from the org or the team stops receiving at once. That state is fresh for each
 /// event: a read-index round begun after the event reached this replica, applied

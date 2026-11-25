@@ -1,9 +1,4 @@
 //! Types shared by the node's state machines and its API.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, R
-//! requirements in section 8): D13 (every invocation has an explicit caller), D34 (timer ticks
-//! are proposed by the leader and keyed by slot), R9 (team and org audiences, resolved at
-//! delivery).
 
 use std::collections::BTreeMap;
 
@@ -32,7 +27,7 @@ pub enum Caller {
     /// The app itself: an `xcall` from app `app` (then the caller is the calling
     /// app). Never from a client: the API builds callers from credentials.
     App { app: AppId },
-    /// The platform itself: a component's timer ticks (D34), which reach only
+    /// The platform itself: a component's timer ticks, which reach only
     /// methods whose ABI says `allowSystem`. Never from a client.
     System,
     /// An anonymous visitor through one of the instance's public links
@@ -76,7 +71,7 @@ impl Caller {
         matches!(self, Self::Account { .. } | Self::ApiKey { .. })
     }
 
-    /// The caller as the component host core sees it (the WIT `caller`, D13).
+    /// The caller as the component host core sees it (the WIT `caller`).
     #[must_use]
     pub fn to_host(&self) -> calimero_app_host::Caller {
         use calimero_app_host::Caller as H;
@@ -1874,7 +1869,7 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// Who receives an event (R9). Resolved when the event is sent to a
+/// Who receives an event. Resolved when the event is sent to a
 /// subscriber, against the system state of that moment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -1922,7 +1917,7 @@ pub struct EventRecord {
     pub seq: u32,
     pub kind: String,
     pub data: serde_json::Value,
-    /// A component's event: who receives it (R9), checked when it is sent.
+    /// A component's event: who receives it, checked when it is sent.
     /// `None` for an event that goes to everyone who reaches the app (one an SDK
     /// 0.12 app recorded).
     #[serde(default, skip_serializing_if = "Option::is_none")]

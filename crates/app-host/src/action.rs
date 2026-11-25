@@ -1,19 +1,12 @@
-//! Actions (D12, D17, D22, D27) and outbound HTTP (S9), as the host core sees them.
+//! Actions and outbound HTTP, as the host core sees them.
 //!
 //! An action runs on the leader, outside the log, with storage disabled: it reads through
 //! views and writes by calling methods, each its own entry, through the node's
 //! [`ActionHost`]. Every method it calls gets a key derived from the action's key, the
-//! method, a hash of the arguments and an occurrence number (D27), so a retried action's
+//! method, a hash of the arguments and an occurrence number, so a retried action's
 //! calls replay instead of applying twice. Only an action may send HTTP (`wasi:http`), and
 //! only through the node's [`HttpHost`], which allows the hosts the signed manifest
-//! declares (S9).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
-//! security rules in section 9, R requirements in section 8): D12 (outbound HTTP only in
-//! actions, outside the log), D17 (actions are durable, logged when started and when done), D22
-//! (a failed action retries with backoff, then ends `ActionFailed`), D27 (an action's sub-call
-//! key adds the method, argument hash and occurrence), S9 (outbound HTTP only from leader runs,
-//! to declared and approved URLs), R14 (secrets for outbound calls).
+//! declares.
 
 use sha2::{Digest, Sha256};
 
@@ -29,7 +22,7 @@ pub const MAX_STARTED_ACTIONS: usize = 100;
 /// What the node lets an action do: its key, views, and calls of the app's methods as
 /// the action's caller.
 pub trait ActionHost: Send + Sync {
-    /// The action's key (its id), the same on every attempt (D17).
+    /// The action's key (its id), the same on every attempt.
     fn key(&self) -> String;
     /// Run view `method` on the app; the JSON result, or why not.
     fn view(&self, method: &str, args: &[u8]) -> Result<Vec<u8>, String>;
@@ -97,8 +90,8 @@ impl HttpExchange {
     }
 }
 
-/// The node's gate for an action's outbound requests (S9): declared hosts, the owner's
-/// approval, secrets (R14).
+/// The node's gate for an action's outbound requests: declared hosts, the owner's
+/// approval, secrets.
 pub trait HttpHost: Send + Sync {
     /// Send `request`; the response, or why it was not sent.
     fn send(&self, request: &HttpRequest) -> Result<HttpResponse, String>;
@@ -113,7 +106,7 @@ impl HttpHost for NoHttp {
     }
 }
 
-/// An action that `start_action` queued; the executor logs it as `ActionStarted` (D17).
+/// An action that `start_action` queued; the executor logs it as `ActionStarted`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionStart {
     /// The action's key.
@@ -122,8 +115,8 @@ pub struct ActionStart {
     pub args: Vec<u8>,
 }
 
-/// The key of the `occurrence`-th call of `method` with `args` in action `action_key`
-/// (D27): hex SHA-256 over the four, prefixed `act:`.
+/// The key of the `occurrence`-th call of `method` with `args` in action `action_key`:
+/// hex SHA-256 over the four, prefixed `act:`.
 #[must_use]
 pub fn subcall_key(action_key: &str, method: &str, args: &[u8], occurrence: u32) -> String {
     let args_hash = Sha256::digest(args);

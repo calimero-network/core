@@ -1,7 +1,4 @@
 //! The API's routes for blobs, files and resumable uploads.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (R requirements in section 8):
-//! R8 (the blob API and its lifecycle).
 
 #[allow(
     clippy::wildcard_imports,
@@ -108,7 +105,7 @@ async fn blob_upload(
     Ok(Json(out))
 }
 
-/// A component holds a bounded number of blobs and files (R8).
+/// A component holds a bounded number of blobs and files.
 async fn refuse_full_app(node: &Node, app: &crate::types::AppRecord) -> Result<(), ApiError> {
     let stats = node.storage_stats(app).await?;
     if stats.blobs.len() + stats.files.len() >= crate::component::blobs::MAX_COMPONENT_BLOBS {
@@ -140,7 +137,7 @@ fn blob_mime(headers: &HeaderMap) -> Result<String, ApiError> {
     Ok(mime.to_owned())
 }
 
-/// `?grant=` on a download: a component's run handed it out (R8).
+/// `?grant=` on a download: a component's run handed it out.
 #[derive(Deserialize)]
 pub(super) struct BlobGrant {
     grant: Option<String>,

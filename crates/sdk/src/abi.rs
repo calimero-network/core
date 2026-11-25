@@ -10,7 +10,7 @@
 //! compile where a method, error, event or other shape uses it. That is what keeps a bare
 //! `u64` (or `i64`, `u128`, `i128`, `usize`, `isize`) out of an app's JSON, where serde would
 //! write a number JavaScript reads exactly only up to 2^53: the derives refuse such a field
-//! and name it, and only a type that derives one of them reaches the ABI (D20).
+//! and name it, and only a type that derives one of them reaches the ABI.
 //!
 //! Each shape is canonical JSON (keys sorted), assembled at compile time:
 //!
@@ -23,10 +23,7 @@
 //!   `"content"` (adjacently), or `"untagged":true`;
 //! - a generic type adds `"params":["T",..]`, and its fields name them (`list<T>`).
 //!
-//! Types are ABI type strings, with `u64`/`i64` decimal strings and `bytes` base64url (D20).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
-//! (64-bit integers travel as decimal strings in JSON).
+//! Types are ABI type strings, with `u64`/`i64` decimal strings and `bytes` base64url.
 
 /// A type's entry in the ABI's `types`, and the types its shape refers to.
 #[derive(Debug)]
@@ -43,11 +40,11 @@ pub struct TypeDef {
 /// `#[derive(AbiType)]`. Implement it by hand only for a type with a hand-written serde form
 /// (the SDK does for `BlobRef`). The `app` macros require it of every app type in a method's
 /// parameters and result and in an error's or event's fields, and the derives of every app
-/// type in a field, so each one's JSON is checked (D20).
+/// type in a field, so each one's JSON is checked.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` travels as an app's JSON but has no ABI shape: it does not implement `AbiType`",
     label = "derive `AbiType` (a serde type) or `Record` for `{Self}`",
-    note = "every type in an app method's parameters or result, an error's or event's fields, or a field of one of those, is described in the ABI (D20)",
+    note = "every type in an app method's parameters or result, an error's or event's fields, or a field of one of those, is described in the ABI, so clients know its JSON",
     note = "a bare u64/i64 field would reach JavaScript as a number exact only up to 2^53: `#[derive(AbiType)]` refuses it and names it; write it `#[serde(with = \"calimero_sdk::json::u64_str\")]` (`i64_str`, `opt_u64_str`, ...), a decimal string; u128, i128, usize and isize have no JSON form: use u32 or u64",
     note = "a type alias of u64 or i64 is not converted: use the integer type itself, with its `with`"
 )]

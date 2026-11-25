@@ -461,7 +461,7 @@ fn not_found() -> Failure {
     }
 }
 
-/// The platform's refusals come before the app runs, with the node's codes (Rulings 32, 35):
+/// The platform's refusals come before the app runs, with the node's codes:
 /// the harness app is an org app, so every anonymous caller is `401 UNAUTHENTICATED`, a
 /// `public` method included (the node's access gate refuses before the ABI is read); an
 /// account the app's org does not hold (never in it, or removed) is `404 NOT_FOUND`. A guest

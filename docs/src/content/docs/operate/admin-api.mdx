@@ -144,7 +144,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `GET /auth/activity[?after=T]` | account holder | What the account's passkeys did, newest first (the last 100): `{ activity: [{ at, passkey, kind, app, origin, method, subject }] }`, `kind` `signIn` (with `app`, `origin`) or `approval` (with `method`, `subject`); `after`: only entries after `T` (Unix seconds) ([Activity](/operate/auth/#activity)) | `account activity` |
 | `GET /auth/me` | signed in | The account, passkeys (each with `addedAt` and `lastSignInAt`), `passkeyId`, organizations (`personal: true` on the one made at sign-up), `via` (`session` or `apiKey`), the `app` and `origin` a session is bound to, `recoveryCode`, `recoveryPending` | `whoami`, `account show` |
 | `GET /auth/apps[?after=ID&limit=N]` | signed in | The apps the account owns, in any organization (a package-bound session: its package's): `{ scope, governance, approvedReleases, clusterReleases, apps, next }`, `approvedReleases` its only organization's (below cluster version 1.0.0-rc.32 its personal organization's), each app's release, newer releases it may upgrade to (`availableVersions`, and `latestReachable`/`latestBlocked`: the newest it can reach and why the latest is not it, [Which release an app can reach](/protocol/upgrades/#which-release-an-app-can-reach)), last upgrade, replicas' releases and `lastWriteAt` (as in `GET /ops/apps`) ([Reading the approvals](/protocol/governance/#reading-the-approvals)) | |
-| `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas; `developerFuelToday` and `developerWritesToday`: what today's runs of the apps the account is the developer of used (D76, D78). `bundleBytes`, `developerFuelToday` and `developerWritesToday` are decimal strings | `account usage` |
+| `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas; `developerFuelToday` and `developerWritesToday`: what today's runs of the apps the account is the developer of used. `bundleBytes`, `developerFuelToday` and `developerWritesToday` are decimal strings | `account usage` |
 | `GET /auth/aliases` | signed in | The account's aliases | `instance alias list` |
 | `GET/PUT/DELETE /auth/aliases/{alias}` | signed in | Resolve, set (`{ app }`) or remove an alias | `instance alias get/add/remove`, `instance use` |
 | `POST /auth/apikeys` | account holder (a passkey session) | `{ label, apps?, methods?, readOnly, allowConfirm, ttlSecs?, upgrades?, then?, confirm? }` → `{ keyId, key, then }`, approved with a passkey (`412` first). `then: [{ app, method, args }]` runs confirm calls of the key's apps under the same passkey before the key is made, `key:$key` written as `key:<keyId>` ([follow-ups](/protocol/identities/#follow-ups)). `upgrades: { app, package? }` makes an upgrade key, which signs that app's upgrades in place of a passkey and is refused everywhere else (`403 UPGRADE_KEY_ONLY`); only an owner or admin of the app's organization makes or uses one | `account api-key create` |
@@ -244,7 +244,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `DELETE /orgs/{org}` | account holder | Delete with teams, invites and apps (owner; `412` first) | `org delete` |
 | `POST /orgs/{org}/name` | account holder | `{ name, confirm? }`: rename the organization (owner or admin; `412` first), the name as `POST /orgs` takes it → `{ orgId, name }`. `403` below admin, `404` outside the organization ([Organizations](/protocol/organizations/#organizations)) | - |
 | `POST /orgs/{org}/metadata` | signed in | `{ metadata }` | `org metadata set` |
-| `GET /orgs/{org}/usage` | org admin | What today's runs of the apps the org is the developer of used: `apps`, `developerFuelToday`, `developerWritesToday` (decimal strings), the quotas (D78); a member gets `403` | |
+| `GET /orgs/{org}/usage` | org admin | What today's runs of the apps the org is the developer of used: `apps`, `developerFuelToday`, `developerWritesToday` (decimal strings), the quotas; a member gets `403` | |
 | `POST /orgs/{org}/members` | account holder | `{ account, role, confirm? }`; `owner` moves ownership. `412` first | `org members add` |
 | `DELETE /orgs/{org}/members/{account}` | account holder | Remove a member, or leave. `412` first; the retry's JSON body is `{ confirm }` | `org members remove`, `org leave` |
 | `POST /orgs/{org}/members/{account}/metadata` | signed in | `{ metadata }` | `org member-metadata` |
@@ -381,7 +381,7 @@ its value):
 | `maxFileBytesPerOrg` | `50000000000` (50 GB) |
 | `maxConcurrentRunsPerOrg` | `4` |
 | `computeFuelPerOrg` | `10000000000000` |
-| `maxFuelPerDeveloperPerDay` | `"0"` (a decimal string, D20; no limit; per developer: a deployment's owner for its instances, else the app's org or owner, D78; `409 UPGRADE_PENDING` until every node runs this release) |
+| `maxFuelPerDeveloperPerDay` | `"0"` (a decimal string; no limit; per developer: a deployment's owner for its instances, else the app's org or owner; `409 UPGRADE_PENDING` until every node runs this release) |
 
 ## Internal
 

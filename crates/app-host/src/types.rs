@@ -1,16 +1,4 @@
 //! What goes into an invocation and what comes out of it (spec section 3).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, R
-//! requirements in section 8): D12 (outbound HTTP only in actions, outside the log), D13 (every
-//! invocation has an explicit caller), D17 (actions are durable, logged when started and when
-//! done), D19 (the time and randomness each kind of run sees), D25 (xcalls are deduplicated by
-//! a per-source watermark), D28 (the default fuel budget), D29 (a stuck xcall is retried for up
-//! to an hour, then dead-lettered), D34 (timer ticks are proposed by the leader and keyed by
-//! slot), D39 (app data is keyed by generation; host records sit outside it), D47
-//! (`storage.add` and `unique-id` avoid serializing calls), D52 (unique ids are
-//! `<leader term>.<call seq>.<n>`), D76 (calls, timers and deliveries may send outbound HTTP,
-//! recorded
-//! in the entry), R1 (cross-org apps).
 
 use std::fmt;
 use std::time::Duration;
@@ -21,7 +9,7 @@ use crate::abi::ComputeCaps;
 use crate::files::{NewFile, PublishedFile};
 use crate::runs::StartedRun;
 
-/// Fuel per call or view (D28); Task 13 measures the real ratio to wall time.
+/// Fuel per call or view; Task 13 measures the real ratio to wall time.
 pub const DEFAULT_FUEL: u64 = 200_000_000;
 /// Memory per instance: 1,024 WASM pages (64 MiB).
 pub const DEFAULT_MEMORY_PAGES: u32 = 1_024;
@@ -29,7 +17,7 @@ pub const DEFAULT_MEMORY_PAGES: u32 = 1_024;
 const PAGES_PER_MIB: u32 = 16;
 /// Epoch deadline for a call or a view (spec section 5).
 pub const CALL_WALL_CLOCK: Duration = Duration::from_secs(2);
-/// Epoch deadline for an action run (spec section 5, D12).
+/// Epoch deadline for an action run (spec section 5).
 pub const ACTION_WALL_CLOCK: Duration = Duration::from_secs(10);
 /// The detail of a run that used its whole wall-clock budget, in its own code or waiting
 /// in a host call (`HostCore::with_deadline`).
@@ -47,7 +35,7 @@ pub enum InvocationKind {
     Migrate,
 }
 
-/// Who invoked the method (D13). Mirrors the WIT `caller` variant.
+/// Who invoked the method. Mirrors the WIT `caller` variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Caller {
     Account(String),
@@ -67,7 +55,7 @@ pub enum Caller {
     },
 }
 
-/// A timer tick's slot (D34).
+/// A timer tick's slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimerCtx {
     pub scheduled_ms: u64,
@@ -88,10 +76,10 @@ pub struct ComputeCtx {
 /// `id_term` is the leader's Raft term while it runs the invocation and `id_seq` the
 /// leader's per-term execution counter, assigned by the executor, incremented for every
 /// execution (re-runs included) and never repeated within a term; together they make
-/// `unique_id` unique without knowing the log index, which is assigned only at proposal
-/// (D47, D52). `entry_ts_ms` is the entry timestamp
+/// `unique_id` unique without knowing the log index, which is assigned only at proposal.
+/// `entry_ts_ms` is the entry timestamp
 /// for calls, timers, init, migrate and xcall delivery, and the timestamp of the applied
-/// entry being read for views (D19). `seed` is the leader's fresh seed for the run; views
+/// entry being read for views. `seed` is the leader's fresh seed for the run; views
 /// and actions ignore it and draw from the node's CSPRNG. A compute run is an action that
 /// carries `compute`: it draws from `seed` and sees `entry_ts_ms`, like a logged run.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,7 +115,7 @@ impl Budget {
         }
     }
 
-    /// The budget of an action run (D12): 10 s of wall clock; fuel and memory as a call.
+    /// The budget of an action run: 10 s of wall clock; fuel and memory as a call.
     #[must_use]
     pub const fn action() -> Self {
         Self {
@@ -178,7 +166,7 @@ pub enum Status {
     Trap { kind: TrapKind, detail: String },
 }
 
-/// One state change; `key` is the stored key, generation prefix included (D39).
+/// One state change; `key` is the stored key, generation prefix included.
 /// `value: None` deletes the key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Write {
@@ -205,7 +193,7 @@ pub struct Event {
     pub audience: Audience,
 }
 
-/// A message to another app's method (D25, D29): kept in the run's outbox and delivered
+/// A message to another app's method: kept in the run's outbox and delivered
 /// by the platform after the entry commits, only if the run ends `Ok`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xcall {
@@ -234,12 +222,12 @@ pub struct Outcome {
     pub events: Vec<Event>,
     /// The xcalls the run sent; empty unless `Ok`.
     pub xcalls: Vec<Xcall>,
-    /// The actions the run started (D17); empty unless `Ok`.
+    /// The actions the run started; empty unless `Ok`.
     pub actions: Vec<crate::action::ActionStart>,
     /// The app's own log lines (stdout, stderr, `log`), whatever the status. They may hold
     /// user data: the node keeps none of them, in a log entry or on a job node.
     pub logs: Vec<String>,
-    /// A logged run's outbound requests and their responses, for its log entry (D76);
+    /// A logged run's outbound requests and their responses, for its log entry;
     /// kept whatever the status, since they left the node. Empty for views and actions.
     pub http: Vec<crate::action::HttpExchange>,
     /// Files the run finished; empty unless the status is `Ok`.
@@ -296,8 +284,8 @@ pub trait Directory: Send + Sync {
     fn team_exists(&self, team: &str) -> bool;
     /// The account's membership in the app's own org, with its role: at most that one
     /// org, and nothing for a personal app: a component runs code the platform does not
-    /// vet, so it never learns its callers' memberships elsewhere. R1's admitted partners
-    /// extend it.
+    /// vet, so it never learns its callers' memberships elsewhere. Cross-org apps' admitted
+    /// partners extend it.
     fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)>;
     /// The app linked under `name` (a reference of the app's release: a unit member or an
     /// attached app). None by default.
@@ -338,7 +326,7 @@ pub struct BlobInfo {
 /// An invocation `HostCore::new` refuses.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum InvalidInvocation {
-    /// A `Timer` invocation without its `TimerCtx` (D34).
+    /// A `Timer` invocation without its `TimerCtx`.
     #[error("a timer invocation needs its timer slot")]
     TimerWithoutSlot,
     /// A `TimerCtx` on an invocation that is not a timer tick.

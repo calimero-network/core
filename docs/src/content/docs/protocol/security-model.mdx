@@ -121,7 +121,7 @@ code, and app code beyond what its owner approved.
   replicas, quotas) still name an actor any node of the cluster can claim.
 - **Which node a client talks to.** A client checks that a node is attested,
   not that the user's approver approved its release, so it sends credentials and
-  passkey assertions to any attested node (F5 in the design).
+  passkey assertions to any attested node.
 
 - **Rollback, partly.** A rollback shorter than one checkpoint (1 s) looks like
   a crash; a store spliced from rows of different ages is not caught; an

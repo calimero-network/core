@@ -53,7 +53,7 @@ pub fn delete(&mut self, ids: Vec<String>) -> app::Result<u64> {
 
 <Aside type="caution">
   The ids travel as strings: a `u64` inside a list (`Vec<u64>`) is refused at
-  compile time, because it would lose precision in JavaScript (the D20 rule in
+  compile time, because it would lose precision in JavaScript (the decimal-string rule in
   [SDK macros](/build/sdk-macros/#applogic)). An `Option<u64>` on its own is
   a decimal string on the wire already.
 </Aside>

@@ -10,11 +10,6 @@
 //! an app's state still opens, it is listed and it can be deleted, but it runs
 //! nothing (`410 UNSUPPORTED_ENGINE`), and an entry of its format applies as a
 //! no-op on every replica alike.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, R
-//! requirements in section 8): D17 (actions are durable, logged when started and when done),
-//! D25 (xcalls are deduplicated by a per-source watermark), D29 (a stuck xcall is retried for
-//! up to an hour, then dead-lettered), R8 (the blob API and its lifecycle).
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -105,13 +100,13 @@ pub(crate) mod rows {
     /// A component's idempotency keys per class in the order they were recorded:
     /// `q ‖ class ‖ n`, for retention (`crate::idempotency`).
     pub const CORDER: u8 = b'q';
-    /// A component's blobs (R8, `crate::component::blobs`): its record of each, by SHA-256.
+    /// A component's blobs (`crate::component::blobs`): its record of each, by SHA-256.
     pub const CBLOB: u8 = b'b';
-    /// A component's xcall outbox (D25, `crate::component::xcall`): `o ‖ seq`.
+    /// A component's xcall outbox (`crate::component::xcall`): `o ‖ seq`.
     pub const COUT: u8 = b'o';
-    /// A component's dead letters (D29): `d ‖ n`.
+    /// A component's dead letters: `d ‖ n`.
     pub const CDEAD: u8 = b'd';
-    /// A component's pending actions (D17, `crate::component::action`): `a ‖ id`.
+    /// A component's pending actions (`crate::component::action`): `a ‖ id`.
     pub const CACT: u8 = b'a';
     /// A component's own secret values (`crate::component::InstanceSecrets`), one row:
     /// `s ‖ all`. Never in the app's storage: no run reads it, only the node's outbound gate.
@@ -437,7 +432,7 @@ impl AppMachine {
     }
 
     /// The app's blobs and what its storage holds besides. A component's storage
-    /// is its own keyspace, in memory; its blobs are host records beside it (R8). An
+    /// is its own keyspace, in memory; its blobs are host records beside it. An
     /// SDK 0.12 app's is not read: it is reported empty.
     #[must_use]
     pub fn storage_stats(&self) -> StorageStats {

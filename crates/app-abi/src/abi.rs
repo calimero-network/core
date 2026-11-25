@@ -3,15 +3,12 @@
 //!
 //! The node's own reader (`calimero_app_host::Abi`) keeps only what it enforces; this one
 //! keeps the free-form keys too (`params`, `returns`, `errors`, `events`, `types`), which
-//! describe the app to clients. Unknown keys are ignored, like the node does (D51).
+//! describe the app to clients. Unknown keys are ignored, like the node does.
 //!
 //! `types` (written by the SDK since `calimero-sdk` describes `#[derive(Record)]` and
 //! `#[derive(AbiType)]` types; see `calimero_sdk::abi`) holds each app type's shape: a
 //! [`TypeDef`]. An ABI without it, or a type it does not list, leaves the type unknown, as
 //! before; an entry this reader cannot read is left out the same way.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D51
-//! (the ABI carries `abiVersion` and nodes ignore unknown keys).
 
 use std::collections::BTreeMap;
 

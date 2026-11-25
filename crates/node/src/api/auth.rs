@@ -1,7 +1,4 @@
 //! The API's routes for passkey sign-up and sign-in, sessions, the account, aliases and API keys.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
-//! (64-bit integers travel as decimal strings in JSON).
 
 #[allow(
     clippy::wildcard_imports,
@@ -1744,7 +1741,7 @@ async fn passkey_label(
 /// summed over the component apps billed to `account:{id}` as their developer
 /// (`usage::developer`), on the UTC day of the node's app time. An organization's
 /// are the organization's (`GET /orgs/{org}/usage`). Sums of 64-bit counters are
-/// decimal strings (D20): `bundleBytes`, `developerFuelToday`, `developerWritesToday`.
+/// decimal strings: `bundleBytes`, `developerFuelToday`, `developerWritesToday`.
 async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
     let today = node

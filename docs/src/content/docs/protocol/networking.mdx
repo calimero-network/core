@@ -228,7 +228,7 @@ Routes: app data (`view`, `call`, `events`, `storage`, `last-write`, `xcalls`, `
 any node, other blobs only for an approved hosted app that marks them; `blob/delete` refused while a
 hosted app marks the blob or its leader is committing an entry that stored it; `raft` needs
 `rpc.sender` = the caller and, for an app group, an approved release and membership (replicas or the
-group's voters/learners): openraft itself never checks (F4).
+group's voters/learners): openraft itself never checks.
 Outbound, blobs (`spread_blob`) and presence go only to peers `may_send` allows.
 Both Raft checks run per heartbeat of every app group, so they read `SystemMachine::app_of_group`
 and `group_may_hold` (`system/routing.rs`: a group -> app and node -> apps index and a (group,

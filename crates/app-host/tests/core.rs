@@ -1,13 +1,4 @@
-//! The host core's policy, overlay and determinism rules (spec sections 3-5, D19, D46, D47).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
-//! security rules in section 9): D17 (actions are durable, logged when started and when done),
-//! D19 (the time and randomness each kind of run sees), D27 (an action's sub-call key adds the
-//! method, argument hash and occurrence), D46 (the host core reads state through `StateView`),
-//! D47 (`storage.add` and `unique-id` avoid serializing calls), D52 (unique ids are
-//! `<leader term>.<call seq>.<n>`), D76 (calls, timers and deliveries may send outbound HTTP,
-//! recorded
-//! in the entry), S9 (outbound HTTP only from leader runs, to declared and approved URLs).
+//! The host core's policy, overlay and determinism rules (spec sections 3-5).
 
 #![allow(
     clippy::unwrap_used,
@@ -515,7 +506,7 @@ fn disabled_interfaces_refuse() {
     let state = base(&[]);
     let call = inv(InvocationKind::Call);
     let mut host = core_for(&state, &call);
-    // A call starts an action; its key comes from the run's unique ids (D17, D52).
+    // A call starts an action; its key comes from the run's unique ids.
     assert_eq!(
         host.start_action("enrich", b"{}"),
         Ok(Ok("a.3.42.0".to_owned()))
@@ -1535,13 +1526,16 @@ fn actions_send_http_and_calls_record_what_they_send() {
     let mut action = core_for(&state, &inv(InvocationKind::Action))
         .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)
         .with_http(Arc::new(Echo));
-    assert!(action.storage_get(b"k").is_err(), "no state access (D12)");
+    assert!(
+        action.storage_get(b"k").is_err(),
+        "an action has no state access"
+    );
     assert_eq!(action.action_key().unwrap(), "a.1.1.0");
     assert_eq!(
         action.action_view("company", b"{}"),
         Ok(Ok(b"\"company\"".to_vec()))
     );
-    // The same call twice gets two keys; a retry would get the same two (D27).
+    // The same call twice gets two keys; a retry would get the same two.
     action.action_call("apply", b"{}").unwrap().unwrap();
     action.action_call("apply", b"{}").unwrap().unwrap();
     action.action_call("apply", b"{\"x\":1}").unwrap().unwrap();
@@ -1559,8 +1553,8 @@ fn actions_send_http_and_calls_record_what_they_send() {
     let out = action.finish(Status::Ok, Vec::new(), Usage::default());
     assert!(out.http.is_empty());
 
-    // A call has no action context; it sends HTTP (D76) and records the exchange for its
-    // entry, whatever its status. Views and `init` send none (S9).
+    // A call has no action context; it sends HTTP and records the exchange for its
+    // entry, whatever its status. Views and `init` send none.
     let mut call = core_for(&state, &inv(InvocationKind::Call))
         .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)
         .with_http(Arc::new(Echo));

@@ -9,9 +9,6 @@
 //! does not describe stays its JSON (`JSONValue`).
 //!
 //! An optional argument left `nil` is not sent: the SDK reads a missing argument as `None`.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
-//! (64-bit integers travel as decimal strings in JSON).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -288,7 +285,7 @@ const WIRE: &str = r#"
     }
 "#;
 
-/// Whether the SDK's macros convert the type itself (D20): `u64`, `i64` and `bytes` have a
+/// Whether the SDK's macros convert the type itself: `u64`, `i64` and `bytes` have a
 /// string form only here or directly inside an `Option`.
 fn converted(ty: &Type) -> bool {
     matches!(ty, Type::Int(Int::U64 | Int::I64) | Type::Bytes)

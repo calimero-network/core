@@ -1,4 +1,4 @@
-//! Full-text search for component apps (spec section 7, R2): the host keeps an index of
+//! Full-text search for component apps (spec section 7): the host keeps an index of
 //! each table's declared text fields, derived from the app's state, and views query it
 //! through the WIT `search` interface.
 //!
@@ -20,9 +20,6 @@
 //! state, and every search it makes reads that, however far a later view moves the indexes
 //! meanwhile. Views queued on earlier states are brought up first, in order (`AppEntry::due`),
 //! so the indexes pass through each live view's state instead of jumping over it.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (R requirements in section 8):
-//! R2 (tables with indexes, counts and full-text search).
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};

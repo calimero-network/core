@@ -1,8 +1,4 @@
 //! Error types: the app-facing [`AppError`] and the SDK's own [`StorageError`] and [`TableError`].
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
-//! (64-bit integers travel as decimal strings in JSON), D50 (per-run limits on events, keys,
-//! cursors and logs).
 
 use std::io;
 
@@ -76,7 +72,7 @@ pub enum StorageError {
     /// NaN has no deterministic form and is refused.
     #[error("NaN is not allowed in stored values")]
     Nan,
-    /// A key is longer than the host accepts (D50).
+    /// A key is longer than the host accepts.
     #[error("key is {len} bytes, over the {max} byte limit")]
     KeyTooLong {
         /// The offending length.
@@ -192,7 +188,7 @@ pub enum TableError {
 
 impl From<StorageError> for AppError {
     /// `Storage` with the message, except a run limit, which is the typed `RunLimit` with
-    /// `limit` (`"writes"` or `"bytes"`), `max` and `attempted` (decimal strings, D20).
+    /// `limit` (`"writes"` or `"bytes"`), `max` and `attempted` (decimal strings).
     fn from(e: StorageError) -> Self {
         if let StorageError::RunLimit {
             limit,

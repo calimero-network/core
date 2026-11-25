@@ -5,10 +5,6 @@ The workspace's library and binary crates. Each has its own
 before working in the crate. How they connect:
 [architecture](../docs/src/content/docs/contribute/architecture.mdx); the same
 list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-guide.mdx).
-Ids such as D20, S9 and R8 in the crates' comments and `AGENTS.md` cite the decision,
-security-rule and requirement tables of
-[app-runtime-v0.14](../docs/specs/app-runtime-v0.14.md); F1 to F4 cite
-[gate-system-group](../docs/specs/gate-system-group.md), section 1.2.
 
 ## Binaries
 

@@ -1,18 +1,5 @@
 //! The host core: the only code that reads or writes app state, applies access policy or
 //! decides what an invocation may do (spec section 3). Engines map WIT calls onto it.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
-//! security rules in section 9, R requirements in section 8): D12 (outbound HTTP only in
-//! actions, outside the log), D17 (actions are durable, logged when started and when done), D19
-//! (the time and randomness each kind of run sees), D25 (xcalls are deduplicated by a
-//! per-source watermark), D27 (an action's sub-call key adds the method, argument hash and
-//! occurrence), D38 (a migration is a rebuild into a separate keyspace), D46 (the host core
-//! reads state through `StateView`), D47 (`storage.add` and `unique-id` avoid serializing
-//! calls), D50 (per-run limits on events, keys, cursors and logs), D52 (unique ids are
-//! `<leader term>.<call seq>.<n>`), D76 (calls, timers and deliveries may send outbound HTTP,
-//! recorded
-//! in the entry), S9 (outbound HTTP only from leader runs, to declared and approved URLs), R8
-//! (the blob API and its lifecycle).
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -71,7 +58,8 @@ pub const MAX_KEY_BYTES: usize = 1_024;
 /// of a run never hold more than this. Equal to the executor's log-entry cap
 /// (`calimero_log::MAX_ENTRY_BYTES`, 1 MiB), which still checks the encoded entry.
 pub const MAX_RUN_BYTES: usize = 1024 * 1024;
-/// The refusal of a write past [`MAX_RUN_BYTES`]: the executor's D50 refusal, made early.
+/// The refusal of a write past [`MAX_RUN_BYTES`]: the executor's entry-size refusal, made
+/// early.
 pub const ENTRY_TOO_LARGE: &str = "entry too large";
 /// Writes per run: `put`, `delete` and `add` count one each; the next one is refused.
 pub const MAX_WRITES: u32 = 10_000;
@@ -174,7 +162,7 @@ pub const EMIT_TOO_MANY_ACCOUNTS: &str = "too many audience accounts";
 
 /// The refusal of an `action.*` call outside an action, or without the node's runner.
 const NOT_AN_ACTION: &str = "only an action has an action context";
-/// xcalls one run may send (D25).
+/// xcalls one run may send.
 pub const MAX_XCALLS: usize = 100;
 /// Bytes of an xcall's target app id or method name.
 pub const MAX_XCALL_NAME_BYTES: usize = 128;
@@ -212,13 +200,13 @@ pub struct HostCore {
     sync_xcalls: u32,
     /// Per (app, method, args hash), the synchronous calls made so far.
     sync_occurrences: BTreeMap<(String, String, Vec<u8>), u32>,
-    /// Actions this run started (D17).
+    /// Actions this run started.
     started: Vec<ActionStart>,
-    /// Per (method, args hash), the calls this action made so far (D27).
+    /// Per (method, args hash), the calls this action made so far.
     occurrences: BTreeMap<(String, Vec<u8>), u32>,
     subcalls: u32,
     http_requests: u32,
-    /// A logged run's outbound exchanges, for its entry (D76).
+    /// A logged run's outbound exchanges, for its entry.
     http_log: Vec<HttpExchange>,
     overlay: Overlay,
     writes: u32,
@@ -261,7 +249,7 @@ pub struct HostCore {
 
 impl HostCore {
     /// `state` is the committed state at `applied_index`: the leader's latest for calls,
-    /// the index the view reads at for views (D46). A timer invocation must carry its
+    /// the index the view reads at for views. A timer invocation must carry its
     /// slot and no other kind may.
     pub fn new(
         app_id: &str,
@@ -358,7 +346,7 @@ impl HostCore {
         Ok(answer)
     }
 
-    /// The app's blobs as the node records them (R8); without it the app has none.
+    /// The app's blobs as the node records them; without it the app has none.
     #[must_use]
     pub fn with_blobs(mut self, blobs: Arc<dyn BlobHost>) -> Self {
         self.blobs = blobs;
@@ -373,7 +361,7 @@ impl HostCore {
         self
     }
 
-    /// The node's runner for an action (D12, D17): its key, views and calls.
+    /// The node's runner for an action: its key, views and calls.
     #[must_use]
     pub fn with_action(mut self, action: Arc<dyn ActionHost>) -> Self {
         self.action = Some(action);
@@ -388,7 +376,7 @@ impl HostCore {
         self
     }
 
-    /// The node's outbound gate for an action's HTTP (S9); without it nothing is sent.
+    /// The node's outbound gate for an action's HTTP; without it nothing is sent.
     #[must_use]
     pub fn with_http(mut self, http: Arc<dyn HttpHost>) -> Self {
         self.http = http;
@@ -521,7 +509,7 @@ impl HostCore {
     }
 
     /// Adds `delta` to the deterministic CBOR integer at `key` (absent is 0) without the
-    /// guest reading it (D47). One write; a non-integer value or an overflow is refused;
+    /// guest reading it. One write; a non-integer value or an overflow is refused;
     /// limits as [`HostCore::storage_put`].
     pub fn storage_add(
         &mut self,
@@ -626,7 +614,7 @@ impl HostCore {
         let _ = self.cursors.remove(&id.0);
     }
 
-    // --- rebuild (D38): migrations are not in this milestone --------------------------
+    // --- rebuild: migrations are not in this milestone --------------------------
 
     pub fn rebuild_get(&self, _key: &[u8]) -> Result<Option<Vec<u8>>, HostDenied> {
         Err(self.rebuild_denied())
@@ -794,7 +782,7 @@ impl HostCore {
         self.applied_index
     }
 
-    /// `"<id_term>.<id_seq>.<n>"`, `n` counting this run's calls from 0 (D47, D52).
+    /// `"<id_term>.<id_seq>.<n>"`, `n` counting this run's calls from 0.
     /// Unique across runs because the leader never repeats `(term, seq)`; deterministic
     /// for a given invocation. Only in invocations that become log entries.
     pub fn unique_id(&mut self) -> Result<String, HostDenied> {
@@ -809,7 +797,7 @@ impl HostCore {
         Ok(id)
     }
 
-    /// Starts a durable action (D17): calls and timers only. The action is queued on the
+    /// Starts a durable action: calls and timers only. The action is queued on the
     /// outcome, logged as started with the entry only if the run ends `Ok`, and run by the
     /// leader's runner after. Its key (`a.<term>.<seq>.<n>`, from the run's unique ids) is
     /// returned. More than [`MAX_STARTED_ACTIONS`] is the WIT result's error.
@@ -1049,7 +1037,7 @@ impl HostCore {
         }
     }
 
-    /// Queues an xcall in the run's outbox (D25): calls, timers, `init` and xcall
+    /// Queues an xcall in the run's outbox: calls, timers, `init` and xcall
     /// deliveries only, delivered after the entry commits and only if the run ends `Ok`.
     /// A malformed target (empty, over [`MAX_XCALL_NAME_BYTES`], a reserved `__` method)
     /// or more than [`MAX_XCALLS`] is the WIT result's error; the arguments count toward
@@ -1278,7 +1266,7 @@ impl HostCore {
         Ok(host)
     }
 
-    /// A blob's metadata (R8), if it is one of the app's blobs; `None` for any other id.
+    /// A blob's metadata, if it is one of the app's blobs; `None` for any other id.
     /// Every kind but actions (which read through views) and migrations.
     pub fn blobs_info(&self, id: &str) -> Result<Option<BlobInfo>, HostDenied> {
         self.burn(FUEL_HOST_CALL);
@@ -1356,12 +1344,12 @@ impl HostCore {
         Ok(page)
     }
 
-    /// This action run's key (D17): actions only.
+    /// This action run's key: actions only.
     pub fn action_key(&self) -> Result<String, HostDenied> {
         Ok(self.action_host()?.key())
     }
 
-    /// Runs view `method` for the action (D12).
+    /// Runs view `method` for the action.
     pub fn action_view(
         &mut self,
         method: &str,
@@ -1373,7 +1361,7 @@ impl HostCore {
         Ok(self.answered(args.len(), answer))
     }
 
-    /// Runs `method` as one logged call for the action, under the D27 key of this
+    /// Runs `method` as one logged call for the action, under the sub-call key of this
     /// (method, args) pair's next occurrence in the run.
     pub fn action_call(
         &mut self,
@@ -1393,7 +1381,7 @@ impl HostCore {
         Ok(self.answered(args.len(), answer))
     }
 
-    /// Sends a run's outgoing HTTP request through the node's gate (S9, D76): actions,
+    /// Sends a run's outgoing HTTP request through the node's gate: actions,
     /// calls, timers and deliveries; views, `init` and migrations trap `HostDenied`. Past
     /// [`MAX_HTTP_REQUESTS`] or a body over [`MAX_HTTP_BODY_BYTES`] the request is not sent
     /// and the guest gets the error. A logged run records the exchange for its entry
@@ -1442,7 +1430,7 @@ impl HostCore {
         Ok(())
     }
 
-    // --- WASI served by the host (D19) -----------------------------------------------
+    // --- WASI served by the host -----------------------------------------------
 
     #[must_use]
     pub fn wall_ms(&self) -> u64 {
@@ -1573,7 +1561,7 @@ impl HostCore {
         )
     }
 
-    /// State reads: everything but actions, which read through views (D12).
+    /// State reads: everything but actions, which read through views.
     fn may_read(&self) -> Result<(), HostDenied> {
         if self.inv.kind == InvocationKind::Action {
             return Err(self.denied("storage"));
@@ -1592,7 +1580,7 @@ impl HostCore {
         Ok(())
     }
 
-    /// A value may refer only to the app's own blobs (R8): retention follows the
+    /// A value may refer only to the app's own blobs: retention follows the
     /// references, so one to a blob the app does not hold would keep nothing alive.
     fn check_blob_refs(&self, value: &[u8]) -> Result<(), HostDenied> {
         if blob_refs(value).iter().any(|id| {
@@ -1672,7 +1660,8 @@ fn bounded(answer: Result<Vec<u8>, String>) -> Result<Vec<u8>, String> {
     }
 }
 
-/// The SHA-256 of an action call's arguments, the D27 occurrence counter's key.
+/// The SHA-256 of an action call's arguments, the key of its occurrence counter (identical
+/// calls in one run get distinct sub-call keys).
 fn sha_args(args: &[u8]) -> Vec<u8> {
     use sha2::Digest as _;
     sha2::Sha256::digest(args).to_vec()

@@ -1,7 +1,4 @@
 //! The API's routes for the peer routes (`/internal/*`) between the cluster's nodes.
-//!
-//! F-numbers cite the findings of `docs/specs/gate-system-group.md`, section 1.2: F4 (Raft
-//! messages were not tied to group membership).
 
 #[allow(
     clippy::wildcard_imports,
@@ -255,7 +252,7 @@ fn admit_raft(
 ) -> Result<(), ApiError> {
     // openraft takes the sender an RPC names on trust, and a follower takes
     // an append from any node with a higher term: the sender must be the
-    // caller, and a member of the group (F4).
+    // caller, and a member of the group.
     if rpc.sender() != Some(caller.node) {
         return Err(ApiError::forbidden(
             "a Raft message names another node than the one that sent it",

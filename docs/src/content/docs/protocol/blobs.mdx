@@ -12,7 +12,7 @@ attachment, an image, a model. Log entries are capped at 1 MiB and should stay
 small, so anything large goes to the **blob store** and the log carries only
 its id. The same store holds bundles and uploaded `.mpk` releases. Apps are
 `calimero:app` components, and the node keeps their blobs as described here
-(spec `app-runtime-v0.14` R8).
+(spec `app-runtime-v0.14`, the blob requirement).
 
 ## The store
 
@@ -219,7 +219,7 @@ Every replica applies the entry only if the source is a file the app's records m
 Otherwise it answers `NOT_A_RUN_OUTPUT` and changes nothing, so a leader cannot publish anything else.
 
 The plaintext counts against the organization's file quota from the entry until retention collects it.
-Retention is R8: the plain blob is held while a `BlobRef` in state names it, and for an hour after.
+Retention: the plain blob is held while a `BlobRef` in state names it, and for an hour after.
 Publishing an output the app already holds as a plain blob stores and charges nothing again.
 A run publishes at most 16 outputs, each at most 47 MiB (the plain blob it becomes; a larger output answers `file too large`) and 64 MiB together.
 Past that `publish` answers the soft error `run published too much` and records nothing.
@@ -283,7 +283,7 @@ cap (64 MiB) by the envelope, in the clear; the client reports both as `TOO_LARG
 
 ### Blobs a component holds
 
-(R8, `component/blobs.rs`.)
+(`component/blobs.rs`.)
 
 The cluster's store and routes (`store_blob`, a majority, `fetch_blob`, `collect_blob`,
 `blob_held_strong`), but the app holds a blob through a host record (`BlobRecord { size, mime, refs,
@@ -352,7 +352,7 @@ in-memory token bucket over at most `MAX_TRACKED_ACCOUNTS` accounts): `429 TOO_M
 Code: `node/component/files.rs`.
 
 A file is a sealed blob.
-It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
+It shares the blob id namespace and the `BlobRef` type; there is no delete, and retention is a blob's.
 A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key
 (`backup::file_key`, not the TEE key) and the app's blob records.
 A sealed file's record carries a `FileSeal` (`BlobRecord::file`: the plaintext hash and the wrapped

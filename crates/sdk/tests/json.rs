@@ -1,7 +1,4 @@
-//! 64-bit integers are decimal strings in JSON events and errors (D20).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
-//! (64-bit integers travel as decimal strings in JSON).
+//! 64-bit integers are decimal strings in JSON events and errors.
 
 use calimero_sdk::json::{i64_str, opt_u64_str, u64_str};
 use serde::{Deserialize, Serialize};

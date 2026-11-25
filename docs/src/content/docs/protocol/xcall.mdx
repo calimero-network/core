@@ -231,14 +231,14 @@ A run another app called offers no one onward.
 
 ### Xcalls
 
-(D13, D25, D29, `component/xcall.rs`.)
+(`component/xcall.rs`.)
 
 An `Ok` entry's `Outcome::xcalls` go to the source's outbox (`XcallHead` in `ComponentHead`, rows
 `rows::COUT ‖ seq`, at most `MAX_OUTBOX`).
 The source leader's timer poll (`Node::deliver_xcalls`, at most `DELIVER_BATCH` a round) delivers
 the head through `call_component` with `CallRequest::xcall = XcallFrom { source, seq }`,
 `Caller::App`, a `node:xcall-…` key; the target checks the boundary again (`same_boundary`: one
-org), its watermark (`XcallHead::seen`, D25: answered as delivered without running), the ABI
+org), its watermark (`XcallHead::seen`, answered as delivered without running), the ABI
 (`allowApps`, `"*"` = any; `abi_check`), runs `kind = xcall-deliver` and records `CallEntry::xcall`,
 whose apply moves the watermark whatever the status.
 The source then logs `componentXcallDone { seq, dead }`.

@@ -1,8 +1,4 @@
 //! The ordered key-value store the SDK runs on: `HostStore` in the guest, [`MemStore`] in tests.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D47
-//! (`storage.add` and `unique-id` avoid serializing calls), D50 (per-run limits on events,
-//! keys, cursors and logs).
 
 use crate::error::StorageError;
 
@@ -24,7 +20,7 @@ pub type DefaultStore = HostStore;
 #[cfg(not(target_arch = "wasm32"))]
 pub type DefaultStore = MemStore;
 
-/// The longest key the host accepts (D50).
+/// The longest key the host accepts.
 pub const MAX_KEY_BYTES: usize = 1024;
 /// The longest key the SDK builds: one under the host's limit, so the bounds it derives
 /// (`last ++ 0x00` for a cursor, `prefix ++ 0xFF` for a range) always fit.
@@ -55,14 +51,14 @@ pub trait Store {
     fn put(&mut self, k: &[u8], v: &[u8]) -> Result<(), StorageError>;
     /// Remove `k`; limits as [`Store::put`].
     fn delete(&mut self, k: &[u8]) -> Result<(), StorageError>;
-    /// Add `delta` to the CBOR integer at `k` (absent is 0) without reading it (D47); limits
+    /// Add `delta` to the CBOR integer at `k` (absent is 0) without reading it; limits
     /// as [`Store::put`].
     fn add(&mut self, k: &[u8], delta: i64) -> Result<(), StorageError>;
     /// Open a cursor over `[start, end)`, newest-first when `reverse`.
     fn range(&self, start: &[u8], end: &[u8], reverse: bool) -> Self::Range;
 }
 
-/// Refuse a key over [`MAX_SDK_KEY_BYTES`], with a clear error before the host call (D50).
+/// Refuse a key over [`MAX_SDK_KEY_BYTES`], with a clear error before the host call.
 pub fn check_key(key: &[u8]) -> Result<(), StorageError> {
     if key.len() > MAX_SDK_KEY_BYTES {
         return Err(StorageError::KeyTooLong {

@@ -19,7 +19,7 @@ A request is made only when every gate holds:
    admin; on again only through the consent page). The node wraps every run's client in
    `egress_gated`, which asks before each request and refuses with `EGRESS_OFF`
    (`OutboundRefusal::EgressOff`) before any other gate, over every approval.
-5. The run writes (calls, follow-ups, timers; a component's actions and, D76, its calls,
+5. The run writes (calls, follow-ups, timers; a component's actions and its calls,
    timers and deliveries): never a view, `init`, a migration or compute (a compute run
    has no network at all, so the switch never concerns a job node).
 6. `https` on 443 to a name resolving only to public addresses, size limits from
@@ -107,7 +107,7 @@ key may do at its bound host is still the app's to use.
   turned off reaches a run already going); test
   `egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again`.
 - `TURNSTILE_VERIFY_URL`: Cloudflare Turnstile's siteverify, for apps that check a
-  token from a call (D76; `apps/fixture-captcha`) and for the `turnstile` stand-in.
+  token from a call (`apps/fixture-captcha`) and for the `turnstile` stand-in.
 - Feature `outbound-testing`: `[outbound.testing] echo` answers `.test` hosts
   in-process (cluster tests and scenarios) and takes literal secrets; `turnstile`
   answers `TURNSTILE_VERIFY_URL` in-process as Cloudflare answers its test secrets

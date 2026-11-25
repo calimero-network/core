@@ -1,9 +1,4 @@
 //! How a failed run becomes one `TrapKind` (spec section 5, error mapping).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
-//! security rules in section 9): D23 (a timeout is not logged and does not spend the
-//! idempotency key), D36 (a deadline answers `503 TIMEOUT`, never `422 TRAP`), S6 (a host panic
-//! is `Trap(Fault)`, never a node crash), S10 (logs and traps carry no user data).
 
 use calimero_app_host::{HostDenied, TrapKind};
 use thiserror::Error;
@@ -45,7 +40,7 @@ pub(crate) struct Cancelled;
 #[error("memory allocation failed")]
 pub(crate) struct GrowFailed;
 
-/// A panic in host code, caught at the engine boundary (S6).
+/// A panic in host code, caught at the engine boundary.
 #[derive(Debug, Error)]
 #[error("host panic")]
 pub(crate) struct HostPanic;
@@ -63,11 +58,11 @@ pub(crate) fn denied(refusal: HostDenied) -> Error {
 }
 
 /// Classifies a failed run. The detail never carries guest arguments, results or
-/// account ids (S10): it is the trap code or a fixed text.
+/// account ids: it is the trap code or a fixed text.
 ///
 /// Node load is not the guest's fault: an instance pool with no free slot, or an
 /// allocation the OS refused while instantiating or growing memory, is `Unavailable` (not
-/// logged, retried with the same key; D23, D36).
+/// logged, retried with the same key).
 pub(crate) fn classify(err: &Error, phase: Phase) -> (TrapKind, String) {
     if let Some(refusal) = err.downcast_ref::<HostDenied>() {
         return (TrapKind::HostDenied, refusal.to_string());

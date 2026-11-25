@@ -1,7 +1,4 @@
-//! Test guest: exercises the nine D44 stubs (stdin, exit, terminals, filesystem).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D44
-//! (nine WASI interfaces are served by stubs that refuse).
+//! Test guest: exercises the nine refusing WASI stubs (stdin, exit, terminals, filesystem).
 
 use wasi::cli::{environment, exit, stdin, terminal_stderr, terminal_stdin, terminal_stdout};
 use wasi::filesystem::preopens;

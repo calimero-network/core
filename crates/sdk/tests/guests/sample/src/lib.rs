@@ -1,8 +1,4 @@
 //! Test guest: a small rooms app using every `app` attribute, run by `tests/abi.rs`.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D13
-//! (every invocation has an explicit caller), D20 (64-bit integers travel as decimal strings in
-//! JSON).
 
 use std::io::{Read, Write};
 
@@ -62,7 +58,7 @@ pub struct Tally {
     pub note: Option<String>,
 }
 
-/// One reading, its 64-bit integers in their D20 form: decimal strings in JSON, exact past
+/// One reading, its 64-bit integers as decimal strings in JSON, exact past
 /// 2^53.
 #[derive(serde::Serialize, serde::Deserialize, AbiType)]
 #[serde(rename_all = "camelCase")]
@@ -74,7 +70,7 @@ pub struct Reading {
 }
 
 /// Readings nested in another plain serde type: each one's shape is checked through its
-/// `AbiType` (D20).
+/// `AbiType`.
 #[derive(serde::Serialize, serde::Deserialize, AbiType)]
 pub struct Meter {
     pub readings: Vec<Reading>,
@@ -390,7 +386,7 @@ impl Rooms {
     }
 
     /// A timer without `allow(system)`: `every` implies it, since a timer's caller is
-    /// always `System` (D13).
+    /// always `System`.
     #[app::every("30s")]
     pub fn heartbeat(&mut self) -> app::Result<()> {
         Ok(())

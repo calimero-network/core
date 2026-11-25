@@ -163,7 +163,7 @@ refusal is `429 QUOTA_EXCEEDED`.
 | Stored file bytes per organization (`maxFileBytesPerOrg`) | 50 GB |
 | Concurrent compute runs per organization (`maxConcurrentRunsPerOrg`) | 4 |
 | Reserved compute fuel per organization (`computeFuelPerOrg`) | 10 times `MAX_COMPUTE_FUEL` |
-| Fuel per developer per UTC day (`maxFuelPerDeveloperPerDay`; the developer usage is billed to: a deployment's owner for its instances, else the app's org or owner, D78) | 0 (no limit); checked before a client's call or an xcall to any of its apps runs, not at apply: `init`, timer ticks and event handlers still run and count (D76) |
+| Fuel per developer per UTC day (`maxFuelPerDeveloperPerDay`; the developer usage is billed to: a deployment's owner for its instances, else the app's org or owner) | 0 (no limit); checked before a client's call or an xcall to any of its apps runs, not at apply: `init`, timer ticks and event handlers still run and count |
 
 The fuel cap is approximate by at most one refresh interval (5 s). A call never
 asks a peer: the node reads the apps it replicates from its own replicas, and the
@@ -173,7 +173,7 @@ interval. A peer that stops answering keeps the figures it last reported. An app
 peer has reported yet counts as nothing, so the cap fails open rather than closed:
 refusing every call to all of a developer's apps whenever one replica of one of them
 is unreachable would be worse than a developer briefly exceeding a daily cap. The cap is a
-decimal string in JSON (D20); a node writes a non-zero cap only once every node runs
+decimal string in JSON; a node writes a non-zero cap only once every node runs
 its release or newer (`409 UPGRADE_PENDING`).
 
 ## Roles and capabilities
@@ -202,7 +202,7 @@ at 0.
 `DeleteApp`, `DeleteOrg` and `DeleteTeam` free an app's files through `remove_app`.
 `TransferApp` of an app leaving a personal organization (to the new owner's) is refused when that
 organization's quota would not hold its files.
-The exception is `maxFuelPerDeveloperPerDay` (Q20, D76, D78; `"0"`, the default, is no limit; a
+The exception is `maxFuelPerDeveloperPerDay` (`"0"`, the default, is no limit; a
 decimal string in JSON, a number refused, `system::decimal_u64`).
 It is charged to the app's developer, `usage::developer` (#4839), the same identity usage is billed
 to: the owner of the deployment an app was created from, else the app's organization or owner.
@@ -215,12 +215,12 @@ The check asks no peer (`Node::developer_fuel_cached`): apps this node replicate
 replica, the others from `Node::refresh_usage`, which every `USAGE_REFRESH` (5 s) while a cap is set
 asks all peers at once (`internal/usage/today`) and keeps a silent peer's last figures; so the cap
 is approximate by one interval and an app no peer ever reported counts as nothing (fails open).
-A refused delivered xcall is the target's final answer (D29, `deliver_one`), not a dead letter.
+A refused delivered xcall is the target's final answer (`deliver_one`), not a dead letter.
 The refusal is not logged, so the key is not spent; `init`, timer ticks and event handlers are never
 refused, and they still count toward the developer's day.
-The quota is fuel; wall time is information only (D76).
+The quota is fuel; wall time is information only.
 A non-zero cap is written only once every registered node's attested release is this node's or newer
-(`Node::nodes_behind_release`, as D71 gates `base_seq`), else `409 UPGRADE_PENDING`
+(`Node::nodes_behind_release`, as `base_seq` is gated), else `409 UPGRADE_PENDING`
 (`api::UPGRADE_PENDING`, one code for every such release gate), judged before the operator is asked
 to sign (`__set_quotas`, #4791): an older node would drop the field and its snapshots would reset
 the cap.

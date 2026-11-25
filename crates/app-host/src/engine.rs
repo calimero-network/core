@@ -1,8 +1,4 @@
-//! The engine contract (D3): engines run components, the host core decides everything else.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D3
-//! (the executor depends on an `Engine` trait, never a runtime), D44 (nine WASI interfaces are
-//! served by stubs that refuse).
+//! The engine contract: engines run components, the host core decides everything else.
 
 use std::any::Any;
 use std::sync::Arc;
@@ -16,7 +12,7 @@ use crate::types::{Budget, Outcome};
 /// Why a component can't be prepared.
 #[derive(Debug, Error)]
 pub enum PrepareError {
-    /// The component imports an interface outside the world and the D44 stubs.
+    /// The component imports an interface outside the world and the refusing WASI stubs.
     #[error("forbidden import: {0}")]
     ForbiddenImport(String),
     /// The component carries no `calimero:abi` section.

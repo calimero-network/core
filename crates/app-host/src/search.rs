@@ -1,9 +1,6 @@
-//! Full-text search (spec section 7, R2): the host keeps an index of each table's declared
+//! Full-text search (spec section 7): the host keeps an index of each table's declared
 //! text fields from the app's state, and views query it. The index is derived data on the
 //! node; the host core only carries the query to it and enforces who may ask.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (R requirements in section 8):
-//! R2 (tables with indexes, counts and full-text search).
 
 /// Hits one query returns at most (the node's index caps it the same way).
 pub const MAX_SEARCH_LIMIT: u32 = 100;

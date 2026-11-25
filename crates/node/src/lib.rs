@@ -7,9 +7,6 @@
 //! Spec: [Protocol overview](https://calimero-network.github.io/core/protocol/overview/),
 //! [Architecture](https://calimero-network.github.io/core/contribute/architecture/).
 //! Crate guide: [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D34
-//! (timer ticks are proposed by the leader and keyed by slot).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -249,7 +246,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
-    // Timer ticks (D34) of the component apps this node leads.
+    // Timer ticks of the component apps this node leads.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();
     drop(tokio::spawn(async move {

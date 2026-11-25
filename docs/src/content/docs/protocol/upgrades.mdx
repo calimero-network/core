@@ -944,13 +944,13 @@ person, else green, with `reasons`, the egress diff (`before`, `after`, `added`,
 `newMethods`/`removedMethods`.
 A single upgrade keeps the members where they are; a unit's moves its direct members as `unit_plan`
 does.
-The class decides how it applies: under `secondApprover` a red one takes two approvers (C8), under
+The class decides how it applies: under `secondApprover` a red one takes two approvers, under
 `noDestinations` a green one of a unit with no destination before or after applies on its own,
-unless it removes a method or would move the unit's members (C9).
+unless it removes a method or would move the unit's members.
 
 ### Update classes and policies
 
-(C8; `system/updates.rs`, `api/update_policies.rs`; docs: protocol upgrades "The class at apply",
+(`system/updates.rs`, `api/update_policies.rs`; docs: protocol upgrades "The class at apply",
 "Update policies".)
 
 Every `UpgradeApp` the API writes carries `class` (`types::UpgradeClass`: `egress::update` of that
@@ -1008,7 +1008,7 @@ whatever the entry lists), and its members are the instance's `links` (`upgrade_
 (`api::upgrades::approval_json`).
 The apply errors carry their code (each a `system::Rejection` of its own `RejectionKind`).
 `autoApply` (`noDestinations`: a green update that removes no method and moves none of the apps it
-created, of an app whose unit has no destinations before or after) and `holdHours` act through C9
+created, of an app whose unit has no destinations before or after) and `holdHours` act through updates that apply on their own
 (below).
 Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST /apps/{app}/upgrade-policy`
 (`policy_json`), `GET /apps/{app}/update` adds `policy`, `pendingApprovals`,
@@ -1019,7 +1019,7 @@ or an approval waiting).
 
 ### Updates on their own, restore points and undo
 
-(C9; `system/updates.rs`, `node/auto_updates.rs`, `node/restore_points.rs`, `api/undo.rs`; docs:
+(`system/updates.rs`, `node/auto_updates.rs`, `node/restore_points.rs`, `api/undo.rs`; docs:
 protocol upgrades "Updates that apply on their own".)
 
 Staged rollouts (waves across a deployment's instances) are not part of core: pacing across

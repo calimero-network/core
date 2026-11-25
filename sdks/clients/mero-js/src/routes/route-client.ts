@@ -7,7 +7,7 @@
  *   {@link NodeTransport}, so it is sealed to an attested node, carries the
  *   transport's credential (refreshed on a `401`), moves on past a
  *   `421 WRONG_NODE`, and a route the document marks retry-safe retries a
- *   `503` (D70); the two
+ *   `503`; the two
  *   routes a node serves in the clear (`/attestation`, `/health`) go
  *   unsealed, without the credential;
  * - the `412 CONFIRM_REQUIRED` step-up and the `428
@@ -69,7 +69,7 @@ export interface RouteClientOptions {
 }
 
 /**
- * The routes a `503` is retried on (D70): those the document marks
+ * The routes a `503` is retried on: those the document marks
  * `x-calimero-retry-safe` (a call, a view, a method by its path), each
  * carrying its idempotency key or reading. As path patterns, without the
  * leading `/`.
@@ -86,7 +86,7 @@ const NEEDS_KEY = new Set(RETRY_SAFE_ROUTES.filter((r) => r.requires === 'idempo
  * A `fetch` that sends `openapi-fetch`'s request through `transport`: the
  * path and query after {@link ROUTE_BASE_URL}, the body as it was serialised,
  * and the request's signal. Headers other than `content-type` are not sent:
- * the transport sets the credential. A call or a view is retried as D70 says
+ * the transport sets the credential. A call or a view is retried on a `503`
  * (its confirmed attempt, carrying `confirm`, exactly once).
  */
 export function transportFetch(transport: RouteTransport): (request: Request) => Promise<Response> {
@@ -122,7 +122,7 @@ export function transportFetch(transport: RouteTransport): (request: Request) =>
 /**
  * Gives a request to a route whose retries require an `idempotencyKey`
  * (`x-calimero-retry-requires`: a call, a method by its path) one when it has
- * none, made before it is first sent, so its D70 retries and its step-up's
+ * none, made before it is first sent, so its `503` retries and its step-up's
  * confirmed retry carry the same key.
  */
 export const idempotencyKeys: Middleware = {

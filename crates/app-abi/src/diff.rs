@@ -8,9 +8,6 @@
 //!
 //! The app types those name are compared by their shapes in `types`, with the same rule in
 //! the direction each one travels (`shapes`).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
-//! (64-bit integers travel as decimal strings in JSON).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -647,7 +644,7 @@ mod tests {
         assert!(!widens(&t("u32"), &t("u16")));
         assert!(widens(&t("list<u16>"), &t("list<u32>")));
         assert!(widens(&t("char"), &t("string")));
-        // A JSON number and D20's decimal string are different forms.
+        // A JSON number and a decimal string are different forms.
         assert!(!widens(&t("u64"), &t("u64_number")));
         assert!(!widens(&t("u64_number"), &t("u64")));
         assert!(widens(&t("u32"), &t("u64_number")));

@@ -1,9 +1,4 @@
 //! The API's routes for the app directory: instances, their metadata, access, transfers and moves.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2, S
-//! security rules in section 9): D20 (64-bit integers travel as decimal strings in JSON), D25
-//! (xcalls are deduplicated by a per-source watermark), D29 (a stuck xcall is retried for up to
-//! an hour, then dead-lettered), S5 (views are read-only and never run confirm methods).
 
 #[allow(
     clippy::wildcard_imports,
@@ -578,7 +573,7 @@ async fn create_instance(
     if executor != crate::types::Executor::Component {
         return Err(ApiError::unsupported_bundle());
     }
-    // A component's confirm methods are its ABI's (S5), never the request's.
+    // A component's confirm methods are its ABI's, never the request's.
     if serde_json::to_vec(&body.init_args).map_or(0, |a| a.len()) > crate::node::MAX_ARGS_BYTES {
         return Err(crate::node::args_too_large());
     }
@@ -1432,7 +1427,7 @@ async fn app_metadata(
     Ok(Json(json!({})))
 }
 
-/// A component app's xcalls (D25, D29): messages waiting in its outbox and its dead
+/// A component app's xcalls: messages waiting in its outbox and its dead
 /// letters, newest last. The app's owner's or an org admin's, from a replica.
 async fn app_xcalls(
     State(node): State<Arc<Node>>,
@@ -1522,7 +1517,7 @@ async fn app_openapi(
     Ok(Json(calimero_app_abi::openapi::document(&abi, &info)))
 }
 
-/// One day of an app's usage book on the wire: every figure a decimal string (D20).
+/// One day of an app's usage book on the wire: every figure a decimal string.
 /// `wallMs` is for information only; the quota counts fuel.
 fn usage_day(day: u64, u: &crate::component::DayUsage) -> Value {
     json!({

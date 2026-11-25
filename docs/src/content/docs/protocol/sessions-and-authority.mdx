@@ -316,7 +316,7 @@ Budgets (`admit_pending`): ceremonies of callers not yet known (sign-in, sign-up
 finish) share `MAX_PENDING_CHALLENGES` and are never refused: one sealed session
 (`calimero_sealed::SealedSession`, set by `intercept`) holds at most `MAX_CEREMONIES_PER_SESSION`,
 its next begin displacing its own oldest, and a full pool displaces the oldest of the session
-holding the most, so a flood never locks other callers out (review finding D1).
+holding the most, so a flood never locks other callers out.
 The store (`api::Ceremonies`) indexes ceremonies by expiry, by session and by each session's rank,
 so a begin, take, expiry or displacement is O(log n), never a scan of the pool.
 Not keyed on the peer IP: the node serves plain HTTP behind the operator's TLS front, where every

@@ -1,12 +1,6 @@
 //! A three-node cluster in one process, driven only through the client, over
 //! sealed channels, with the kv fixture component (the cluster itself is in
 //! `harness/cluster.rs`, shared with `benches/cluster_throughput.rs`).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D38
-//! (a migration is a rebuild into a separate keyspace).
-//!
-//! F-numbers cite the findings of `docs/specs/gate-system-group.md`, section 1.2: F4 (Raft
-//! messages were not tied to group membership).
 
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -2960,7 +2954,7 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
         .unwrap();
 
     // A failed upgrade is recorded with its reason, and a retry runs it again: a
-    // component's upgrade that names a migration is refused (D38).
+    // component's upgrade that names a migration is refused.
     let _ = alice
         // A bundle of its own: an app's package is the first release naming its bundle.
         .packages().upload(mpk(
@@ -6808,7 +6802,7 @@ async fn credentials_memberships_and_the_fleet_are_approved_where_they_are_made(
 /// now answered by another node of the cluster: a reused port, a node moved or
 /// replaced), is refused there, never handled as that node's own. It comes over
 /// the real peer path (`peer_post`: an identified channel, `api::peer`) from
-/// the genuine leader, so the sender and membership checks (F4) pass: only the
+/// the genuine leader, so the sender and membership checks pass: only the
 /// addressee is wrong. A message without an addressee (a peer on the previous
 /// release) is still handled, and both are counted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

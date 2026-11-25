@@ -776,7 +776,7 @@ mounted as `harness::poll`; a sleep stays only where it shows that something
 does not happen within a window), a smaller file where size is not the point, a matrix split into
 tests. A request a test expects to answer `503` is sent once through
 `client.transport()`: the client's `call` and `view` send it again while the node
-answers `503` (D70), about seven times. A new slow test is made fast, not listed.
+answers `503`, about seven times. A new slow test is made fast, not listed.
 
 `.github/workflows/e2e.yml` runs in the merge queue, on every entry whose change
 reaches code, and nightly on master with the long soak; a PR runs it only when

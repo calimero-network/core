@@ -4,7 +4,7 @@
 // `Transport.request(method, path, options)` reaches one node route over the
 // attested, sealed channel with the credential held now; the runtime handles
 // attestation, sealing, the session and its refresh, `421 WRONG_NODE` moves,
-// D70 retries, the `412 CONFIRM_REQUIRED` passkey step-up, error mapping and
+// `503` retries, the `412 CONFIRM_REQUIRED` passkey step-up, error mapping and
 // server-sent events. Its pieces live here too: the node's attestation
 // (`attestation.ts`), the node directory (`directory.ts`), passkeys
 // (`passkey.ts`) and the typed refusals (`errors.ts`). This is the bottom layer:

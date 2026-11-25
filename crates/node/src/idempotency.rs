@@ -4,7 +4,7 @@
 //! call that came without a key, or one a client created for its own retries,
 //! `node:c-…`; [`class_of`]) for [`NODE_KEY_TTL_MS`] (10 minutes), a caller's own
 //! key for [`IDEMPOTENCY_TTL_MS`] (24 hours). A record expires once the earlier of
-//! the newest applied entry's timestamp (D16) and the applying entry's own
+//! the newest applied entry's timestamp and the applying entry's own
 //! ([`expiry_now`]) is past its own by that time, never by a node's local clock,
 //! so every replica drops the same records: retention runs inside `apply`, on what
 //! the log carries. At most [`IDEMPOTENCY_MAX_RECORDS`] (100,000) records per app:
@@ -19,9 +19,6 @@
 //! Each executor keeps its records in its own rows (`app::rows::IDEM` and
 //! `rows::expiry` for wasmer, `rows::CIDEM` and `rows::corder` for components);
 //! this module is the one rule over both.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D16
-//! (entry timestamps never decrease).
 
 use calimero_log::StateTx;
 use serde::{Deserialize, Serialize};

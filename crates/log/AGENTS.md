@@ -24,8 +24,8 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `CATCH_UP`, then `Unavailable`) until it has applied its whole log: a leader
   restored into its old term (a restart, no election) can hold entries it
   appended past the commit index it saved, which is not synced. The node's
-  component apps take their unique ids (D52, `term.seq.n`) from it.
-- `Group::propose_led_staged` (C2) is `propose_led` in two steps, for a build that is slow
+  component apps take their unique ids (`term.seq.n`) from it.
+- `Group::propose_led_staged` is `propose_led` in two steps, for a build that is slow
   (the node's logged runs: a guest that may wait in its host calls). The builder gets
   `Stage::Read(&M, applied)` under the applied state's read lock and answers
   `Staged::Done(Proposal)` or `Staged::Run(P)`; the lock is released and it gets

@@ -27,7 +27,7 @@ interface storage {
   get: func(key: list<u8>) -> option<list<u8>>;
   put: func(key: list<u8>, value: list<u8>);
   delete: func(key: list<u8>);
-  add: func(key: list<u8>, delta: s64);   // commutative, no read; value is a CBOR integer (D47)
+  add: func(key: list<u8>, delta: s64);   // commutative, no read; value is a CBOR integer
   resource cursor { next: func(max: u32) -> list<tuple<list<u8>, list<u8>>>; }
   range: func(start: list<u8>, end: list<u8>, reverse: bool) -> cursor;
 
@@ -49,7 +49,7 @@ interface storage {
   add-checked: func(key: list<u8>, delta: s64) -> result<_, limit-exceeded>;
 }
 
-// Available only while handling kind = migrate (D38). `storage` reads the old state
+// Available only while handling kind = migrate. `storage` reads the old state
 // (writes to it trap HostDenied); `rebuild` reads and writes the new version's keyspace.
 interface rebuild {
   use storage.{cursor};
@@ -91,12 +91,12 @@ interface context {
   org: func() -> option<org-id>;
   org-role: func(account: account-id) -> option<org-role-t>;
   org-role-strict: func(account: account-id) -> option<org-role-t>; // read-index on the system group
-  orgs-of: func(account: account-id) -> list<org-membership>;     // the app's own org only (D75); partners with R1
+  orgs-of: func(account: account-id) -> list<org-membership>;     // the app's own org only; partners with cross-org apps
   in-team: func(account: account-id, team: team-id) -> bool;
   applied-index: func() -> u64;
-  unique-id: func() -> string;   // <leader term>.<call seq>.<n>; calls, timers, init, xcall delivery (D52)
-  start-action: func(method: string, args: list<u8>) -> result<action-id, string>; // calls and timers (D17)
-  // time and randomness: wasi:clocks and wasi:random, served by the host (D19)
+  unique-id: func() -> string;   // <leader term>.<call seq>.<n>; calls, timers, init, xcall delivery
+  start-action: func(method: string, args: list<u8>) -> result<action-id, string>; // calls and timers
+  // time and randomness: wasi:clocks and wasi:random, served by the host
 }
 
 interface events {
@@ -110,7 +110,7 @@ interface blobs {
   grant: func(id: blob-id, ttl-seconds: u32) -> string;
 }
 
-// Full-text search over a table's declared fields (spec section 7, R2): the host keeps the
+// Full-text search over a table's declared fields (spec section 7): the host keeps the
 // index from the app's state and answers views only. Not in the spec's section 4 world,
 // which names the index but no interface to query it.
 interface search {
@@ -171,7 +171,7 @@ interface xcall {
   batch: func(requests: list<request>) -> list<result<list<u8>, string>>;
 }
 
-// Available only while handling kind = action (D12, D17)
+// Available only while handling kind = action
 interface action {
   key: func() -> string;                                                    // this action run's idempotency key
   view: func(method: string, args: list<u8>) -> result<list<u8>, string>;
@@ -190,8 +190,8 @@ world app {
   import action;
   import runs;
 
-  // WASI 0.2.12, what wasmtime 50 and componentize-js 0.23 ship (D43); implemented by the host (section 4 table).
-  // The nine stubbed interfaces of D44 are accepted at install but are not part of the world.
+  // WASI 0.2.12, what wasmtime 50 and componentize-js 0.23 ship; implemented by the host (section 4 table).
+  // The nine stubbed WASI interfaces (toolchains import them whatever the app does) are accepted at install but are not part of the world.
   import wasi:io/error@0.2.12;
   import wasi:io/poll@0.2.12;
   import wasi:io/streams@0.2.12;
@@ -203,7 +203,7 @@ world app {
   import wasi:cli/stderr@0.2.12;
   import wasi:cli/environment@0.2.12;
   import wasi:http/types@0.2.12;
-  import wasi:http/outgoing-handler@0.2.12; // usable in actions only (D12)
+  import wasi:http/outgoing-handler@0.2.12; // usable in actions only
 
   use types.{invocation-kind, app-error};
   export handle: func(kind: invocation-kind, method: string, args: list<u8>) -> result<list<u8>, app-error>;

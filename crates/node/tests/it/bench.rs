@@ -1,4 +1,4 @@
-//! G1 measurements (spec D32, plan Task 13 Step 1) on the in-process three-node cluster.
+//! G1 measurements (plan Task 13 Step 1) on the in-process three-node cluster.
 //! Ignored by default; run in release on an otherwise idle machine:
 //!
 //! `cargo test --release -p calimero-node --test it bench:: -- --ignored --nocapture --test-threads 1`
@@ -6,9 +6,6 @@
 //! Each measurement prints one `MEASURE` line. Engine-level numbers (fuel, engine time,
 //! fresh instance, spin) invoke the node's own engine on the leader's applied state with
 //! the node's own directory, because the API does not return an outcome's usage.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D32
-//! (the first milestone's definition of done).
 
 use crate::common;
 

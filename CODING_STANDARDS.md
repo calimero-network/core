@@ -79,8 +79,7 @@ Delete commented-out code; add future code in the change that first uses it.
 
 ## Citing decisions
 
-A comment that cites a decision id also states the reason in a few words, and the id is defined in the repository: D, S and R in `docs/specs/app-runtime-v0.14.md`, F in `docs/specs/gate-system-group.md`; a file that cites several says where once, in its `//!`.
-Name no reviewer and no review finding: state what the finding was.
+Comments, strings and docs state the reason, never a decision id (`D20`, `S9`, `Ruling 31`) or a reviewer's name: a reader has no table to look one up in.
 
 ## Security: trust boundaries
 

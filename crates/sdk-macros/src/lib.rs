@@ -5,9 +5,6 @@
 //!
 //! Spec: [SDK macros](https://calimero-network.github.io/core/build/sdk-macros/).
 //! Crate guide: [`crates/sdk-macros/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/sdk-macros/AGENTS.md).
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
-//! (64-bit integers travel as decimal strings in JSON).
 
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput, Item, ItemImpl, ItemStruct};
@@ -72,7 +69,7 @@ pub fn derive_record(input: TokenStream) -> TokenStream {
 /// A serde struct's or enum's JSON shape for the ABI's `types`, read from its `#[serde(..)]`
 /// attributes: `#[derive(Serialize, Deserialize, AbiType)]`. `#[abi(plain)]` on a field (or the
 /// type) says its 64-bit integers and `Vec<u8>` travel as plain serde writes them: JSON numbers
-/// (`u64_number`, `i64_number`) and arrays of numbers (`byte_list`), not D20's strings.
+/// (`u64_number`, `i64_number`) and arrays of numbers (`byte_list`), not the SDK's strings.
 #[proc_macro_derive(AbiType, attributes(serde, abi))]
 pub fn derive_abi_type(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

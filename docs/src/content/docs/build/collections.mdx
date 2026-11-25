@@ -143,7 +143,7 @@ table emptied by `clear()` has neither row and starts again the same way, for
 the price of counting nothing.
 
 A write reads the mark, never the length, so inserts into one table still do
-not conflict over a shared row (D47).
+not conflict over a shared row.
 
 Once a table has a length, every release that writes it must keep it: a
 release built with an SDK from before `len()` inserts and removes records

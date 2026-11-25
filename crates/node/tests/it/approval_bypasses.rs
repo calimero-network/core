@@ -3,10 +3,10 @@
 //! the way such a node would: with the cluster secret, over its own sealed
 //! channel, by proposing system commands, by minting sessions.
 //!
-//! - F2: the internal routes judge which node calls and its release.
-//! - F3: a decision carries its maker's proof, checked where it applies.
-//! - F4: a Raft message's sender is the node that sent it, a group member.
-//! - F1: sessions are signed by the node that issued them, not by a key
+//! - The internal routes judge which node calls and its release.
+//! - A decision carries its maker's proof, checked where it applies.
+//! - A Raft message's sender is the node that sent it, a group member.
+//! - Sessions are signed by the node that issued them, not by a key
 //!   every node holds.
 //!
 //! Builds the component kv fixture `apps/fixture-kv` from this checkout
@@ -151,7 +151,7 @@ async fn alices_app(c: &Cluster) -> (Client, SoftAuthenticator, String, String, 
     (alice, key, account, app, bundle)
 }
 
-// ---------------------------------------------------------------- F2, F4
+// ----------------------------------- internal routes and Raft messages judge their sender
 
 /// A node on an unapproved release holds the cluster secret and opens sealed
 /// channels like any node. Before, `/internal/view`, `call`, `events`,
@@ -220,7 +220,7 @@ async fn a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes(
     let (status, v) = peer_send(&c, &node3, 0, false, "internal/view", &view, 2).await;
     assert_eq!(status, 403, "{v}");
 
-    // F4: a Raft append for the app's group, from node 3, is refused, whether
+    // A Raft append for the app's group, from node 3, is refused, whether
     // it names node 3 or node 1 (the app's leader) as its sender.
     for sender in [3, 1] {
         let rpc = json!({
@@ -303,7 +303,7 @@ async fn the_usage_routes_answer_identified_peers_only() {
     }
 }
 
-// ---------------------------------------------------------------- F3
+// --------------------------------------------- a decision carries its maker's proof
 
 /// The system leader, by index.
 async fn system_leader(c: &Cluster) -> usize {
@@ -1035,7 +1035,7 @@ async fn operator_decisions_need_the_operator_signature() {
     .await;
 }
 
-// ---------------------------------------------------------------- F1
+// ------------------------------------------------- sessions are signed per node
 
 /// Before, every node held the session key K_s and could mint a session for
 /// any account. Now

@@ -1,8 +1,5 @@
 //! The `app` macros end to end: the sample guest built into a component, its embedded ABI
 //! read by the host, and its generated `handle` run on the wasmtime engine.
-//!
-//! Ids in these comments cite `docs/specs/app-runtime-v0.14.md` (D decisions in section 2): D20
-//! (64-bit integers travel as decimal strings in JSON).
 
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(
@@ -513,7 +510,7 @@ fn init_takes_arguments_like_a_call() {
     let title =
         |app: &mut App, key: &str| ok_json(&app.view("title", &args(json!({ "key": key }))));
 
-    // Delivered, by camelCase name, a `u64` as a decimal string (D20).
+    // Delivered, by camelCase name, a `u64` as a decimal string.
     let mut app = App::new();
     let init = args(json!({ "welcome": "hello", "opensAt": "1700" }));
     let out = app.run(InvocationKind::Init, owner(), "init", &init, None);
