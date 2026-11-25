@@ -40,6 +40,7 @@ use crate::attest::{kms_report_data, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
 use crate::node::{CallRequest, Issuer, JobAttestError, Node, ViewRequest};
+use crate::packages::Via;
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::cluster_version::{scope_app_features, Feature};
 use crate::system::{
@@ -98,8 +99,8 @@ mod update_policies;
 pub(crate) mod upgrades;
 
 pub(crate) use approvals::{
-    refuse_egress_off, set_egress, set_outbound_approval, set_release_approval, EgressBody,
-    OutboundApprovalBody, ReleaseApprovalBody,
+    outbound_release, refuse_egress_off, set_egress, set_outbound_approval, set_release_approval,
+    EgressBody, OutboundApprovalBody, ReleaseApprovalBody,
 };
 // `POST /apps/{app}/egress`, routed beside its `GET` in `upgrades::routes`.
 use approvals::app_set_egress;
@@ -141,7 +142,7 @@ use {
         ScopeAppsBody, TeamBody, TeamDeleteBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,
         TeamUpdateBody,
     },
-    packages::{InstallBody, PublisherBody},
+    packages::{AccountInstallBody, InstallBody, PublisherBody, UploadQuery},
     public_links::PublicLinkBody,
     recovery::{RecoveryBegin, RecoveryFinish, RecoveryKeyBody, RecoveryStart, RecoveryStartBody},
     sign_up::{OpsSignUpInviteBody, SignUpBody, SignUpInviteBody},
@@ -792,12 +793,22 @@ impl Principal {
     }
 
     /// Whether this principal may touch `app` at all: a package-bound
-    /// session only an app running a release of its package.
+    /// session only an app running a release of its package, and an API key
+    /// scoped to some apps only those (on every route that names an app, not
+    /// only [`gate`]'s: security review, a key's scope skipped on the record,
+    /// metadata, alias and delegation routes).
     pub(crate) fn within(
         &self,
         node: &Node,
         app: &crate::types::AppRecord,
     ) -> Result<(), ApiError> {
+        if self
+            .api_key
+            .as_ref()
+            .is_some_and(|k| !key_scoped_to(k, &app.app_id))
+        {
+            return Err(key_not_scoped());
+        }
         // A session vouches for its account only where the node that signed
         // it may hold the data: a node on an unapproved release cannot mint
         // its way into an app (F1).
@@ -820,6 +831,44 @@ impl Principal {
             Some(_) => Err(ApiError::not_found("no such app")),
         }
     }
+}
+
+impl Principal {
+    /// Refuse an API key that may not change settings: a read-only key, or one
+    /// scoped to some methods (a setting is none of them). App metadata and
+    /// aliases are settings; calls go through [`gate`].
+    pub(crate) fn settings_write(&self) -> Result<(), ApiError> {
+        match &self.api_key {
+            Some(k) if k.read_only => Err(ApiError::forbidden("read-only API key")),
+            Some(k) if k.methods.is_some() => Err(ApiError::forbidden(
+                "this API key is scoped to methods; changing settings needs an unscoped key or a passkey session",
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Refuse a scoped API key (to apps, methods or reads): what reaches past
+    /// one app, such as an organization's settings, needs an unscoped key or
+    /// a passkey session, as installing does ([`installer`]).
+    pub(crate) fn unscoped(&self) -> Result<(), ApiError> {
+        match &self.api_key {
+            Some(k) if k.read_only || k.apps.is_some() || k.methods.is_some() => {
+                Err(ApiError::forbidden(
+                    "this API key is scoped; this needs an unscoped key or a passkey session",
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Whether `key` reaches `app`: a key scoped to no app reaches every one.
+pub(crate) fn key_scoped_to(key: &ApiKeyRecord, app: &str) -> bool {
+    key.apps.as_ref().is_none_or(|a| a.iter().any(|x| x == app))
+}
+
+fn key_not_scoped() -> ApiError {
+    ApiError::forbidden("API key not scoped to this app")
 }
 
 /// Which of its own package's teams a package-bound session may change
@@ -1529,15 +1578,15 @@ fn utc_day(secs: u64) -> Option<String> {
 
 /// The bundle a create or upgrade names, with the compute component of the release it
 /// comes from: a bundle hash (a raw upload, no compute), or a package release (installed
-/// from the registry first if the fleet lacks it).
+/// from the registry first, for `org`, if the fleet lacks it).
 async fn bundle_named(
     node: &Node,
     bundle: Option<String>,
     package: Option<&str>,
     version: Option<&str>,
     service: Option<&str>,
-    actor: &str,
-    frontend: bool,
+    (actor, org): (&str, Option<&str>),
+    via: Via,
 ) -> Result<(String, Option<String>, Option<PackageRef>), ApiError> {
     match (bundle, package) {
         // A hash names a release's WASM only for who may see that release;
@@ -1551,7 +1600,7 @@ async fn bundle_named(
         (Some(_), None) => Err(crate::node::rejected("unknown bundle")),
         (None, Some(p)) => {
             let (bundle, compute, release) = node
-                .resolve_release_parts(p, version, service, actor, frontend)
+                .resolve_release_parts(p, version, service, (actor, org), via)
                 .await?;
             Ok((bundle, compute, Some(release)))
         }
@@ -1674,8 +1723,8 @@ async fn gate(
         if write && k.read_only {
             return Err(ApiError::forbidden("read-only API key"));
         }
-        if k.apps.as_ref().is_some_and(|a| !a.contains(&app.app_id)) {
-            return Err(ApiError::forbidden("API key not scoped to this app"));
+        if !key_scoped_to(k, &app.app_id) {
+            return Err(key_not_scoped());
         }
         if k.methods
             .as_ref()
@@ -2399,9 +2448,7 @@ async fn scope_report(
             in_scope
                 && (s.may_reach(a, Some(account)) || s.may_upgrade(a, account, owner_approves))
                 && bound.is_none_or(|pkg| {
-                    s.bundles
-                        .get(&a.bundle)
-                        .and_then(|b| b.package.as_ref())
+                    report::release_of_app(s, a, Reader::Account(account))
                         .is_some_and(|r| r.package == pkg)
                 })
                 && key_apps.is_none_or(|apps| apps.contains(&a.app_id))

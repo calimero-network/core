@@ -266,8 +266,9 @@ pub(super) async fn validate(
         (Some(package), Some(version)) => {
             node.sys_fresh_from(principal.sys_index).await;
             let found = node.sys(|s| {
-                let v = s.packages.get(package)?.versions.get(version)?;
-                s.sees_release(v, &account).then(|| v.clone())
+                let v = s.release_used(package, version, &account)?;
+                let p = s.package_used(package, &account, false)?;
+                Some((p.signer_id.clone(), v.clone()))
             });
             Some(found.ok_or_else(|| ApiError::not_found("no such package version"))?)
         }
@@ -279,7 +280,11 @@ pub(super) async fn validate(
         }
     };
     let answer = node
-        .validate_pipeline(body.source.as_bytes(), release.as_ref(), &account)
+        .validate_pipeline(
+            body.source.as_bytes(),
+            release.as_ref().map(|(signer, v)| (signer.as_str(), v)),
+            &account,
+        )
         .await?;
     Ok(Json(answer))
 }

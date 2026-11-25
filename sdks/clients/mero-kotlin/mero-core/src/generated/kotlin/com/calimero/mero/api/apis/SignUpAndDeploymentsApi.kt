@@ -305,7 +305,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
     /**
      * POST /deployments
      * Create a deployment
-     * A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (&#x60;null&#x60; on a node with no apps domain). An organization owns a deployment only holding a recovery key (&#x60;POST /orgs/{org}/recovery&#x60;), so a lost passkey never locks it: &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.37.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (&#x60;null&#x60; on a node with no apps domain). An organization owns a deployment only holding a recovery key (&#x60;POST /orgs/{org}/recovery&#x60;), so a lost passkey never locks it: &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.38.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param deploymentCreateRequest 
      * @return DeploymentCreate200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -337,7 +337,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
     /**
      * POST /deployments
      * Create a deployment
-     * A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (&#x60;null&#x60; on a node with no apps domain). An organization owns a deployment only holding a recovery key (&#x60;POST /orgs/{org}/recovery&#x60;), so a lost passkey never locks it: &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.37.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (&#x60;null&#x60; on a node with no apps domain). An organization owns a deployment only holding a recovery key (&#x60;POST /orgs/{org}/recovery&#x60;), so a lost passkey never locks it: &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.38.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param deploymentCreateRequest 
      * @return ApiResponse<DeploymentCreate200Response?>
      * @throws IllegalStateException If the request is not correctly configured

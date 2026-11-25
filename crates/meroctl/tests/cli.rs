@@ -1004,6 +1004,7 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
     // A WASM of each release's own: one that ships in another signer's package
     // is refused, and the node names an instance's release by its WASM.
     let wasm = app.join("app.wasm");
+    let org = s(&alice.run(&["org", "list"])["namespaces"][0]["orgId"]);
     let release = |version: &str| {
         std::fs::write(&wasm, variant(kv, &format!("dep-{version}"))).unwrap();
         alice.try_run(&[
@@ -1014,6 +1015,8 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
             path(&wasm),
             "--version",
             version,
+            "--install-org",
+            &org,
         ])
     };
     let shipped = release("1.0.0").unwrap();

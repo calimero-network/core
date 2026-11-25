@@ -11,7 +11,7 @@ Verification, the install and the release record are the node's
 
 - **Crate**: `calimero-app-downloader`
 - **Entry**: `src/lib.rs`
-- **Consumer**: `calimero-node` only (`packages.rs`: `HttpRegistry`, `AppRequest`, `AppSource`)
+- **Consumer**: `calimero-node` only (`packages.rs`: `HttpRegistry`, `RegistryStatus`, `AppRequest`, `AppSource`)
 - **Deps**: `reqwest`, `url`, `async-trait`, `calimero-primitives` (`ApplicationId`, `BlobId`, `ContextId`, `ApplicationSource`, `utils::loggable_url`)
 
 ## Commands
@@ -49,7 +49,10 @@ bytes:
 - `Ok(None)`: the registry answered `404` (not published there); the node
   answers `404`.
 - `Err`: a real fault (unreachable, other status, too large, unaddressable
-  coordinates); the node answers `503`.
+  coordinates); the node answers `503`. Another status is a `RegistryStatus`
+  (`status`, `url`) inside the report, so the node reads it with
+  `downcast_ref`: a `401` or `403` to the fetch without the credential means the
+  release is not public, and the install goes on with the credential.
 
 The node then verifies the publisher signature and every digest itself, and
 fetches a registry release again from the registry (never a peer) when it runs

@@ -65,7 +65,7 @@ The **Who** column below uses these terms:
 | Who | Means |
 | --- | --- |
 | anyone | no credential needed |
-| signed in | a session or an API key |
+| signed in | a session or an API key; a key scoped to some apps reaches only those on every route that names an app (and `GET /apps` lists only those), a read-only or method-scoped key changes no settings (app metadata, aliases), and an organization's settings need an unscoped key |
 | session | a passkey session; an API key is refused (`403`) |
 | account holder | a passkey session not bound to an app's frontend |
 | installer | an account holder, or an API key scoped to no app and no method and not read-only |
@@ -158,14 +158,14 @@ with `details` when there is more to say (for example `leaderUrl` with
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
 | `POST /bundles` | installer | Upload raw WASM (16 MiB at most). Only with `--allow-unsigned-bundles` or `--dev`. | `app install --path X.wasm` |
-| `POST /packages` | installer | Upload a signed `.mpk`. Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. | `app install --path X.mpk` |
-| `POST /packages/install` | installer | `{ package, version }` from the registry | `app install P@V` |
+| `POST /packages?org=` | installer | Upload a signed `.mpk`, private to `org` (else the caller's only organization; in none, to the accounts that install it). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. | `app install --path X.mpk [--org ORG]` |
+| `POST /packages/install` | installer | `{ package, version, org? }` from the registry, for `org` (else the caller's only organization); public when the registry serves it to anyone, else private to that organization (in none, to the accounts that install it) | `app install P@V [--org ORG]` |
 | `GET /packages` | signed in | Installed packages, only the releases the caller may see ([who sees a release](/protocol/applications/#who-sees-a-release)) | `app list` |
 | `GET /packages/{package}` | signed in | One package and the versions the caller may see; `404` when none | `app get`, `app versions`, `app get-latest-version` |
 | `DELETE /packages/{package}` | account holder | Uninstall every version; refused while an app runs one | `app uninstall` |
 | `DELETE /packages/{package}/{version}` | account holder | Uninstall one version | `app uninstall --version` |
 | `GET /packages/{package}/{version}/pipelines` | signed in | The pipelines the release registers: per name `hash`, `worstCaseFuel`, the `modules` they pin and the canonical `pipeline`; `404` for a release the caller may not see | `app pipelines` |
-| `GET /packages/{package}/{version}/capabilities` | signed in | What a release is and may do, before any app of it exists: `package`, `version`, `service`, `bundle` (the service WASM's hash), `mpk`, `manifestHash`, `signer`, `name`, `author`, the sorted `outbound` prefixes and the embedded `abi` (`null` when none), and over the release and the apps its `uses` would create, `destinations` (empty: no data leaves Calimero; an external endpoint, a TEE included, is listed like any other) and `members` (both `null` while such a release is not installed); `?service=<name>` picks the service (default: the release's only one; `400 NO_SUCH_SERVICE` for an unknown name, or none on a release with several; `400 BAD_REQUEST` for an over-long name); `404` for a release the caller may not see, a session bound to the package sees all its releases | - |
+| `GET /packages/{package}/{version}/capabilities` | signed in | What a release is and may do, before any app of it exists: `package`, `version`, `service`, `bundle` (the service WASM's hash), `mpk`, `manifestHash`, `signer`, `name`, `author`, the sorted `outbound` prefixes and the embedded `abi` (`null` when none), and over the release and the apps its `uses` would create, `destinations` (empty: no data leaves Calimero; an external endpoint, a TEE included, is listed like any other) and `members` (both `null` while such a release is not installed); `?service=<name>` picks the service (default: the release's only one; `400 NO_SUCH_SERVICE` for an unknown name, or none on a release with several; `400 BAD_REQUEST` for an over-long name); `404` for a release the caller may not see; a session bound to the package sees what its account sees | - |
 | `GET /package-origins/{package}` | signed in | The web origins the package's manager registered (`origin`, `rpId`, `addedBy`, `addedAt`, `served`) | `app origins list` |
 | `POST /package-origins/{package}` | account holder | `{ origin, rpId?, served?, confirm? }`: register an origin whose pages sign people in to the package (`served: true`: the cluster also serves its frontend there, a custom domain); the package's manager, `412` first ([Registered origins](/protocol/identities/#registered-origins)) | `app origins add` |
 | `DELETE /package-origins/{package}` | account holder | `{ origin, confirm? }`: remove one; the sessions opened there end. `412` first | `app origins remove` |
@@ -281,7 +281,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `org outbound` |
 | `POST /orgs/{org}/upgrade` | account holder | `{ package, version, team?, cascade?, migrate?, confirm? }`: an upgrade run, by the organization's owner or an admin | `team upgrade trigger` |
 | `POST /orgs/{org}/packages/{package}/upgrade` | account holder | `{ version, migrate?, confirm? }`: a publisher's upgrade run, by an owner or admin of the publisher organization, over the package's instances in the organizations they are an owner or admin of; `412` first | |
-| `GET /orgs/{org}/backup-key`, `POST /orgs/{org}/backup-key` | account holder | The organization's [recovery-disk](/operate/deployment/#backups-and-the-recovery-disk) backup key `{ holder, key, apps }` (any member), or set it (`{ publicKey, confirm? }`, 64 hex, an X25519 public key; org-wide `MANAGE_APPLICATION`, where owners upgrade apps; `412` first; `409 FEATURE_NOT_ACTIVE` below 1.0.0-rc.20) | |
+| `GET /orgs/{org}/backup-key`, `POST /orgs/{org}/backup-key` | account holder | The organization's [recovery-disk](/operate/deployment/#backups-and-the-recovery-disk) backup key `{ holder, key, apps }` (any member), or set it (`{ publicKey, confirm? }`, 64 hex, an X25519 public key; the organization's owner and admins, where owners upgrade apps (org-wide `MANAGE_APPLICATION` below cluster version 1.0.0-rc.38); `412` first; `409 FEATURE_NOT_ACTIVE` below 1.0.0-rc.20) | |
 | `GET /orgs/{org}/upgrades/{run}` | signed in (a member) | A run's progress | `team upgrade status` |
 | `POST /orgs/{org}/upgrades/{run}/retry` | account holder, or ops for an operator's run | Retry the failed apps as a new run | `team upgrade retry` |
 

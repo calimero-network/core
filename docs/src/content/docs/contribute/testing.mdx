@@ -612,6 +612,7 @@ a case is never skipped.
 #### Coverage matrix
 
 {/* upgrade-matrix:begin: python3 -I crates/node/tests/fault/upgrade_deep.py --matrix */}
+
 | Area | Case | Seeded on the old release | Checked in the mixed cluster, after the roll and after a restart | Covered |
 | --- | --- | --- | --- | --- |
 | Governance | `granted-governance` | a cluster deployed with `--release-approvals owner --deployers owner`: the operator grants an account while it still may (`POST /ops/deployers`), names the cluster's owner (`POST /ops/cluster-owner`) and switches deployments to granted (`POST /ops/deployments/granted`); from then on the owner grants every new account (`POST /deployers`), and each organization approves the new release in the rollout | `GET /deployers` on every node: `deployments: granted` though every node runs with the default `--deployments open`, `deployers: owner`, the owner and the operator's grant; a second switch, the operator's grant and its release approval are refused as on the old release | yes (since 1.0.0-rc.15, granted run only) |
@@ -643,7 +644,7 @@ a case is never skipped.
 | Teams | `app-teams` | two packages' instances in an organization given app teams (ScopeApps): one closed keeping one member, one open | the app-team list; the kept member and the open team's members reach their apps, the member who lost the closed one is refused it; the closed one opened again on the new release admits them | yes (since 1.0.0-rc.15) |
 | Teams | `app-channels` | two packages' app teams in an organization; a channel an unbound session made under one; a session bound to that package's frontend makes a channel under its app team, renames it, adds a member, and makes and deletes another | the channels and their members as before; the bound session is still bound to its package and still refused (403) a channel under the other package's app team, an org-wide team, the app team's mark and deleting it, and an organization role; on the new release it makes, renames, fills and deletes a channel again | yes (since 1.0.0-rc.20) |
 | Packages | `packages` | two signed releases installed from the registry and the second uninstalled again; an app on the first with data; an app from a dev bundle (raw component) | the package and its versions; both apps answer from the new nodes; on the new release the uninstalled version installs again and the app upgrades to it keeping its data; the release's capability card reads with its ABI | yes (since 1.0.0-rc.15) |
-| Packages | `package-services` | a package of two services (`alpha`, `beta`) installed; an instance of each, written to | the package and each instance's release naming its service, each instance answering with its own data, an instance naming no service or an unknown one refused; on the new release a new instance of a named service, the capability card of each service, and the alpha instance upgraded to a later release of the package keeping its service and its data | yes (since 1.0.0-rc.25) |
+| Packages | `release-visibility` | kv-b 1.0.0 installed from the registry by an account whose organization holds a second member, who never installed it (a release recorded before it was public or private) | the release from before keeps exactly its rule: the member lists it on every node and, on the new release, creates an instance of it, and an account sharing no organization with its installer does not list it on any node; kv-c installed on the new release, which the registry serves to anyone, is public: an account in no organization lists it and creates an instance of it | yes (since 1.0.0-rc.15) |
 | Packages | `package-origins` | two web origins registered for a package by its manager: one plain and one the cluster serves (a custom domain) | the manager's list as they read it; the operator's served-origins list naming the package's host label; a stranger refused the list and the registration; on the new release one origin removed and two registered while the other seeded served origin stays, after a restart too; on every node a sign-in begun from a registered origin names that origin's host as its rp-id and one begun from an unregistered or removed origin is refused `ORIGIN_NOT_REGISTERED`. The assertion itself is not signed | yes (since 1.0.0-rc.16) |
 | Packages | `publisher-binding` | a package signing key bound to an organization (its publisher) | the binding and its generation as anyone reads them; a second key bound on the new release | yes (since 1.0.0-rc.15) |
 | Upgrades | `app-upgrade-migration` | notes 1.0.0 and 2.0.0 (state version 1 to 2) installed; an app upgraded to 2.0.0, one left on 1.0.0, two upgraded by an organization-wide upgrade run | each app's release and notes; the run's status as a member reads it; the app left on 1.0.0 upgrades on the new release keeping its note and gains 2.0.0's methods; a new run there | yes (since 1.0.0-rc.15) |
@@ -652,8 +653,8 @@ a case is never skipped.
 | Upgrades | `unclassified-updates` | kv-r 1.0.0 and 1.1.0 (one WASM) installed and 1.0.0 uninstalled under three apps that run it, so their update cannot be classified (red, an `unclassified` reason naming the release that is gone); in an organization whose policy asks for a second approver, one app upgraded by an admin on the owner's first approval and one with that approval still waiting; one upgraded by its owner where no policy asks | each app's `lastUpgrade` (red, its `unclassified` reason, the first approver) and data; the waiting app's update (red, `unclassified`) and approval on every node, the owner alone refused `SECOND_APPROVAL_REQUIRED`; on the new release the admin applies the waiting update, and 1.0.0 is installed again, an app made on it, uninstalled, and that app's unclassified update approved and applied the same way | yes (since 1.0.0-rc.35) |
 | Deployments | `deployment-used-secrets` | a deployment offering a release that uses (`uses`) another package, whose release declares a secret, and the deployment's value of that secret; the release's `uses` and the value wait for the cluster version that brings them, so they are made after the roll | the deployment's secrets as its manager reads them: the value's fingerprint, the release that declares it (`declaredBy`) and the offered app that uses it; an outsider is refused the list, and a name nothing it reaches declares is refused; a new value set on the new release | yes (since 1.0.0-rc.32) |
 | Deployments | `deployment-offer-upgrades` | a deployment offering release 1.0.0 of a package whose 1.1.0, 1.2.0 and 1.3.0 are installed too, and a customer's two instances from it; the customer's owner refused an upgrade outside the offer (`409 OUTSIDE_DEPLOYMENT`), then, the deployment offering 1.1.0, accepting it on one instance without naming a version | the deployment's offer; each instance's release and data, on the deployment; `GET /apps/{app}/update` (`available` with `source: deployment` where the instance runs another release than the offer, none where it runs the offer; `mayApprove` and `approvers` for the owner); every installed release but the offer and the one it runs refused `OUTSIDE_DEPLOYMENT` to each instance; on the new release the other instance takes the offer naming its version, the deployment offers 1.2.0 and the first instance accepts it naming none | yes (since 1.0.0-rc.33) |
-| Deployments | `deployment-named-to-customers` | a deployment offering a release, and a customer's instance from it | `GET /apps/{app}/update` names the instance's deployment with its id and its owner's kind and name (names are not unique), as `GET /deployments/{id}` names the owner; on the new release a second instance from it is named the same way | yes (since 1.0.0-rc.37) |
-| Deployments | `deployment-needs-recovery` | an organization with a recovery key, and a deployment it owns | the organization keeps its key; removing it is refused (`409 RECOVERY_KEY_REQUIRED`) while it owns the deployment, before the passkey; on the new release rotating it succeeds, and another organization without a key is refused a deployment | yes (since 1.0.0-rc.37) |
+| Deployments | `deployment-named-to-customers` | a deployment offering a release, and a customer's instance from it | `GET /apps/{app}/update` names the instance's deployment with its id and its owner's kind and name (names are not unique), as `GET /deployments/{id}` names the owner; on the new release a second instance from it is named the same way | yes (since 1.0.0-rc.38) |
+| Deployments | `deployment-needs-recovery` | an organization with a recovery key, and a deployment it owns | the organization keeps its key; removing it is refused (`409 RECOVERY_KEY_REQUIRED`) while it owns the deployment, before the passkey; on the new release rotating it succeeds, and another organization without a key is refused a deployment | yes (since 1.0.0-rc.38) |
 | Deployments | `deployer-grants` | the operator's deployer grants on the open cluster (`POST /ops/deployers`, signed with the operator key): an account's without an end, an organization's until a date, and an account's revoked again (`DELETE /ops/deployers/{key}`) | `GET /deployers` as the operator on every node: `deployments: open`, `deployers: operator`, no owner, and each grant (key, deployer, end, `operator`); an account refused the list and the owner's grant route, a grant without the operator's signature answered `428`; on the new release the organization's grant revoked and another account's granted | yes (since 1.0.0-rc.15, open run only) |
 | Apps | `app-state-history` | an app with 40 writes (sets, overwrites, removals) and app metadata | every entry through each node, the length, the full event history from index 0 (the event stream's replay), the app record, its storage figures and ABI; a write on the new release extends the history after the old events | yes (since 1.0.0-rc.15) |
 | Apps | `app-access-kinds` | an organization's app with each kind of grant alone: none (the owner), the organization, a named account, anyone, a team | who reads and writes each (the owner, a member, the named account, an outsider, no credential), allowed and refused as before (`anyone` admits the outsider, never a caller without an account); each instance's grants as the owner reads them; a grant added on the new release | yes (since 1.0.0-rc.33) |
@@ -689,7 +690,7 @@ a case is never skipped.
 | Apps | An undo refused to a release no longer installed (`UndoUpgrade::release_installed`, `UNDO_RELEASE_GONE`) | - | - | no: it adds a refusal, not a stored shape: an entry without the flag replays as it applied below cluster version 1.0.0-rc.36 (`Feature::UndoToInstalledRelease`), and the undo itself is `restore-points-undo`'s. The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build |
 | Apps | An instance's outbound audit (`GET /apps/{app}/outbound-log`, `meroctl instance outbound-log`) | - | - | no: it stores nothing: each node keeps its runs' requests in memory (`calimero_outbound::OutboundAudit`), which a restart or a roll empties by design, so there is no data to carry across releases; the suite's clusters also run with outbound off. `an_instances_owner_reads_its_outbound_requests_without_values` (`component_cluster.rs`) and `calimero_outbound`'s audit tests cover it on one build |
 | Apps | Host work charged to fuel, and at most `MAX_SEARCHES_PER_RUN` searches per request (`calimero_app_host`'s fuel table) | - | - | no: it changes what a run may spend, not a stored shape: followers apply a call's diff and never run it, so the log replays alike on either release, and a search cap answers a view, which is never logged. The deep cases' calls and searches run far within the default fuel on both releases. `tests/engine.rs` (`reading_megabytes_of_state_costs_fuel`, `a_view_makes_at_most_max_searches_per_run`, `a_guest_cannot_spend_fuel_its_host_calls_already_owe`, `refused_xcall_arguments_cost_fuel`, `stdout_costs_fuel_after_the_log_is_full`) covers it on one build |
-| Keys | An API key made with follow-ups (`POST /auth/apikeys { then }`): confirm calls approved by the key's one passkey prompt | - | - | no: it adds no stored shape: the key's record is unchanged and each follow-up is an ordinary call entry of its app with the key's consent; `CreateApiKey::then` is new in the log only behind cluster version 1.0.0-rc.36 (`Feature::KeyFollowUps`), and an entry without it replays as before. `tests/it/key_follow_ups.rs` and `system::tests::credentials_need_the_accounts_own_passkey` cover it on one build |
+| Keys | An API key made with follow-ups (`POST /auth/apikeys { then }`): confirm calls approved by the key's one passkey prompt | - | - | no: it adds no stored shape: the key's record is unchanged and each follow-up is an ordinary call entry of its app with the key's consent; `CreateApiKey::then` is new in the log only behind cluster version 1.0.0-rc.38 (`Feature::KeyFollowUps`), and an entry without it replays as before. `tests/it/key_follow_ups.rs` and `system::tests::credentials_need_the_accounts_own_passkey` cover it on one build |
 | Accounts | Account recovery started and finished with a new passkey | - | - | no: the start takes a WebAuthn registration made outside a session, which neither meroctl nor the suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The recovery code (`account-recovery-code`) is covered |
 | Accounts | Finishing a sign-up with a cluster sign-up invite (`register/finish { invite }`, which spends a use) | - | - | no: the finish carries a WebAuthn registration made by a new P-256 passkey, which the suite's standard-library Python cannot make; meroctl's `login --dev-passkey` registers a new file but takes no invite, and the release's meroctl is the one that seeds. Issuing, listing and revoking an invite and the node's refusal or acceptance of a token at `register/begin` are covered (`sign-up-invites`); `tests/sign_up.rs` covers the finish and the spent use on one build |
 | Accounts | Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, `setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, `deleteOrg`, `setCapabilities`, `setAllApps`, `setEgress`) and the page's verifier link | - | - | no: a consent request is approved in a browser on the node's consent page; the cluster test `consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as the API's route, which the organization and team cases cover; a `createOrg` asked from an app's frontend also makes that app's team in the same `CreateOrg`, the organization and team `ScopeApps` makes, which `app-teams` covers. The verifier link is a startup setting (`--attestation-verifier-url`) that stores nothing |
@@ -699,6 +700,7 @@ a case is never skipped.
 | Pipelines | Live pipeline events (`meroctl cloud compute pipeline watch`) | - | - | no: the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal is covered, the stream itself by the cluster tests |
 | Apps | The consent page's install sheet (`install`), update sheets with their class, policy and approval step ("Approve (1 of 2)", "Approve and update (2 of 2)"), an update policy changed on the page (`updatePolicy`), the node's updates page (`updates`, `/updates/{id}`, `POST /consent/{id}/open`) and `GET /apps/{app}/update`'s `summary` | - | - | no: pages and reads that store nothing of their own: a consent request lives in one node's memory for minutes, and what the pages approve is logged by the routes they run (`POST /apps`, `SetUpgradePolicy`, `ApproveUpgrade`, `UpgradeApp`), whose stored shapes are the `upgrade-policies` and `update-classes-approvals` cases'. `an_install_sheet_shows_what_gets_created_and_where_data_can_go` and `an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build |
 | Deployments | A customer's instance outside every deployment on a granted cluster, refused at create and on an upgrade into a deployer's package (`403 DEPLOY_NOT_GRANTED`; `CreateApp { offers_only }` and `UpgradeApp` at apply, `Feature::OffersOnly`) | - | - | no: a refusal that stores nothing, on a granted cluster, which the open upgrade-path cluster is not and cannot become without turning every case that installs after the switch red; an entry without `offers_only` replays as it applied below cluster version 1.0.0-rc.36. `on_a_granted_cluster_a_customer_creates_only_from_an_offer` (`deployments.rs`) and `system::tests::on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers` and `..._keeps_out_of_a_deployers_package` (the replay) cover it on one build |
+
 {/* upgrade-matrix:end */}
 
 ### Replaying a release's data directory
@@ -744,18 +746,45 @@ change needs; the required `Rust` check waits on every job after it, and
 [`./scripts/check-like-ci.py`](/contribute/development/#before-a-pr) runs the
 same steps locally.
 
+The pull request and its merge-queue entry run the fast gate: `ci-checks.yml`
+with only the tests the change reaches (below), `sdks.yml` and the lints; in the
+queue, `E2E result` reports without running anything. The push to master runs the
+rest after the merge: every test in all four shards and `e2e.yml` in full, one run
+per commit. A red push opens an issue titled `master is red: <workflow>`
+(`.github/actions/report-master`, the `report-master` job) naming the commit, and
+the next green push closes it. A red master is reverted, not fixed forward. Master
+is not deployed, only a release is, and a pull request that cuts one runs
+`e2e.yml` in full before it merges.
+
 Every job runs on a standard GitHub-hosted runner (4 cores). The Rust jobs of
 `ci-checks.yml` and `e2e.yml` restore their rust-cache group: the dependencies
 and the workspace's own crates as master last built them. setup-rust-ci then sets
 every tracked file's mtime to an old date and touches the files that differ from
-the commit that build was made from (`target/.ci-cache-commit`), so cargo
-rebuilds only the crates a change reaches; with no such commit, every file counts
-as changed. The test apps the tests build from source on first use (every
+the commit that build was made from (`$RUNNER_TEMP/ci-cache-commit/commit`,
+saved through rust-cache's `cache-directories`: rust-cache deletes the files at
+`target/`'s root before it saves, so a marker kept there was never cached), so
+cargo rebuilds only the crates a change reaches; with no such commit, every file
+counts as changed. rust-cache saves only when its key (the dependencies) changes,
+so the cached build is as old as the last dependency change on master. The test apps the tests build from source on first use (every
 guest and fixture in `target/app-components`, built once through
 `calimero_app_build::build_in_repo_cache` into one cargo target dir;
 app-build's own test builds in `target/tmp`; the SDK's compile-fail cases in
 `target/tests/trybuild`) are cached apart, saved from master, whose push runs
-`Rust tests (1/4)` alone: the merge queue already ran every test on that tree. (sccache on the Actions cache was tried and dropped: with this many
+`Rust tests (1/4)`; that push runs every shard.
+
+A pull request and its merge-queue entry run only the tests the change can reach: `Scope`'s `test_filter`
+(`scripts/ci-scope.py`) is a nextest `rdeps(...)` filterset over the workspace
+crates it changes, so `Rust tests` runs their tests and those of every crate
+depending on them, dev-dependencies included. A change reaching beyond that graph
+runs every test: a file outside a workspace crate (`apps/`, fixtures, scripts,
+`docs/public/openapi.json`, which tests read by path), an input of every job, or a
+crate the test guests compile from (the SDK, the app engine and their
+dependencies, which the guests build against outside cargo's graph of the
+workspace). The queue's diff is the entry against its base, so two changes that
+break each other within that graph still fail there. The push to master runs every
+test whatever the filter, so a test the filter missed fails there. In `.config/nextest.toml`, the
+guest builder's tests and the SDK's compile-fail cases have a high `priority`, so
+they start first rather than leave one shard running minutes after the others. (sccache on the Actions cache was tried and dropped: with this many
 parallel jobs its writes hit the cache API's rate limit.) CI builds carry no debuginfo
 (`CARGO_PROFILE_DEV_DEBUG=0`): the cache restores faster and the test binaries
 link faster, and a failing test still names its file and line. The workspace
@@ -782,14 +811,18 @@ tests. A request a test expects to answer `503` is sent once through
 `client.transport()`: the client's `call` and `view` send it again while the node
 answers `503` (D70), about seven times. A new slow test is made fast, not listed.
 
-`.github/workflows/e2e.yml` runs in the merge queue, on every entry whose change
-reaches code, and nightly on master with the long soak; a PR runs it only when
-labelled `ci:e2e`, except that a change reaching the consent page or its browser tests runs the job below for it regardless. Its `plan` job decides from the change (`scripts/ci-scope.py`):
+`.github/workflows/e2e.yml` runs on every push to master whose change reaches code
+(after the merge), and nightly on master with the long soak; a PR runs it first
+only when labelled `ci:e2e` or when it cuts a release (its workspace version has
+no GitHub Release yet, the test `release.yml` publishes on), and a merge-queue
+entry runs none of it, except that a change reaching the consent page or its browser tests runs the job below for it regardless. Its `plan` job decides from the change (`scripts/ci-scope.py`):
 the builds and the scenarios for any code change, and the process suite, compute
 and the clients only for a change that reaches `merod`'s closure, the compute
-fixtures or the fault tests; `E2E result` gathers them into one check the queue
-can require. A push to master runs only what saves the caches (`Rust tests (1/4)`,
-the upgrade path) and what publishes: the queue already tested that tree.
+fixtures or the fault tests; `E2E result` gathers them into one check, required on
+PRs and in the queue, where it passes when `plan` skips everything. On master its
+`report-master` job opens or closes the red-master issue. `clients against merod
+(mero-swift)` builds `merod` on macOS from the `release` cache group, which the
+nightly run saves: rust-cache keys by OS, so the Linux save never reaches it.
 
 The jobs:
 

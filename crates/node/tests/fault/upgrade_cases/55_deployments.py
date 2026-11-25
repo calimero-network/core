@@ -215,7 +215,7 @@ class DeploymentOfferUpgrades(DeepCase):
 class DeploymentNamedToCustomers(DeepCase):
     name = "deployment-named-to-customers"
     area = "Deployments"
-    since = "1.0.0-rc.37"
+    since = "1.0.0-rc.38"
     seeds = "a deployment offering a release, and a customer's instance from it"
     verifies = ("`GET /apps/{app}/update` names the instance's deployment with its id and its owner's kind and name "
                 "(names are not unique), as `GET /deployments/{id}` names the owner; on the new release a second "
@@ -254,7 +254,7 @@ def _recovery_key(seed: bytes) -> str:
 class DeploymentNeedsRecovery(DeepCase):
     name = "deployment-needs-recovery"
     area = "Deployments"
-    since = "1.0.0-rc.37"
+    since = "1.0.0-rc.38"
     seeds = "an organization with a recovery key, and a deployment it owns"
     verifies = ("the organization keeps its key; removing it is refused (`409 RECOVERY_KEY_REQUIRED`) while it owns "
                 "the deployment, before the passkey; on the new release rotating it succeeds, and another "

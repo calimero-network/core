@@ -17,6 +17,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `no data directory: --data-dir DIR (or --node NAME)` | `run` without `--node` and without `--data-dir` | Pass one. |
 | `peer must be id=url` | A `--peers` entry without `=` | `--peers 1=https://n1/,2=https://n2/`. |
 | `a TDX node takes its storage key from mero-kms only` | `--storage-key` or `--storage-key-file` without `--dev` | Use `--kms-url` with `--kms-identity`, or add `--dev` on a development machine. |
+| `--dev attests with mock quotes, so it never takes a key from mero-kms` | `--dev` with `--kms-url` | A development node never asks mero-kms: drop `--kms-url` and `--kms-identity`, or run without `--dev`. |
 | `no storage key: pass --kms-url with --kms-identity` | TDX mode with no key source | As it says. |
 | `mero-kms needs both --kms-url and --kms-identity` | One of the two | Give both. |
 | `a TDX node needs MERO_TEE_VERSION and MERO_TEE_PROFILE` | Not running in a mero-tee image, or the image did not set them | Run in the image, or set `--tee-release`/`--tee-profile` (or `--peer-profiles`); for a local node use `--dev`. |
@@ -50,6 +51,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `401` "the passkey this session used was removed" | The device was revoked | Sign in with another passkey. |
 | `403` "this needs a passkey session, not an API key" | Managing credentials, approvals or upgrades with an API key | Use a passkey session. |
 | `403` "this API key is scoped; installing code …" | A scoped or read-only key installing or creating apps | Use an unscoped key or a session. |
+| `403` "API key not scoped to this app" or "this API key is scoped; this needs …" | A key scoped to other apps reading or changing this one, or a scoped key changing an organization's settings | Use a key scoped to this app, an unscoped key, or a session. |
 | `403` "a session opened on an app's frontend can use that app only" | An app-bound session doing account work | Do it on the cluster's own page (its `--origins`, the Cloud console on Calimero Cloud), or, for creating an organization, minting an invite or joining with one, have the app ask the [consent page](/protocol/consent-page/#organizations-and-invites) (`createOrg`, `createInvite`, `acceptInvite`). |
 | `403` "a session opened on an app's frontend changes only that app's own teams" | An app-bound session changing a team outside its package's app team, or the app team itself | Do it on the cluster's own page. |
 | `403` "the Ops API is disabled on this node" | No `--ops-token` / `--ops-token-sha256` | Configure one and restart. |

@@ -337,7 +337,10 @@ first approves with `POST /apps/{app}/upgrade-approvals { version, unit? }`, its
 own consent (`<app> / __approve_upgrade / { package, version, targets, class }`,
 `ApproveUpgrade`), logged as a pending approval on the organization
 (`Org::pending_upgrades`, one per app; with `unit` the members the unit's
-upgrade moves, by app). Another owner or admin then upgrades as usual
+upgrade moves, by app).
+A version the approver may not use (a release private to an organization they are
+not in) answers `409 NOT_INSTALLED`, as a version that does not exist, before any
+passkey. Another owner or admin then upgrades as usual
 (`/upgrade`, `/upgrade-unit`, the consent page, an organization's or a
 publisher's run); `UpgradeApp` applies only with a live first approval of that
 move by someone else (`SystemState::update_gate`), and records its approver
@@ -396,11 +399,16 @@ authority, and apply judges it again from the log alone
 - the app's policy says `noDestinations`, and the class is green (and agrees
   with the log, as [The class at apply](#the-class-at-apply) says);
 - it moves the app along its package to a newer release; never back;
+- outside a deployment, the app's owner may use that release (`sees_release`:
+  a private release only while the owner is a member of an organization it was
+  installed for), judged from the logged cluster version that brings
+  `Feature::PrivateReleases`, so an entry logged before replays as it applied;
 - the app is no unit's member (a member moves with its unit) and its unit, as
   the log holds it, has no destination before or after the move;
 - its release keeps the unit's members where they are: its `uses` resolve each
-  member to the release it runs, as creating the instance would pick it (from
-  1.0.0-rc.36, `autoUpdateMembersStay`; `SystemState::moves_members`);
+  member to the release it runs, as creating the instance would pick it, among
+  the releases its owner may use, its package's signer signs or its deployment
+  offers (from 1.0.0-rc.36, `autoUpdateMembersStay`; `SystemState::moves_members`);
 - its hold has passed: the upgrade's own `at` is at least `holdHours` after the
   release was logged, its install (`installedAt`) or, for an instance of a
   deployment, its deployment's offer of exactly that release (`addedAt`).
@@ -786,6 +794,9 @@ the cluster's system log; the other nodes go on.
 | `wholeUnits` | `CreateApp` of a unit member with its instance's deployment (`unit_offer`, the offer that covers it), and `DeleteApp` taking an instance's unit with it (`members`); an earlier release ignores both fields, so it would refuse the member as not offered and keep the members running | 1.0.0-rc.32 |
 | `deploymentSecrets` | `SetDeploymentSecret` and `ClearDeploymentSecret`, a deployment's managers setting a secret's value for every instance created from it; an earlier release cannot read them, so an instance led from it would send the operator's value, or none, where another leader sends the deployment's | 1.0.0-rc.32 |
 | `autoUpdateMembersStay` | `UpgradeApp` with `members_stay`: an update on its own is refused where its release would move the unit's members; an earlier release ignores the field and applies it to the app alone, leaving the members behind. Once the logged cluster version brings it, an entry without the flag is judged by it too | 1.0.0-rc.36 |
+| `heldTeamGrants` | No entry: a rule `SetTeamMember`, `SetTeamMembers`, `SetCapabilities` and `SetDefaultCapabilities` apply from the logged version. Below admin, a team's row, a row's capabilities and a team's default are set only on a team the actor sees, and grant only capabilities the actor holds organization-wide, as an invite's. An earlier release would apply what this one refuses | 1.0.0-rc.38 |
+| `inviteCreatorStanding` | No entry: a rule `RedeemInvite` (and a sign-up with an organization invite) applies from the logged version. An invite whose creator is no longer a member, is below its role, or no longer sees a team it names gives nothing. An earlier release would apply it | 1.0.0-rc.38 |
+| `backupKeyApprovers` | No entry: a rule `SetBackupKey` applies from the logged version. An organization's backup key is set only by its owner and admins, who approve its upgrades. An earlier release would take an org-wide `MANAGE_APPLICATION` holder's | 1.0.0-rc.38 |
 | `ownerApprovedUpgrades` | `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey` with `owner_approves`: only an owner or admin of the app's organization upgrades it, starts a run of it or makes and uses an upgrade key for it; an earlier release ignores the field and would apply a member's, a team lead's or a publisher's upgrade where a later one refuses it. Once the logged cluster version brings it, an entry without the flag is judged by it too | 1.0.0-rc.33 |
 | `upgradeInDeployment` | `UpgradeApp` with `in_deployment`: an instance from a deployment moves only to the release its deployment offers; an earlier release ignores the field and would move it where a later one refuses | 1.0.0-rc.32 |
 | `expireProofs` | `ExpireProofs`, the system leader's one-time mark after which a sign-in's or sign-up's proof is forgotten once the session it opened expires (at a later entry's own time), and a sign-in whose session expired by then is refused; an earlier release cannot read it, and would keep every proof. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.31 |
@@ -893,7 +904,7 @@ from CI".
 
 `POST /auth/apikeys { upgrades: { app, package? } }` (passkey consent; `api_key_args` states
 `upgrades` only when set, so other keys' consents read as before) makes a key bound to one app, its
-package and that package's pinned signer, plus the public half of an Ed25519 key derived from the
+package and that package's pinned signer (a package with no release the account may use is `404 no such package`, as a missing one, before the passkey; regression `an_upgrade_key_never_names_a_package_its_maker_may_not_use`), plus the public half of an Ed25519 key derived from the
 key (`proof::api_key_public`).
 `api::principal` refuses it everywhere (`403 UPGRADE_KEY_ONLY`); only `app_upgrade` takes it
 (`api::credential`), for `{ version }` of its package (`SystemState::key_may_upgrade`), signing the
@@ -915,14 +926,14 @@ For whoever `GET /apps/{app}` admits (`principal`, `within`, `reaches`; a sessio
 package's frontend included), so the app's frontend can offer an upgrade and open the consent page.
 Answers `{ app, running: { package, version } | null, available: { package, version, source:
 deployment | release } | null, mayApprove, approvers: owner-and-admins | operator | managers }`:
-`available` is a deployment instance's offer for the package it runs (the newest when several) where
+`available` is a deployment instance's offer for the package it runs (the newest when several, only one that still serves, `offer_serves`; regression `an_offer_that_no_longer_serves_is_no_available_update`) where
 it differs from the running one, else the newest release of its package the caller sees (all of them
 for a bound session) newer than the running one that the upgrade would take
 (`report::newer_versions`, `report::newest_reachable`: authority and runtime, as `latestReachable`);
 `mayApprove` is `api::upgrade_refusal` under the rule in force; `approvers` is `managers` while
 `Feature::OwnerApprovedUpgrades` is not.
 `available` also carries the update classifier's verdict (Unit destinations below), over the whole
-unit when the instance has members.
+unit when the instance has members and the caller is a member of its organization or may use every release they move to (they are chosen for its owner; `member_targets_readable`), else over the app alone (regression `a_units_update_never_shows_a_reader_a_member_release_it_may_not_use`).
 
 ### Unit destinations
 
@@ -1010,6 +1021,7 @@ Only a `__upgrade_unit` consent keeps `targets` on a run (`StartUpgradeRun` drop
 whatever the entry lists), and its members are the instance's `links` (`upgrade_run_apps`).
 `POST /apps/{app}/upgrade-approvals` answers `approval` in the `pendingApprovals` shape
 (`api::upgrades::approval_json`).
+A target the approver may not use (`SystemState::release_used`) answers `409 NOT_INSTALLED` as a missing version, and for an instance from a deployment anything but its offer that still serves (`release_offered_to`) `409 OUTSIDE_DEPLOYMENT`, before the passkey, and `ApproveUpgrade` refuses it at apply once the logged cluster version brings `Feature::PrivateReleases` (regressions `a_first_approval_answers_a_release_its_approver_may_not_use_as_a_missing_one`, `system::tests::a_first_approval_of_a_release_its_approver_may_not_use_is_refused`).
 The apply errors carry their code (each a `system::Rejection` of its own `RejectionKind`).
 `autoApply` (`noDestinations`: a green update that removes no method and moves none of the apps it
 created, of an app whose unit has no destinations before or after) and `holdHours` act through C9
@@ -1050,9 +1062,8 @@ An automatic `UpgradeFailed` carries `from_release` (`Feature::AutoUpdates`); ap
 when the app runs the target already or no longer runs that release (another move won).
 `UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that actor); apply
 judges `SystemState::auto_update_gate`: policy, green class (and `check_class`), newer release of
-its package, not a unit member, the logged unit with no destination before or after, a release that
-keeps the unit's members where they are (`moves_members` over `release_of_use`, which `unit_members`
-picks with too; `UpgradeApp { members_stay }`, `Feature::AutoUpdateMembersStay`, rc.36), the hold
+its package that, outside a deployment, the app's owner may use (`sees_release`, once the logged cluster version brings `Feature::PrivateReleases`; regressions `an_update_on_its_own_moves_only_to_a_release_its_owner_may_use`, `an_update_never_applies_on_its_own_to_a_release_its_owner_may_not_use`), not a unit member, the logged unit with no destination before or after, a release that
+keeps the unit's members where they are (`moves_members` over `release_of_use`; `UpgradeApp { members_stay }`, `Feature::AutoUpdateMembersStay`, rc.36), the hold
 (`at` >= `installedAt`, or the deployment offer's `addedAt`, + `holdHours`), a restore point
 (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `RESTORE_POINT_REQUIRED`; `UpgradeRecord::auto`).
 Every update decision's time is `types::update_now` (`testing::shift_update_clock` moves it in

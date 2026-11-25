@@ -436,7 +436,7 @@ offering an app in one need the same grant, held by the account acting.
     { from: 3, to: 1, label: 'POST /deployers { deployer, until? } + passkey' },
     { from: 1, to: 2, label: 'GrantDeployer: the owner\'s consent' },
     { type: 'divider', label: 'an install' },
-    { from: 4, to: 1, label: 'POST /packages/install { package, version }' },
+    { from: 4, to: 1, label: 'POST /packages/install { package, version, org? }' },
     { from: 1, to: 1, label: 'a live grant (account:<id>, or org:<id> held org-wide)? else 403 DEPLOY_NOT_GRANTED, nothing fetched' },
     { from: 1, to: 2, label: 'InstallPackage: the grant judged again at installedAt' },
   ]}
@@ -533,7 +533,7 @@ organization without a recovery key is `409 RECOVERY_KEY_REQUIRED`, and so is
 removing the key (`POST /orgs/{org}/recovery { publicKey: null }`) while it
 owns one; rotating it stays allowed, and no member change is ever blocked. The
 owner keeps the seed offline. Both refusals come before the passkey, and apply
-judges them again (`deploymentNeedsRecovery`, 1.0.0-rc.37); an entry logged
+judges them again (`deploymentNeedsRecovery`, 1.0.0-rc.38); an entry logged
 below that version replays as it applied, and an organization that already owns
 a deployment without a key is refused nothing until it creates another or would
 remove a key it later sets. An account's deployment needs no key.
@@ -541,7 +541,11 @@ remove a key it later sets. An account's deployment needs no key.
 **Instances**: `POST /apps { deployment, package, version?, service?, … }`
 creates an instance from the release the deployment offers for that package
 (`version`, if given, must be it), whether or not the creator sees the
-release otherwise, and without a deployer grant: nothing is installed. The
+release otherwise, and without a deployer grant: nothing is installed. An offer
+serves (here, and for an upgrade to it) only while someone who acts for the
+deployment's owner may still use the release; otherwise the deployment answers as
+one that does not offer the package (`400 NOT_OFFERED`), and instances made before
+keep running. The
 instance records the deployment (`AppRecord::deployment`), and `CreateApp`
 checks again where it applies that the deployment exists and offers the
 release the instance runs. Instances created without a deployment, and those
@@ -564,6 +568,10 @@ refuses the same where it applies (`SystemState::within_deployment`) for an
 entry that says so (`in_deployment`, set once the cluster version brings
 `upgradeInDeployment`, 1.0.0-rc.32) or once the logged cluster version brings
 the rule; an earlier entry replays as it applied.
+An offer moves an instance (one app, any run, the operator's, an update on its
+own) only while someone who acts for the deployment's owner may still use the
+release it names; from the logged cluster version that brings
+`privateReleases`, apply judges the same.
 
 **Secrets**: a value a manager sets for a secret its offered releases declare
 is the value the node attaches where the release binds `NAME`, for every instance created from the deployment that
@@ -620,7 +628,8 @@ runs it). Records from before deployments are not moved into one.
   owner's kind and name, and the apps it offers with their releases. Never its managers or customers.
 - `GET /deployments/{id}/orgs`: for its managers, on fresh state: each
   organization with instances created from it, with its id and name, how many,
-  which of the deployment's apps and the releases they run, and when the
+  which of the deployment's apps and the releases they run (as each instance's
+  record names them, never a release found by its WASM), and when the
   first was created, and `memberCount` and `activeMembers30d` (members whose
   last sign-in or session exchange is within 30 days). Never who the members
   are, teams, instance names or app data; instances in a personal
@@ -822,7 +831,7 @@ The operator's, any governance, `POST|DELETE /ops/releases/{version}/deadline` (
 operator key, `__release_deadline`; `after: null` lifts), public at `GET /releases`.
 Past one, a party whose newest approved release is older (judged on the set that governs the app)
 creates, installs and upgrades nothing (`SystemState::stalled_for_release`, `install_stalled`; `409
-RELEASE_DEADLINE`, `node::stalled`), placement skips retired nodes (`SystemState::retired`); running
+RELEASE_DEADLINE`, `node::stalled`; a registry install judges the package's pinned key only for an installer that may use the package, `package_used`, else as unbound; regression `an_install_names_no_stalled_publisher_of_a_package_its_installer_may_not_use`), placement skips retired nodes (`SystemState::retired`); running
 apps go on.
 Judged at the command's own time (`createdAt`, `at`, `installedAt`), never a node's clock;
 `run_upgrade` stamps `at` before the migration so apply agrees.
