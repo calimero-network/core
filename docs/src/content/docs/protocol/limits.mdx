@@ -32,15 +32,26 @@ error the guest's host call returns.
 | Xcalls (outbox) | 100 per run; app id or method 128 bytes | `MAX_XCALLS`, `MAX_XCALL_NAME_BYTES` |
 | Synchronous xcalls | 16 per run; arguments 512 KiB; result 1 MiB | `MAX_SYNC_XCALLS`, `MAX_SYNC_XCALL_ARGS_BYTES`, `MAX_SYNC_XCALL_RESULT_BYTES` |
 | Actions | 100 started per call or timer; 1000 `ctx.view` and `ctx.call` per action run | `MAX_STARTED_ACTIONS`, `MAX_ACTION_SUBCALLS` |
-| Outbound HTTP | 8 requests per action, one per call; bodies 1 MiB; 64 KiB recorded in a call's entry; 100 headers | `MAX_HTTP_REQUESTS`, `MAX_HTTP_BODY_BYTES`, `MAX_RECORDED_BODY_BYTES`, `MAX_HEADERS` |
+| Outbound HTTP | 8 requests per run (an action, call, timer or delivery); bodies 1 MiB; 64 KiB of each body recorded in a logged run's entry; 100 headers; 1.5 s wait for a logged run's response (`CALL_FETCH_TIMEOUT`) | `MAX_HTTP_REQUESTS`, `MAX_HTTP_BODY_BYTES`, `MAX_RECORDED_BODY_BYTES`, `MAX_HEADERS` |
 | Connector calls | input 64 KiB; 64 values in one limit (metadata keys, models); each call counts as an outbound request | `MAX_CONNECTOR_INPUT`, `MAX_LIMIT_VALUES` |
 | Outbound secrets and their redaction | 32 distinct secret values per request (more is refused); each redacted from the response as sent and in 19 common encodings (hex, base64, percent, JSON), 20 patterns a secret, 640 a request; encodings only for a secret of 8 to 4096 bytes, as sent otherwise | `MAX_SECRETS_PER_REQUEST`, `PATTERNS_PER_SECRET`, `MAX_REDACTION_PATTERNS`, `MIN_ENCODED_SECRET_BYTES`, `MAX_ENCODED_SECRET_BYTES` |
 | Declared secrets (credential bindings) | 16 per release; name 64 bytes; description 256 bytes; one host, 1 to 8 path prefixes of 256 bytes each, and one place each (a header, or a body field); header name or body field 64 bytes; header `format` 64 bytes with `{}` once; no two on one host's same place on a shared path | `MAX_SECRETS`, `MAX_SECRET_NAME_BYTES`, `MAX_SECRET_DESCRIPTION_BYTES`, `MAX_SECRET_PATHS`, `MAX_SECRET_PATH_BYTES`, `MAX_SECRET_FIELD_BYTES`, `MAX_SECRET_FORMAT_BYTES` |
 | Search | 100 hits at most; query 256 bytes; 32 searches per run (`"too many searches in one run"`) | `MAX_SEARCH_LIMIT`, `MAX_SEARCH_QUERY_BYTES`, `MAX_SEARCHES_PER_RUN` |
-| Files | 16 open; 2 GiB each; 64 MiB written per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_READ_CHUNK` |
+| Files | 16 open; 2 GiB each; 64 MiB written per run (2 GiB in a compute run); 1,000 new files per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_COMPUTE_FILE_BYTES`, `MAX_NEW_FILES`, `MAX_READ_CHUNK` |
 | Blob download grant | 1 day at most | `MAX_GRANT_TTL_SECS` |
 | Compute runs started | 16 per run; 64 active per app; 64 inputs, 64 KiB of arguments | `MAX_STARTS_PER_RUN`, `MAX_ACTIVE_RUNS`, `MAX_RUN_INPUTS`, `MAX_COMPUTE_ARGS_BYTES` |
 | Call arguments | 512 KiB (`413 ARGS_TOO_LARGE`, before anything runs) | `MAX_ARGS_BYTES` |
+
+A soft limit answers a fixed string, which depends only on the run's own calls,
+so every node gives the same answer. `events.emit` answers `too many events`,
+`event name too long`, `event data too large`, `too many audience accounts`,
+`malformed audience` (an empty account list, account, team or org id),
+`unknown team`, or `audience names another org`; `xcall.send` answers
+`too many xcalls` or `malformed xcall target`; `emit`, `xcall.send` and
+`start-action` past the run's bytes answer
+`entry too large: the run would write <n> bytes, over 1048576`. A refused
+call records nothing. The caps on keys, events, cursors and logs sit low on
+purpose: raising one later breaks no app, lowering one does.
 
 ### What host work costs
 
@@ -163,7 +174,7 @@ refusal is `429 QUOTA_EXCEEDED`.
 | Stored file bytes per organization (`maxFileBytesPerOrg`) | 50 GB |
 | Concurrent compute runs per organization (`maxConcurrentRunsPerOrg`) | 4 |
 | Reserved compute fuel per organization (`computeFuelPerOrg`) | 10 times `MAX_COMPUTE_FUEL` |
-| Fuel per developer per UTC day (`maxFuelPerDeveloperPerDay`; the developer usage is billed to: a deployment's owner for its instances, else the app's org or owner, D78) | 0 (no limit); checked before a client's call or an xcall to any of its apps runs, not at apply: `init`, timer ticks and event handlers still run and count (D76) |
+| Fuel per developer per UTC day (`maxFuelPerDeveloperPerDay`; the developer usage is billed to: a deployment's owner for its instances, else the app's org or owner) | 0 (no limit); checked before a client's call or an xcall to any of its apps runs, not at apply: `init`, timer ticks and event handlers still run and count |
 
 The fuel cap is approximate by at most one refresh interval (5 s). A call never
 asks a peer: the node reads the apps it replicates from its own replicas, and the
@@ -173,7 +184,8 @@ interval. A peer that stops answering keeps the figures it last reported. An app
 peer has reported yet counts as nothing, so the cap fails open rather than closed:
 refusing every call to all of a developer's apps whenever one replica of one of them
 is unreachable would be worse than a developer briefly exceeding a daily cap. The cap is a
-decimal string in JSON (D20); a node writes a non-zero cap only once every node runs
+decimal string in JSON, as every 64-bit integer is
+([Types](/build/app-abi/#types)); a node writes a non-zero cap only once every node runs
 its release or newer (`409 UPGRADE_PENDING`).
 
 ## Roles and capabilities
