@@ -390,7 +390,7 @@ mod segment_tests {
     use super::*;
     use crate::app::rows;
 
-    /// Review finding A6 audit: a blob record that did not read gave "no segments", so a
+    /// A blob record that did not read gave "no segments", so a
     /// restore went on without that file's bytes and the restored app silently lost them.
     #[test]
     fn a_blob_record_that_does_not_read_is_an_error_not_no_segments() {

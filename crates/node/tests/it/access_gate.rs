@@ -540,7 +540,7 @@ async fn a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfe
     assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
 }
 
-/// Review finding A3: `GET /attestation?app=` is in the clear and takes no
+/// `GET /attestation?app=` is in the clear and takes no
 /// credential, yet it bound any app's bundle hash, so anyone could learn that a
 /// private app exists and which release it runs (`404` against `200`). It now
 /// answers as an anonymous `GET /apps/{app}` does: an app reads exactly as an id

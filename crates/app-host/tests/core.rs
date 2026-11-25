@@ -351,7 +351,7 @@ fn range_is_lazy() {
     assert_eq!(big.len(), 1_000, "max is capped at 1,000");
 }
 
-/// Review finding A4: 1,000 values of about 1 MiB each made one `range_next` gather
+/// 1,000 values of about 1 MiB each made one `range_next` gather
 /// about 1 GiB on the host before the guest (64 MiB) saw any of it. A batch now stops at
 /// `MAX_RANGE_BATCH_BYTES`, and the next one carries on where it stopped.
 #[test]

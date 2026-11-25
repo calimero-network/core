@@ -925,7 +925,7 @@ impl DiskCluster {
     }
 }
 
-/// Review finding B3: a state row a replica could not read during an apply read
+/// A state row a replica could not read during an apply read
 /// as absent, and the replica applied the entry anyway, answering (and writing)
 /// differently from the others. The read fault now fails the batch, so that
 /// replica stops on the entry instead.

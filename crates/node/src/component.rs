@@ -2584,7 +2584,7 @@ mod tests {
         assert!(!Outcome::default().is_retryable());
     }
 
-    /// Review finding B3: a row an apply read but could not decode read as absent, and
+    /// A row an apply read but could not decode read as absent, and
     /// the batch went on (a pipeline step applied as if its run were unknown, a replayed
     /// call ran again, an idempotency record was dropped). It now fails the batch.
     #[test]

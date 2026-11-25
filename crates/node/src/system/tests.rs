@@ -1626,7 +1626,7 @@ fn a_sign_ins_refresh_token_needs_its_passkeys_assertion() {
     assert_eq!(m.state.refresh[&hash].account, "alice");
 }
 
-/// Review finding B1: every sign-in's proof stayed in `used_proofs` for good, so
+/// Every sign-in's proof stayed in `used_proofs` for good, so
 /// the system state (one snapshot row) only grew. From the `ExpireProofs` mark
 /// on, a sign-in's proof is forgotten once the session it opened expires (at an
 /// entry's own time, never a clock), and a sign-in whose session expired by
@@ -2356,7 +2356,7 @@ fn a_create_org_entry_from_before_takes_any_name() {
 /// The status a client sees for a refusal comes from what the log refused it
 /// for, never from its wording: a quota refusal worded otherwise is still
 /// `429 QUOTA_EXCEEDED`, and a refusal of another kind whose wording happens
-/// to start like a quota's is still `400 REJECTED` (review finding E4).
+/// to start like a quota's is still `400 REJECTED`.
 #[test]
 fn a_refusals_status_comes_from_its_kind_not_its_wording() {
     let (mut m, _alice, _bob, _carol) = proven_cluster();
