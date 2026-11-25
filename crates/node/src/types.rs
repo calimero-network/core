@@ -27,7 +27,7 @@ pub enum Caller {
     /// The app itself: an `xcall` from app `app` (then the caller is the calling
     /// app). Never from a client: the API builds callers from credentials.
     App { app: AppId },
-    /// The platform itself: a component's timer ticks (D34), which reach only
+    /// The platform itself: a component's timer ticks, which reach only
     /// methods whose ABI says `allowSystem`. Never from a client.
     System,
     /// An anonymous visitor through one of the instance's public links
@@ -71,7 +71,7 @@ impl Caller {
         matches!(self, Self::Account { .. } | Self::ApiKey { .. })
     }
 
-    /// The caller as the component host core sees it (the WIT `caller`, D13).
+    /// The caller as the component host core sees it (the WIT `caller`).
     #[must_use]
     pub fn to_host(&self) -> calimero_app_host::Caller {
         use calimero_app_host::Caller as H;
@@ -1215,7 +1215,7 @@ pub struct Org {
     #[serde(default)]
     pub upgrade_runs: std::collections::BTreeMap<String, UpgradeRun>,
     /// The organization's recovery key and any recovery under way
-    /// (`docs/specs/org-recovery.md`); absent for an organization that never
+    /// ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)); absent for an organization that never
     /// set one, as every organization written before this field was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<OrgRecovery>,
@@ -1504,7 +1504,7 @@ pub struct PendingRecovery {
 pub const RECOVERY_DELAY_SECS: u64 = 72 * 60 * 60;
 
 /// An account recovery started with the account's recovery code, not
-/// finished or cancelled yet (`docs/specs/account-recovery.md`): the passkey
+/// finished or cancelled yet ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)): the passkey
 /// it adds, [`RECOVERY_DELAY_SECS`] after the start (the same delay as an
 /// organization's), unless one of the account's passkeys cancels first.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1879,7 +1879,7 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// Who receives an event (R9). Resolved when the event is sent to a
+/// Who receives an event. Resolved when the event is sent to a
 /// subscriber, against the system state of that moment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -1927,7 +1927,7 @@ pub struct EventRecord {
     pub seq: u32,
     pub kind: String,
     pub data: serde_json::Value,
-    /// A component's event: who receives it (R9), checked when it is sent.
+    /// A component's event: who receives it, checked when it is sent.
     /// `None` for an event that goes to everyone who reaches the app (one an SDK
     /// 0.12 app recorded).
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -570,9 +570,9 @@ async fn move_replicas(
     // `replicas[0]` forms the group when it is created (`Node::ensure_app_group`
     // initializes it there): every set this move records keeps the current
     // replicas first, in their order, so it is never a node that has not
-    // joined the group yet. A sorted union put a newcomer with a lower id
-    // first, and it formed an empty group of its own with the others as voters
-    // (B8). The system group compares these sets as sets, so the order is the
+    // joined the group yet: a sorted union would put a newcomer with a lower id
+    // first, and it would form an empty group of its own with the others as
+    // voters. The system group compares these sets as sets, so the order is the
     // writer's to choose.
     let kept = |set: &std::collections::BTreeSet<u64>| -> Vec<u64> {
         app.replicas

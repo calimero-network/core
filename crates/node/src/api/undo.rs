@@ -1,5 +1,5 @@
-//! The API's routes for undoing an upgrade from its restore point (C9;
-//! `SystemCmd::UndoUpgrade`, `crate::node::restore_points`).
+//! The API's routes for undoing an upgrade from its restore point
+//! (`SystemCmd::UndoUpgrade`, `crate::node::restore_points`).
 
 #[allow(
     clippy::wildcard_imports,
@@ -457,8 +457,8 @@ mod tests {
             none,
             json!({ "entriesSince": 0, "lastWriteAt": 50, "any": false })
         );
-        // The holder hosting the app but behind its group (Bugbot on #5210, "lagging
-        // replica undercounts"): its own count is never read; the majority's furthest is.
+        // The holder hosting the app but behind its group: its own count is never read; the
+        // majority's furthest is.
         let hosted = json!({
             "hosted": true, "entriesSince": 0, "lastWriteMs": null, "takenAt": 100,
         });

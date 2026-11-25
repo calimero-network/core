@@ -1,4 +1,4 @@
-//! Release 1.0.0 of the notes app the consent page tests upgrade (`crates/node/tests/consent_page.rs`).
+//! Release 1.0.0 of the notes app the consent page tests upgrade (`crates/node/tests/it/consent_page.rs`).
 //! `apps/fixture-notes-v2` is 2.0.0; the page names what changes between their ABIs.
 //! Method names and arguments are the ABI's camelCase ones.
 

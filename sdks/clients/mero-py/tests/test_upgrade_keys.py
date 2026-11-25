@@ -1,5 +1,5 @@
 """
-Upgrade keys (core #4852, core 1.0.0-rc.10): an API key made with a passkey
+Upgrade keys (core 1.0.0-rc.10): an API key made with a passkey
 that upgrades one app to signed releases of its package, so CI deploys
 without a passkey, and is refused everything else (`403 UPGRADE_KEY_ONLY`).
 

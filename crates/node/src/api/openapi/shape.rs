@@ -5,7 +5,7 @@
 //! shape   := alt ('|' alt)*                       one of these
 //! alt     := atom '[]'*                           '[]': a list of it
 //! atom    := 'string' | 'int' | 'uint' | 'number' | 'bool' | 'null' | 'any'
-//!          | 'u64'                                a decimal string (D20)
+//!          | 'u64'                                a decimal string
 //!          | 'b64url'                             base64url without padding
 //!          | '"text"'                             this string
 //!          | '#Name'                              components/schemas/Name

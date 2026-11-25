@@ -278,13 +278,11 @@ impl Pending {
     }
 }
 
-/// The most ceremonies a node holds open for callers it does not know yet
-/// (sign-in, sign-up, a recovery's finish). Each lives at most
-/// `CHALLENGE_TTL`; past this a new one displaces the oldest of the caller
-/// holding the most (`admit_pending`), so the pool never grows without bound
-/// (Xil's review, issue 12) and a flood never locks the others out (review
-/// finding D1). Ceremonies of known accounts do not count here, so a full
-/// anonymous pool never blocks an account's step-up.
+/// The most ceremonies a node holds open for callers it does not know yet (sign-in,
+/// sign-up, a recovery's finish). Each lives at most `CHALLENGE_TTL`; past this a new one
+/// displaces the oldest of the caller holding the most (`admit_pending`), so the pool never
+/// grows without bound and a flood never locks the others out. Ceremonies of known accounts
+/// do not count here, so a full anonymous pool never blocks an account's step-up.
 pub const MAX_PENDING_CHALLENGES: usize = 10_000;
 /// The most anonymous ceremonies one sealed session holds open; its next
 /// begin displaces its own oldest. A client has a few at once (a sign-in, a
@@ -645,8 +643,7 @@ fn rp(node: &Node) -> RelyingParty {
 }
 
 /// A confirmation (step-up) needs the user verified (PIN or biometric), not
-/// just present: a touch alone is not consent to a confirm method (Xil's
-/// review, issue 6).
+/// just present: a touch alone is not consent to a confirm method.
 pub(crate) fn rp_step_up(node: &Node) -> RelyingParty {
     RelyingParty {
         require_uv: true,
@@ -747,7 +744,7 @@ impl Principal {
     /// Whether this principal may change `team` of `org` as `reach` says: a
     /// package-bound session only a team of its own package's, the org's
     /// app team for that package ([`crate::types::Org::package_of_team`])
-    /// or one below it, so an app's frontend runs its own channels (#5014).
+    /// or one below it, so an app's frontend runs its own channels.
     /// Who may do the change itself is judged where it applies, as for any
     /// session; this only keeps the session to its package's teams.
     pub(crate) fn within_team(
@@ -813,7 +810,7 @@ impl Principal {
         }
         // A session vouches for its account only where the node that signed
         // it may hold the data: a node on an unapproved release cannot mint
-        // its way into an app (F1).
+        // its way into an app.
         if let Some(release) = &self.issuer_release {
             if !node.sys(|s| s.release_may_hold(app, Some(release))) {
                 return Err(ApiError::unauthenticated(
@@ -952,7 +949,7 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 /// [`Node::sys_fresh_index`]): a session or key revoked through another node is
 /// refused here at once, not once this replica catches up. What needs no state
 /// is checked before that round, so a credential that cannot be valid costs the
-/// system leader nothing (D4): an API key's shape ([`api_key_shaped`]) and the
+/// system leader nothing: an API key's shape ([`api_key_shaped`]) and the
 /// keys a fresh read found missing ([`UnknownApiKeys`]), a visitor's signature,
 /// a session token's signature under its issuer's attested key and its expiry.
 async fn credential(node: &Node, headers: &HeaderMap) -> Result<Option<Principal>, ApiError> {
@@ -1210,8 +1207,7 @@ pub(crate) async fn signed_in(node: &Node, headers: &HeaderMap) -> Result<Princi
 
 /// Who may install code or create apps: a passkey session, or an API key
 /// scoped to no app and no method and not read-only. A key handed to one app
-/// (or read-only) must not install bundles or start new apps (Xil's review,
-/// issue 7).
+/// (or read-only) must not install bundles or start new apps.
 async fn installer(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
     let p = signed_in(node, headers).await?;
     p.unbound()?;
@@ -1399,7 +1395,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     let app_hash: [u8; 32] = match (&q.app, &q.app_hash) {
         (Some(app), _) => {
             // In the clear and without a credential, so judged as an anonymous
-            // `GET /apps/{app}` is (#4723): on the cluster's latest system state,
+            // `GET /apps/{app}` is: on the cluster's latest system state,
             // and an app nobody anonymous may reach answers as one that does not
             // exist, so the bound hash never says that a private app exists or
             // which release it runs. Read at once after the round: an unknown id
@@ -1589,7 +1585,7 @@ fn utc_day(secs: u64) -> Option<String> {
 
 // ---------------------------------------------------------------- account recovery
 
-// `docs/specs/account-recovery.md`: a code made with a passkey; signed out,
+// [Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery): a code made with a passkey; signed out,
 // the code and a new passkey start a recovery; within `RECOVERY_DELAY_SECS`
 // (72 h, as an organization's) a passkey the account has cancels it; after,
 // the new passkey finishes it and signs in.
@@ -1720,8 +1716,8 @@ async fn gate(
     let account = p.as_ref().and_then(|p| p.caller.account());
     // Access is judged on the cluster's latest system state (a read index): a
     // removal or revocation committed through another node holds before the
-    // next request, read or write, and a grant is seen at once (Xil's review:
-    // access judged on lagging local state). `principal` already read fresh
+    // next request, read or write, and a grant is seen at once, never judged
+    // on lagging local state. `principal` already read fresh
     // for a request that carries a credential.
     let sys_index = match &p {
         Some(p) => p.sys_index,
@@ -1975,7 +1971,7 @@ pub(crate) async fn still_admitted(node: &Node, p: &Principal, app_id: &str) -> 
 pub const MAX_EVENT_BATCH: usize = 256;
 
 /// The app's events from `from`, then live. A component's event carries its
-/// audience (R9) and goes to `subscriber` (`None`: anonymous) only if the system
+/// audience and goes to `subscriber` (`None`: anonymous) only if the system
 /// state says it still reaches the app and is in the audience, so a member removed
 /// from the org or the team stops receiving at once. That state is fresh for each
 /// event: a read-index round begun after the event reached this replica, applied

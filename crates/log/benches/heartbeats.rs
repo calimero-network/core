@@ -1,4 +1,4 @@
-//! What a node's Raft traffic costs as it hosts more groups (B6): `n` groups on
+//! What a node's Raft traffic costs as it hosts more groups: `n` groups on
 //! three engines in one process (the in-memory transport of `tests/cluster.rs`),
 //! each led by node 1, idle, on the production timing (`Config::default()`).
 //! For 1, 100 and 1,000 groups (`HEARTBEAT_GROUPS=1,100,1000`) it prints the
@@ -7,8 +7,8 @@
 //! message handled.
 //!
 //! Heartbeats travel batched per peer (`network::Batcher`), so a peer gets
-//! about one message per tick whatever the groups it shares; before they were
-//! batched, it got one per shared group (#5340's rows). The CPU per message shows whether routing one costs
+//! about one message per tick whatever the groups it shares, not one per shared
+//! group. The CPU per message shows whether routing one costs
 //! more with more groups: a scan of every group per message would grow it with
 //! them; a lookup keeps it flat.
 

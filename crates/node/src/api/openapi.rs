@@ -4389,7 +4389,7 @@ mod tests {
 
     /// A component an operation answers as its whole success body names the Rust type the
     /// handler serializes (`Component::of`), so `response_shapes_match_their_types` holds the two
-    /// together and a field added to one and not the other turns red (review finding E7).
+    /// together and a field added to one and not the other turns red.
     #[test]
     fn every_component_answered_whole_is_a_types() {
         let comps = components();

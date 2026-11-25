@@ -158,7 +158,7 @@ async fn blob_upload(
     }))
 }
 
-/// A component holds a bounded number of blobs and files (R8).
+/// A component holds a bounded number of blobs and files (`MAX_COMPONENT_BLOBS`).
 async fn refuse_full_app(node: &Node, app: &crate::types::AppRecord) -> Result<(), ApiError> {
     let stats = node.storage_stats(app).await?;
     if stats.blobs.len() + stats.files.len() >= crate::component::blobs::MAX_COMPONENT_BLOBS {
@@ -190,7 +190,7 @@ fn blob_mime(headers: &HeaderMap) -> Result<String, ApiError> {
     Ok(mime.to_owned())
 }
 
-/// `?grant=` on a download: a component's run handed it out (R8).
+/// `?grant=` on a download: a component's run handed it out.
 #[derive(Deserialize)]
 pub(super) struct BlobGrant {
     grant: Option<String>,

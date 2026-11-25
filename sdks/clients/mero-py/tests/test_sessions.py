@@ -1,5 +1,5 @@
 """
-The account's sessions (core #4894's `/auth/sessions`) through the facade:
+The account's sessions (`/auth/sessions`) through the facade:
 `client.auth.sessions_list()` lists them and `client.auth.session_revoke(
 session=...)` ends one.
 

@@ -1,4 +1,4 @@
-//! Refusing a store older than mero-kms has seen (`docs/specs/rollback-protection.md`).
+//! Refusing a store older than mero-kms has seen ([Rollback protection](https://calimero-network.github.io/core/protocol/encryption/#rollback-protection)).
 //!
 //! mero-kms keeps, per node of a cluster, an entry `(generation, mark)`, and a
 //! cluster epoch (the number of rollbacks an operator forced). The node keeps

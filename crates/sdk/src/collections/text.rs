@@ -1,7 +1,7 @@
 //! `Text`: a Fugue sequence of characters over the store (v1's `FugueText`).
 //!
 //! Tree-Fugue, Algorithm 1 of Weidner, Gentle and Kleppmann, *The Art of the Fugue*
-//! (arXiv 2305.00583), as v1's `crates/storage/src/collections/fugue.rs` implements it. One
+//! (arXiv 2305.00583), as v1's `calimero-storage` (0.x, since removed) implemented it. One
 //! leader applies every edit, so there is no merge; Fugue is here for what editors send: an
 //! edit typed against a view that is no longer current. Every character has a stable id,
 //! an insert names the id of the character it follows, and a delete names ids, so an edit

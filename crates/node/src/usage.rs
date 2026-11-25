@@ -94,7 +94,7 @@ pub fn account_payer(account: &str) -> String {
 ///
 /// Unlike [`payer`] this moves no quota but one: file bytes and limits stay
 /// the owning organization's or account's, while the daily fuel cap
-/// (`Quotas::max_fuel_per_developer_per_day`, D76, D78) follows the developer.
+/// (`Quotas::max_fuel_per_developer_per_day`) follows the developer.
 ///
 /// [`Deployment`]: crate::system::Deployment
 #[must_use]
