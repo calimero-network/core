@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.deployment_secret_set_body import DeploymentSecretSetBody
-from ...models.deployment_secret_set_response_200 import DeploymentSecretSetResponse200
+from ...models.deployment_secret_body import DeploymentSecretBody
+from ...models.deployment_secret_set import DeploymentSecretSet
 from ...models.error import Error
 from typing import cast
 
@@ -17,7 +17,7 @@ def _get_kwargs(
     id: str,
     name: str,
     *,
-    body: DeploymentSecretSetBody,
+    body: DeploymentSecretBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[DeploymentSecretSetResponse200, Error]]:
+) -> Optional[Union[DeploymentSecretSet, Error]]:
     if response.status_code == 200:
-        response_200 = DeploymentSecretSetResponse200.from_dict(response.json())
+        response_200 = DeploymentSecretSet.from_dict(response.json())
 
         return response_200
 
@@ -93,7 +93,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[DeploymentSecretSetResponse200, Error]]:
+) -> Response[Union[DeploymentSecretSet, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -107,8 +107,8 @@ def sync_detailed(
     name: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentSecretSetBody,
-) -> Response[Union[DeploymentSecretSetResponse200, Error]]:
+    body: DeploymentSecretBody,
+) -> Response[Union[DeploymentSecretSet, Error]]:
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
@@ -130,14 +130,14 @@ def sync_detailed(
     Args:
         id (str):
         name (str):
-        body (DeploymentSecretSetBody):
+        body (DeploymentSecretBody): The request body of `PUT /deployments/{id}/secrets/{name}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentSecretSetResponse200, Error]]
+        Response[Union[DeploymentSecretSet, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -158,8 +158,8 @@ def sync(
     name: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentSecretSetBody,
-) -> Optional[Union[DeploymentSecretSetResponse200, Error]]:
+    body: DeploymentSecretBody,
+) -> Optional[Union[DeploymentSecretSet, Error]]:
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
@@ -181,14 +181,14 @@ def sync(
     Args:
         id (str):
         name (str):
-        body (DeploymentSecretSetBody):
+        body (DeploymentSecretBody): The request body of `PUT /deployments/{id}/secrets/{name}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentSecretSetResponse200, Error]
+        Union[DeploymentSecretSet, Error]
     """
 
     return sync_detailed(
@@ -204,8 +204,8 @@ async def asyncio_detailed(
     name: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentSecretSetBody,
-) -> Response[Union[DeploymentSecretSetResponse200, Error]]:
+    body: DeploymentSecretBody,
+) -> Response[Union[DeploymentSecretSet, Error]]:
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
@@ -227,14 +227,14 @@ async def asyncio_detailed(
     Args:
         id (str):
         name (str):
-        body (DeploymentSecretSetBody):
+        body (DeploymentSecretBody): The request body of `PUT /deployments/{id}/secrets/{name}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentSecretSetResponse200, Error]]
+        Response[Union[DeploymentSecretSet, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -253,8 +253,8 @@ async def asyncio(
     name: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentSecretSetBody,
-) -> Optional[Union[DeploymentSecretSetResponse200, Error]]:
+    body: DeploymentSecretBody,
+) -> Optional[Union[DeploymentSecretSet, Error]]:
     """Set a deployment's value of a secret
 
      Every instance created from the deployment uses it unless the instance set its own
@@ -276,14 +276,14 @@ async def asyncio(
     Args:
         id (str):
         name (str):
-        body (DeploymentSecretSetBody):
+        body (DeploymentSecretBody): The request body of `PUT /deployments/{id}/secrets/{name}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentSecretSetResponse200, Error]
+        Union[DeploymentSecretSet, Error]
     """
 
     return (

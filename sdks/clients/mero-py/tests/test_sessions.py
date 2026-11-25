@@ -27,9 +27,9 @@ def test_session_revoke_takes_the_session_id():
 
 
 def test_me_documents_the_passkey_times():
-    from calimero_client_py.openapi.models import MeResponse200PasskeysItem
+    from calimero_client_py.openapi.models import AccountPasskey
 
-    doc = MeResponse200PasskeysItem.__doc__ or ""
+    doc = AccountPasskey.__doc__ or ""
     for field in ("added_at", "last_sign_in_at"):
         assert field in doc, field
 

@@ -170,7 +170,7 @@ pub(super) struct PublicLinkBody {
 }
 
 /// A link as its list shows it: its key and terms, never a token.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(test, derive(utoipa::ToSchema))]
 pub(super) struct LinkView {
@@ -200,7 +200,7 @@ impl LinkView {
 }
 
 /// `GET /apps/{app}/public-links`.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[cfg_attr(test, derive(utoipa::ToSchema))]
 pub(super) struct PublicLinks {
     links: Vec<LinkView>,
@@ -212,7 +212,7 @@ pub(super) struct PublicLinks {
 pub(super) struct Done {}
 
 /// `POST /apps/{app}/public-links`: the link's key and, this once, its token.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[cfg_attr(test, derive(utoipa::ToSchema))]
 pub(super) struct PublicLinkMade {
     link: String,

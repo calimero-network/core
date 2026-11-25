@@ -96,7 +96,7 @@ def sync_detailed(
     Args:
         org (str):
         team (str):
-        body (TeamUpdateBody):
+        body (TeamUpdateBody): The request body of `POST /orgs/{org}/teams/{team}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -138,7 +138,7 @@ def sync(
     Args:
         org (str):
         team (str):
-        body (TeamUpdateBody):
+        body (TeamUpdateBody): The request body of `POST /orgs/{org}/teams/{team}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -175,7 +175,7 @@ async def asyncio_detailed(
     Args:
         org (str):
         team (str):
-        body (TeamUpdateBody):
+        body (TeamUpdateBody): The request body of `POST /orgs/{org}/teams/{team}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -215,7 +215,7 @@ async def asyncio(
     Args:
         org (str):
         team (str):
-        body (TeamUpdateBody):
+        body (TeamUpdateBody): The request body of `POST /orgs/{org}/teams/{team}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

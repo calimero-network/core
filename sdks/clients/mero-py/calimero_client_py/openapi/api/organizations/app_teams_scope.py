@@ -7,16 +7,16 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_teams_scope_body import AppTeamsScopeBody
-from ...models.app_teams_scope_response_200 import AppTeamsScopeResponse200
+from ...models.app_teams_scoped import AppTeamsScoped
 from ...models.error import Error
+from ...models.scope_apps_body import ScopeAppsBody
 from typing import cast
 
 
 def _get_kwargs(
     org: str,
     *,
-    body: AppTeamsScopeBody,
+    body: ScopeAppsBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppTeamsScopeResponse200, Error]]:
+) -> Optional[Union[AppTeamsScoped, Error]]:
     if response.status_code == 200:
-        response_200 = AppTeamsScopeResponse200.from_dict(response.json())
+        response_200 = AppTeamsScoped.from_dict(response.json())
 
         return response_200
 
@@ -81,7 +81,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppTeamsScopeResponse200, Error]]:
+) -> Response[Union[AppTeamsScoped, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -94,8 +94,8 @@ def sync_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: AppTeamsScopeBody,
-) -> Response[Union[AppTeamsScopeResponse200, Error]]:
+    body: ScopeAppsBody,
+) -> Response[Union[AppTeamsScoped, Error]]:
     """Give apps app teams, or open or close one
 
      The owner or an admin; `keep` names who stays when a team closes; `childTeams` says whether the app
@@ -108,14 +108,14 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (AppTeamsScopeBody):
+        body (ScopeAppsBody): The request body of `POST /orgs/{org}/app-teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppTeamsScopeResponse200, Error]]
+        Response[Union[AppTeamsScoped, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -134,8 +134,8 @@ def sync(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: AppTeamsScopeBody,
-) -> Optional[Union[AppTeamsScopeResponse200, Error]]:
+    body: ScopeAppsBody,
+) -> Optional[Union[AppTeamsScoped, Error]]:
     """Give apps app teams, or open or close one
 
      The owner or an admin; `keep` names who stays when a team closes; `childTeams` says whether the app
@@ -148,14 +148,14 @@ def sync(
 
     Args:
         org (str):
-        body (AppTeamsScopeBody):
+        body (ScopeAppsBody): The request body of `POST /orgs/{org}/app-teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppTeamsScopeResponse200, Error]
+        Union[AppTeamsScoped, Error]
     """
 
     return sync_detailed(
@@ -169,8 +169,8 @@ async def asyncio_detailed(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: AppTeamsScopeBody,
-) -> Response[Union[AppTeamsScopeResponse200, Error]]:
+    body: ScopeAppsBody,
+) -> Response[Union[AppTeamsScoped, Error]]:
     """Give apps app teams, or open or close one
 
      The owner or an admin; `keep` names who stays when a team closes; `childTeams` says whether the app
@@ -183,14 +183,14 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (AppTeamsScopeBody):
+        body (ScopeAppsBody): The request body of `POST /orgs/{org}/app-teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppTeamsScopeResponse200, Error]]
+        Response[Union[AppTeamsScoped, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -207,8 +207,8 @@ async def asyncio(
     org: str,
     *,
     client: AuthenticatedClient,
-    body: AppTeamsScopeBody,
-) -> Optional[Union[AppTeamsScopeResponse200, Error]]:
+    body: ScopeAppsBody,
+) -> Optional[Union[AppTeamsScoped, Error]]:
     """Give apps app teams, or open or close one
 
      The owner or an admin; `keep` names who stays when a team closes; `childTeams` says whether the app
@@ -221,14 +221,14 @@ async def asyncio(
 
     Args:
         org (str):
-        body (AppTeamsScopeBody):
+        body (ScopeAppsBody): The request body of `POST /orgs/{org}/app-teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppTeamsScopeResponse200, Error]
+        Union[AppTeamsScoped, Error]
     """
 
     return (

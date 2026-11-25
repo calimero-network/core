@@ -285,26 +285,44 @@ pub(crate) fn verdict_json(c: &Classification) -> Value {
 /// its members; empty: no data leaves Calimero) as `destinations`, and each member by path with
 /// its package, version, own destinations
 /// and (for an instance) app id.
-pub(crate) fn describe(placed: &Placed) -> Value {
-    let members: serde_json::Map<String, Value> = placed
+pub(crate) fn describe(placed: &Placed) -> UnitEgress {
+    let members = placed
         .unit
         .members
         .iter()
         .map(|(path, r)| {
-            let mut m = json!({
-                "package": r.package,
-                "version": r.version,
-                "signer": r.signer,
-                "destinations": r.egress(),
-            });
-            if let Some(id) = placed.apps.get(path) {
-                m["app"] = json!(id);
-            }
+            let m = UnitMember {
+                package: r.package.clone(),
+                version: r.version.clone(),
+                signer: r.signer.clone(),
+                destinations: r.egress().into_iter().collect(),
+                app: placed.apps.get(path).cloned(),
+            };
             (path.clone(), m)
         })
         .collect();
-    json!({
-        "destinations": placed.unit.egress(),
-        "members": members,
-    })
+    UnitEgress {
+        destinations: placed.unit.egress().into_iter().collect(),
+        members,
+    }
+}
+
+/// A unit's egress: the sorted destinations over the app and its members (empty: no data
+/// leaves Calimero), and each member by its path.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UnitEgress {
+    pub destinations: Vec<String>,
+    pub members: BTreeMap<String, UnitMember>,
+}
+
+/// An app of a unit: the release it runs or would run, that release's signer, the destinations
+/// it alone may send data to, and its app id (absent on a release's card).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UnitMember {
+    package: String,
+    version: String,
+    signer: String,
+    destinations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    app: Option<String>,
 }

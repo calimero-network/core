@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.app_move_body import AppMoveBody
-from ...models.app_move_response_200 import AppMoveResponse200
+from ...models.app_moved import AppMoved
 from ...models.error import Error
 from typing import cast
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppMoveResponse200, Error]]:
+) -> Optional[Union[AppMoved, Error]]:
     if response.status_code == 200:
-        response_200 = AppMoveResponse200.from_dict(response.json())
+        response_200 = AppMoved.from_dict(response.json())
 
         return response_200
 
@@ -81,7 +81,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppMoveResponse200, Error]]:
+) -> Response[Union[AppMoved, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -95,7 +95,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: AppMoveBody,
-) -> Response[Union[AppMoveResponse200, Error]]:
+) -> Response[Union[AppMoved, Error]]:
     """Move an app to another organization
 
      Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant
@@ -116,7 +116,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppMoveResponse200, Error]]
+        Response[Union[AppMoved, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -136,7 +136,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: AppMoveBody,
-) -> Optional[Union[AppMoveResponse200, Error]]:
+) -> Optional[Union[AppMoved, Error]]:
     """Move an app to another organization
 
      Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant
@@ -157,7 +157,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppMoveResponse200, Error]
+        Union[AppMoved, Error]
     """
 
     return sync_detailed(
@@ -172,7 +172,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: AppMoveBody,
-) -> Response[Union[AppMoveResponse200, Error]]:
+) -> Response[Union[AppMoved, Error]]:
     """Move an app to another organization
 
      Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant
@@ -193,7 +193,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppMoveResponse200, Error]]
+        Response[Union[AppMoved, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -211,7 +211,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: AppMoveBody,
-) -> Optional[Union[AppMoveResponse200, Error]]:
+) -> Optional[Union[AppMoved, Error]]:
     """Move an app to another organization
 
      Its data where it is; its files, runs and quotas go to the target, its `org` or app-team grant
@@ -232,7 +232,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppMoveResponse200, Error]
+        Union[AppMoved, Error]
     """
 
     return (

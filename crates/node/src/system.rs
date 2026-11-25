@@ -36,8 +36,40 @@ mod routing;
 mod sign_up;
 mod updates;
 
-pub use approvals::{egress_args, ApprovedReleases, Deadlines, OutboundApproved, ReleaseDeadline};
-pub use packages::Uninstalled;
+pub use accounts::SessionsRevoked;
+pub use approvals::{
+    egress_args, ApprovedReleases, Deadlines, EgressSet, OutboundApproved, VersionDeadline,
+};
+pub use deployments::{
+    AppOffered, AppWithdrawn, ClusterOwnerNamed, DeployerGranted, DeployerRevoked,
+    DeploymentDeleted, DeploymentMade, DeploymentSecretCleared, DeploymentSecretSet, GovernanceSet,
+};
+pub use orgs::{
+    InviteRedeemed, OrgCreated, OrgDeleted, OrgRenamed, OrgSettingsSet, TeamCreated, TeamDeleted,
+};
+pub use packages::{PublisherBound, Uninstalled};
+pub use recovery::{RecoveryFinished, RecoveryStarted};
+
+/// What `ScopeApps` answers: the organization's mode after, and each package's app team.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppTeamsScoped {
+    pub mode: crate::types::OrgMode,
+    pub teams: Vec<ScopedTeam>,
+}
+
+/// One package's app team in [`AppTeamsScoped`]: whether it was made, the instances moved onto
+/// it, the rows added, how it is joined now and how many lost it by a close.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopedTeam {
+    pub package: String,
+    pub team_id: TeamId,
+    pub created: bool,
+    pub apps: Vec<AppId>,
+    pub added: usize,
+    pub join: Option<TeamJoin>,
+    pub dropped: usize,
+}
 pub use rejection::{Rejection, RejectionKind};
 pub use sign_up::InviteKeyAnswer;
 pub use updates::PolicyView;
@@ -4429,15 +4461,15 @@ impl SystemState {
                 None => {}
             }
             let join = o.teams.get(&team_id).map(|t| t.join);
-            report.push(json!({
-                "package": plan.package,
-                "teamId": team_id,
-                "created": created,
-                "apps": plan.instances,
-                "added": added,
-                "join": join,
-                "dropped": dropped,
-            }));
+            report.push(ScopedTeam {
+                package: plan.package.clone(),
+                team_id: team_id.clone(),
+                created,
+                apps: plan.instances.clone(),
+                added,
+                join,
+                dropped,
+            });
             for id in &plan.instances {
                 if let Some(a) = self.apps.get_mut(id) {
                     a.access = a.access.onto_team(team_id.clone());
@@ -4477,7 +4509,10 @@ impl SystemState {
             .orgs
             .get(org)
             .map_or(crate::types::OrgMode::Legacy, Org::mode);
-        Ok(json!({ "mode": mode, "teams": report }))
+        Ok(json!(AppTeamsScoped {
+            mode,
+            teams: report
+        }))
     }
 
     /// [`SystemCmd::MoveApp`], judged and applied as one step: every rule is
@@ -4789,14 +4824,14 @@ impl SystemState {
                 revoked = before - self.invites.len();
             }
         }
-        Ok(json!({
-            "appId": app_id,
-            "from": from,
-            "org": to_org,
-            "grants": access,
-            "created": created,
-            "added": joins.iter().map(|(m, _)| m).collect::<Vec<_>>(),
-            "revokedInvites": revoked,
+        Ok(json!(AppMoved {
+            app_id: app_id.to_owned(),
+            from,
+            org: to_org.to_owned(),
+            grants: access,
+            created,
+            added: joins.into_iter().map(|(m, _)| m).collect(),
+            revoked_invites: revoked as u64,
         }))
     }
 
@@ -4921,11 +4956,11 @@ impl SystemState {
 
     /// The deadlines as the read APIs show them, oldest release first.
     #[must_use]
-    pub fn deadlines_json(&self) -> Vec<ReleaseDeadline> {
+    pub fn deadlines_json(&self) -> Vec<VersionDeadline> {
         let mut out: Vec<(&String, &u64)> = self.release_deadlines.iter().collect();
         out.sort_by(|a, b| compare_versions(a.0, b.0));
         out.into_iter()
-            .map(|(r, after)| ReleaseDeadline {
+            .map(|(r, after)| VersionDeadline {
                 version: r.clone(),
                 after: rfc3339(*after),
                 after_secs: *after,
@@ -5890,6 +5925,20 @@ pub fn scope_apps_args(apps: Option<&[ScopeApp]>, shared: Option<bool>) -> Value
 /// What a person consents to when moving an app to another organization
 /// (`<app> / __move`).
 #[must_use]
+/// What `POST /apps/{app}/move` answers: where the app went, its access there, whether an app
+/// team was made, the accounts brought in and the invites revoked.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppMoved {
+    app_id: String,
+    from: String,
+    org: String,
+    grants: crate::types::Access,
+    created: bool,
+    added: Vec<String>,
+    revoked_invites: u64,
+}
+
 pub fn move_app_args(to_org: &str, bring_members: bool) -> Value {
     json!({ "toOrg": to_org, "bringMembers": bring_members })
 }
@@ -7812,5 +7861,7 @@ impl Machine for SystemMachine {
 #[cfg(test)]
 mod queue_tests;
 
+#[cfg(test)]
+mod answer_tests;
 #[cfg(test)]
 mod tests;

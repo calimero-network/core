@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.upload_begin_body import UploadBeginBody
-from ...models.upload_begin_response_200 import UploadBeginResponse200
+from ...models.upload_view import UploadView
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, UploadBeginResponse200]]:
+) -> Optional[Union[Error, UploadView]]:
     if response.status_code == 200:
-        response_200 = UploadBeginResponse200.from_dict(response.json())
+        response_200 = UploadView.from_dict(response.json())
 
         return response_200
 
@@ -71,7 +71,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, UploadBeginResponse200]]:
+) -> Response[Union[Error, UploadView]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -85,7 +85,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: UploadBeginBody,
-) -> Response[Union[Error, UploadBeginResponse200]]:
+) -> Response[Union[Error, UploadView]]:
     """Begin a file upload
 
      A session for a file of `size` bytes, sent in parts of `partBytes`.
@@ -101,7 +101,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, UploadBeginResponse200]]
+        Response[Union[Error, UploadView]]
     """
 
     kwargs = _get_kwargs(
@@ -121,7 +121,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: UploadBeginBody,
-) -> Optional[Union[Error, UploadBeginResponse200]]:
+) -> Optional[Union[Error, UploadView]]:
     """Begin a file upload
 
      A session for a file of `size` bytes, sent in parts of `partBytes`.
@@ -137,7 +137,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, UploadBeginResponse200]
+        Union[Error, UploadView]
     """
 
     return sync_detailed(
@@ -152,7 +152,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: UploadBeginBody,
-) -> Response[Union[Error, UploadBeginResponse200]]:
+) -> Response[Union[Error, UploadView]]:
     """Begin a file upload
 
      A session for a file of `size` bytes, sent in parts of `partBytes`.
@@ -168,7 +168,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, UploadBeginResponse200]]
+        Response[Union[Error, UploadView]]
     """
 
     kwargs = _get_kwargs(
@@ -186,7 +186,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: UploadBeginBody,
-) -> Optional[Union[Error, UploadBeginResponse200]]:
+) -> Optional[Union[Error, UploadView]]:
     """Begin a file upload
 
      A session for a file of `size` bytes, sent in parts of `partBytes`.
@@ -202,7 +202,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, UploadBeginResponse200]
+        Union[Error, UploadView]
     """
 
     return (

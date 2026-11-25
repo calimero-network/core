@@ -9,14 +9,36 @@ use super::*;
 /// What a client reads before sign-up (`GET /sign-up`, no session): the
 /// cluster's policy and which invites it takes, so a frontend shows "invite
 /// only" instead of failing at the end of a passkey ceremony.
-async fn sign_up_public(State(node): State<Arc<Node>>) -> ApiResult {
+async fn sign_up_public(State(node): State<Arc<Node>>) -> ApiResult<Json<SignUpPublic>> {
     node.sys_fresh().await;
-    let mut out = json!(node.sys(|s| sign_up_json(s.governance().sign_up)));
-    // What this cluster's passkeys are named after (`passkeys::passkey_user_name`),
-    // so a sign-in can say which of the person's passkeys to pick.
-    out["cluster"] = json!(node.config.cluster);
-    out["passkeyTag"] = json!(passkeys::cluster_tag(&node));
-    Ok(Json(out))
+    Ok(Json(SignUpPublic {
+        state: node.sys(|s| sign_up_json(s.governance().sign_up)),
+        // What this cluster's passkeys are named after (`passkeys::passkey_user_name`),
+        // so a sign-in can say which of the person's passkeys to pick.
+        cluster: node.config.cluster.clone(),
+        passkey_tag: passkeys::cluster_tag(&node),
+    }))
+}
+
+/// `GET /sign-up`: the policy and what it implies, the cluster's name and the tag a sign-in
+/// uses to pick the person's passkey for it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SignUpPublic {
+    #[serde(flatten)]
+    state: SignUpState,
+    cluster: String,
+    passkey_tag: String,
+}
+
+/// The cluster's sign-up policy and live invites (keys and terms, never a token), and who runs
+/// sign-up (`owner` or `operator`).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SignUpInviteList {
+    sign_up: SignUpState,
+    run_by: String,
+    invites: Vec<SignUpInviteView>,
 }
 
 pub(super) fn sign_up_json(policy: SignUp) -> SignUpState {
@@ -62,7 +84,7 @@ pub(super) struct SignUpInviteView {
 }
 
 /// A sign-up invite the owner just made: its terms, then its token, answered this once.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(super) struct SignUpInviteMade {
     #[serde(flatten)]
     pub(super) invite: SignUpInviteView,
@@ -415,7 +437,10 @@ async fn sign_up_invite_revoke(
 
 /// The policy and the live sign-up invites (keys and terms, never a token):
 /// for the operator (its token) and whoever acts for the cluster's owner.
-async fn sign_up_invite_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn sign_up_invite_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<SignUpInviteList>> {
     if operator(&node, &headers).is_err() {
         let account = signed_in(&node, &headers).await?.account()?;
         let _caught_up = node.sys_fresh().await;
@@ -438,11 +463,16 @@ async fn sign_up_invite_list(State(node): State<Arc<Node>>, headers: HeaderMap) 
             .iter()
             .map(|(k, i)| sign_up_invite_json(k, i))
             .collect();
-        json!({
-            "signUp": sign_up_json(s.governance().sign_up),
-            "runBy": if s.deployers_owner().is_some() { "owner" } else { "operator" },
-            "invites": invites,
-        })
+        SignUpInviteList {
+            sign_up: sign_up_json(s.governance().sign_up),
+            run_by: if s.deployers_owner().is_some() {
+                "owner"
+            } else {
+                "operator"
+            }
+            .to_owned(),
+            invites,
+        }
     })))
 }
 

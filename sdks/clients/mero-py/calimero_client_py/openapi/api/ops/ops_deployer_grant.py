@@ -7,15 +7,15 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.deployer_body import DeployerBody
+from ...models.deployer_granted import DeployerGranted
 from ...models.error import Error
-from ...models.ops_deployer_grant_body import OpsDeployerGrantBody
-from ...models.ops_deployer_grant_response_200 import OpsDeployerGrantResponse200
 from typing import cast
 
 
 def _get_kwargs(
     *,
-    body: OpsDeployerGrantBody,
+    body: DeployerBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsDeployerGrantResponse200]]:
+) -> Optional[Union[DeployerGranted, Error]]:
     if response.status_code == 200:
-        response_200 = OpsDeployerGrantResponse200.from_dict(response.json())
+        response_200 = DeployerGranted.from_dict(response.json())
 
         return response_200
 
@@ -63,7 +63,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsDeployerGrantResponse200]]:
+) -> Response[Union[DeployerGranted, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -75,8 +75,8 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-    body: OpsDeployerGrantBody,
-) -> Response[Union[Error, OpsDeployerGrantResponse200]]:
+    body: DeployerBody,
+) -> Response[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      An account or organization that may install where deployments are granted, `until` an RFC 3339 time.
@@ -86,14 +86,14 @@ def sync_detailed(
     `nonce`.
 
     Args:
-        body (OpsDeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsDeployerGrantResponse200]]
+        Response[Union[DeployerGranted, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -110,8 +110,8 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-    body: OpsDeployerGrantBody,
-) -> Optional[Union[Error, OpsDeployerGrantResponse200]]:
+    body: DeployerBody,
+) -> Optional[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      An account or organization that may install where deployments are granted, `until` an RFC 3339 time.
@@ -121,14 +121,14 @@ def sync(
     `nonce`.
 
     Args:
-        body (OpsDeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsDeployerGrantResponse200]
+        Union[DeployerGranted, Error]
     """
 
     return sync_detailed(
@@ -140,8 +140,8 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-    body: OpsDeployerGrantBody,
-) -> Response[Union[Error, OpsDeployerGrantResponse200]]:
+    body: DeployerBody,
+) -> Response[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      An account or organization that may install where deployments are granted, `until` an RFC 3339 time.
@@ -151,14 +151,14 @@ async def asyncio_detailed(
     `nonce`.
 
     Args:
-        body (OpsDeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsDeployerGrantResponse200]]
+        Response[Union[DeployerGranted, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -173,8 +173,8 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-    body: OpsDeployerGrantBody,
-) -> Optional[Union[Error, OpsDeployerGrantResponse200]]:
+    body: DeployerBody,
+) -> Optional[Union[DeployerGranted, Error]]:
     """Grant a deployer
 
      An account or organization that may install where deployments are granted, `until` an RFC 3339 time.
@@ -184,14 +184,14 @@ async def asyncio(
     `nonce`.
 
     Args:
-        body (OpsDeployerGrantBody):
+        body (DeployerBody): The request body of `POST /ops/deployers`, `POST /deployers`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsDeployerGrantResponse200]
+        Union[DeployerGranted, Error]
     """
 
     return (

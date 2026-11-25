@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.team_set_member_body import TeamSetMemberBody
+from ...models.team_member_body import TeamMemberBody
 from ...models.team_set_member_response_200 import TeamSetMemberResponse200
 from typing import cast
 
@@ -17,7 +17,7 @@ def _get_kwargs(
     org: str,
     team: str,
     *,
-    body: TeamSetMemberBody,
+    body: TeamMemberBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -92,7 +92,7 @@ def sync_detailed(
     team: str,
     *,
     client: AuthenticatedClient,
-    body: TeamSetMemberBody,
+    body: TeamMemberBody,
 ) -> Response[Union[Error, TeamSetMemberResponse200]]:
     """Add or change a team member
 
@@ -104,7 +104,7 @@ def sync_detailed(
     Args:
         org (str):
         team (str):
-        body (TeamSetMemberBody):
+        body (TeamMemberBody): The request body of `POST /orgs/{org}/teams/{team}/members`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -132,7 +132,7 @@ def sync(
     team: str,
     *,
     client: AuthenticatedClient,
-    body: TeamSetMemberBody,
+    body: TeamMemberBody,
 ) -> Optional[Union[Error, TeamSetMemberResponse200]]:
     """Add or change a team member
 
@@ -144,7 +144,7 @@ def sync(
     Args:
         org (str):
         team (str):
-        body (TeamSetMemberBody):
+        body (TeamMemberBody): The request body of `POST /orgs/{org}/teams/{team}/members`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -167,7 +167,7 @@ async def asyncio_detailed(
     team: str,
     *,
     client: AuthenticatedClient,
-    body: TeamSetMemberBody,
+    body: TeamMemberBody,
 ) -> Response[Union[Error, TeamSetMemberResponse200]]:
     """Add or change a team member
 
@@ -179,7 +179,7 @@ async def asyncio_detailed(
     Args:
         org (str):
         team (str):
-        body (TeamSetMemberBody):
+        body (TeamMemberBody): The request body of `POST /orgs/{org}/teams/{team}/members`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -205,7 +205,7 @@ async def asyncio(
     team: str,
     *,
     client: AuthenticatedClient,
-    body: TeamSetMemberBody,
+    body: TeamMemberBody,
 ) -> Optional[Union[Error, TeamSetMemberResponse200]]:
     """Add or change a team member
 
@@ -217,7 +217,7 @@ async def asyncio(
     Args:
         org (str):
         team (str):
-        body (TeamSetMemberBody):
+        body (TeamMemberBody): The request body of `POST /orgs/{org}/teams/{team}/members`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

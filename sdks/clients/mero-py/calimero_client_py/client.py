@@ -154,8 +154,8 @@ class Client:
     `calimero_client_py.openapi.api`, sealed to the node:
 
         from calimero_client_py.openapi.api.organizations import org_create
-        from calimero_client_py.openapi.models import OrgCreateBody
-        org = org_create.sync(client=client.api(), body=OrgCreateBody(name="Acme"))
+        from calimero_client_py.openapi.models import OrgBody
+        org = org_create.sync(client=client.api(), body=OrgBody(name="Acme"))
     """
 
     def __init__(

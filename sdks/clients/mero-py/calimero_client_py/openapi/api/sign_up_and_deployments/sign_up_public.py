@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.sign_up_public_response_200 import SignUpPublicResponse200
+from ...models.sign_up_public import SignUpPublic
 from typing import cast
 
 
@@ -23,9 +23,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[SignUpPublicResponse200]:
+) -> Optional[SignUpPublic]:
     if response.status_code == 200:
-        response_200 = SignUpPublicResponse200.from_dict(response.json())
+        response_200 = SignUpPublic.from_dict(response.json())
 
         return response_200
 
@@ -37,7 +37,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[SignUpPublicResponse200]:
+) -> Response[SignUpPublic]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -49,7 +49,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[SignUpPublicResponse200]:
+) -> Response[SignUpPublic]:
     """The sign-up policy
 
      Who may create an account here, the cluster's name and the tag a sign-in uses to pick the person's
@@ -62,7 +62,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[SignUpPublicResponse200]
+        Response[SignUpPublic]
     """
 
     kwargs = _get_kwargs()
@@ -77,7 +77,7 @@ def sync_detailed(
 def sync(
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[SignUpPublicResponse200]:
+) -> Optional[SignUpPublic]:
     """The sign-up policy
 
      Who may create an account here, the cluster's name and the tag a sign-in uses to pick the person's
@@ -90,7 +90,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        SignUpPublicResponse200
+        SignUpPublic
     """
 
     return sync_detailed(
@@ -101,7 +101,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[SignUpPublicResponse200]:
+) -> Response[SignUpPublic]:
     """The sign-up policy
 
      Who may create an account here, the cluster's name and the tag a sign-in uses to pick the person's
@@ -114,7 +114,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[SignUpPublicResponse200]
+        Response[SignUpPublic]
     """
 
     kwargs = _get_kwargs()
@@ -127,7 +127,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[SignUpPublicResponse200]:
+) -> Optional[SignUpPublic]:
     """The sign-up policy
 
      Who may create an account here, the cluster's name and the tag a sign-in uses to pick the person's
@@ -140,7 +140,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        SignUpPublicResponse200
+        SignUpPublic
     """
 
     return (

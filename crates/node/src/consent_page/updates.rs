@@ -1012,7 +1012,7 @@ pub(super) async fn open(
         OpenBody::UpdatePolicy { subject } => policy_request(node, &p, account, subject).await?,
     };
     let axum::Json(v) = super::hold(node, account.to_owned(), None, action, model, back).await?;
-    Ok(v)
+    Ok(serde_json::json!(v))
 }
 
 #[cfg(test)]

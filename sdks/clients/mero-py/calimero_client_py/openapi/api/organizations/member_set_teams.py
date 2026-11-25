@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.member_set_teams_body import MemberSetTeamsBody
 from ...models.member_set_teams_response_200 import MemberSetTeamsResponse200
+from ...models.team_rows_body import TeamRowsBody
 from typing import cast
 
 
@@ -17,7 +17,7 @@ def _get_kwargs(
     org: str,
     account: str,
     *,
-    body: MemberSetTeamsBody,
+    body: TeamRowsBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -97,7 +97,7 @@ def sync_detailed(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberSetTeamsBody,
+    body: TeamRowsBody,
 ) -> Response[Union[Error, MemberSetTeamsResponse200]]:
     """Set a member's rows in several teams
 
@@ -111,7 +111,7 @@ def sync_detailed(
     Args:
         org (str):
         account (str):
-        body (MemberSetTeamsBody):
+        body (TeamRowsBody): The request body of `POST /orgs/{org}/members/{account}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -139,7 +139,7 @@ def sync(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberSetTeamsBody,
+    body: TeamRowsBody,
 ) -> Optional[Union[Error, MemberSetTeamsResponse200]]:
     """Set a member's rows in several teams
 
@@ -153,7 +153,7 @@ def sync(
     Args:
         org (str):
         account (str):
-        body (MemberSetTeamsBody):
+        body (TeamRowsBody): The request body of `POST /orgs/{org}/members/{account}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -176,7 +176,7 @@ async def asyncio_detailed(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberSetTeamsBody,
+    body: TeamRowsBody,
 ) -> Response[Union[Error, MemberSetTeamsResponse200]]:
     """Set a member's rows in several teams
 
@@ -190,7 +190,7 @@ async def asyncio_detailed(
     Args:
         org (str):
         account (str):
-        body (MemberSetTeamsBody):
+        body (TeamRowsBody): The request body of `POST /orgs/{org}/members/{account}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -216,7 +216,7 @@ async def asyncio(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberSetTeamsBody,
+    body: TeamRowsBody,
 ) -> Optional[Union[Error, MemberSetTeamsResponse200]]:
     """Set a member's rows in several teams
 
@@ -230,7 +230,7 @@ async def asyncio(
     Args:
         org (str):
         account (str):
-        body (MemberSetTeamsBody):
+        body (TeamRowsBody): The request body of `POST /orgs/{org}/members/{account}/teams`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

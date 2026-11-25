@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_xcalls_response_200 import AppXcallsResponse200
 from ...models.error import Error
+from ...models.xcalls_report import XcallsReport
 from typing import cast
 
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppXcallsResponse200, Error]]:
+) -> Optional[Union[Error, XcallsReport]]:
     if response.status_code == 200:
-        response_200 = AppXcallsResponse200.from_dict(response.json())
+        response_200 = XcallsReport.from_dict(response.json())
 
         return response_200
 
@@ -62,7 +62,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppXcallsResponse200, Error]]:
+) -> Response[Union[Error, XcallsReport]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -75,7 +75,7 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppXcallsResponse200, Error]]:
+) -> Response[Union[Error, XcallsReport]]:
     """An app's cross-app calls
 
      The owner or an organization admin: how many calls wait in its outbox for delivery (`pending`, a
@@ -92,7 +92,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppXcallsResponse200, Error]]
+        Response[Union[Error, XcallsReport]]
     """
 
     kwargs = _get_kwargs(
@@ -110,7 +110,7 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppXcallsResponse200, Error]]:
+) -> Optional[Union[Error, XcallsReport]]:
     """An app's cross-app calls
 
      The owner or an organization admin: how many calls wait in its outbox for delivery (`pending`, a
@@ -127,7 +127,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppXcallsResponse200, Error]
+        Union[Error, XcallsReport]
     """
 
     return sync_detailed(
@@ -140,7 +140,7 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppXcallsResponse200, Error]]:
+) -> Response[Union[Error, XcallsReport]]:
     """An app's cross-app calls
 
      The owner or an organization admin: how many calls wait in its outbox for delivery (`pending`, a
@@ -157,7 +157,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppXcallsResponse200, Error]]
+        Response[Union[Error, XcallsReport]]
     """
 
     kwargs = _get_kwargs(
@@ -173,7 +173,7 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppXcallsResponse200, Error]]:
+) -> Optional[Union[Error, XcallsReport]]:
     """An app's cross-app calls
 
      The owner or an organization admin: how many calls wait in its outbox for delivery (`pending`, a
@@ -190,7 +190,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppXcallsResponse200, Error]
+        Union[Error, XcallsReport]
     """
 
     return (

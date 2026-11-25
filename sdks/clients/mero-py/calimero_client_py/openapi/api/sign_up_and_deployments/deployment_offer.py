@@ -7,16 +7,16 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.deployment_offer_body import DeploymentOfferBody
-from ...models.deployment_offer_response_200 import DeploymentOfferResponse200
+from ...models.app_offered import AppOffered
 from ...models.error import Error
+from ...models.offer_body import OfferBody
 from typing import cast
 
 
 def _get_kwargs(
     id: str,
     *,
-    body: DeploymentOfferBody,
+    body: OfferBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[DeploymentOfferResponse200, Error]]:
+) -> Optional[Union[AppOffered, Error]]:
     if response.status_code == 200:
-        response_200 = DeploymentOfferResponse200.from_dict(response.json())
+        response_200 = AppOffered.from_dict(response.json())
 
         return response_200
 
@@ -81,7 +81,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[DeploymentOfferResponse200, Error]]:
+) -> Response[Union[AppOffered, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -94,8 +94,8 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentOfferBody,
-) -> Response[Union[DeploymentOfferResponse200, Error]]:
+    body: OfferBody,
+) -> Response[Union[AppOffered, Error]]:
     """Offer a release in a deployment
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -104,14 +104,14 @@ def sync_detailed(
 
     Args:
         id (str):
-        body (DeploymentOfferBody):
+        body (OfferBody): The request body of `POST /deployments/{id}/apps`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentOfferResponse200, Error]]
+        Response[Union[AppOffered, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -130,8 +130,8 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentOfferBody,
-) -> Optional[Union[DeploymentOfferResponse200, Error]]:
+    body: OfferBody,
+) -> Optional[Union[AppOffered, Error]]:
     """Offer a release in a deployment
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -140,14 +140,14 @@ def sync(
 
     Args:
         id (str):
-        body (DeploymentOfferBody):
+        body (OfferBody): The request body of `POST /deployments/{id}/apps`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentOfferResponse200, Error]
+        Union[AppOffered, Error]
     """
 
     return sync_detailed(
@@ -161,8 +161,8 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentOfferBody,
-) -> Response[Union[DeploymentOfferResponse200, Error]]:
+    body: OfferBody,
+) -> Response[Union[AppOffered, Error]]:
     """Offer a release in a deployment
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -171,14 +171,14 @@ async def asyncio_detailed(
 
     Args:
         id (str):
-        body (DeploymentOfferBody):
+        body (OfferBody): The request body of `POST /deployments/{id}/apps`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[DeploymentOfferResponse200, Error]]
+        Response[Union[AppOffered, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -195,8 +195,8 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient,
-    body: DeploymentOfferBody,
-) -> Optional[Union[DeploymentOfferResponse200, Error]]:
+    body: OfferBody,
+) -> Optional[Union[AppOffered, Error]]:
     """Offer a release in a deployment
 
      **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
@@ -205,14 +205,14 @@ async def asyncio(
 
     Args:
         id (str):
-        body (DeploymentOfferBody):
+        body (OfferBody): The request body of `POST /deployments/{id}/apps`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[DeploymentOfferResponse200, Error]
+        Union[AppOffered, Error]
     """
 
     return (

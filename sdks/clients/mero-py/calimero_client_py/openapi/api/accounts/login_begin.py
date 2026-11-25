@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.login_begin_body import LoginBeginBody
-from ...models.login_begin_response_200 import LoginBeginResponse200
+from ...models.passkey_challenge import PasskeyChallenge
 from typing import cast
 
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, LoginBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     if response.status_code == 200:
-        response_200 = LoginBeginResponse200.from_dict(response.json())
+        response_200 = PasskeyChallenge.from_dict(response.json())
 
         return response_200
 
@@ -53,7 +53,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, LoginBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -66,7 +66,7 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: LoginBeginBody,
-) -> Response[Union[Error, LoginBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
@@ -83,7 +83,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, LoginBeginResponse200]]
+        Response[Union[Error, PasskeyChallenge]]
     """
 
     kwargs = _get_kwargs(
@@ -101,7 +101,7 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
     body: LoginBeginBody,
-) -> Optional[Union[Error, LoginBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
@@ -118,7 +118,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, LoginBeginResponse200]
+        Union[Error, PasskeyChallenge]
     """
 
     return sync_detailed(
@@ -131,7 +131,7 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: LoginBeginBody,
-) -> Response[Union[Error, LoginBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
@@ -148,7 +148,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, LoginBeginResponse200]]
+        Response[Union[Error, PasskeyChallenge]]
     """
 
     kwargs = _get_kwargs(
@@ -164,7 +164,7 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
     body: LoginBeginBody,
-) -> Optional[Union[Error, LoginBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
@@ -181,7 +181,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, LoginBeginResponse200]
+        Union[Error, PasskeyChallenge]
     """
 
     return (

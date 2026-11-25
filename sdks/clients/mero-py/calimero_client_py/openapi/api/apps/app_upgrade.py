@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.app_upgrade_body import AppUpgradeBody
-from ...models.app_upgrade_response_200 import AppUpgradeResponse200
 from ...models.error import Error
+from ...models.upgrade_applied import UpgradeApplied
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppUpgradeResponse200, Error]]:
+) -> Optional[Union[Error, UpgradeApplied]]:
     if response.status_code == 200:
-        response_200 = AppUpgradeResponse200.from_dict(response.json())
+        response_200 = UpgradeApplied.from_dict(response.json())
 
         return response_200
 
@@ -86,7 +86,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppUpgradeResponse200, Error]]:
+) -> Response[Union[Error, UpgradeApplied]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -100,7 +100,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: AppUpgradeBody,
-) -> Response[Union[AppUpgradeResponse200, Error]]:
+) -> Response[Union[Error, UpgradeApplied]]:
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
@@ -130,7 +130,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppUpgradeResponse200, Error]]
+        Response[Union[Error, UpgradeApplied]]
     """
 
     kwargs = _get_kwargs(
@@ -150,7 +150,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: AppUpgradeBody,
-) -> Optional[Union[AppUpgradeResponse200, Error]]:
+) -> Optional[Union[Error, UpgradeApplied]]:
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
@@ -180,7 +180,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppUpgradeResponse200, Error]
+        Union[Error, UpgradeApplied]
     """
 
     return sync_detailed(
@@ -195,7 +195,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: AppUpgradeBody,
-) -> Response[Union[AppUpgradeResponse200, Error]]:
+) -> Response[Union[Error, UpgradeApplied]]:
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
@@ -225,7 +225,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppUpgradeResponse200, Error]]
+        Response[Union[Error, UpgradeApplied]]
     """
 
     kwargs = _get_kwargs(
@@ -243,7 +243,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: AppUpgradeBody,
-) -> Optional[Union[AppUpgradeResponse200, Error]]:
+) -> Optional[Union[Error, UpgradeApplied]]:
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
@@ -273,7 +273,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppUpgradeResponse200, Error]
+        Union[Error, UpgradeApplied]
     """
 
     return (

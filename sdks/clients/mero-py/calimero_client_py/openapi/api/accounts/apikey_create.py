@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.api_key_made import ApiKeyMade
 from ...models.apikey_create_body import ApikeyCreateBody
-from ...models.apikey_create_response_200 import ApikeyCreateResponse200
 from ...models.error import Error
 from typing import cast
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ApikeyCreateResponse200, Error]]:
+) -> Optional[Union[ApiKeyMade, Error]]:
     if response.status_code == 200:
-        response_200 = ApikeyCreateResponse200.from_dict(response.json())
+        response_200 = ApiKeyMade.from_dict(response.json())
 
         return response_200
 
@@ -93,7 +93,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ApikeyCreateResponse200, Error]]:
+) -> Response[Union[ApiKeyMade, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -106,7 +106,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: ApikeyCreateBody,
-) -> Response[Union[ApikeyCreateResponse200, Error]]:
+) -> Response[Union[ApiKeyMade, Error]]:
     """Make an API key
 
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
@@ -137,7 +137,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ApikeyCreateResponse200, Error]]
+        Response[Union[ApiKeyMade, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -155,7 +155,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: ApikeyCreateBody,
-) -> Optional[Union[ApikeyCreateResponse200, Error]]:
+) -> Optional[Union[ApiKeyMade, Error]]:
     """Make an API key
 
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
@@ -186,7 +186,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ApikeyCreateResponse200, Error]
+        Union[ApiKeyMade, Error]
     """
 
     return sync_detailed(
@@ -199,7 +199,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: ApikeyCreateBody,
-) -> Response[Union[ApikeyCreateResponse200, Error]]:
+) -> Response[Union[ApiKeyMade, Error]]:
     """Make an API key
 
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
@@ -230,7 +230,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ApikeyCreateResponse200, Error]]
+        Response[Union[ApiKeyMade, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -246,7 +246,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: ApikeyCreateBody,
-) -> Optional[Union[ApikeyCreateResponse200, Error]]:
+) -> Optional[Union[ApiKeyMade, Error]]:
     """Make an API key
 
      Scoped to `apps` and `methods`, read-only or not, for `ttlSecs`; `upgrades` makes an upgrade key,
@@ -277,7 +277,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ApikeyCreateResponse200, Error]
+        Union[ApiKeyMade, Error]
     """
 
     return (

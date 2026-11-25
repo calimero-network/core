@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_abi_response_200 import AppAbiResponse200
+from ...models.app_abi import AppAbi
 from ...models.error import Error
 from typing import cast
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppAbiResponse200, Error]]:
+) -> Optional[Union[AppAbi, Error]]:
     if response.status_code == 200:
-        response_200 = AppAbiResponse200.from_dict(response.json())
+        response_200 = AppAbi.from_dict(response.json())
 
         return response_200
 
@@ -52,7 +52,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppAbiResponse200, Error]]:
+) -> Response[Union[AppAbi, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -65,7 +65,7 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppAbiResponse200, Error]]:
+) -> Response[Union[AppAbi, Error]]:
     """An app's ABI
 
      The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document,
@@ -81,7 +81,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppAbiResponse200, Error]]
+        Response[Union[AppAbi, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -99,7 +99,7 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppAbiResponse200, Error]]:
+) -> Optional[Union[AppAbi, Error]]:
     """An app's ABI
 
      The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document,
@@ -115,7 +115,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppAbiResponse200, Error]
+        Union[AppAbi, Error]
     """
 
     return sync_detailed(
@@ -128,7 +128,7 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppAbiResponse200, Error]]:
+) -> Response[Union[AppAbi, Error]]:
     """An app's ABI
 
      The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document,
@@ -144,7 +144,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppAbiResponse200, Error]]
+        Response[Union[AppAbi, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -160,7 +160,7 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppAbiResponse200, Error]]:
+) -> Optional[Union[AppAbi, Error]]:
     """An app's ABI
 
      The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document,
@@ -176,7 +176,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppAbiResponse200, Error]
+        Union[AppAbi, Error]
     """
 
     return (

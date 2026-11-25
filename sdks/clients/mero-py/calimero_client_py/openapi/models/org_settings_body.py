@@ -19,7 +19,8 @@ T = TypeVar("T", bound="OrgSettingsBody")
 
 @_attrs_define
 class OrgSettingsBody:
-    """
+    """The request body of `POST /orgs/{org}/settings`.
+
     Attributes:
         allow_guests (Union[Unset, bool]):
         allow_public_links (Union[Unset, bool]):

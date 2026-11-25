@@ -7,15 +7,15 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.account_set_backup_key_body import AccountSetBackupKeyBody
 from ...models.backup_key_answer import BackupKeyAnswer
+from ...models.backup_key_body import BackupKeyBody
 from ...models.error import Error
 from typing import cast
 
 
 def _get_kwargs(
     *,
-    body: AccountSetBackupKeyBody,
+    body: BackupKeyBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -90,7 +90,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-    body: AccountSetBackupKeyBody,
+    body: BackupKeyBody,
 ) -> Response[Union[BackupKeyAnswer, Error]]:
     """Set the account's backup key
 
@@ -102,7 +102,8 @@ def sync_detailed(
     `details.challenge`.
 
     Args:
-        body (AccountSetBackupKeyBody):
+        body (BackupKeyBody): The request body of `POST /auth/backup-key`, `POST
+            /orgs/{org}/backup-key`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -126,7 +127,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-    body: AccountSetBackupKeyBody,
+    body: BackupKeyBody,
 ) -> Optional[Union[BackupKeyAnswer, Error]]:
     """Set the account's backup key
 
@@ -138,7 +139,8 @@ def sync(
     `details.challenge`.
 
     Args:
-        body (AccountSetBackupKeyBody):
+        body (BackupKeyBody): The request body of `POST /auth/backup-key`, `POST
+            /orgs/{org}/backup-key`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -157,7 +159,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-    body: AccountSetBackupKeyBody,
+    body: BackupKeyBody,
 ) -> Response[Union[BackupKeyAnswer, Error]]:
     """Set the account's backup key
 
@@ -169,7 +171,8 @@ async def asyncio_detailed(
     `details.challenge`.
 
     Args:
-        body (AccountSetBackupKeyBody):
+        body (BackupKeyBody): The request body of `POST /auth/backup-key`, `POST
+            /orgs/{org}/backup-key`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -191,7 +194,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-    body: AccountSetBackupKeyBody,
+    body: BackupKeyBody,
 ) -> Optional[Union[BackupKeyAnswer, Error]]:
     """Set the account's backup key
 
@@ -203,7 +206,8 @@ async def asyncio(
     `details.challenge`.
 
     Args:
-        body (AccountSetBackupKeyBody):
+        body (BackupKeyBody): The request body of `POST /auth/backup-key`, `POST
+            /orgs/{org}/backup-key`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

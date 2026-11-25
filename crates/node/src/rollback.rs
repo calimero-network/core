@@ -145,7 +145,7 @@ pub fn judge(node: NodeId, grant: Option<Grant>, record: Option<Record>) -> Verd
 }
 
 /// What the node reports of its counter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     /// The cluster epoch: rollbacks forced so far.
