@@ -74,7 +74,11 @@ fn upgrade_answers_answer_as_before() {
     writes_as_before::<super::update_policies::ApprovalLogged>(
         &json!({ "app": "a1", "approval": approval }),
     );
-    for running in [Value::Null, json!({ "package": "p", "version": "1.0.0" })] {
+    let shown = json!({ "id": "d1", "name": "Acme", "owner": { "kind": "org", "name": "acme" } });
+    for (running, deployment) in [
+        (Value::Null, Value::Null),
+        (json!({ "package": "p", "version": "1.0.0" }), shown),
+    ] {
         writes_as_before::<super::upgrades::UpdateView>(&json!({
             "app": "a1",
             "running": running,
@@ -85,6 +89,7 @@ fn upgrade_answers_answer_as_before() {
             "policy": { "autoApply": "never", "holdHours": 0,
                 "secondApprover": false, "source": "default" },
             "pendingApprovals": [approval],
+            "deployment": deployment,
         }));
     }
     let unit = json!({
