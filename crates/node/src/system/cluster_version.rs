@@ -414,9 +414,9 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
-            Self::OffersOnly
-            | Self::UndoToInstalledRelease
-            | Self::AutoUpdateMembersStay => "1.0.0-rc.36",
+            Self::OffersOnly | Self::UndoToInstalledRelease | Self::AutoUpdateMembersStay => {
+                "1.0.0-rc.36"
+            }
             // #5356 merged after 1.0.0-rc.37 was cut (#5368), so rc.37 does not decode
             // `then`: it rebuilds the key's statement without it and refuses the key.
             Self::KeyFollowUps
