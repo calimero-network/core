@@ -4,7 +4,9 @@
 //! app's policy may ask for.
 //!
 //! [`authorize`] judges the proof each carries and [`apply`] applies it;
-//! `system.rs` sends a command here by its [`super::Area`].
+//! `system.rs` sends a command here by its [`super::Area`]. Each arm of either
+//! is one call to a function of its own, in the order of the arms, and each
+//! refusal of this area's own rules is a named [`Rejection`].
 
 #[allow(
     clippy::wildcard_imports,
@@ -18,6 +20,24 @@ use crate::types::{
     AutoApply, PendingApproval, RunTarget, UpgradeClass, UpgradePolicy, MAX_CLASS_REASONS,
 };
 
+// This area's refusals. Each is `400 REJECTED`, the kind the bare message it
+// names was answered with; the message is what a client reads.
+
+/// A policy for an app that is not in the organization.
+const NO_SUCH_APP_IN_ORG: Rejection =
+    Rejection::new(RejectionKind::Rejected, "no such app in that organization");
+/// An approval of a release that is not installed.
+const RELEASE_NOT_INSTALLED: Rejection =
+    Rejection::new(RejectionKind::Rejected, "that release is not installed");
+/// An approval to another package than the app runs.
+const RUNS_ANOTHER_PACKAGE: Rejection =
+    Rejection::new(RejectionKind::Rejected, "the app runs another package");
+/// An approval naming a target outside the app's unit, or off its package.
+const TARGET_OUTSIDE_UNIT: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "a target is not a member of the app's unit moving along its package",
+);
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     match cmd {
@@ -27,14 +47,14 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             policy,
             actor,
             consent,
-        } => {
-            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
-            let args = upgrade_policy_args(app.as_deref(), policy.as_ref());
-            proofs.states(&st, &format!("org:{org}"), "__set_upgrade_policy", &|a| {
-                *a == args
-            })?;
-            Ok(Some(used))
-        }
+        } => passkey_consent(
+            proofs,
+            actor,
+            consent,
+            &format!("org:{org}"),
+            "__set_upgrade_policy",
+            &upgrade_policy_args(app.as_deref(), policy.as_ref()),
+        ),
         SystemCmd::ApproveUpgrade {
             app_id,
             package,
@@ -44,32 +64,54 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             actor,
             consent,
             ..
-        } => {
-            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
-            let args = approve_upgrade_args(package, version, targets, class);
-            proofs.states(&st, app_id, "__approve_upgrade", &|a| *a == args)?;
-            Ok(Some(used))
-        }
+        } => passkey_consent(
+            proofs,
+            actor,
+            consent,
+            app_id,
+            "__approve_upgrade",
+            &approve_upgrade_args(package, version, targets, class),
+        ),
         SystemCmd::UndoUpgrade {
             app_id,
             apps,
             actor,
             consent,
             ..
-        } => {
-            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
-            let args = proofs.s.undo_args(apps.keys());
-            proofs.states(&st, app_id, "__undo_upgrade", &|a| *a == args)?;
-            Ok(Some(used))
-        }
+        } => passkey_consent(
+            proofs,
+            actor,
+            consent,
+            app_id,
+            "__undo_upgrade",
+            &proofs.s.undo_args(apps.keys()),
+        ),
         _ => Ok(None),
     }
 }
 
+/// `actor`'s passkey consent, not used before, stating `method` on `subject`
+/// with exactly the arguments `stated`.
+fn passkey_consent(
+    proofs: &Proofs<'_>,
+    actor: &str,
+    consent: &Value,
+    subject: &str,
+    method: &str,
+    stated: &Value,
+) -> Result<Option<String>, Rejection> {
+    let (statement, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+    proofs.states(&statement, subject, method, &|args| args == stated)?;
+    Ok(Some(used))
+}
+
 /// Apply a command of this area by its own rules, its proof already judged
 /// ([`super::authorize`]).
+///
+/// `ApproveUpgrade` has more fields than a function takes arguments, so it
+/// goes whole to its function, which takes its fields by name.
 pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
-    let s = &mut m.state;
+    let state = &mut m.state;
     match cmd {
         SystemCmd::SetUpgradePolicy {
             org,
@@ -77,113 +119,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             policy,
             actor,
             ..
-        } => {
-            if !s.orgs.contains_key(&org) {
-                return Err("no such organization".into());
-            }
-            if !s.approves_upgrades(&org, &actor) {
-                return Err(NOT_AN_UPGRADE_APPROVER.into());
-            }
-            if let Some(id) = &app {
-                if !s.apps.get(id).is_some_and(|a| a.org == org) {
-                    return Err("no such app in that organization".into());
-                }
-            }
-            if let Some(p) = &policy {
-                p.check()?;
-            }
-            let here: BTreeSet<AppId> = s
-                .apps
-                .values()
-                .filter(|a| a.org == org)
-                .map(|a| a.app_id.clone())
-                .collect();
-            let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
-            match (&app, policy) {
-                (None, p) => o.upgrade_policy = p,
-                (Some(id), Some(p)) => {
-                    let _prev = o.app_upgrade_policies.insert(id.clone(), p);
-                }
-                (Some(id), None) => {
-                    let _gone = o.app_upgrade_policies.remove(id);
-                }
-            }
-            // What deleted apps left behind goes with the next change.
-            o.app_upgrade_policies.retain(|id, _| here.contains(id));
-            o.pending_upgrades.retain(|id, _| here.contains(id));
-            Ok(s.policy_json(&org, app.as_deref()))
-        }
-        SystemCmd::ApproveUpgrade {
-            app_id,
-            package,
-            version,
-            targets,
-            class,
-            actor,
-            at,
-            ..
-        } => {
-            let a = s.apps.get(&app_id).ok_or("no such app")?;
-            if !s.approves_upgrades(&a.org, &actor) {
-                return Err(NOT_AN_UPGRADE_APPROVER.into());
-            }
-            if !s.upgrade_policy_of(a).0.second_approver || class.is_green() {
-                return Err(ONE_APPROVAL);
-            }
-            if s.logged_release(&package, &version).is_none() {
-                return Err("that release is not installed".into());
-            }
-            if s.running(a).is_some_and(|r| r.package != package) {
-                return Err("the app runs another package".into());
-            }
-            // A unit's members only, each to an installed release of the package it runs.
-            for (member, t) in &targets {
-                let runs = a
-                    .links
-                    .values()
-                    .any(|id| id == member)
-                    .then(|| s.apps.get(member))
-                    .flatten()
-                    .and_then(|m| s.running(m));
-                if !runs.is_some_and(|r| r.package == t.package)
-                    || s.logged_release(&t.package, &t.version).is_none()
-                {
-                    return Err(
-                        "a target is not a member of the app's unit moving along its package"
-                            .into(),
-                    );
-                }
-            }
-            s.check_class(a, (&package, &version), &targets, &class)?;
-            let org = a.org.clone();
-            // Another's live approval of the same update waits for its second: an upgrade.
-            let other = s
-                .orgs
-                .get(&org)
-                .and_then(|o| o.pending_upgrades.get(&app_id));
-            if let Some(p) = other {
-                if p.by != actor
-                    && p.package == package
-                    && p.version == version
-                    && p.targets == targets
-                    && s.approval_live(&org, &app_id, p, at)
-                {
-                    return Err(APPROVAL_PENDING);
-                }
-            }
-            let approval = PendingApproval {
-                package,
-                version,
-                targets,
-                by: actor,
-                at,
-                class,
-            };
-            let out = json!(approval);
-            let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
-            let _prev = o.pending_upgrades.insert(app_id, approval);
-            Ok(out)
-        }
+        } => set_upgrade_policy(state, &org, app, policy, &actor),
+        cmd @ SystemCmd::ApproveUpgrade { .. } => approve_upgrade(state, cmd),
         SystemCmd::UndoUpgrade {
             app_id,
             apps,
@@ -191,92 +128,278 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             at,
             release_installed,
             ..
-        } => {
-            let a = s.apps.get(&app_id).ok_or("no such app")?;
-            if !s.approves_upgrades(&a.org, &actor) {
-                return Err(NOT_AN_UPGRADE_APPROVER.into());
-            }
-            let named: BTreeSet<&AppId> = apps.keys().collect();
-            let expected = s.undo_set(&app_id)?;
-            if named != expected.iter().collect() {
-                return Err(UNDO_NOT_AS_NAMED);
-            }
-            // Every part is judged before any moves: all or nothing.
-            for (id, replicas) in &apps {
-                let a = s.apps.get(id).ok_or("no such app")?;
-                let p = a.restore_point.as_ref().ok_or(NO_RESTORE_POINT)?;
-                s.may_undo(a, p, at)?;
-                match &p.file {
-                    Some(f) => {
-                        let distinct: BTreeSet<u64> = replicas.iter().copied().collect();
-                        if replicas.first() != Some(&f.node)
-                            || distinct.len() != replicas.len()
-                            || replicas.iter().any(|n| s.replica_node(n).is_none())
-                        {
-                            return Err(UNDO_NOT_AS_NAMED);
-                        }
-                    }
-                    None if !replicas.is_empty() => return Err(UNDO_NOT_AS_NAMED),
-                    None => {}
-                }
-                if !s.bundles.contains_key(&p.from_bundle) {
-                    return Err(RESTORE_BUNDLE_GONE.into());
-                }
-                if release_installed
-                    || s.cluster_brings(cluster_version::Feature::UndoToInstalledRelease)
-                {
-                    s.undo_release_installed(p)?;
-                }
-            }
-            let mut groups = serde_json::Map::new();
-            for (id, replicas) in apps {
-                let group = s.next_group.max(1) + 1;
-                let a = s.apps.get_mut(&id).ok_or("no such app")?;
-                let Some(mut p) = a.restore_point.take() else {
-                    return Err(NO_RESTORE_POINT);
-                };
-                a.last_upgrade = Some(crate::types::UpgradeRecord {
-                    from: a.bundle.clone(),
-                    to: p.from_bundle.clone(),
-                    at,
-                    by: actor.clone(),
-                    ok: true,
-                    error: Value::Null,
-                    run: p.run.clone(),
-                    api_key: None,
-                    from_release: p.to_release.clone(),
-                    to_release: p.from_release.clone(),
-                    class: None,
-                    reasons: Vec::new(),
-                    approved_by: None,
-                    auto: false,
-                    undo: true,
-                });
-                a.bundle = p.from_bundle.clone();
-                a.compute_bundle = p.from_compute.clone();
-                a.release = p.from_release.clone();
-                if let Some(f) = &p.file {
-                    // Into a new group the holder seeds from the restore point, as a
-                    // restore does; the restore point stays until that restore finishes,
-                    // so a seed that stopped half way may be sent again.
-                    a.group = group;
-                    a.replicas = replicas;
-                    a.restore = Some(crate::types::PendingRestore {
-                        seed: Some(f.node),
-                        source: Some(f.source.clone()),
-                    });
-                    p.undone_at = Some(p.undone_at.unwrap_or(at));
-                    a.restore_point = Some(p);
-                    s.next_group = group;
-                    let _prev = groups.insert(id, json!(group));
-                } else {
-                    let _prev = groups.insert(id, Value::Null);
-                }
-            }
-            Ok(json!({ "groups": groups }))
-        }
+        } => undo_upgrade(state, &app_id, apps, &actor, at, release_installed),
+        // SAFETY: `SystemCmd::area` sends a command only to the module of
+        // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached updates::apply"),
     }
+}
+
+/// Set (or, with none, clear) an organization's or one app's update policy:
+/// an upgrade approver's. What deleted apps left behind goes with the change.
+fn set_upgrade_policy(
+    state: &mut SystemState,
+    org: &str,
+    app: Option<AppId>,
+    policy: Option<UpgradePolicy>,
+    actor: &str,
+) -> Result<Value, Rejection> {
+    if !state.orgs.contains_key(org) {
+        return Err(NO_SUCH_ORG);
+    }
+    if !state.approves_upgrades(org, actor) {
+        return Err(NOT_AN_UPGRADE_APPROVER.into());
+    }
+    if let Some(app_id) = &app {
+        if !state
+            .apps
+            .get(app_id)
+            .is_some_and(|record| record.org == org)
+        {
+            return Err(NO_SUCH_APP_IN_ORG);
+        }
+    }
+    if let Some(policy) = &policy {
+        policy.check()?;
+    }
+    let here: BTreeSet<AppId> = state
+        .apps
+        .values()
+        .filter(|record| record.org == org)
+        .map(|record| record.app_id.clone())
+        .collect();
+    let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
+    match (&app, policy) {
+        (None, policy) => organization.upgrade_policy = policy,
+        (Some(app_id), Some(policy)) => {
+            let _prev = organization
+                .app_upgrade_policies
+                .insert(app_id.clone(), policy);
+        }
+        (Some(app_id), None) => {
+            let _gone = organization.app_upgrade_policies.remove(app_id);
+        }
+    }
+    organization
+        .app_upgrade_policies
+        .retain(|app_id, _| here.contains(app_id));
+    organization
+        .pending_upgrades
+        .retain(|app_id, _| here.contains(app_id));
+    Ok(state.policy_json(org, app.as_deref()))
+}
+
+/// Record the first approval of a red update, where the app's policy asks
+/// for a second approver: an upgrade approver's, to an installed release of
+/// the package it runs, its unit's members along theirs, the class the log
+/// derives. Another's live approval of the same update waits for its second:
+/// an upgrade.
+fn approve_upgrade(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejection> {
+    let SystemCmd::ApproveUpgrade {
+        app_id,
+        package,
+        version,
+        targets,
+        class,
+        actor,
+        at,
+        ..
+    } = cmd
+    else {
+        // SAFETY: `apply` sends only an `ApproveUpgrade` here.
+        unreachable!("approve_upgrade applies an ApproveUpgrade")
+    };
+    let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
+    if !state.approves_upgrades(&app.org, &actor) {
+        return Err(NOT_AN_UPGRADE_APPROVER.into());
+    }
+    if !state.upgrade_policy_of(app).0.second_approver || class.is_green() {
+        return Err(ONE_APPROVAL);
+    }
+    if state.logged_release(&package, &version).is_none() {
+        return Err(RELEASE_NOT_INSTALLED);
+    }
+    if state
+        .running(app)
+        .is_some_and(|running| running.package != package)
+    {
+        return Err(RUNS_ANOTHER_PACKAGE);
+    }
+    check_unit_targets(state, app, &targets)?;
+    state.check_class(app, (&package, &version), &targets, &class)?;
+    let org = app.org.clone();
+    let other = state
+        .orgs
+        .get(&org)
+        .and_then(|organization| organization.pending_upgrades.get(&app_id));
+    if let Some(pending) = other {
+        if pending.by != actor
+            && pending.package == package
+            && pending.version == version
+            && pending.targets == targets
+            && state.approval_live(&org, &app_id, pending, at)
+        {
+            return Err(APPROVAL_PENDING);
+        }
+    }
+    let approval = PendingApproval {
+        package,
+        version,
+        targets,
+        by: actor,
+        at,
+        class,
+    };
+    let out = json!(approval);
+    let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
+    let _prev = organization.pending_upgrades.insert(app_id, approval);
+    Ok(out)
+}
+
+/// An approval's targets are its unit's members only, each to an installed
+/// release of the package it runs.
+fn check_unit_targets(
+    state: &SystemState,
+    app: &AppRecord,
+    targets: &BTreeMap<AppId, RunTarget>,
+) -> Result<(), Rejection> {
+    for (member, target) in targets {
+        let runs = app
+            .links
+            .values()
+            .any(|id| id == member)
+            .then(|| state.apps.get(member))
+            .flatten()
+            .and_then(|record| state.running(record));
+        if !runs.is_some_and(|running| running.package == target.package)
+            || state
+                .logged_release(&target.package, &target.version)
+                .is_none()
+        {
+            return Err(TARGET_OUTSIDE_UNIT);
+        }
+    }
+    Ok(())
+}
+
+/// Undo an upgrade of an app and the members its unit's run moved: an
+/// upgrade approver's, naming exactly that set. Every part is judged before
+/// any moves: all or nothing.
+fn undo_upgrade(
+    state: &mut SystemState,
+    app_id: &str,
+    apps: BTreeMap<AppId, Vec<u64>>,
+    actor: &str,
+    at: u64,
+    release_installed: bool,
+) -> Result<Value, Rejection> {
+    let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
+    if !state.approves_upgrades(&app.org, actor) {
+        return Err(NOT_AN_UPGRADE_APPROVER.into());
+    }
+    let named: BTreeSet<&AppId> = apps.keys().collect();
+    let expected = state.undo_set(app_id)?;
+    if named != expected.iter().collect() {
+        return Err(UNDO_NOT_AS_NAMED);
+    }
+    for (id, replicas) in &apps {
+        check_undo_part(state, id, replicas, at, release_installed)?;
+    }
+    let mut groups = serde_json::Map::new();
+    for (id, replicas) in apps {
+        let group = undo_one(state, &id, replicas, actor, at)?;
+        let _prev = groups.insert(id, group.map_or(Value::Null, |group| json!(group)));
+    }
+    Ok(json!({ "groups": groups }))
+}
+
+/// One app an undo reverts may go back: its restore point is undoable now,
+/// its replicas start from the restore point's holder on distinct replica
+/// nodes (none when nothing ran on its group), and what it goes back to is
+/// still here.
+fn check_undo_part(
+    state: &SystemState,
+    app_id: &str,
+    replicas: &[u64],
+    at: u64,
+    release_installed: bool,
+) -> Result<(), Rejection> {
+    let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
+    let point = app.restore_point.as_ref().ok_or(NO_RESTORE_POINT)?;
+    state.may_undo(app, point, at)?;
+    match &point.file {
+        Some(file) => {
+            let distinct: BTreeSet<u64> = replicas.iter().copied().collect();
+            if replicas.first() != Some(&file.node)
+                || distinct.len() != replicas.len()
+                || replicas
+                    .iter()
+                    .any(|node| state.replica_node(node).is_none())
+            {
+                return Err(UNDO_NOT_AS_NAMED);
+            }
+        }
+        None if !replicas.is_empty() => return Err(UNDO_NOT_AS_NAMED),
+        None => {}
+    }
+    if !state.bundles.contains_key(&point.from_bundle) {
+        return Err(RESTORE_BUNDLE_GONE.into());
+    }
+    if release_installed || state.cluster_brings(cluster_version::Feature::UndoToInstalledRelease) {
+        state.undo_release_installed(point)?;
+    }
+    Ok(())
+}
+
+/// Revert one app to its restore point's release; with a file, into a new
+/// group the holder seeds from the restore point, as a restore does (the new
+/// group's id is answered). The restore point stays until that restore
+/// finishes, so a seed that stopped half way may be sent again.
+fn undo_one(
+    state: &mut SystemState,
+    app_id: &str,
+    replicas: Vec<u64>,
+    actor: &str,
+    at: u64,
+) -> Result<Option<u64>, Rejection> {
+    let group = state.next_group.max(1) + 1;
+    let app = state.apps.get_mut(app_id).ok_or(NO_SUCH_APP)?;
+    let Some(mut point) = app.restore_point.take() else {
+        return Err(NO_RESTORE_POINT);
+    };
+    app.last_upgrade = Some(crate::types::UpgradeRecord {
+        from: app.bundle.clone(),
+        to: point.from_bundle.clone(),
+        at,
+        by: actor.to_owned(),
+        ok: true,
+        error: Value::Null,
+        run: point.run.clone(),
+        api_key: None,
+        from_release: point.to_release.clone(),
+        to_release: point.from_release.clone(),
+        class: None,
+        reasons: Vec::new(),
+        approved_by: None,
+        auto: false,
+        undo: true,
+    });
+    app.bundle = point.from_bundle.clone();
+    app.compute_bundle = point.from_compute.clone();
+    app.release = point.from_release.clone();
+    let Some(file) = &point.file else {
+        return Ok(None);
+    };
+    app.group = group;
+    app.replicas = replicas;
+    app.restore = Some(crate::types::PendingRestore {
+        seed: Some(file.node),
+        source: Some(file.source.clone()),
+    });
+    point.undone_at = Some(point.undone_at.unwrap_or(at));
+    app.restore_point = Some(point);
+    state.next_group = group;
+    Ok(Some(group))
 }
 
 /// Whether the log's `claimed` reason says at least what `derived` says: the same reason,
@@ -297,7 +420,7 @@ impl SystemState {
     /// # Errors
     /// [`NO_RESTORE_POINT`] when the app has none.
     pub fn undo_set(&self, app_id: &str) -> Result<BTreeSet<AppId>, Rejection> {
-        let a = self.apps.get(app_id).ok_or("no such app")?;
+        let a = self.apps.get(app_id).ok_or(NO_SUCH_APP)?;
         let p = a.restore_point.as_ref().ok_or(NO_RESTORE_POINT)?;
         // A member its unit's run moved goes back with its instance, never alone.
         if p.run.is_some() && self.unit_parent(app_id).is_some() {
