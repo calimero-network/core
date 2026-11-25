@@ -161,10 +161,8 @@ impl VerificationResult {
     /// The existing enforcement layers below keep their own equivalent
     /// enforcement by design (mode-specific errors `policy_valid` cannot
     /// express), and `is_valid()` stays crypto-only for them:
-    /// - `crates/context/src/handlers/admit_tee_node.rs` — per-group
-    ///   `TeeAdmissionPolicy` (MRTD/RTMR allowlists + `tcb_status_allowed`);
-    /// - `crates/merod/src/kms/mod.rs` — `enforce_attestation_policy`
-    ///   (measurement + TCB allowlists for KMS self-attestation);
+    /// - `crates/kms-client/src/kms/mod.rs` — `enforce_attestation_policy`
+    ///   (measurement + TCB allowlists when the node verifies its KMS);
     /// - the mero-tee KMS `get_key.rs` `enforce_attestation_policy` on the
     ///   key-release side (external consumer of this crate).
     pub fn is_valid(&self) -> bool {

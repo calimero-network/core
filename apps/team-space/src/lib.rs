@@ -31,7 +31,7 @@
 //!
 //! The app owner, who runs `init`, owns the config and is the one writer of every set.
 //! Layer 3 does not ask about the organization: anyone the node admits is judged by the
-//! app's own rows alone (`crates/node/tests/shared_storage.rs` reaches the app as a listed
+//! app's own rows alone (`crates/node/tests/it/shared_storage.rs` reaches the app as a listed
 //! account outside its organization).
 //!
 //! v1 checked writer sets on every node at merge (`SharedStorage`, `AccessControl`). Here a
@@ -40,7 +40,7 @@
 //!
 //! `tryGrantRole` and `tryRotateWriters` answer `false` where the plain method fails; v1's
 //! workflows could not assert a refusal, and the scenarios keep them. The node's cluster
-//! tests run this app too (`crates/node/tests/component_cluster.rs`, `shared_storage.rs`).
+//! tests run this app too (`crates/node/tests/it/component_cluster.rs`, `shared_storage.rs`).
 //! Method names and arguments are the ABI's camelCase ones.
 
 use std::collections::BTreeSet;

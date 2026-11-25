@@ -36,9 +36,11 @@ cargo test -p calimero-build-utils git_details_or_unknown_returns_unknown_outsid
 
 ## Mental Model
 
-`set_version_env_vars` is called by the `merod` and `meroctl` binaries (`crates/merod/build.rs`, `crates/meroctl/build.rs`) as `calimero_build_utils::set_version_env_vars("MEROD")` / `"MEROCTL"`, `.expect()`-ing the result - a build.rs failing hard here is intentional, not a bug to soften.
+`meroctl` and `app-build` call it from their `build.rs` (`crates/meroctl/build.rs`, `crates/app-build/build.rs`): `read_workspace_version()` (falling back to `CARGO_PKG_VERSION` when built from a published tarball) becomes `CALIMERO_RELEASE_VERSION`, and `git_details_or_unknown` becomes `CALIMERO_BUILD_DESCRIBE` and `CALIMERO_BUILD_COMMIT`, which the code reads with `env!(...)` (`--version`, `crates/meroctl/src/local.rs`, `crates/meroctl/src/make.rs`). `merod` has no `build.rs`; the node library sets `CALIMERO_RELEASE_VERSION` itself (`crates/node/build.rs`, its own copy of the reader).
 
-`set_version_env_vars` composes the other three: it reads the workspace release version (from the workspace-root `[workspace.metadata.workspaces].version`, not the placeholder `0.0.0` in each crate's own `Cargo.toml`), resolves git info relative to `CARGO_MANIFEST_DIR` (falling back to `"unknown"` rather than failing if the crate is built outside a git checkout, e.g. from a source tarball), and reads the active `rustc` version. It then prints four `cargo:rustc-env=...` lines, which downstream code reads via `env!(...)` at compile time (see `crates/merod/src/version.rs`, `crates/merod/src/cli.rs`, `crates/meroctl/src/version.rs`, `crates/meroctl/src/cli.rs`).
+The workspace release version is `[workspace.metadata.workspaces].version` in the root `Cargo.toml`, not the placeholder `0.0.0` in each crate's own `Cargo.toml`. Git info resolves relative to `CARGO_MANIFEST_DIR` and falls back to `"unknown"` outside a git checkout (e.g. a source tarball) rather than failing the build.
+
+`set_version_env_vars(prefix)` (which also stamps the `rustc` version) has no caller in the workspace today.
 
 ## Key Files
 
