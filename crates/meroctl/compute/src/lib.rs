@@ -1,5 +1,8 @@
 //! `meroctl local compute run`: one compute method on a compute component alone, with the engine, caps
 //! and determinism of a job node and plain files in place of sealed ones.
+//!
+//! Spec: [Compute actions](https://calimero-network.github.io/core/build/guides/compute-actions/),
+//! [The job node](https://calimero-network.github.io/core/protocol/compute-actions/#the-job-node).
 
 mod files;
 

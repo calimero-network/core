@@ -9,6 +9,12 @@
 )]
 use super::*;
 
+/// What `UninstallPackage` answers (`#Uninstalled`): the versions it removed.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Uninstalled {
+    pub removed: Vec<String>,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     let s = proofs.s;
@@ -289,7 +295,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 let _prev = s.packages.remove(&package);
                 s.forget_origins(&package);
             }
-            Ok(json!({ "removed": gone }))
+            Ok(json!(Uninstalled { removed: gone }))
         }
         SystemCmd::BindPublisher {
             signer_id,

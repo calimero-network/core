@@ -1,4 +1,4 @@
-//! The ordered key-value store the SDK runs on: [`HostStore`] in the guest, [`MemStore`] in tests.
+//! The ordered key-value store the SDK runs on: `HostStore` in the guest, [`MemStore`] in tests.
 
 use crate::error::StorageError;
 

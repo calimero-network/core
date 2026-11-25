@@ -41,20 +41,39 @@ fn checked(public_key: &str) -> Result<(), ApiError> {
     }
 }
 
-/// `{ holder, key: { publicKey, setAt, setBy } | null, apps }`: `apps` is how
-/// many apps' backups open with it.
-fn answer(node: &Node, holder: &BackupHolder) -> Value {
-    node.sys(|s| {
-        let key = s
-            .backup_keys
-            .get(&holder.key())
-            .map(|k| json!({ "publicKey": k.public_key, "setAt": k.set_at, "setBy": k.set_by }));
-        json!({
-            "holder": holder,
-            "key": key,
-            "apps": s.apps_of_holder(holder).count(),
-        })
-    })
+/// A holder's backup key as the API answers it (`#BackupKeyAnswer`): `apps` is how many
+/// apps' backups open with it.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct BackupKeyAnswer {
+    holder: BackupHolder,
+    key: Option<BackupKeyView>,
+    apps: usize,
+}
+
+/// The key itself, `null` while none is set.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BackupKeyView {
+    public_key: String,
+    set_at: u64,
+    set_by: String,
+}
+
+fn answer(node: &Node, holder: &BackupHolder) -> Json<BackupKeyAnswer> {
+    Json(node.sys(|s| backup_key_answer(s, holder)))
+}
+
+/// [`answer`] on the state `s`.
+pub(super) fn backup_key_answer(s: &SystemState, holder: &BackupHolder) -> BackupKeyAnswer {
+    BackupKeyAnswer {
+        holder: holder.clone(),
+        key: s.backup_keys.get(&holder.key()).map(|k| BackupKeyView {
+            public_key: k.public_key.clone(),
+            set_at: k.set_at,
+            set_by: k.set_by.clone(),
+        }),
+        apps: s.apps_of_holder(holder).count(),
+    }
 }
 
 /// Write `holder`'s key, its proof already made.
@@ -64,7 +83,7 @@ async fn set(
     public_key: String,
     actor: String,
     proof: Value,
-) -> ApiResult {
+) -> ApiResult<Json<BackupKeyAnswer>> {
     let _ok = node
         .sys_write(&SystemCmd::SetBackupKey {
             holder: holder.clone(),
@@ -74,13 +93,16 @@ async fn set(
             proof,
         })
         .await?;
-    Ok(Json(answer(node, &holder)))
+    Ok(answer(node, &holder))
 }
 
 /// The operator's backup key, where it upgrades apps.
-async fn ops_backup_key(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn ops_backup_key(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<BackupKeyAnswer>> {
     operator(&node, &headers)?;
-    Ok(Json(answer(&node, &BackupHolder::Operator)))
+    Ok(answer(&node, &BackupHolder::Operator))
 }
 
 /// Set the operator's backup key: signed over `operator / __set_backup_key /
@@ -89,7 +111,7 @@ async fn ops_set_backup_key(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(b): Json<OpsBackupKeyBody>,
-) -> ApiResult {
+) -> ApiResult<Json<BackupKeyAnswer>> {
     operator(&node, &headers)?;
     operator_holds(&node, |g| g.app_upgrades, "app upgrades")?;
     checked(&b.public_key)?;
@@ -116,7 +138,7 @@ async fn org_backup_key(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<BackupKeyAnswer>> {
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     node.sys_fresh().await;
@@ -126,7 +148,7 @@ async fn org_backup_key(
     {
         return Err(ApiError::not_found("no such organization"));
     }
-    Ok(Json(answer(&node, &BackupHolder::Org(org))))
+    Ok(answer(&node, &BackupHolder::Org(org)))
 }
 
 /// Set an organization's backup key: those who upgrade all its apps (its
@@ -137,7 +159,7 @@ async fn org_set_backup_key(
     headers: HeaderMap,
     Path(org): Path<String>,
     Json(b): Json<BackupKeyBody>,
-) -> ApiResult {
+) -> ApiResult<Json<BackupKeyAnswer>> {
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     node.sys_fresh().await;
@@ -154,10 +176,13 @@ async fn org_set_backup_key(
 }
 
 /// The signed-in account's backup key, for its personal apps.
-async fn account_backup_key(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn account_backup_key(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<BackupKeyAnswer>> {
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
-    Ok(Json(answer(&node, &BackupHolder::Account(actor))))
+    Ok(answer(&node, &BackupHolder::Account(actor)))
 }
 
 /// Set the account's backup key, with its passkey over `account:<a> /
@@ -166,7 +191,7 @@ async fn account_set_backup_key(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(b): Json<BackupKeyBody>,
-) -> ApiResult {
+) -> ApiResult<Json<BackupKeyAnswer>> {
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;

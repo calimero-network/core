@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
+use calimero_app_host::SearchBudget;
 use calimero_log::{
     BoxFuture, Engine, Group, GroupId, NodeId, RpcRequest, RpcResponse, Transport, WriteError,
 };
@@ -59,6 +60,9 @@ pub use component::{
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
+/// The run view's types, which the API's OpenAPI registry names (`api::openapi`).
+#[cfg(test)]
+pub(crate) use component::{RunFileView, RunView};
 pub(crate) use component::{PIPELINE_VIEW, RUN_VIEW};
 // The refusals the OpenAPI registry's tests build, to hold `details` to its schema.
 #[cfg(test)]
@@ -399,6 +403,17 @@ impl CallRequest {
             ..Self::new(app_id, method.to_owned(), args, caller)
         }
     }
+}
+
+/// A view's body for the peer it is forwarded to: with a request's search budget, every
+/// search left goes along as `searchesLeft` (`SearchBudget::take_all`), since the peer cannot
+/// give back what it did not use.
+fn forwarded_view(req: &ViewRequest, searches: Option<&SearchBudget>) -> Value {
+    let mut body = serde_json::to_value(req).unwrap_or_default();
+    if let (Some(searches), Some(map)) = (searches, body.as_object_mut()) {
+        let _prev = map.insert("searchesLeft".to_owned(), searches.take_all().into());
+    }
+    body
 }
 
 /// Request to run a read-only method.
@@ -1751,7 +1766,7 @@ impl Node {
     /// key lives as long as the process holding it). `None` when the claim
     /// does not hold: no such node, removed, or another key there.
     ///
-    /// The attestation runs in a task of its own ([`detach`]): it takes
+    /// The attestation runs in a task of its own (`detach`): it takes
     /// longer than a Raft RPC may (about a second on TDX), and a caller that
     /// gives up must not abort it, or no RPC from that peer is ever taken.
     pub async fn identify_peer(&self, key: [u8; 32], claimed: NodeId) -> Option<PeerIdentity> {
@@ -3044,7 +3059,7 @@ impl Node {
 
     /// When `app` last committed a write (Unix milliseconds,
     /// [`crate::app::AppMachine::last_write_ms`]), as a replica applied it:
-    /// [`Self::replica_progress`]'s. `None` before the app's first write, and
+    /// `Self::replica_progress`'s. `None` before the app's first write, and
     /// when no replica answered.
     pub async fn last_write_ms(&self, app: &AppRecord) -> Option<u64> {
         self.replica_progress(app).await?.last_write_ms
@@ -3722,15 +3737,27 @@ impl Node {
         &self,
         g: &Group<AppMachine>,
         req: &ViewRequest,
+        searches: Option<&SearchBudget>,
     ) -> Result<ViewAnswer, ApiError> {
         if g.read_local(|m, _| m.state.executor()) == Some(Kind::Component) {
-            return self.view_local_component(g, req).await;
+            return self.view_local_component(g, req, searches).await;
         }
         Err(ApiError::unsupported_engine())
     }
 
     /// Run a read-only method. Its writes, if any, are discarded.
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
+        self.view_searching(req, None).await
+    }
+
+    /// [`Node::view`] for a request that has made searches already: `searches` is what it
+    /// has left (a synchronous `xcall_view`'s caller's, or what a peer handed over), shared
+    /// with this view's run; `None` is a fresh request.
+    pub(crate) async fn view_searching(
+        &self,
+        req: &ViewRequest,
+        searches: Option<&SearchBudget>,
+    ) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
         self.refuse_while_restoring(&app).await?;
         if app.executor == Kind::Wasmer {
@@ -3752,7 +3779,7 @@ impl Node {
         // Like calls, ride out an election (e.g. right after the leader moved off).
         let mut last = None;
         for _attempt in 0..30 {
-            match self.view_once(req).await {
+            match self.view_once(req, searches).await {
                 Err(e) if e.code == "UNAVAILABLE" => last = Some(e),
                 other => return other,
             }
@@ -3761,12 +3788,16 @@ impl Node {
         Err(last.unwrap_or_else(|| ApiError::unavailable("the app has no leader")))
     }
 
-    async fn view_once(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
+    async fn view_once(
+        &self,
+        req: &ViewRequest,
+        searches: Option<&SearchBudget>,
+    ) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
         if let Some(g) = self.replica_group(&app) {
             if req.strong {
                 match g.read_strong(|_, applied| applied).await {
-                    Ok(_) => return self.view_local(&g, req).await,
+                    Ok(_) => return self.view_local(&g, req, searches).await,
                     Err(WriteError::NotLeader {
                         leader: Some((id, addr)),
                     }) if id != self.config.node_id && !addr.is_empty() => {
@@ -3783,15 +3814,11 @@ impl Node {
                                 let _prev = self
                                     .replica_strong_views
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                return self.view_local(&g, req).await;
+                                return self.view_local(&g, req, searches).await;
                             }
                         }
                         let v = self
-                            .peer_forward(
-                                &addr,
-                                "internal/view",
-                                &serde_json::to_value(req).unwrap_or_default(),
-                            )
+                            .peer_forward(&addr, "internal/view", &forwarded_view(req, searches))
                             .await
                             .map_err(forwarded_view_error)?;
                         return serde_json::from_value(v)
@@ -3807,17 +3834,13 @@ impl Node {
                     "this replica has not caught up to minIndex",
                 ));
             }
-            return self.view_local(&g, req).await;
+            return self.view_local(&g, req, searches).await;
         }
         let addr = self
             .other_replica(&app)
             .ok_or_else(|| ApiError::unavailable("no replica known"))?;
         let v = self
-            .peer_forward(
-                &addr,
-                "internal/view",
-                &serde_json::to_value(req).unwrap_or_default(),
-            )
+            .peer_forward(&addr, "internal/view", &forwarded_view(req, searches))
             .await
             .map_err(forwarded_view_error)?;
         serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
@@ -3866,7 +3889,7 @@ impl Node {
     }
 
     /// Write encrypted snapshots of the app groups this node leads, and of
-    /// the system group when it leads it ([`Self::back_up`]).
+    /// the system group when it leads it (`Self::back_up`).
     pub async fn backup(&self) -> eyre::Result<usize> {
         self.back_up(false).await
     }

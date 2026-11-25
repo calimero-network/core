@@ -88,6 +88,9 @@ rand_chacha.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
+# The OpenAPI generator trial (`api/openapi/generated.rs`): one route group's paths
+# generated from its handlers and types, held to the hand-written registry.
+utoipa.workspace = true
 
 [lib]
 bench = false

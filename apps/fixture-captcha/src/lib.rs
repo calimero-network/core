@@ -52,7 +52,7 @@ pub enum Error {
 }
 
 /// What a client shows: never the answer.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct Puzzle {
     pub id: String,
     pub question: String,

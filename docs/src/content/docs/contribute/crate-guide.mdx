@@ -15,73 +15,73 @@ beside it) has its commands and detail. The same index, for agents, is
 
 ## Binaries
 
-| Crate | Package | What it is |
-| --- | --- | --- |
-| `crates/merod` | `merod` | The node binary: `init`, `run`, `config`, `local`, `inspect`, `kms disk-key`, `attest`. Turns `NodeArgs` into the node's `Config`. |
-| `crates/meroctl` | `meroctl` | The command line for nodes, over the attested, sealed client. |
+| Crate | Package | What it is | Spec |
+| --- | --- | --- | --- |
+| `crates/merod` | `merod` | The node binary: `init`, `run`, `config`, `local`, `inspect`, `kms disk-key`, `attest`. Turns `NodeArgs` into the node's `Config`. | [merod CLI reference](/operate/merod/), [Configuration](/operate/config/) |
+| `crates/meroctl` | `meroctl` | The command line for nodes, over the attested, sealed client. | [meroctl CLI reference](/operate/meroctl/) |
 
 ## The node
 
-| Crate | Package | What it is |
-| --- | --- | --- |
-| `crates/node` | `calimero-node` | The node: system group, app groups, executor glue, routing, the HTTP API and Ops API, packages, follow-ups, blobs, sealed files, compute and pipeline runs, the job node, the consent page, presence, search, app frontends, backups and the recovery disk, the storage key. |
-| `crates/log` | `calimero-log` | Multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration. |
-| `crates/sealed` | `calimero-sealed` | The sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js. |
-| `crates/identity` | `calimero-identity` | WebAuthn passkeys, session tokens, API keys, confirm challenges; `testing`: a software authenticator. |
-| `crates/client` | `calimero-client` | The Rust client: attestation check (shared with peers), sealed requests, sign-in, and a route layer generated from the node's OpenAPI document (`client.<group>().<method>()`). |
-| `crates/kms-client` | `calimero-kms-client` | The mero-kms client: release-policy check, key release, `kms disk-key`. |
-| `crates/outbound` | `calimero-outbound` | The gated outbound HTTPS client and secrets a run may use. |
-| `crates/search` | `calimero-search` | Per-app full-text search (tantivy), built in memory from apps' search exports. |
+| Crate | Package | What it is | Spec |
+| --- | --- | --- | --- |
+| `crates/node` | `calimero-node` | The node: system group, app groups, executor glue, routing, the HTTP API and Ops API, packages, follow-ups, blobs, sealed files, compute and pipeline runs, the job node, the consent page, presence, search, app frontends, backups and the recovery disk, the storage key. | [Protocol overview](/protocol/overview/), [Architecture](/contribute/architecture/) |
+| `crates/log` | `calimero-log` | Multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration. | [Replication](/protocol/replication/), [Storage](/protocol/storage/) |
+| `crates/sealed` | `calimero-sealed` | The sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js. | [The sealed channel](/protocol/networking/#the-sealed-channel), [Encryption in transit](/protocol/encryption/#in-transit) |
+| `crates/identity` | `calimero-identity` | WebAuthn passkeys, session tokens, API keys, confirm challenges; `testing`: a software authenticator. | [Accounts, passkeys & sessions](/protocol/identities/), [Sessions and authority](/protocol/sessions-and-authority/) |
+| `crates/client` | `calimero-client` | The Rust client: attestation check (shared with peers), sealed requests, sign-in, and a route layer generated from the node's OpenAPI document (`client.<group>().<method>()`). | [What the verifier checks](/protocol/tee-attestation/#what-the-verifier-checks), [Networking & sealed channels](/protocol/networking/) |
+| `crates/kms-client` | `calimero-kms-client` | The mero-kms client: release-policy check, key release, `kms disk-key`. | [What a node trusts its KMS on](/protocol/tee-attestation/#what-a-node-trusts-its-kms-on), [The storage key and the cluster key](/protocol/encryption/#at-rest-the-storage-key-k_r-and-the-cluster-key-k_c) |
+| `crates/outbound` | `calimero-outbound` | The gated outbound HTTPS client and secrets a run may use. | [Outbound HTTPS](/protocol/execution/#outbound-https), [Secrets](/protocol/secrets/), [Call an external service](/build/guides/outbound/) |
+| `crates/search` | `calimero-search` | Per-app full-text search (tantivy), built in memory from apps' search exports. | [Search your app's data](/build/guides/search/) |
 
 ## Attestation and releases
 
-| Crate | Package | What it is |
-| --- | --- | --- |
-| `crates/tee-attestation` | `calimero-tee-attestation` | TDX quote generation (Linux, configfs-tsm) and DCAP verification; `mock-attestation` for tests; the `calimero-tee-verify` binary behind `cli`. |
-| `crates/tee-release` | `calimero-tee-release` | Fetches and Sigstore-verifies signed mero-tee release assets (`published-mrtds.json`, KMS policies). |
+| Crate | Package | What it is | Spec |
+| --- | --- | --- | --- |
+| `crates/tee-attestation` | `calimero-tee-attestation` | TDX quote generation (Linux, configfs-tsm) and DCAP verification; `mock-attestation` for tests; the `calimero-tee-verify` binary behind `cli`. | [TEE attestation](/protocol/tee-attestation/) |
+| `crates/tee-release` | `calimero-tee-release` | Fetches and Sigstore-verifies signed mero-tee release assets (`published-mrtds.json`, KMS policies). | [What a node trusts its KMS on](/protocol/tee-attestation/#what-a-node-trusts-its-kms-on), [What the verifier checks](/protocol/tee-attestation/#what-the-verifier-checks) |
 
 ## Packages
 
-| Crate | Package | What it is |
-| --- | --- | --- |
-| `crates/bundle` | `calimero-bundle` | The `.mpk` manifest, JCS canonicalization and Ed25519 signatures; shared with `meroctl-sign`. |
-| `crates/pipeline` | `calimero-pipeline` | The pipeline YAML language: compile, canonical JSON, apply-time checks, worst-case fuel, prices and estimates. |
-| `crates/app-downloader` | `calimero-app-downloader` | Fetching signed releases from a package registry (`HttpRegistry`). |
+| Crate | Package | What it is | Spec |
+| --- | --- | --- | --- |
+| `crates/bundle` | `calimero-bundle` | The `.mpk` manifest, JCS canonicalization and Ed25519 signatures; shared with `meroctl-sign`. | [What a release carries](/protocol/applications/#what-a-release-carries), [Packaging & signing](/build/packaging-signing/) |
+| `crates/pipeline` | `calimero-pipeline` | The pipeline YAML language: compile, canonical JSON, apply-time checks, worst-case fuel, prices and estimates. | [Pipeline runs](/protocol/compute-actions/#pipeline-runs), [Sealed files and pipelines](/build/guides/files-and-pipelines/) |
+| `crates/app-downloader` | `calimero-app-downloader` | Fetching signed releases from a package registry (`HttpRegistry`). | [Installing a release](/protocol/applications/#installing-a-release) |
 
 ## The app runtime
 
 Apps are `calimero:app` components on wasmtime. Check with their owner before
 changing these.
 
-| Crate | Package | What it is |
-| --- | --- | --- |
-| `crates/app-wit` | `calimero-app-wit` | The `calimero:app` WIT world and its import allow-list. |
-| `crates/app-host` | `calimero-app-host` | The engine-neutral host core of `calimero:app`: state, policy, time and randomness. |
-| `crates/app-engine-wasmtime` | `calimero-app-engine-wasmtime` | The wasmtime engine for components: fuel, epochs, limits and a checked cache. |
-| `crates/sdk` (+ `sdk-macros`) | `calimero-sdk`, `calimero-sdk-macros` | The Rust app SDK for `calimero:app`: app attributes, encoding, tables, collections, env and the embedded ABI. |
-| `crates/app-sdk` | `calimero-app-sdk` | The SDK's old name: re-exports `calimero-sdk`, kept until no app depends on it. |
-| `crates/app-build` | `calimero-app-build` | Builds Rust guests into `calimero:app` components; behind `meroctl app build`, `meroctl app codegen` and `meroctl app abi diff`. |
-| `crates/app-abi` | `calimero-app-abi` | An app's ABI for clients: the OpenAPI document the node serves, typed TS/Python clients, breaking-change checks. |
+| Crate | Package | What it is | Spec |
+| --- | --- | --- | --- |
+| `crates/app-wit` | `calimero-app-wit` | The `calimero:app` WIT world and its import allow-list. | [Application execution](/protocol/execution/), [The env API](/build/host-functions/) |
+| `crates/app-host` | `calimero-app-host` | The engine-neutral host core of `calimero:app`: state, policy, time and randomness. | [Application execution](/protocol/execution/), [The env API](/build/host-functions/) |
+| `crates/app-engine-wasmtime` | `calimero-app-engine-wasmtime` | The wasmtime engine for components: fuel, epochs, limits and a checked cache. | [One run](/protocol/execution/#one-run), [Limits](/protocol/limits/) |
+| `crates/sdk` (+ `sdk-macros`) | `calimero-sdk`, `calimero-sdk-macros` | The Rust app SDK for `calimero:app`: app attributes, encoding, tables, collections, env and the embedded ABI. | [Build Calimero apps](/build/), [SDK macros](/build/sdk-macros/), [Tables & collections](/build/collections/) |
+| `crates/app-sdk` | `calimero-app-sdk` | The SDK's old name: re-exports `calimero-sdk`, kept until no app depends on it. | [Build Calimero apps](/build/) |
+| `crates/app-build` | `calimero-app-build` | Builds Rust guests into `calimero:app` components; behind `meroctl app build`, `meroctl app codegen` and `meroctl app abi diff`. | [Packaging & signing](/build/packaging-signing/) |
+| `crates/app-abi` | `calimero-app-abi` | An app's ABI for clients: the OpenAPI document the node serves, typed TS/Python clients, breaking-change checks. | [App interface (ABI)](/build/app-abi/), [Typed clients](/build/guides/typed-clients/) |
 
 ## Shared types
 
-| Crate | Package | What it is |
-| --- | --- | --- |
-| `crates/primitives` | `calimero-primitives` | Ids, hashes, and the outbound and search wire types. |
+| Crate | Package | What it is | Spec |
+| --- | --- | --- | --- |
+| `crates/primitives` | `calimero-primitives` | Ids, hashes, and the outbound and search wire types. | [Glossary](/protocol/glossary/) |
 
 ## Build and development
 
-| Crate | Package | What it is |
-| --- | --- | --- |
-| `crates/build-utils` | `calimero-build-utils` | `build.rs` helpers: release version, git and rustc metadata. |
-| `crates/git-hooks` | `calimero-git-hooks` | Installs `.githooks/pre-commit` (`cargo fmt --check`) on any build. |
-| `crates/utils/fs` | `calimero-utils-fs` | Writing a secret file only its owner can read, on Unix and Windows; used by `merod`, `meroctl` and `meroctl-sign`. |
+| Crate | Package | What it is | Spec |
+| --- | --- | --- | --- |
+| `crates/build-utils` | `calimero-build-utils` | `build.rs` helpers: release version, git and rustc metadata. | [Development workflow](/contribute/development/) |
+| `crates/git-hooks` | `calimero-git-hooks` | Installs `.githooks/pre-commit` (`cargo fmt --check`) on any build. | [Development workflow](/contribute/development/) |
+| `crates/utils/fs` | `calimero-utils-fs` | Writing a secret file only its owner can read, on Unix and Windows; used by `merod`, `meroctl` and `meroctl-sign`. | [Hardening & security](/operate/security/) |
 
 ## Tools
 
-| Directory | Package | What it is |
-| --- | --- | --- |
-| `crates/meroctl/sign` | `meroctl-sign` | The signing library behind `meroctl app signer\|sign\|pack`; no binary. |
-| `crates/meroctl/compute` | `meroctl-compute` | Runs one compute method of a compute component alone, with a job node's engine and caps: the library behind `meroctl local compute run`; no binary. |
-| `crates/client/gen` | `calimero-client-gen` | Generate `calimero-client`'s route layer from `docs/public/openapi.json`; its test fails while the checked-in code is stale. |
-| `crates/search/bench` | `calimero-search-bench` | `calimero-search`'s engine over the node's in-memory directory: index size, query latency, memory, the search-gas fit (`benchmarks.yml` uploads its report). |
+| Directory | Package | What it is | Spec |
+| --- | --- | --- | --- |
+| `crates/meroctl/sign` | `meroctl-sign` | The signing library behind `meroctl app signer\|sign\|pack`; no binary. | [Packaging & signing](/build/packaging-signing/), [The signer key is the update authority](/build/packaging-signing/#the-signer-key-is-the-update-authority) |
+| `crates/meroctl/compute` | `meroctl-compute` | Runs one compute method of a compute component alone, with a job node's engine and caps: the library behind `meroctl local compute run`; no binary. | [Compute actions](/build/guides/compute-actions/), [The job node](/protocol/compute-actions/#the-job-node) |
+| `crates/client/gen` | `calimero-client-gen` | Generate `calimero-client`'s route layer from `docs/public/openapi.json`; its test fails while the checked-in code is stale. | [Node API reference (OpenAPI)](/operate/api-reference/) |
+| `crates/search/bench` | `calimero-search-bench` | `calimero-search`'s engine over the node's in-memory directory: index size, query latency, memory, the search-gas fit (`benchmarks.yml` uploads its report). | [Search your app's data](/build/guides/search/) |
