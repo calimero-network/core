@@ -87,6 +87,7 @@ from .app_method_response_200_events_item import AppMethodResponse200EventsItem
 from .app_move_body import AppMoveBody
 from .app_move_response_200 import AppMoveResponse200
 from .app_openapi_response_200 import AppOpenapiResponse200
+from .app_outbound_log_response_200 import AppOutboundLogResponse200
 from .app_policy_set_body import AppPolicySetBody
 from .app_policy_set_body_policy_type_0 import AppPolicySetBodyPolicyType0
 from .app_policy_set_body_policy_type_0_auto_apply import (
@@ -577,6 +578,8 @@ from .origins_remove_body import OriginsRemoveBody
 from .origins_remove_response_200 import OriginsRemoveResponse200
 from .outbound_approval import OutboundApproval
 from .outbound_approved import OutboundApproved
+from .outbound_audit_entry import OutboundAuditEntry
+from .outbound_audit_entry_failure import OutboundAuditEntryFailure
 from .outbound_selection_type_0 import OutboundSelectionType0
 from .package import Package
 from .package_capabilities_response_200 import PackageCapabilitiesResponse200
@@ -892,6 +895,7 @@ __all__ = (
     "AppMoveBody",
     "AppMoveResponse200",
     "AppOpenapiResponse200",
+    "AppOutboundLogResponse200",
     "AppPolicySetBody",
     "AppPolicySetBodyPolicyType0",
     "AppPolicySetBodyPolicyType0AutoApply",
@@ -1294,6 +1298,8 @@ __all__ = (
     "OriginsRemoveResponse200",
     "OutboundApproval",
     "OutboundApproved",
+    "OutboundAuditEntry",
+    "OutboundAuditEntryFailure",
     "OutboundSelectionType0",
     "Package",
     "PackageCapabilitiesResponse200",

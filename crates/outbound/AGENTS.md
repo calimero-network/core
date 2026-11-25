@@ -66,7 +66,11 @@ declared outputs; a non-2xx answers only its status and `error.code`.
 `for_run_with_connectors` returns `RunClients`: the raw client refuses every
 declared connector's host, so the connector is the only way there, and both
 clients take the run's `EgressCheck` (`egress_gated`, `egress_gated_connectors`):
-egress off refuses a connector call with `EgressOff` as it refuses a raw request. `STRIPE`
+egress off refuses a connector call with `EgressOff` as it refuses a raw request. Every
+call, sent or refused, is recorded in the run's `OutboundAudit` (`AuditEntry::of_call`:
+the connector's host, the operation's declared path, never the input's ids; the
+connector's binding name once attached), and a raw request refused as `ConnectorHost` as
+`refused` (`connector_calls_are_in_the_audit_with_the_declared_path_and_binding_name`). `STRIPE`
 (PaymentIntents, API `2024-06-20`) and `OPENAI` (chat completions, `v1`) are in
 `CONNECTORS`. Not wired yet: the manifest's `connectors`, the consent page and
 the guest's `connector.call` (#5349); the node still calls `for_run_counted`.
@@ -100,11 +104,21 @@ slice). Bindings keep the app from placing a secret where it is echoed; what the
 key may do at its bound host is still the app's to use.
 
 - `OutboundService::from_settings` → `for_run(app, declared, approval, context)`;
-  `for_run_counted(.., sent)` also counts each request handed to the transport
+  `for_run_counted(.., sent, audit)` also counts each request handed to the transport
   (the node's `calimero_app_outbound_requests_total`).
 - `merge_approval` computes the approval an owner's selection leaves.
-- `egress_gated(inner, EgressCheck)`: the egress switch, asked per request (so one
-  turned off reaches a run already going); test
+- `OutboundAudit` (`audit.rs`): each request a `for_run_counted` client (or a
+  `for_run_with_connectors` client, raw or connector call) is handed,
+  sent or refused, as an `AuditEntry` under the run's `context` (the instance): time,
+  method, host, path (no query, `MAX_AUDIT_PATH_BYTES`), status or `AuditFailure`
+  (`SecretRefused` marks a refused binding, placeholder or redaction bound; `EgressOff` for the egress switch's refusals), the names of the credential
+  bindings `prepare` attached (`Prepared::attached` via `secret_names`; for a secret
+  refusal, the binding `SecretRefused` names), body sizes. Never a value, body, query or
+  header. Bounded per node: `MAX_AUDIT_ENTRIES`, `AUDIT_RETENTION_MS`,
+  `MAX_AUDIT_INSTANCES`. The node owns one (`Node::outbound_audit`).
+- `egress_gated(inner, EgressCheck, audit, context)`: the egress switch, asked per
+  request (so one turned off reaches a run already going), each refusal recorded in
+  the audit as `EgressOff`; test
   `egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again`.
 - `TURNSTILE_VERIFY_URL`: Cloudflare Turnstile's siteverify, for apps that check a
   token from a call (D76; `apps/fixture-captcha`) and for the `turnstile` stand-in.

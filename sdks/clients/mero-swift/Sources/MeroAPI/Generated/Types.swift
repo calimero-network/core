@@ -367,6 +367,15 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `GET /apps/{app}/openapi.json`.
     /// - Remark: Generated from `#/paths//apps/{app}/openapi.json/get(app_openapi)`.
     func appOpenapi(_ input: Operations.AppOpenapi.Input) async throws -> Operations.AppOpenapi.Output
+    /// An app's outbound requests
+    ///
+    /// The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/outbound-log`.
+    /// - Remark: Generated from `#/paths//apps/{app}/outbound-log/get(app_outbound_log)`.
+    func appOutboundLog(_ input: Operations.AppOutboundLog.Input) async throws -> Operations.AppOutboundLog.Output
     /// An app's pipeline runs
     ///
     /// The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.
@@ -2406,6 +2415,23 @@ extension APIProtocol {
         headers: Operations.AppOpenapi.Input.Headers = .init()
     ) async throws -> Operations.AppOpenapi.Output {
         try await appOpenapi(Operations.AppOpenapi.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// An app's outbound requests
+    ///
+    /// The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/outbound-log`.
+    /// - Remark: Generated from `#/paths//apps/{app}/outbound-log/get(app_outbound_log)`.
+    public func appOutboundLog(
+        path: Operations.AppOutboundLog.Input.Path,
+        headers: Operations.AppOutboundLog.Input.Headers = .init()
+    ) async throws -> Operations.AppOutboundLog.Output {
+        try await appOutboundLog(Operations.AppOutboundLog.Input(
             path: path,
             headers: headers
         ))
@@ -6771,6 +6797,89 @@ public enum Components {
                 case undoneAt
                 case lostWrites
                 case unavailable
+            }
+        }
+        /// One outbound request of an instance: `atMs` (Unix milliseconds, the node's clock), `method`, `host` and `path` (no query string, at most 128 bytes, `pathTruncated` when cut; both empty for a URL that did not parse), the host's `status` or, absent that, the `failure` that stopped it (`malformed`, `refused` by a gate, `notApproved`, `awaitingApproval`, `egressOff` (egress turned off), `secret` (a credential binding refused, or a `{{secret:` placeholder), `failed` in transit), the names of the credential bindings the node attached in `secrets` (for a `secret` refusal, the binding refused), and the request's and response's body sizes. Never a secret value, a body, a query string or a header.
+        ///
+        /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry`.
+        public struct OutboundAuditEntry: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry/atMs`.
+            public var atMs: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry/method`.
+            public var method: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry/host`.
+            public var host: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry/path`.
+            public var path: Swift.String
+            /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry/pathTruncated`.
+            public var pathTruncated: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry/status`.
+            public var status: Swift.Int64?
+            /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry/failure`.
+            @frozen public enum FailurePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case malformed = "malformed"
+                case refused = "refused"
+                case notApproved = "notApproved"
+                case awaitingApproval = "awaitingApproval"
+                case egressOff = "egressOff"
+                case secret = "secret"
+                case failed = "failed"
+            }
+            /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry/failure`.
+            public var failure: Components.Schemas.OutboundAuditEntry.FailurePayload?
+            /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry/secrets`.
+            public var secrets: [Swift.String]
+            /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry/requestBytes`.
+            public var requestBytes: Swift.Int64
+            /// - Remark: Generated from `#/components/schemas/OutboundAuditEntry/responseBytes`.
+            public var responseBytes: Swift.Int64
+            /// Creates a new `OutboundAuditEntry`.
+            ///
+            /// - Parameters:
+            ///   - atMs:
+            ///   - method:
+            ///   - host:
+            ///   - path:
+            ///   - pathTruncated:
+            ///   - status:
+            ///   - failure:
+            ///   - secrets:
+            ///   - requestBytes:
+            ///   - responseBytes:
+            public init(
+                atMs: Swift.Int64,
+                method: Swift.String,
+                host: Swift.String,
+                path: Swift.String,
+                pathTruncated: Swift.Bool,
+                status: Swift.Int64? = nil,
+                failure: Components.Schemas.OutboundAuditEntry.FailurePayload? = nil,
+                secrets: [Swift.String],
+                requestBytes: Swift.Int64,
+                responseBytes: Swift.Int64
+            ) {
+                self.atMs = atMs
+                self.method = method
+                self.host = host
+                self.path = path
+                self.pathTruncated = pathTruncated
+                self.status = status
+                self.failure = failure
+                self.secrets = secrets
+                self.requestBytes = requestBytes
+                self.responseBytes = responseBytes
+            }
+            public enum CodingKeys: String, CodingKey {
+                case atMs
+                case method
+                case host
+                case path
+                case pathTruncated
+                case status
+                case failure
+                case secrets
+                case requestBytes
+                case responseBytes
             }
         }
         /// What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.
@@ -19809,6 +19918,161 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.AppOpenapi.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// An app's outbound requests
+    ///
+    /// The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/outbound-log`.
+    /// - Remark: Generated from `#/paths//apps/{app}/outbound-log/get(app_outbound_log)`.
+    public enum AppOutboundLog {
+        public static let id: Swift.String = "app_outbound_log"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppOutboundLog.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppOutboundLog.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppOutboundLog.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppOutboundLog.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.AppOutboundLog.Input.Path,
+                headers: Operations.AppOutboundLog.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/json/entries`.
+                        public var entries: [Components.Schemas.OutboundAuditEntry]
+                        /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/json/partial`.
+                        public var partial: Swift.Bool
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - entries:
+                        ///   - partial:
+                        public init(
+                            entries: [Components.Schemas.OutboundAuditEntry],
+                            partial: Swift.Bool
+                        ) {
+                            self.entries = entries
+                            self.partial = partial
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case entries
+                            case partial
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/outbound-log/GET/responses/200/content/application\/json`.
+                    case json(Operations.AppOutboundLog.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppOutboundLog.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppOutboundLog.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppOutboundLog.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/outbound-log/get(app_outbound_log)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppOutboundLog.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppOutboundLog.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):

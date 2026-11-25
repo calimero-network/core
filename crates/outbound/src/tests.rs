@@ -668,6 +668,7 @@ fn a_counted_run_counts_only_the_requests_it_sent() {
             Some(approving(&declared())),
             "ctx".to_owned(),
             Arc::clone(&sent),
+            Arc::default(),
         )
         .unwrap();
     let _answer = approved
@@ -684,6 +685,7 @@ fn a_counted_run_counts_only_the_requests_it_sent() {
             None,
             "ctx".to_owned(),
             Arc::clone(&sent),
+            Arc::default(),
         )
         .unwrap();
     let _refused = unapproved
@@ -1000,6 +1002,93 @@ fn an_instances_own_value_wins_for_its_bound_name_only() {
     assert!(!format!("{owned:?}").contains("owners-own"));
 }
 
+/// Every request a run hands the node lands in its instance's audit, sent or refused,
+/// with the host, the path without its query, the name of the credential binding the
+/// node attached (or refused) and the sizes: never the secret's value, a body, a query
+/// string or a header.
+#[test]
+fn the_audit_records_sent_and_refused_requests_without_values() {
+    let fake = Arc::new(Fake::default());
+    let audit = Arc::new(OutboundAudit::default());
+    let run_of = |app: AppIdentity, provider: Option<Arc<dyn SecretProvider>>| {
+        OutboundService::with_parts(&[HOST], provider, fake.clone())
+            .for_run_counted(
+                app,
+                vec![VERIFY.to_owned()],
+                Some(approving(&declared())),
+                "instance-1".to_owned(),
+                Arc::default(),
+                Arc::clone(&audit),
+            )
+            .expect("the app declares a URL")
+    };
+    let run = run_of(forms(), Some(Arc::new(OneSecret)));
+    // Sent: the node attaches the bound body field.
+    let body = "response=tok-private";
+    let request = post(&format!("{VERIFY}?remoteip=10.1.2.3"), body);
+    let _answer = run.send(&borsh::to_vec(&request).unwrap()).expect("sent");
+    // Refused: the app sets the bound field itself.
+    let own_field = post(VERIFY, "secret=guessed&response=tok-private");
+    let _e = run
+        .send(&borsh::to_vec(&own_field).unwrap())
+        .expect_err("the node sets the bound field");
+    // Refused: a required binding with no value on this node.
+    let mut required = forms();
+    for binding in required.secrets.values_mut() {
+        binding.required = true;
+    }
+    let _e = run_of(required, None)
+        .send(&borsh::to_vec(&post(VERIFY, body)).unwrap())
+        .expect_err("no value for a required binding");
+    // Refused: the retired placeholder, which names no binding.
+    let named = post(VERIFY, "secret={{secret:NOT_BOUND}}");
+    let _e = run
+        .send(&borsh::to_vec(&named).unwrap())
+        .expect_err("a placeholder");
+    let elsewhere = post("https://challenges.cloudflare.com/other", "");
+    let _e = run
+        .send(&borsh::to_vec(&elsewhere).unwrap())
+        .expect_err("not declared");
+    let _e = run.send(b"\xff").expect_err("malformed");
+
+    let entries = audit.entries("instance-1");
+    assert_eq!(entries.len(), 6, "{entries:?}");
+    let sent = &entries[0];
+    assert_eq!(sent.method, "POST");
+    assert_eq!(sent.host, HOST);
+    assert_eq!(sent.path, "/turnstile/v0/siteverify");
+    assert_eq!(sent.status, Some(200));
+    assert_eq!(sent.failure, None);
+    assert_eq!(sent.secrets, ["TURNSTILE_SECRET"]);
+    assert_eq!(sent.request_bytes, body.len() as u64);
+    assert!(sent.response_bytes > 0);
+    for refused in &entries[1..3] {
+        assert_eq!(refused.failure, Some(AuditFailure::Secret), "{refused:?}");
+        assert_eq!(refused.secrets, ["TURNSTILE_SECRET"], "{refused:?}");
+        assert_eq!(refused.status, None);
+    }
+    assert_eq!(entries[3].failure, Some(AuditFailure::Secret));
+    assert!(entries[3].secrets.is_empty(), "{:?}", entries[3]);
+    assert_eq!(entries[4].failure, Some(AuditFailure::Refused));
+    assert_eq!(entries[4].path, "/other");
+    assert!(entries[4].secrets.is_empty());
+    assert_eq!(entries[5].failure, Some(AuditFailure::Malformed));
+
+    let json = serde_json::to_string(&entries).unwrap();
+    for leak in [
+        SECRET,
+        "guessed",
+        "remoteip",
+        "10.1.2.3",
+        "tok-private",
+        "NOT_BOUND",
+        "Content-Type",
+    ] {
+        assert!(!json.contains(leak), "{leak} in {json}");
+    }
+    assert!(audit.entries("instance-2").is_empty());
+}
+
 #[test]
 fn egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again() {
     use std::sync::atomic::AtomicBool;
@@ -1015,9 +1104,12 @@ fn egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again()
         .expect("the app declares a URL");
     let off = Arc::new(AtomicBool::new(true));
     let switch = Arc::clone(&off);
+    let audit = Arc::new(OutboundAudit::default());
     let gated = egress_gated(
         run,
         Arc::new(move || switch.load(Ordering::SeqCst).then_some("its organization")),
+        Arc::clone(&audit),
+        "ctx".to_owned(),
     );
     let request = borsh::to_vec(&post(VERIFY, "response=tok")).unwrap();
 
@@ -1034,6 +1126,13 @@ fn egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again()
         fake.0.lock().unwrap().is_empty(),
         "nothing reached the transport"
     );
+    // The owner's audit names the refusal as egress off, with the endpoint.
+    let entries = audit.entries("ctx");
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].failure, Some(AuditFailure::EgressOff));
+    assert_eq!(entries[0].host, HOST);
+    assert_eq!(entries[0].path, "/turnstile/v0/siteverify");
+    assert_eq!(entries[0].status, None);
 
     // Asked again for each request: on again, the approved request goes out.
     off.store(false, Ordering::SeqCst);
@@ -1168,6 +1267,45 @@ fn a_secret_echoed_in_a_common_encoding_is_redacted_from_a_failure() {
         Vec::<&str>::new(),
         "encodings of the secret reached the app and the log: {reason}"
     );
+}
+
+#[test]
+fn the_audit_records_a_transport_failure_by_kind_never_its_words() {
+    // An owner reads the audit: like the guest and the log, it learns only that
+    // the request failed in transit, never what the transport said about it.
+    let audit = Arc::new(OutboundAudit::default());
+    let run = OutboundService::with_parts(
+        &[HOST],
+        Some(Arc::new(Awkward)),
+        Arc::new(EchoesEncoded { fail: true }),
+    )
+    .for_run_counted(
+        forms(),
+        vec![VERIFY.to_owned()],
+        Some(approving(&declared())),
+        "ctx".to_owned(),
+        Arc::default(),
+        Arc::clone(&audit),
+    )
+    .expect("the app declares a URL");
+    let request = post(VERIFY, "response=tok");
+    let _e = run
+        .send(&borsh::to_vec(&request).unwrap())
+        .expect_err("the transport failed");
+
+    let entries = audit.entries("ctx");
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].failure, Some(AuditFailure::Failed));
+    assert_eq!(entries[0].status, None);
+    assert_eq!(
+        entries[0].secrets,
+        ["TURNSTILE_SECRET"],
+        "attached, then failed"
+    );
+    assert_eq!(entries[0].response_bytes, 0);
+    let json = serde_json::to_string(&entries).unwrap();
+    assert_eq!(leaked(&json), Vec::<&str>::new(), "{json}");
+    assert!(!json.contains("upstream refused"), "{json}");
 }
 
 /// An honest upstream that answers what it was sent, transformed: a model asked to repeat
