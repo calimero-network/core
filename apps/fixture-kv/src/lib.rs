@@ -272,6 +272,16 @@ impl Kv {
         Ok(())
     }
 
+    /// Writes `n` keys (`quiet-0` ..) of `size` bytes each without events, so only the run's
+    /// write limits (10,000 writes, 1 MiB) stop it: the refused write's typed `RunLimit`.
+    pub fn fill_quiet(&mut self, n: u32, size: u32) -> app::Result<()> {
+        let value = "x".repeat(size as usize);
+        for i in 0..n {
+            let _event = self.upsert(&format!("quiet-{i}"), &value)?;
+        }
+        Ok(())
+    }
+
     /// Never returns: runs until the node's fuel or wall-clock budget stops it.
     pub fn spin(&mut self) -> app::Result<()> {
         let mut n: u64 = 0;
@@ -456,7 +466,8 @@ impl Kv {
             env::xcall_call::<u32, _>(&b, "slowBump", &args),
         );
         let counts = vec![x?, y?];
-        // Host calls, not a busy loop: the wall clock stops the run before its fuel does.
+        // Host calls, not a busy loop. Each costs fuel per byte (C7), so the test that
+        // stalls gives its cluster fuel enough for the wall clock to stop the run first.
         while stall == Some(true) {
             let _ = std::hint::black_box(env::random_bytes(1 << 20));
         }
@@ -465,7 +476,8 @@ impl Kv {
 
     /// Draws 1 MiB of randomness from the host `spins` times, then counts one more under
     /// `key` and answers the count: a slow target for `bumpBoth`. The host fills the bytes,
-    /// so the call takes wall time without spending its fuel. Also stores the run's time
+    /// which costs fuel per byte (C7), so the test sizing it in wall time lifts its fuel.
+    /// Also stores the run's time
     /// (the entry's, stamped as the run starts) under `<key>@<count>`, so a test tells calls
     /// that started together from calls that took turns.
     #[app::allow(app = "*")]
@@ -544,7 +556,9 @@ impl Kv {
     }
 
     /// An action (D12): reads `key` through a view, sends it to the echo host with the
-    /// action's key and a secret, and writes what came back through `applyEnrichment`.
+    /// action's key, and writes what came back through `applyEnrichment`. A secret the
+    /// release binds to the echo host (`ECHO_KEY`, in tests) is attached by the node, never
+    /// named here.
     #[app::action]
     pub fn enrich(ctx: &mut ActionCtx, key: String) -> app::Result<()> {
         let value: Option<String> = ctx.view("get", &KeyArg { key: &key })?;
@@ -552,8 +566,7 @@ impl Kv {
             "https://echo.outbound.test/v1/enrich?v={}",
             value.unwrap_or_default()
         ))
-        .header("Idempotency-Key", &ctx.key())
-        .header("Authorization", "Bearer {{secret:ECHO_KEY}}");
+        .header("Idempotency-Key", &ctx.key());
         let response = ctx.fetch(&request)?;
         let summary = format!("{} {}", response.status, response.text());
         ctx.call::<(), _>(

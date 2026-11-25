@@ -55,7 +55,7 @@ impl<S: Store> Counter<S> {
         let out =
             u64::try_from(next).map_err(|_| StorageError::BadCounter(self.name.label().into()))?;
         let key = self.storage_key()?;
-        self.store.put(&key, &value::int_to_vec(next)?);
+        self.store.put(&key, &value::int_to_vec(next)?)?;
         Ok(out)
     }
 
@@ -68,21 +68,21 @@ impl<S: Store> Counter<S> {
         }
         let key = self.storage_key()?;
         self.store
-            .put(&key, &value::int_to_vec(i128::from(now - 1))?);
+            .put(&key, &value::int_to_vec(i128::from(now - 1))?)?;
         Ok(now - 1)
     }
 
     /// Set the counter back to zero (deletes its key).
     pub fn reset(&mut self) -> Result<(), StorageError> {
         let key = self.storage_key()?;
-        self.store.delete(&key);
+        self.store.delete(&key)?;
         Ok(())
     }
 
     /// Add `delta` without reading the counter (`storage.add`).
     pub fn add(&mut self, delta: i64) -> Result<(), StorageError> {
         let key = self.storage_key()?;
-        self.store.add(&key, delta);
+        self.store.add(&key, delta)?;
         Ok(())
     }
 }

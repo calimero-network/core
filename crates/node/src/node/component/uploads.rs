@@ -57,6 +57,9 @@ const _: () = assert!(
         && COMPLETE_WAIT.as_millis() < PART_FORWARD_TIMEOUT.as_millis()
         && PART_FORWARD_TIMEOUT.as_secs() < 30
 );
+// A failed push is tried again within one `complete` wait: once the replicas take segments,
+// one retried `complete` lands.
+const _: () = assert!(PUSH_RETRY_MAX.as_millis() < COMPLETE_WAIT.as_millis());
 // Session segments are not pinned: the sweep's grace must outlive any session.
 const _: () = assert!(UPLOAD_TTL.as_secs() < crate::node::segments::SEGMENT_GRACE.as_secs());
 

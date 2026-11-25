@@ -93,7 +93,7 @@ def sync_detailed(
 ) -> Response[Union[Error, OutboundApproved]]:
     """Approve outbound prefixes for the organization's apps
 
-     The owner; `412` first.
+     The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -131,7 +131,7 @@ def sync(
 ) -> Optional[Union[Error, OutboundApproved]]:
     """Approve outbound prefixes for the organization's apps
 
-     The owner; `412` first.
+     The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -164,7 +164,7 @@ async def asyncio_detailed(
 ) -> Response[Union[Error, OutboundApproved]]:
     """Approve outbound prefixes for the organization's apps
 
-     The owner; `412` first.
+     The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -200,7 +200,7 @@ async def asyncio(
 ) -> Optional[Union[Error, OutboundApproved]]:
     """Approve outbound prefixes for the organization's apps
 
-     The owner; `412` first.
+     The owner; `412` first. `409 EGRESS_OFF` while the organization's egress is off.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

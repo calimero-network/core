@@ -231,3 +231,55 @@ async fn another_accounts_session_is_neither_listed_nor_ended() {
     assert!(e.starts_with("403"), "{e}");
     assert!(alice.auth().me().await.is_ok());
 }
+
+/// A flood of sign-in begins from one sealed session never stops another
+/// client's sign-in on the same node: the flooding session holds at most
+/// `MAX_CEREMONIES_PER_SESSION` open ceremonies, its next begin displacing
+/// its own oldest, so the pool other callers share stays open (review
+/// finding D1: 10,000 begins, about 33 a second, used to lock everyone out).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_flood_of_sign_in_begins_does_not_stop_another_clients_sign_in() {
+    use calimero_client::Passkey;
+    use futures_util::StreamExt;
+
+    let c = Cluster::start(1).await;
+    let (_alice, mut pk) = signed_up(&c, 0, "alice").await;
+
+    // One sealed session begins as many sign-ins as the node's whole pool holds.
+    let flood = c.client(0);
+    let flooding = &flood;
+    let begun: Vec<Value> =
+        futures_util::stream::iter(0..calimero_node::api::MAX_PENDING_CHALLENGES)
+            .map(|_| async move { flooding.auth().login_begin(None).await.map(wire) })
+            .buffer_unordered(16)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .expect("a session's begins are never refused: each displaces its own oldest");
+
+    // Another client still signs in.
+    let other = c.client(0);
+    let _s = other
+        .sign_in(&mut pk)
+        .await
+        .expect("a flood from one session leaves the others room");
+
+    // The flood's earliest ceremonies were displaced by its later ones.
+    let first = &begun[0];
+    let challenge =
+        calimero_identity::from_b64url(first["options"]["challenge"].as_str().unwrap()).unwrap();
+    let e = flood
+        .transport()
+        .json(
+            calimero_client::Request::new(reqwest::Method::POST, "auth/passkey/login/finish").json(
+                json!({
+                    "challengeId": first["challengeId"],
+                    "assertion": pk.get(&challenge),
+                }),
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("UNKNOWN_CHALLENGE"), "{e}");
+}

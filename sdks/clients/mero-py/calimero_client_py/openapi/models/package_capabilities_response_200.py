@@ -33,6 +33,7 @@ class PackageCapabilitiesResponse200:
         author (Union[None, str]):
         outbound (list[str]):
         secrets (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+        secret_bindings (list[str]):
         uses (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
         abi (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
         destinations (Union[None, list[str]]):
@@ -50,6 +51,7 @@ class PackageCapabilitiesResponse200:
     author: Union[None, str]
     outbound: list[str]
     secrets: Any
+    secret_bindings: list[str]
     uses: Any
     abi: Any
     destinations: Union[None, list[str]]
@@ -86,6 +88,8 @@ class PackageCapabilitiesResponse200:
 
         secrets = self.secrets
 
+        secret_bindings = self.secret_bindings
+
         uses = self.uses
 
         abi = self.abi
@@ -118,6 +122,7 @@ class PackageCapabilitiesResponse200:
                 "author": author,
                 "outbound": outbound,
                 "secrets": secrets,
+                "secretBindings": secret_bindings,
                 "uses": uses,
                 "abi": abi,
                 "destinations": destinations,
@@ -171,6 +176,8 @@ class PackageCapabilitiesResponse200:
 
         secrets = d.pop("secrets")
 
+        secret_bindings = cast(list[str], d.pop("secretBindings"))
+
         uses = d.pop("uses")
 
         abi = d.pop("abi")
@@ -221,6 +228,7 @@ class PackageCapabilitiesResponse200:
             author=author,
             outbound=outbound,
             secrets=secrets,
+            secret_bindings=secret_bindings,
             uses=uses,
             abi=abi,
             destinations=destinations,

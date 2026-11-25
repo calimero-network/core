@@ -10,10 +10,7 @@
 use super::*;
 
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     let s = proofs.s;
     match cmd {
         // Credentials: the account's own passkey consent. A new passkey is
@@ -98,9 +95,9 @@ pub(super) fn authorize(
                 if !s.invites.contains_key(&r.invite_key)
                     && !s.sign_up_invites.contains_key(&r.invite_key)
                 {
-                    return Err(
-                        "sign-up refused: this invite was used up, revoked or never existed",
-                    );
+                    return Err(Rejection::sign_up(
+                        "this invite was used up, revoked or never existed",
+                    ));
                 }
                 let redeemed = crate::proof::verify_invite_redeem(
                     &r.invite_key,
@@ -109,14 +106,14 @@ pub(super) fn authorize(
                     &r.signature,
                 )?;
                 if s.used_proofs.contains(&redeemed) {
-                    return Err("that redemption was used already");
+                    return Err("that redemption was used already".into());
                 }
             }
             if refresh
                 .as_ref()
                 .is_some_and(|g| g.record.account != account.account_id)
             {
-                return Err("the consent is for another change");
+                return Err("the consent is for another change".into());
             }
             let args = account_args(account, refresh.as_ref());
             proofs.states(
@@ -159,7 +156,7 @@ pub(super) fn authorize(
         } => {
             let old = s.refresh.get(old_hash).ok_or("unknown refresh token")?;
             if old.key.is_empty() {
-                return Err("this refresh token has no key; sign in again");
+                return Err("this refresh token has no key; sign in again".into());
             }
             if old.account != record.account
                 || old.session != record.session
@@ -167,7 +164,7 @@ pub(super) fn authorize(
                 || old.app != record.app
                 || old.origin != record.origin
             {
-                return Err("the exchange is for another session");
+                return Err("the exchange is for another session".into());
             }
             let message = crate::proof::refresh_use_message(
                 old_hash,
@@ -195,7 +192,7 @@ pub(super) fn authorize(
             let carried = calimero_identity::assertion_counter(credential, &assertion)
                 .map_err(|_| "the assertion does not verify")?;
             if carried != *count {
-                return Err("the assertion carries another counter");
+                return Err("the assertion carries another counter".into());
             }
             Ok(None)
         }
@@ -206,7 +203,7 @@ pub(super) fn authorize(
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let s = &mut m.state;
     match cmd {
         SystemCmd::CreateAccount {
@@ -220,10 +217,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // The first account waits for genesis: the rules it joins
             // under are fixed before anyone relies on them.
             if s.governance.is_none() && s.accounts.is_empty() {
-                return Err("the cluster is starting");
+                return Err("the cluster is starting".into());
             }
             if s.accounts.contains_key(&account.account_id) {
-                return Err("account exists");
+                return Err("account exists".into());
             }
             // Judged before anything changes: a refusal leaves no trace.
             let admission = s.admits(invite.as_ref())?;
@@ -231,21 +228,21 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // carries (one proposed below that version, applied after it).
             let personal_org = personal_org.filter(|_| !s.ordinary_orgs());
             if s.accounts.len() >= s.quotas.max_accounts as usize {
-                return Err("quota exceeded: accounts");
+                return Err(Rejection::quota("accounts"));
             }
             for c in &account.passkeys {
                 if s.credentials.contains_key(&c.id) {
-                    return Err("credential already registered");
+                    return Err("credential already registered".into());
                 }
             }
             if refresh.as_ref().is_some_and(|g| s.refresh_known(&g.hash)) {
-                return Err("refresh token already issued");
+                return Err("refresh token already issued".into());
             }
             if personal_org
                 .as_ref()
                 .is_some_and(|p| s.orgs.contains_key(&p.org_id))
             {
-                return Err("organization exists");
+                return Err("organization exists".into());
             }
             for c in &account.passkeys {
                 let _prev = s
@@ -320,11 +317,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if s.credentials.contains_key(&credential.id) {
-                return Err("credential already registered");
+                return Err("credential already registered".into());
             }
             let acc = s.accounts.get_mut(&account).ok_or("unknown account")?;
             if acc.passkeys.len() >= 10 {
-                return Err("an account holds at most 10 passkeys");
+                return Err("an account holds at most 10 passkeys".into());
             }
             if at > 0 {
                 let _prev = acc.passkey_times.insert(
@@ -347,10 +344,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let acc = s.accounts.get_mut(&account).ok_or("unknown account")?;
             if acc.passkeys.len() <= 1 {
-                return Err("cannot remove the last passkey");
+                return Err("cannot remove the last passkey".into());
             }
             if !acc.passkeys.iter().any(|c| c.id == credential_id) {
-                return Err("no such passkey");
+                return Err("no such passkey".into());
             }
             acc.passkeys.retain(|c| c.id != credential_id);
             let _gone = acc.passkey_times.remove(&credential_id);
@@ -399,7 +396,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // Counters only move forward, whatever order logins committed
             // in; a passkey that does not count (0) has nothing to record.
             if count <= cred.sign_count {
-                return Err("stale signature counter");
+                return Err("stale signature counter".into());
             }
             cred.sign_count = count;
             Ok(Value::Null)
@@ -413,7 +410,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if !s.accounts.contains_key(&record.account) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             if let Some(scope) = &record.upgrades {
                 s.upgrade_key_fits_as_logged(
@@ -429,7 +426,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .filter(|k| k.account == record.account)
                 .count();
             if keys >= s.quotas.max_api_keys_per_account as usize {
-                return Err("quota exceeded: API keys");
+                return Err(Rejection::quota("API keys"));
             }
             let id = record.key_id.clone();
             let _prev = s.api_keys.insert(hash, record);
@@ -440,13 +437,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             s.api_keys
                 .retain(|_, r| !(r.key_id == key_id && r.account == actor));
             if s.api_keys.len() == before {
-                return Err("no such key");
+                return Err("no such key".into());
             }
             Ok(Value::Null)
         }
         SystemCmd::CreateRefresh { hash, record, .. } => {
             if s.refresh_known(&hash) {
-                return Err("refresh token already issued");
+                return Err("refresh token already issued".into());
             }
             // A sign-in: its passkey's last sign-in is when the session
             // opened (unknown in an earlier release's entry).
@@ -478,14 +475,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if s.refresh_known(&new_hash) {
-                return Err("refresh token already issued");
+                return Err("refresh token already issued".into());
             }
             let old = s.refresh.remove(&old_hash).ok_or("unknown refresh token")?;
             if old.expires_at <= now || old.account != record.account {
-                return Err("refresh token expired");
+                return Err("refresh token expired".into());
             }
             if s.revoked_sessions.contains(&old.session) {
-                return Err("session revoked");
+                return Err("session revoked".into());
             }
             // The session opened when its first token did, whatever the
             // exchange states (an earlier release's states none).
@@ -517,11 +514,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             label,
         } => {
             if label.chars().count() > MAX_LABEL_CHARS {
-                return Err("a passkey label is at most 64 characters");
+                return Err("a passkey label is at most 64 characters".into());
             }
             let a = s.accounts.get_mut(&account).ok_or("unknown account")?;
             if !a.passkeys.iter().any(|c| c.id == credential) {
-                return Err("no such passkey");
+                return Err("no such passkey".into());
             }
             if label.is_empty() {
                 let _gone = a.passkey_labels.remove(&credential);
