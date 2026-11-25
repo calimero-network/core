@@ -2977,15 +2977,23 @@ impl SystemState {
     }
 
     /// Whether `d`'s offer of `v` still serves: someone who acts for its owner may use `v`.
+    /// A release every member of the owning organization may use is answered by whether one
+    /// of them acts for it; only a release recorded before `visibility` is judged member by
+    /// member.
     #[must_use]
     pub fn offer_serves(&self, d: &Deployment, v: &PackageVersion) -> bool {
         let candidates: Vec<&str> = match &d.owner {
             Deployer::Account(a) => vec![a],
-            Deployer::Org(o) => self
-                .orgs
-                .get(o)
-                .map(|o| o.members.keys().map(String::as_str).collect())
-                .unwrap_or_default(),
+            Deployer::Org(o) => {
+                let mut members = self.orgs.get(o).into_iter().flat_map(|o| o.members.keys());
+                let for_all = v.installed_by_any(OPERATOR)
+                    || v.visibility == Some(Visibility::Public)
+                    || (v.visibility == Some(Visibility::Private) && v.orgs.contains(o));
+                if for_all {
+                    return members.any(|m| self.acts_for(&d.owner, m));
+                }
+                members.map(String::as_str).collect()
+            }
         };
         candidates
             .into_iter()

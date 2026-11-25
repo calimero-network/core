@@ -14826,3 +14826,66 @@ fn an_uploader_keeps_a_raw_bundle_a_private_release_later_ships() {
     assert!(m.state.sees_bundle("b9", "alice"), "she uploaded it");
     assert!(!m.state.sees_bundle("b9", OPERATOR));
 }
+
+/// A deployment owned by an organization serves a private release only if one who acts
+/// for it is in an organization the release is private to, a public or catalog one always,
+/// and judges a release recorded before `visibility` member by member.
+#[test]
+fn an_org_deployment_serves_a_private_release_of_its_own_org_alone() {
+    use super::{Deployer, Deployment};
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    // alice owns A and bob owns B; alice is also a member of B, where she manages nothing.
+    let _prev = m
+        .state
+        .orgs
+        .get_mut(&p("bob"))
+        .unwrap()
+        .members
+        .insert("alice".into(), OrgRole::Member);
+    let deployment = |org: &str| Deployment {
+        id: org.into(),
+        name: org.into(),
+        owner: Deployer::Org(p(org)),
+        apps: BTreeMap::new(),
+        created_by: org.into(),
+        created_at: 0,
+    };
+    let release = |extra: Value| -> super::PackageVersion {
+        let mut v = json!({
+            "version": "1.0.0", "mpk": "ab", "mpkSize": 1, "source": "registry",
+            "services": { "": "b1" }, "installedBy": "alice", "installedAt": 1,
+        });
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(v).unwrap()
+    };
+    let (a, b) = (deployment("alice"), deployment("bob"));
+    let private = |orgs: &[&str]| {
+        release(json!({
+            "visibility": "private", "orgs": orgs.iter().map(|o| p(o)).collect::<Vec<_>>(),
+        }))
+    };
+    assert!(m.state.offer_serves(&a, &private(&["alice"])));
+    assert!(!m.state.offer_serves(&b, &private(&["alice"])), "not B's");
+    assert!(m.state.offer_serves(&b, &private(&["alice", "bob"])));
+    assert!(!m.state.offer_serves(&a, &private(&["zed"])), "no one of A");
+    assert!(
+        m.state.offer_serves(&a, &private(&["bob"])),
+        "alice is in B"
+    );
+    assert!(m
+        .state
+        .offer_serves(&b, &release(json!({ "visibility": "public" }))));
+    let catalog = release(json!({ "visibility": "private", "installedBy": OPERATOR }));
+    assert!(m.state.offer_serves(&b, &catalog));
+    // Before `visibility`: whoever shares an organization with an installer.
+    assert!(m.state.offer_serves(&b, &release(json!({}))));
+    assert!(!m
+        .state
+        .offer_serves(&b, &release(json!({ "installedBy": "carol" }))));
+}
