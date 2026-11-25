@@ -180,15 +180,17 @@ The JSON form of every ABI type, as the SDK's macros write and read it (D20):
 | any other name (a record, a serde struct or enum, `Page<Item>`) | the type's serde form | a component named after it (`Page_Item`): its shape from `types`, else any JSON |
 
 A `u64`, `i64` or `Vec<u8>` nested inside another type is a compile error
-(Ruling 27), so the string forms above hold wherever these types appear. A
+(Ruling 27), and every app type the ABI names must derive `Record` or `AbiType`,
+whose fields are checked the same way, so the string forms above hold wherever
+these types appear; `u128`, `i128`, `usize` and `isize` do not compile at all. A
 `#[derive(AbiType)]` field marked `#[abi(plain)]` is described as plain serde
 writes it, at any depth (`Vec<u64>` is `list<u64_number>`): its JSON does not
 change, the ABI only says what it is. `list<u8>` still reads as `bytes`;
 `byte_list` is the array spelling.
 An app type with a shape in `types` is a component with that shape: an object
 with its fields, a `oneOf` per enum, a generic type instantiated per use
-(`Listing_Slot`). One without (a type with neither derive, or any type in an ABI
-built before `types`) is an open schema (`x-calimero-abi-type` keeps the Rust
+(`Listing_Slot`). One without (any type in an ABI built before `types`; an app built
+now cannot compile one into its signatures) is an open schema (`x-calimero-abi-type` keeps the Rust
 name) and a typed client types it `unknown` / `Any` / `JSONValue` /
 `JsonElement`. The Swift and Kotlin clients make each described type a nested
 type: a record a `struct` / `data class`, an enum an `enum` / `sealed interface`

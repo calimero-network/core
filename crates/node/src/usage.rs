@@ -26,7 +26,7 @@
 //! `developer` are functions of `app` (one value each per app at a time), so
 //! they add no series: a node exports at most 12 series per app it hosts (4
 //! call kinds, CPU, memory, 3 compute, outbound, state, blobs), and an app that changes
-//! payer or developer starts over under the new values ([`Usage::entry`]).
+//! payer or developer starts over under the new values (`Usage::entry`).
 //! An app's series go once it leaves this node (deleted, or its replica moved).
 //! Counters start at zero when the process starts.
 

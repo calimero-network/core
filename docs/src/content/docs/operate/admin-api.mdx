@@ -417,3 +417,43 @@ token, never by a session or the ops token.
   before any of these routes: `GET`/`HEAD` of a package's frontend files and
   `/.well-known/calimero.json`. See [Networking](/operate/networking/#app-frontends).
 </Aside>
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Placement read
+
+Code: `GET /ops/placement`, `meroctl ops placement`, for mdma's rebalancer.
+
+Each app's id, group and replicas, each node's id, zone, attested release (`Node::release_of_node`,
+at most `PLACEMENT_RELEASE_WAIT`) and app count, after `sys_fresh` (`fresh` in the answer).
+Ids and counts only.
+
+### Version and approval reports
+
+Code: `report.rs`, read-only.
+
+`GET /ops/apps`, `GET /ops/orgs` (operator), `GET /orgs/{org}/apps` (any member; `404` else) and
+`GET /auth/apps` (the account's own apps), paged (`?after&limit`, `report::MAX_REPORT_PAGE`).
+Per app: scope, bundle digest, package release (`report::release_of_app`: the one the instance runs,
+so releases sharing a WASM are told apart), `upgradesHeldBy` (`operator`, else `owner` once the
+logged version brings `Feature::OwnerApprovedUpgrades`, else the manifest's), `lastUpgrade`
+(`AppRecord::last_upgrade`, with `report::actor_kind`: `owner`/`member`/`operator`, judged against
+the app's and org's owners as they stand), approved releases, each replica's release and whether
+approved; for accounts also name, the upgrader's account, newer visible releases
+(`availableVersions`, the newest `MAX_AVAILABLE_VERSIONS`, from the release it runs, those with its
+WASM included), the newest of all of them it can reach (`latestReachable`) and why the latest is not
+it (`latestBlocked`: `runtime`, `authority`), and `clusterReleases`.
+`lastUpgrade.from`/`to` name each end's release from `UpgradeRecord::from_release`/`to_release` when
+recorded.
+The operator sees a package name only for releases it installed (`Reader::Operator`,
+`sees_release`), never an account, a name or an upgrade's error text.
+Node releases come from `Node::release_of_node` (attested once, then kept; at most
+`PLACEMENT_RELEASE_WAIT` each), as for placement.
+Every report also names each app's `lastWriteAt` (Unix seconds, `null` before its first write;
+`api::with_last_writes`): `ComponentHead::last_write_ms`, read from this node's replica or, for an
+app it does not host, a replica's (`Node::last_write_ms`, `internal/last-write`, at most
+`LAST_WRITE_WAIT` each, one page at a time).

@@ -1959,6 +1959,8 @@ impl Rig {
     }
 }
 
+/// A run's output is not downloadable as a blob until it is published, and once published it is the
+/// exact plaintext the run wrote.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2139,6 +2141,8 @@ fn raw_id(id: &str) -> [u8; 32] {
     <[u8; 32]>::try_from(hex::decode(id).unwrap()).unwrap()
 }
 
+/// A logged entry pins the ids it stores until it commits: a blob collection that runs between a
+/// publish's push and its commit must not delete the bytes the entry is about to register.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_collection_between_a_publishes_push_and_its_commit_leaves_the_bytes() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2158,6 +2162,8 @@ async fn a_collection_between_a_publishes_push_and_its_commit_leaves_the_bytes()
         .await;
 }
 
+/// A peer asked to delete a blob's bytes while a publish of the same content is between its push and
+/// its commit keeps them: the leader's pin counts as in use.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_peer_asked_to_delete_between_a_publishes_push_and_its_commit_keeps_the_bytes() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2192,6 +2198,8 @@ async fn a_peer_asked_to_delete_between_a_publishes_push_and_its_commit_keeps_th
     }
 }
 
+/// A peer's delete that finished its checks before a publish stored the same bytes gives up when the
+/// put lands (`BlobGuards::put`), so the published blob still downloads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_peers_delete_that_checked_before_a_publish_stored_its_bytes_keeps_them() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2283,6 +2291,8 @@ async fn a_publish_apply_refuses_keeps_no_charge_and_no_bytes() {
     .await;
 }
 
+/// Only an output of this app's done runs publishes: an uploaded file, an unknown id or another app's
+/// output is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn only_an_output_of_this_apps_done_runs_publishes() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2323,6 +2333,8 @@ async fn only_an_output_of_this_apps_done_runs_publishes() {
     assert_eq!(e.code(), Some("NOT_SUPPORTED"), "{e}");
 }
 
+/// A published output stays downloadable through its grant after the app's leader stops and another
+/// node leads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_published_blob_survives_a_leader_change() {
     let mut rig = Rig::start(&[JOB_A]).await;

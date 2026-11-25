@@ -1,6 +1,10 @@
 //! `merod`: the Calimero node. v1's command line (`--home`, `--node`, `init`,
 //! `run`, `config`, `kms`, and `attest`) over the node (`calimero-node`):
 //! attested, one Raft log per app.
+//!
+//! Spec: [merod CLI reference](https://calimero-network.github.io/core/operate/merod/),
+//! [Configuration](https://calimero-network.github.io/core/operate/config/).
+//! Crate guide: [`crates/merod/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/merod/AGENTS.md).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

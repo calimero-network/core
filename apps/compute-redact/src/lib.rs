@@ -74,16 +74,18 @@ pub enum Error {
 }
 
 /// One page of `jobs`: the jobs the caller may see among the page's, and where to continue.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, AbiType)]
 pub struct JobsPage {
     pub jobs: Vec<JobView>,
     pub next: Option<String>,
 }
 
 /// What a part's run answers.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, AbiType)]
 pub struct Redacted {
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub rows: u64,
+    #[serde(with = "calimero_sdk::json::u64_str")]
     pub cells: u64,
 }
 
@@ -468,7 +470,7 @@ mod tests {
     }
 
     fn preview_of(rows: u64) -> Value {
-        json!({ "header": ["name"], "rows": [], "total_rows": rows, "cells": 0 })
+        json!({ "header": ["name"], "rows": [], "total_rows": rows.to_string(), "cells": "0" })
     }
 
     fn job(n: u8, rows_per_part: u32) -> Job {
@@ -509,7 +511,7 @@ mod tests {
         assert_eq!(runner.started[3].2[1]["start"], 20);
         assert_eq!(runner.started[3].2[1]["rows"], 5);
         for (i, n) in [(1, 11u8), (2, 12), (3, 13)] {
-            let part = Some(json!({ "rows": 10, "cells": 3 }));
+            let part = Some(json!({ "rows": "10", "cells": "3" }));
             let done = outcome(&format!("r{i}"), part, Some(n));
             app.finish(done, &mut runner.starter()).unwrap();
         }

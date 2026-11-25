@@ -1,5 +1,9 @@
-//! One route from a named `bytecode_id` to an installed application, from the
-//! single source this node is configured with. See AGENTS.md for the contract.
+//! Fetches a signed release (`.mpk`) by `package@version` from the operator's package
+//! registry (`source::http::HttpRegistry`, behind the node's `--registry-url`). The bytes
+//! come back unverified: the node checks the signature and digests before installing.
+//!
+//! Spec: [Installing a release](https://calimero-network.github.io/core/protocol/applications/#installing-a-release).
+//! Crate guide: [`crates/app-downloader/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-downloader/AGENTS.md).
 
 pub mod port;
 pub mod registry;
