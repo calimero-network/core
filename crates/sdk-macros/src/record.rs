@@ -122,8 +122,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         .map(|f| (f.ident.clone().expect("named field"), &f.ty))
         .collect();
 
-    for (_, ty) in &fields {
-        check_wire(ty)?;
+    for (ident, ty) in fields.iter() {
+        check_wire(ty).map_err(|e| syn::Error::new(e.span(), format!("field `{ident}`: {e}")))?;
     }
 
     // Every listed field must exist; lists use Rust names, the trait uses camelCase.

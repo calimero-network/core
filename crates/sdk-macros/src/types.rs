@@ -153,16 +153,49 @@ fn inner_types(ty: &Type) -> Vec<&Type> {
     }
 }
 
-/// Refuse a `u64`, `i64` or `Vec<u8>` the macros cannot convert because it sits inside
-/// another type (Ruling 27): JSON would get a number that loses precision, or an array of
-/// bytes, instead of the D20 form. Types defined elsewhere (records, structs with plain
-/// serde, aliases) cannot be inspected and are not checked.
+/// Integer types serde writes as a JSON number that may pass 2^53, where JavaScript stops
+/// reading numbers exactly, and that have no D20 string form: refused wherever the ABI
+/// describes a type.
+const WIDE: &[&str] = &["u128", "i128", "usize", "isize"];
+
+/// `ty` when it is one of [`WIDE`].
+fn wide(ty: &Type) -> Option<String> {
+    ident_of(ty).filter(|name| WIDE.contains(&name.as_str()))
+}
+
+/// The refusal of a [`WIDE`] integer `name` found in `outer`.
+fn wide_error(outer: &Type, name: &str) -> syn::Error {
+    let at = if ident_of(outer).as_deref() == Some(name) {
+        String::new()
+    } else {
+        format!(" inside {}", compact(outer))
+    };
+    syn::Error::new_spanned(
+        outer,
+        format!(
+            "{name}{at} would reach JSON as a number that JavaScript reads exactly only up to \
+             2^53 (D20); use u32, or u64 (a decimal string in JSON)"
+        ),
+    )
+}
+
+/// Refuse what JSON would carry wrongly: a `u64`, `i64` or `Vec<u8>` the macros cannot convert
+/// because it sits inside another type (Ruling 27), where JSON would get a number that loses
+/// precision, or an array of bytes, instead of the D20 form; and a `u128`, `i128`, `usize` or
+/// `isize` anywhere ([`WIDE`]). A type defined elsewhere (a record, a serde struct, an alias)
+/// is checked through its `AbiType`, which every type the ABI describes must implement.
 pub fn check_wire(ty: &Type) -> syn::Result<()> {
+    if let Some(name) = wide(ty) {
+        return Err(wide_error(ty, &name));
+    }
     if wire(ty).is_some() {
         return Ok(());
     }
     fn walk(outer: &Type, ty: &Type) -> syn::Result<()> {
         for inner in inner_types(ty) {
+            if let Some(name) = wide(inner) {
+                return Err(wide_error(outer, &name));
+            }
             if let Some(w) = wire_plain(inner) {
                 let what = if w.is_bytes() { "Vec<u8>" } else { "u64/i64" };
                 let what = match ident_of(inner) {
@@ -181,6 +214,24 @@ pub fn check_wire(ty: &Type) -> syn::Result<()> {
                         compact(outer)
                     ),
                 ));
+            }
+            walk(outer, inner)?;
+        }
+        Ok(())
+    }
+    walk(ty, ty)
+}
+
+/// Refuse a [`WIDE`] integer anywhere in `ty`, for a field whose other integers travel as
+/// plain serde writes them (`#[abi(plain)]`).
+pub fn check_wide(ty: &Type) -> syn::Result<()> {
+    if let Some(name) = wide(ty) {
+        return Err(wide_error(ty, &name));
+    }
+    fn walk(outer: &Type, ty: &Type) -> syn::Result<()> {
+        for inner in inner_types(ty) {
+            if let Some(name) = wide(inner) {
+                return Err(wide_error(outer, &name));
             }
             walk(outer, inner)?;
         }
@@ -377,8 +428,10 @@ fn concrete(ty: &Type, params: &[syn::Ident]) -> Type {
     ty
 }
 
-/// The `__private::Probe::<T>::DEF` of every app type inside `ty`, for the ABI's `types`:
-/// the type itself and its generic arguments, through references, tuples and arrays.
+/// `<T as AbiType>::DEF` of every app type inside `ty`, for the ABI's `types`: the type
+/// itself and its generic arguments, through references, tuples and arrays. Each one requires
+/// `AbiType`, spanned at the type, so a type without a shape (and with it a bare 64-bit
+/// integer the shape would refuse) fails to compile where it is used (D20).
 /// `skip` names what has no entry here: the generic parameters of the type being described,
 /// its own name (a recursive field) and `Self`.
 pub fn probes(
@@ -406,7 +459,9 @@ pub fn probes(
                 }
                 if !SPELLED.contains(&last.ident.to_string().as_str()) {
                     let concrete = concrete(ty, params);
-                    out.push(quote::quote! { #sdk::__private::Probe::<#concrete>::DEF });
+                    out.push(quote::quote_spanned! { syn::spanned::Spanned::span(ty) =>
+                        <#concrete as #sdk::abi::AbiType>::DEF
+                    });
                 }
                 for t in inner_types(ty) {
                     walk(t, skip, params, sdk, out);
@@ -424,16 +479,9 @@ pub fn probes(
     out
 }
 
-/// `probes` as one constant slice expression, with the fallback `NoShape` in scope.
+/// `probes` as one constant slice expression.
 pub fn probe_slice(probes: &[proc_macro2::TokenStream]) -> proc_macro2::TokenStream {
-    let sdk = crate::sdk::path();
-    quote::quote! {
-        {
-            #[allow(unused_imports)]
-            use #sdk::__private::NoShape as _;
-            &[#(#probes),*]
-        }
-    }
+    quote::quote! { &[#(#probes),*] }
 }
 
 fn compact(ty: &Type) -> String {
@@ -527,6 +575,55 @@ mod tests {
             let ty: Type = ty;
             check_wire(&ty).unwrap();
         }
+    }
+
+    #[test]
+    fn wide_integers_are_refused_at_any_depth() {
+        for ty in [
+            parse_quote!(u128),
+            parse_quote!(usize),
+            parse_quote!(Option<isize>),
+            parse_quote!(Vec<i128>),
+            parse_quote!(BTreeMap<String, usize>),
+            parse_quote!(Page<usize>),
+        ] {
+            let ty: Type = ty;
+            let err = check_wire(&ty).expect_err("refused");
+            assert!(err.to_string().contains("2^53 (D20)"), "{err}");
+            let err = check_wide(&ty).expect_err("refused under #[abi(plain)] too");
+            assert!(err.to_string().contains("use u32, or u64"), "{err}");
+        }
+        assert_eq!(
+            check_wire(&parse_quote!(usize)).unwrap_err().to_string(),
+            "usize would reach JSON as a number that JavaScript reads exactly only up to 2^53 \
+             (D20); use u32, or u64 (a decimal string in JSON)"
+        );
+        assert_eq!(
+            check_wire(&parse_quote!(Vec<u128>))
+                .unwrap_err()
+                .to_string(),
+            "u128 inside Vec<u128> would reach JSON as a number that JavaScript reads exactly \
+             only up to 2^53 (D20); use u32, or u64 (a decimal string in JSON)"
+        );
+        check_wide(&parse_quote!(Vec<u64>)).unwrap();
+        check_wide(&parse_quote!(u32)).unwrap();
+    }
+
+    #[test]
+    fn every_app_type_inside_a_type_must_implement_abi_type() {
+        let found = probes(&parse_quote!(Option<Vec<Page<Booking>>>), &[], &[]);
+        let text: Vec<String> = found
+            .iter()
+            .map(|p| p.to_string().replace(' ', ""))
+            .collect();
+        assert_eq!(
+            text,
+            [
+                "<Page<Booking>as::calimero_sdk::abi::AbiType>::DEF",
+                "<Bookingas::calimero_sdk::abi::AbiType>::DEF",
+            ]
+        );
+        assert!(probes(&parse_quote!(BTreeMap<String, Vec<u32>>), &[], &[]).is_empty());
     }
 
     #[test]

@@ -128,7 +128,7 @@ pub enum Event {
 }
 
 /// What the node told the app about the caller.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct Standing {
     pub org: String,
     pub role: String,
