@@ -556,7 +556,9 @@ impl Kv {
     }
 
     /// An action (D12): reads `key` through a view, sends it to the echo host with the
-    /// action's key and a secret, and writes what came back through `applyEnrichment`.
+    /// action's key, and writes what came back through `applyEnrichment`. A secret the
+    /// release binds to the echo host (`ECHO_KEY`, in tests) is attached by the node, never
+    /// named here.
     #[app::action]
     pub fn enrich(ctx: &mut ActionCtx, key: String) -> app::Result<()> {
         let value: Option<String> = ctx.view("get", &KeyArg { key: &key })?;
@@ -564,8 +566,7 @@ impl Kv {
             "https://echo.outbound.test/v1/enrich?v={}",
             value.unwrap_or_default()
         ))
-        .header("Idempotency-Key", &ctx.key())
-        .header("Authorization", "Bearer {{secret:ECHO_KEY}}");
+        .header("Idempotency-Key", &ctx.key());
         let response = ctx.fetch(&request)?;
         let summary = format!("{} {}", response.status, response.text());
         ctx.call::<(), _>(

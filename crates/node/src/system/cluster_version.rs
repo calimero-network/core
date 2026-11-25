@@ -1256,7 +1256,7 @@ mod tests {
             })),
             Feature::DeclaredSecrets => install(json!({
                 "outbound": ["https://api.example.com/"],
-                "secrets": { "API_KEY": { "hosts": ["api.example.com"] } },
+                "secrets": { "API_KEY": { "host": "api.example.com", "paths": ["/"], "header": "x-api-key" } },
             })),
             Feature::HostFuel => unreachable!("no entry names hostFuel"),
             Feature::NamedPool => entry(json!({
