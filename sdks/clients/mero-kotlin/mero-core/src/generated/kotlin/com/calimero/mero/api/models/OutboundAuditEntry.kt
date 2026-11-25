@@ -29,7 +29,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * One outbound request of an instance: `atMs` (Unix milliseconds, the node's clock), `method`, `host` and `path` (no query string, at most 128 bytes, `pathTruncated` when cut; both empty for a URL that did not parse), the host's `status` or, absent that, the `failure` that stopped it (`malformed`, `refused` by a gate, `notApproved`, `awaitingApproval`, `secret` not filled in, `failed` in transit), the names of the `secrets` it asked for, and the request's and response's body sizes. Never a secret value, a body, a query string or a header.
+ * One outbound request of an instance: `atMs` (Unix milliseconds, the node's clock), `method`, `host` and `path` (no query string, at most 128 bytes, `pathTruncated` when cut; both empty for a URL that did not parse), the host's `status` or, absent that, the `failure` that stopped it (`malformed`, `refused` by a gate, `notApproved`, `awaitingApproval`, `egressOff` (egress turned off), `secret` not filled in, `failed` in transit), the names of the `secrets` it asked for, and the request's and response's body sizes. Never a secret value, a body, a query string or a header.
  *
  * @param atMs 
  * @param method 
@@ -81,7 +81,7 @@ data class OutboundAuditEntry (
     /**
      * 
      *
-     * Values: MALFORMED,REFUSED,NOT_APPROVED,AWAITING_APPROVAL,SECRET,FAILED
+     * Values: MALFORMED,REFUSED,NOT_APPROVED,AWAITING_APPROVAL,EGRESS_OFF,SECRET,FAILED
      */
     @Serializable
     enum class Failure(val value: kotlin.String) {
@@ -89,6 +89,7 @@ data class OutboundAuditEntry (
         @SerialName(value = "refused") REFUSED("refused"),
         @SerialName(value = "notApproved") NOT_APPROVED("notApproved"),
         @SerialName(value = "awaitingApproval") AWAITING_APPROVAL("awaitingApproval"),
+        @SerialName(value = "egressOff") EGRESS_OFF("egressOff"),
         @SerialName(value = "secret") SECRET("secret"),
         @SerialName(value = "failed") FAILED("failed");
     }

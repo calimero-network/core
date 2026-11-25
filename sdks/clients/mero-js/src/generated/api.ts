@@ -4876,7 +4876,7 @@ export interface components {
                 message: string;
             } | null;
         };
-        /** @description One outbound request of an instance: `atMs` (Unix milliseconds, the node's clock), `method`, `host` and `path` (no query string, at most 128 bytes, `pathTruncated` when cut; both empty for a URL that did not parse), the host's `status` or, absent that, the `failure` that stopped it (`malformed`, `refused` by a gate, `notApproved`, `awaitingApproval`, `secret` not filled in, `failed` in transit), the names of the `secrets` it asked for, and the request's and response's body sizes. Never a secret value, a body, a query string or a header. */
+        /** @description One outbound request of an instance: `atMs` (Unix milliseconds, the node's clock), `method`, `host` and `path` (no query string, at most 128 bytes, `pathTruncated` when cut; both empty for a URL that did not parse), the host's `status` or, absent that, the `failure` that stopped it (`malformed`, `refused` by a gate, `notApproved`, `awaitingApproval`, `egressOff` (egress turned off), `secret` not filled in, `failed` in transit), the names of the `secrets` it asked for, and the request's and response's body sizes. Never a secret value, a body, a query string or a header. */
         OutboundAuditEntry: {
             /** Format: int64 */
             atMs: number;
@@ -4887,7 +4887,7 @@ export interface components {
             /** Format: int64 */
             status?: number;
             /** @enum {string} */
-            failure?: "malformed" | "refused" | "notApproved" | "awaitingApproval" | "secret" | "failed";
+            failure?: "malformed" | "refused" | "notApproved" | "awaitingApproval" | "egressOff" | "secret" | "failed";
             secrets: string[];
             /** Format: int64 */
             requestBytes: number;
