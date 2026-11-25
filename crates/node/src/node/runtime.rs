@@ -31,7 +31,7 @@ impl Node {
     }
 
     /// The runtime node `id` names over the sealed peer channel (an
-    /// attested node's own answer), kept [`RUNTIME_KEPT`].
+    /// attested node's own answer), kept `RUNTIME_KEPT`.
     pub async fn runtime_of_node(&self, id: NodeId) -> NodeRuntime {
         if id == self.config.node_id {
             return self.own_runtime();
