@@ -12,6 +12,7 @@ use crate::config::{normalize_attestation_measurement, KmsConfig};
 use base64::Engine;
 use calimero_tee_attestation::{
     generate_attestation, verify_attestation, KmsEvidence, VerificationResult,
+    DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER,
 };
 #[cfg(feature = "mock-attestation")]
 use calimero_tee_attestation::{is_mock_quote, verify_mock_attestation};
@@ -793,7 +794,10 @@ fn unix_now() -> u64 {
 /// Defense in depth: the policy parser already refuses empty allowlists, but
 /// they are checked again here so a policy built any other way cannot pass a
 /// KMS with a register unchecked. A missing TCB status is tolerated only for a
-/// (development-gated) mock quote (`allow_missing_tcb_status`).
+/// (development-gated) mock quote (`allow_missing_tcb_status`), which is also
+/// the only quote exempt from the floor on Intel's TCB evaluation data
+/// ([`DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER`], as `policy_valid` holds node
+/// quotes to): a mock quote fetched no collateral.
 fn enforce_attestation_policy(
     policy: &KmsAttestationPolicy,
     verification_result: &VerificationResult,
@@ -830,6 +834,20 @@ fn enforce_attestation_policy(
         warn!("Mock KMS quote did not provide TCB status; skipping TCB status allowlist check");
     } else {
         bail!("Quote verification did not provide a TCB status");
+    }
+
+    if !allow_missing_tcb_status {
+        let floor = DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER;
+        match verification_result.tcb_evaluation_data_number {
+            Some(number) if number >= floor => {}
+            Some(number) => bail!(
+                "KMS TCB status was computed against Intel TCB evaluation data {number}, \
+                 older than the minimum {floor}"
+            ),
+            None => bail!(
+                "KMS TCB status was computed against unknown TCB evaluation data (minimum {floor})"
+            ),
+        }
     }
 
     let body = &verification_result.quote.body;
@@ -2380,6 +2398,36 @@ mod tests {
 
         assert!(enforce_release_policy(&policy, &verification_result, true).is_ok());
         assert!(enforce_release_policy(&policy, &verification_result, false).is_err());
+    }
+
+    /// A real KMS quote is held to the same floor on Intel's TCB evaluation
+    /// data as a node's: an `UpToDate` computed against an older baseline,
+    /// or an unknown one, is refused.
+    #[test]
+    #[cfg(feature = "mock-attestation")]
+    fn a_kms_verdict_from_collateral_below_the_floor_is_refused() {
+        let mut verification_result = make_mock_verification_result();
+        verification_result.tcb_status = Some("UpToDate".to_owned());
+        let policy = make_release_policy(
+            &verification_result,
+            vec!["uptodate".to_owned()],
+            vec![normalize_attestation_measurement(
+                &verification_result.quote.body.mrtd,
+            )],
+        );
+
+        for number in [None, Some(17)] {
+            verification_result.tcb_evaluation_data_number = number;
+            let err = enforce_release_policy(&policy, &verification_result, false)
+                .expect_err("a verdict from too old a baseline must fail")
+                .to_string();
+            assert!(err.contains("TCB evaluation data"), "{number:?}: {err}");
+        }
+
+        verification_result.tcb_evaluation_data_number =
+            Some(DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER);
+        enforce_release_policy(&policy, &verification_result, false)
+            .expect("a verdict from a current baseline passes");
     }
 
     #[test]

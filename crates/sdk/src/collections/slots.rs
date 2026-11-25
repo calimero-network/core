@@ -100,8 +100,8 @@ impl<V: Serialize + DeserializeOwned, S: Store> MapValue<S> for V {
             return Ok(None);
         };
         let old = value::from_slice(&bytes)?;
-        store.delete(&stored);
-        store.add(&collection_key(path, "n", &[])?, -1);
+        store.delete(&stored)?;
+        store.add(&collection_key(path, "n", &[])?, -1)?;
         Ok(Some(old))
     }
 
@@ -112,8 +112,8 @@ impl<V: Serialize + DeserializeOwned, S: Store> MapValue<S> for V {
     fn clear(store: &mut S, path: &KeyPath) -> Result<u64, StorageError> {
         let base = collection_key(path, "m", &[])?;
         let count = collection_key(path, "n", &[])?;
-        let removed = clear_prefix(store, &base);
-        store.delete(&count);
+        let removed = clear_prefix(store, &base)?;
+        store.delete(&count)?;
         Ok(removed)
     }
 
@@ -223,16 +223,16 @@ impl<V: Serialize + DeserializeOwned, S: Store> VecElement<S> for V {
             .get(&key)
             .ok_or(StorageError::Dangling)
             .and_then(|b| value::from_slice(&b))?;
-        store.delete(&key);
-        store.add(&len_key, -1);
+        store.delete(&key)?;
+        store.add(&len_key, -1)?;
         Ok(Some(old))
     }
 
     fn clear(store: &mut S, path: &KeyPath) -> Result<u64, StorageError> {
         let base = collection_key(path, "e", &[])?;
         let len_key = collection_key(path, "n", &[])?;
-        let removed = clear_prefix(store, &base);
-        store.delete(&len_key);
+        let removed = clear_prefix(store, &base)?;
+        store.delete(&len_key)?;
         Ok(removed)
     }
 
@@ -273,7 +273,7 @@ impl<V: Serialize + DeserializeOwned, S: Store> UserValue<S> for V {
             return Ok(None);
         };
         let old = value::from_slice(&bytes)?;
-        store.delete(&key);
+        store.delete(&key)?;
         Ok(Some(old))
     }
 
@@ -372,7 +372,7 @@ fn collection_remove<S: Store>(
     key: &[KeyPart],
 ) -> Result<u64, StorageError> {
     let prefix = encode(child(path, key)?.parts())?;
-    Ok(clear_prefix(store, &prefix))
+    clear_prefix(store, &prefix)
 }
 
 fn collection_is_empty<S: Store + Clone>(store: &S, path: &KeyPath) -> Result<bool, StorageError> {
@@ -385,7 +385,7 @@ fn collection_is_empty<S: Store + Clone>(store: &S, path: &KeyPath) -> Result<bo
 
 fn collection_clear<S: Store>(store: &mut S, path: &KeyPath) -> Result<u64, StorageError> {
     let prefix = children(path)?;
-    Ok(clear_prefix(store, &prefix))
+    clear_prefix(store, &prefix)
 }
 
 /// Every key whose collection holds anything, with that collection, in key order. It skips
@@ -519,13 +519,13 @@ macro_rules! collection_value {
                     return Ok(None);
                 };
                 let removed = collection_remove(store, path, &[position(last)])?;
-                store.add(&len_key, -1);
+                store.add(&len_key, -1)?;
                 Ok(Some(removed))
             }
 
             fn clear(store: &mut S, path: &KeyPath) -> Result<u64, StorageError> {
                 let removed = collection_clear(store, path)?;
-                store.delete(&collection_key(path, "n", &[])?);
+                store.delete(&collection_key(path, "n", &[])?)?;
                 Ok(removed)
             }
 

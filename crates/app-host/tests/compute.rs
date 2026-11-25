@@ -178,7 +178,10 @@ fn a_result_method_may_store_an_output_of_the_run_and_nothing_else() {
     denied(result.storage_put(b"out", &blob_ref(&output)));
     files.apply(&out.new_files);
     let mut result = host(inv(InvocationKind::Call, &[]), &files);
-    result.storage_put(b"out", &blob_ref(&output)).unwrap();
+    result
+        .storage_put(b"out", &blob_ref(&output))
+        .unwrap()
+        .unwrap();
     denied(result.storage_put(b"none", &blob_ref(&"0".repeat(64))));
 }
 
@@ -368,7 +371,7 @@ fn bad_compute_caps_are_refused() {
 fn a_compute_world_abi_lists_compute_methods_without_their_result_methods() {
     let only_digest = json!({
         "abiVersion": 1,
-        "world": "calimero:app/compute@0.5.6",
+        "world": "calimero:app/compute@0.5.7",
         "methods": { "digest": { "kind": "compute", "compute": { "fuel": 5, "result": "onDone" } } },
     });
     let abi = Abi::from_json(&only_digest).unwrap();
@@ -387,7 +390,7 @@ fn a_compute_world_abi_lists_compute_methods_without_their_result_methods() {
         MethodKind::Compute(_)
     ));
     let mut app_world = only_digest;
-    app_world["world"] = json!("calimero:app@0.5.6");
+    app_world["world"] = json!("calimero:app@0.5.7");
     assert!(matches!(
         Abi::from_json(&app_world),
         Err(PrepareError::BadAbi(_))

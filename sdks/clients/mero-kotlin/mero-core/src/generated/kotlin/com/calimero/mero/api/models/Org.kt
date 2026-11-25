@@ -37,7 +37,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).
+ * An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is a personal organization a sign-up made before cluster version 1.0.0-rc.33 (from that version it is an organization like any other). `allowGuests`: whether its instances take guests (its owner or an admin sets it, `POST /orgs/{org}/settings`; absent from a node before 1.0.0-rc.33). `egressOff`: its egress switch is off, so none of its apps sends anything out of the cluster (`POST /orgs/{org}/egress`). `upgradePolicy`, `appUpgradePolicies` and `pendingUpgrades`: its update policy, its apps' own and the first approvals of red updates waiting for a second (absent when none).
  *
  * @param orgId 
  * @param name 
@@ -55,6 +55,7 @@ import kotlinx.serialization.Contextual
  * @param personal 
  * @param allowGuests 
  * @param allowPublicLinks 
+ * @param egressOff 
  * @param upgradePolicy 
  * @param appUpgradePolicies 
  * @param pendingUpgrades 
@@ -115,6 +116,9 @@ data class Org (
 
     @SerialName(value = "allowPublicLinks")
     val allowPublicLinks: kotlin.Boolean? = null,
+
+    @SerialName(value = "egressOff")
+    val egressOff: kotlin.Boolean? = null,
 
     @SerialName(value = "upgradePolicy")
     val upgradePolicy: UpgradePolicy? = null,

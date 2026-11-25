@@ -136,7 +136,7 @@ fn status(e: &calimero_client::Error) -> u16 {
 }
 
 /// The page's origin, from the url a request answered.
-fn origin(url: &str) -> String {
+pub(crate) fn origin(url: &str) -> String {
     url::Url::parse(url).unwrap().origin().ascii_serialization()
 }
 
@@ -155,13 +155,13 @@ fn challenge_args(c: &Cluster, id: &str) -> Value {
 }
 
 /// A browser on the page: plain HTTP to the node's own origin, no session.
-struct Page {
+pub(crate) struct Page {
     http: reqwest::Client,
     url: String,
 }
 
 impl Page {
-    fn new(url: &str) -> Self {
+    pub(crate) fn new(url: &str) -> Self {
         Self {
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -171,7 +171,7 @@ impl Page {
         }
     }
 
-    async fn model(&self) -> Value {
+    pub(crate) async fn model(&self) -> Value {
         let r = self
             .http
             .get(format!("{}/model", self.url))
@@ -182,7 +182,7 @@ impl Page {
         r.json().await.unwrap()
     }
 
-    async fn post(&self, what: &str, body: Value) -> (u16, Value) {
+    pub(crate) async fn post(&self, what: &str, body: Value) -> (u16, Value) {
         let r = self
             .http
             .post(format!("{}/{what}", self.url))
@@ -197,7 +197,11 @@ impl Page {
     /// Approve with `key` (the person's passkey on the page's origin): the
     /// 412, then the assertion over its challenge. Answers the second reply
     /// and the arguments the challenge committed to.
-    async fn approve(&self, c: &Cluster, key: &mut SoftAuthenticator) -> ((u16, Value), Value) {
+    pub(crate) async fn approve(
+        &self,
+        c: &Cluster,
+        key: &mut SoftAuthenticator,
+    ) -> ((u16, Value), Value) {
         self.approve_with(c, key, json!({})).await
     }
 
@@ -518,7 +522,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
                 "removed": [],
                 "kept": ["https://api.example/v1/"],
             },
-            "secrets": { "added": [], "removed": [], "kept": [], "hostsChanged": [] },
+            "secrets": { "added": [], "removed": [], "kept": [], "bindingChanged": [], "words": [] },
             "uses": { "added": [], "removed": [], "kept": [], "changed": [], "createdAdded": [] },
             "frontend": {
                 "from": "https://notes.example",
@@ -2729,6 +2733,7 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
             "author": "Example",
             "outbound": ["https://api.example/v1/", "https://metrics.example/"],
             "secrets": {},
+            "secretBindings": [],
             "uses": {},
             "abi": abi,
             "destinations": ["https://api.example/v1/", "https://metrics.example/"],

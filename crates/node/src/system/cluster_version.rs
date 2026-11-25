@@ -215,10 +215,23 @@ pub enum Feature {
     /// version an `UpgradeApp` moving such an instance into another package is judged alike
     /// (`SystemState::upgrades_outside_offers`).
     OffersOnly,
+    /// `UndoUpgrade { release_installed }`: an undo goes back only to an installed release;
+    /// an earlier release would apply one to a release uninstalled under a shared bundle.
+    UndoToInstalledRelease,
+    /// Host work charged to fuel (C7, `calimero_app_host`'s fuel table): a run's host calls
+    /// pay a base and a per-byte or per-result cost out of its fuel. No entry changes shape:
+    /// only the leader runs and followers apply the diff, so the log replays alike either way.
+    /// It is gated so a call answers the same on every node through a rolling upgrade: below
+    /// it a node runs calls, views and actions without the charges, as an earlier release does.
+    HostFuel,
+    /// `UpgradeApp { auto, members_stay }`: an update on its own moves the instance alone,
+    /// so it is refused where its release would move the unit's members
+    /// (`SystemState::moves_members`). An earlier release would apply it and leave them behind.
+    AutoUpdateMembersStay,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 48] = [
+pub const FEATURES: [Feature; 51] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -267,6 +280,9 @@ pub const FEATURES: [Feature; 48] = [
     Feature::UnclassifiedUpdates,
     Feature::PrivateReleases,
     Feature::OffersOnly,
+    Feature::UndoToInstalledRelease,
+    Feature::HostFuel,
+    Feature::AutoUpdateMembersStay,
 ];
 
 impl Feature {
@@ -322,7 +338,17 @@ impl Feature {
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
             Self::PrivateReleases => "privateReleases",
             Self::OffersOnly => "offersOnly",
+            Self::UndoToInstalledRelease => "undoToInstalledRelease",
+            Self::HostFuel => "hostFuel",
+            Self::AutoUpdateMembersStay => "autoUpdateMembersStay",
         }
+    }
+
+    /// Whether an entry carries it ([`SystemCmd::features`] names it). `HostFuel` is a rule
+    /// the node reads from the logged version when it runs an app, and no entry names it.
+    #[must_use]
+    pub const fn names_an_entry(self) -> bool {
+        !matches!(self, Self::HostFuel)
     }
 
     /// The first core release that applies it. The features of a release
@@ -373,7 +399,10 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
-            Self::PrivateReleases | Self::OffersOnly => "1.0.0-rc.36",
+            Self::OffersOnly | Self::UndoToInstalledRelease | Self::AutoUpdateMembersStay => {
+                "1.0.0-rc.36"
+            }
+            Self::PrivateReleases | Self::HostFuel => "1.0.0-rc.37",
         }
     }
 }
@@ -557,12 +586,12 @@ pub(super) fn apply(
     s: &mut SystemState,
     version: String,
     nodes: &BTreeMap<u64, String>,
-) -> Result<Value, &'static str> {
+) -> Result<Value, crate::system::Rejection> {
     if version.len() > MAX_RELEASE_VERSION_BYTES
         || semver::Version::parse(&version).is_err()
         || nodes.values().any(|v| v.len() > MAX_RELEASE_VERSION_BYTES)
     {
-        return Err(BAD_VERSION);
+        return Err(BAD_VERSION.into());
     }
     let registered: Vec<u64> = s
         .replica_nodes()
@@ -570,19 +599,19 @@ pub(super) fn apply(
         .filter(|id| !s.removed_nodes.contains(id))
         .collect();
     if registered.is_empty() || !nodes.keys().copied().eq(registered.iter().copied()) {
-        return Err(NOT_EVERY_NODE);
+        return Err(NOT_EVERY_NODE.into());
     }
     if nodes
         .values()
         .any(|v| compare_versions(v, &version) == Ordering::Less)
     {
-        return Err(ABOVE_A_NODE);
+        return Err(ABOVE_A_NODE.into());
     }
     if s.cluster_version
         .as_deref()
         .is_some_and(|c| compare_versions(&version, c) != Ordering::Greater)
     {
-        return Err(NOT_FORWARD);
+        return Err(NOT_FORWARD.into());
     }
     s.cluster_version = Some(version.clone());
     Ok(json!({ "clusterVersion": version }))
@@ -626,12 +655,14 @@ impl SystemCmd {
                 owner_approves,
                 class,
                 auto,
+                members_stay,
                 restore_point,
                 ..
             } if *in_deployment
                 || *owner_approves
                 || class.is_some()
                 || *auto
+                || *members_stay
                 || restore_point.is_some() =>
             {
                 let mut f = Vec::new();
@@ -650,6 +681,9 @@ impl SystemCmd {
                 if *auto {
                     f.push(Feature::AutoUpdates);
                 }
+                if *members_stay {
+                    f.push(Feature::AutoUpdateMembersStay);
+                }
                 if restore_point.is_some() {
                     f.push(Feature::RestorePoints);
                 }
@@ -665,7 +699,15 @@ impl SystemCmd {
             Self::SetUpgradePolicy { .. } | Self::ApproveUpgrade { .. } => {
                 vec![Feature::UpgradePolicies]
             }
-            Self::UndoUpgrade { .. } => vec![Feature::RestorePoints],
+            Self::UndoUpgrade {
+                release_installed, ..
+            } => {
+                let mut f = vec![Feature::RestorePoints];
+                if *release_installed {
+                    f.push(Feature::UndoToInstalledRelease);
+                }
+                f
+            }
             Self::CreateApiKey {
                 owner_approves: true,
                 ..
@@ -865,6 +907,7 @@ impl SystemCmd {
             | Self::RemovePackageOrigin { .. }
             | Self::DeleteDeployment { .. }
             | Self::SetOutboundApproval { .. }
+            | Self::SetEgress { .. }
             | Self::DeleteOrg { .. }
             | Self::SetOrgMetadata { .. }
             | Self::SetMemberMetadata { .. }
@@ -959,6 +1002,7 @@ mod tests {
     const RC34: &str = "1.0.0-rc.34";
     const RC35: &str = "1.0.0-rc.35";
     const RC36: &str = "1.0.0-rc.36";
+    const RC37: &str = "1.0.0-rc.37";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1207,6 +1251,12 @@ mod tests {
                 "org": "org", "confirmMethods": [], "replicas": [1],
                 "createdAt": 1, "initArgs": null, "metadata": null,
             }, "offers_only": true })),
+            Feature::UndoToInstalledRelease => entry(json!({ "op": "undoUpgrade",
+                "app_id": "app", "apps": { "app": [1] }, "actor": "alice", "at": 1,
+                "release_installed": true })),
+            Feature::AutoUpdateMembersStay => entry(json!({ "op": "upgradeApp",
+                "app_id": "app", "bundle": "b", "actor": "policy:auto-update", "auto": true,
+                "members_stay": true })),
             Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
@@ -1219,8 +1269,9 @@ mod tests {
             })),
             Feature::DeclaredSecrets => install(json!({
                 "outbound": ["https://api.example.com/"],
-                "secrets": { "API_KEY": { "hosts": ["api.example.com"] } },
+                "secrets": { "API_KEY": { "host": "api.example.com", "paths": ["/"], "header": "x-api-key" } },
             })),
+            Feature::HostFuel => unreachable!("no entry names hostFuel"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",
@@ -1257,13 +1308,11 @@ mod tests {
         /// Apply `cmd` as a node on this release does: an entry it cannot
         /// decode (it uses a feature newer than the release) is skipped as
         /// `malformed command`, as `SystemMachine::apply` does.
-        fn apply(&mut self, cmd: &SystemCmd) -> Result<Value, String> {
+        fn apply(&mut self, cmd: &SystemCmd) -> Result<Value, crate::system::Rejection> {
             if check(Some(self.release), &cmd.features()).is_err() {
                 return Err("malformed command".into());
             }
-            self.machine
-                .run_authorized(cmd.clone())
-                .map_err(str::to_owned)
+            self.machine.run_authorized(cmd.clone())
         }
 
         fn state(&self) -> Value {
@@ -1331,7 +1380,8 @@ mod tests {
     fn an_entry_an_older_node_cannot_decode_splits_the_state() {
         let mut nodes = cluster(&[RC15, RC15, RC14]);
         let cmd = uses(Feature::OrgQuotas);
-        let answers: Vec<Result<Value, String>> = nodes.iter_mut().map(|n| n.apply(&cmd)).collect();
+        let answers: Vec<Result<Value, crate::system::Rejection>> =
+            nodes.iter_mut().map(|n| n.apply(&cmd)).collect();
         assert!(answers[0].is_ok() && answers[1].is_ok(), "{answers:?}");
         assert_eq!(answers[2], Err("malformed command".into()));
         assert!(
@@ -1468,7 +1518,7 @@ mod tests {
     #[test]
     fn a_feature_is_never_proposed_while_an_older_node_holds_the_log() {
         let mut nodes = cluster(&[RC16, RC16, RC14]);
-        for feature in FEATURES {
+        for feature in FEATURES.into_iter().filter(|f| f.names_an_entry()) {
             let cmd = uses(feature);
             let needs = cmd.features();
             assert!(needs.contains(&feature), "{feature:?}: {needs:?}");
@@ -1500,12 +1550,15 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES.iter().partition(|f| {
-            ![
-                RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
-            ]
-            .contains(&f.since())
-        });
+        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
+            .iter()
+            .filter(|f| f.names_an_entry())
+            .partition(|f| {
+                ![
+                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36, RC37,
+                ]
+                .contains(&f.since())
+            });
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -1554,13 +1607,15 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.22's wait for every node on rc.22 (an entry naming several is refused for the
-        // first it needs: an unclassified approval for `upgradePolicies`).
+        // first it needs: an unclassified approval for `upgradePolicies`, an undo with the
+        // installed-release rule for `restorePoints`).
         for &feature in &last {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
-            let first = if feature == Feature::UnclassifiedUpdates {
-                Feature::UpgradePolicies
-            } else {
-                feature
+            let first = match feature {
+                Feature::UnclassifiedUpdates => Feature::UpgradePolicies,
+                Feature::UndoToInstalledRelease => Feature::RestorePoints,
+                Feature::AutoUpdateMembersStay => Feature::AutoUpdates,
+                _ => feature,
             };
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1590,8 +1645,10 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC33);
         let (rc34, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC34);
-        let (rc35, rc36): (Vec<Feature>, Vec<Feature>) =
+        let (rc35, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC35);
+        let (rc36, rc37): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC36);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -1781,9 +1838,17 @@ mod tests {
         for &feature in &rc35 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.36's for every node on rc.36: who may use a release (an rc.35 node drops both
-        // fields), and an instance outside every deployment is a deployer's (it ignores the flag).
-        assert_eq!(rc36, [Feature::PrivateReleases, Feature::OffersOnly]);
+        // rc.36's for every node on rc.36: an instance outside every deployment is a
+        // deployer's, an undo only to a release still installed, an update on its own that
+        // keeps the unit's members (an rc.35 node ignores the flags).
+        assert_eq!(
+            rc36,
+            [
+                Feature::OffersOnly,
+                Feature::UndoToInstalledRelease,
+                Feature::AutoUpdateMembersStay
+            ]
+        );
         for &feature in &rc36 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
@@ -1800,6 +1865,27 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc36 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.37's for every node on rc.37: who may use a release (an rc.36 node drops both
+        // fields).
+        assert_eq!(rc37, [Feature::PrivateReleases]);
+        for &feature in &rc37 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC36))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC37;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC37.into(),
+            nodes: (1..=3).map(|id| (id, RC37.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc37 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));
@@ -1847,20 +1933,29 @@ mod tests {
         };
         // Every registered node, and only those.
         let two = [(1, RC16), (2, RC16)];
-        assert_eq!(m.run_authorized(set(RC16, &two)), Err(NOT_EVERY_NODE));
+        assert_eq!(
+            m.run_authorized(set(RC16, &two)),
+            Err(NOT_EVERY_NODE.into())
+        );
         let four = [(1, RC16), (2, RC16), (3, RC16), (4, RC16)];
-        assert_eq!(m.run_authorized(set(RC16, &four)), Err(NOT_EVERY_NODE));
+        assert_eq!(
+            m.run_authorized(set(RC16, &four)),
+            Err(NOT_EVERY_NODE.into())
+        );
         // Never above what a node supports.
         let behind = [(1, RC16), (2, RC16), (3, RC15)];
-        assert_eq!(m.run_authorized(set(RC16, &behind)), Err(ABOVE_A_NODE));
+        assert_eq!(
+            m.run_authorized(set(RC16, &behind)),
+            Err(ABOVE_A_NODE.into())
+        );
         assert!(m.run_authorized(set("not a version", &behind)).is_err());
         let _ok = m.run_authorized(set(RC15, &behind)).unwrap();
         assert_eq!(m.state.cluster_version.as_deref(), Some(RC15));
         let all = [(1, RC16), (2, RC16), (3, RC16)];
         let _ok = m.run_authorized(set(RC16, &all)).unwrap();
         // Never back, never the same again.
-        assert_eq!(m.run_authorized(set(RC16, &all)), Err(NOT_FORWARD));
-        assert_eq!(m.run_authorized(set(RC15, &all)), Err(NOT_FORWARD));
+        assert_eq!(m.run_authorized(set(RC16, &all)), Err(NOT_FORWARD.into()));
+        assert_eq!(m.run_authorized(set(RC15, &all)), Err(NOT_FORWARD.into()));
         assert_eq!(m.state.cluster_version.as_deref(), Some(RC16));
         // A removed node is not named.
         let _ok = m
@@ -2030,6 +2125,20 @@ mod tests {
             let refused = check(Some(below), &invite_features(all_apps, capabilities)).unwrap_err();
             assert_eq!(refused.feature, feature);
         }
+    }
+
+    /// C7: host work is charged to fuel only from the logged cluster version that brings
+    /// `hostFuel` (`Node::charges_host_fuel`); a cluster on rc.36, or with none logged, runs
+    /// apps as rc.36 does. No entry names it.
+    #[test]
+    fn host_fuel_follows_the_logged_cluster_version() {
+        let mut state = crate::system::SystemState::default();
+        assert!(!state.cluster_brings(Feature::HostFuel));
+        state.cluster_version = Some(RC36.to_owned());
+        assert!(!state.cluster_brings(Feature::HostFuel));
+        state.cluster_version = Some(RC37.to_owned());
+        assert!(state.cluster_brings(Feature::HostFuel));
+        assert!(!Feature::HostFuel.names_an_entry());
     }
 
     #[test]

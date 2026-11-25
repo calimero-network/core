@@ -1,8 +1,10 @@
 // Compiled by tsconfig.consumer.json as an external NodeNext consumer of the built
 // dist/. The @ts-expect-error lines fail if unresolvable specifiers widen the API to any.
 import {
+  CLOUD_ENVIRONMENTS,
   Calimero,
   CalimeroClient,
+  cloudEnvironment,
   ConfirmRequired,
   browserPasskey,
   releaseConsent,
@@ -22,6 +24,12 @@ new CalimeroClient({ policy });
 
 // @ts-expect-error minReleaseVersion is a string
 export const badPolicy: NodePolicy = { release: { minReleaseVersion: 2 } };
+
+// The staging policy as the docs write it: a Cloud's trust goes in `release`.
+const cloud = CLOUD_ENVIRONMENTS[cloudEnvironment() ?? 'production'];
+export const cloudPolicy: NodePolicy = { release: { minReleaseVersion: '2.3.109', ...cloud.trust } };
+// @ts-expect-error allowDebugProfile belongs in `release`, beside the profile it allows
+export const misplacedDebug: NodePolicy = { release: { minReleaseVersion: '2.3.109' }, allowDebugProfile: true };
 
 export const accountOf = (s: CalimeroSession): string => s.accountId;
 

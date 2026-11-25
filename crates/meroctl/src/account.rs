@@ -111,6 +111,10 @@ pub enum ApiKeyCmd {
         /// Only these instances.
         #[arg(long = "instance", value_name = "INSTANCE")]
         contexts: Vec<String>,
+        /// Only these methods (`*` for any), comma-separated or repeated;
+        /// alone, any instance's.
+        #[arg(long, value_delimiter = ',', value_parser = non_empty_method)]
+        methods: Vec<String>,
         #[arg(long)]
         read_only: bool,
         #[arg(long)]
@@ -118,7 +122,7 @@ pub enum ApiKeyCmd {
         /// An upgrade key, for CI: it upgrades this instance to signed
         /// releases of its application (`instance update --version`) and does
         /// nothing else. Takes no other scope.
-        #[arg(long, conflicts_with_all = ["contexts", "read_only"])]
+        #[arg(long, conflicts_with_all = ["contexts", "methods", "read_only"])]
         upgrades: Option<String>,
         /// With `--upgrades`: the application whose releases it may move the
         /// instance to (default: the one it runs).
@@ -136,6 +140,13 @@ pub enum ApiKeyCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
+}
+
+fn non_empty_method(m: &str) -> Result<String, String> {
+    match m.trim() {
+        "" => Err("a method name is empty".to_owned()),
+        m => Ok(m.to_owned()),
+    }
 }
 
 pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
@@ -186,6 +197,7 @@ pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
         AccountCmd::ApiKey(ApiKeyCmd::Create {
             label,
             contexts,
+            methods,
             read_only,
             ttl_secs,
             upgrades,
@@ -206,6 +218,7 @@ pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
             let body = ApikeyCreateRequest {
                 label: Some(label),
                 apps: (!apps.is_empty()).then_some(apps),
+                methods: (!methods.is_empty()).then_some(methods),
                 read_only: Some(read_only),
                 ttl_secs,
                 upgrades,
@@ -240,4 +253,46 @@ pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
             crate::namespace::outbound(env, None, &package, &prefixes, replace, dev_passkey).await?
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Debug, Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        cmd: ApiKeyCmd,
+    }
+
+    fn methods(args: &[&str]) -> Result<Vec<String>, clap::Error> {
+        let argv = ["x", "create"].into_iter().chain(args.iter().copied());
+        match Cli::try_parse_from(argv)?.cmd {
+            ApiKeyCmd::Create { methods, .. } => Ok(methods),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn methods_are_comma_separated_or_repeated() {
+        assert_eq!(methods(&["--methods", "get,set"]).unwrap(), ["get", "set"]);
+        assert_eq!(
+            methods(&["--methods", "get", "--methods", "set"]).unwrap(),
+            ["get", "set"]
+        );
+        assert!(methods(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_empty_method_name_is_refused() {
+        assert!(methods(&["--methods", "get,,set"]).is_err());
+        assert!(methods(&["--methods", ""]).is_err());
+    }
+
+    #[test]
+    fn an_upgrade_key_takes_no_methods() {
+        assert!(methods(&["--upgrades", "notes", "--methods", "get"]).is_err());
+    }
 }

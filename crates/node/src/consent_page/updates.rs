@@ -101,6 +101,15 @@ pub fn reason_words(r: &Reason) -> String {
             of(member),
             methods.join(", ")
         ),
+        Reason::SecretBindingChanged {
+            member,
+            before,
+            after,
+            ..
+        } => match before {
+            None => format!("{}Newly {after}.", of(member)),
+            Some(before) => format!("{}Now {after}; it {before}.", of(member)),
+        },
         Reason::Unclassified {
             member,
             package,
@@ -138,8 +147,9 @@ pub fn policy_words(policy: &UpgradePolicy, source: &str) -> Vec<String> {
     let mut out = vec![match policy.auto_apply {
         AutoApply::Never => "You approve each update. Nothing changes until you do.".to_owned(),
         AutoApply::NoDestinations => format!(
-            "A green update that keeps all data in Calimero and removes no method applies on \
-             its own after a {} h hold; every other update waits for an approval.",
+            "A green update that keeps all data in Calimero, removes no method and moves none \
+             of the apps it created applies on its own after a {} h hold; every other update \
+             waits for an approval.",
             policy.hold_hours
         ),
     }];
@@ -223,8 +233,13 @@ pub(super) fn approval_step(
 }
 
 /// The sheet's `hold`: said only of an update the automatic policy would apply on its own.
-fn hold_words(policy: &UpgradePolicy, c: Option<&Classification>) -> Option<String> {
+fn hold_words(
+    policy: &UpgradePolicy,
+    c: Option<&Classification>,
+    members_move: bool,
+) -> Option<String> {
     let on_its_own = policy.auto_apply == AutoApply::NoDestinations
+        && !members_move
         && c.is_some_and(|c| {
             crate::egress::moves_on_its_own(c)
                 && c.egress.before.is_empty()
@@ -245,6 +260,7 @@ const UNREAD: &str = "this update could not be checked against the version runni
 /// after, the state version, the policy and where the approval stands, and which button
 /// leads (`keepByDefault`: an update that adds a destination keeps the current version
 /// unless the person chooses otherwise). `members`: a line per member that moves.
+/// `members_move`: the release would move the unit's members, which no update on its own does.
 pub(super) fn update_section(
     node: &Node,
     app: &AppRecord,
@@ -252,6 +268,7 @@ pub(super) fn update_section(
     step: &ApprovalStep,
     (from, to): (&str, &str),
     members: Vec<String>,
+    members_move: bool,
 ) -> Value {
     let (policy, source) = node.sys(|s| s.upgrade_policy_of(app));
     // Not classified (a part's release unreadable, or no verdict at all): every fact
@@ -355,7 +372,7 @@ pub(super) fn update_section(
         "keepWords": format!(
             "Keeping {from} is safe: it goes on working and your data stays where it is."
         ),
-        "hold": hold_words(&policy, c),
+        "hold": hold_words(&policy, c, members_move),
         "to": to,
     })
 }
@@ -522,6 +539,11 @@ pub(super) async fn install_request(
         }));
     }
     let destinations: Vec<String> = unit.egress().into_iter().collect();
+    // The credentials the node attaches for it, each where its signed binding says.
+    let credentials: Vec<String> = std::iter::once(&unit.app)
+        .chain(unit.members.values())
+        .flat_map(|r| r.secrets.iter().map(|(name, b)| b.describe(name)))
+        .collect();
     let members = !unit.members.is_empty();
     let where_words = if destinations.is_empty() {
         "Your data stays in Calimero.".to_owned()
@@ -554,7 +576,7 @@ pub(super) async fn install_request(
         update_words.push(format!(
             "Because {app_name} sends no data out of Calimero, you can later add a policy under \
              which its green updates apply on their own after a 24 h hold, as long as they keep \
-             it that way and remove no method."
+             it that way, remove no method and move none of the apps it created."
         ));
     }
     let payer = subject.deployment.as_ref().and_then(|d| {
@@ -620,6 +642,7 @@ pub(super) async fn install_request(
             "newOrg": subject.new_org.as_ref().map(|o| o.name.clone()),
             "creates": creates,
             "destinations": hosts(destinations.iter().map(String::as_str)),
+            "credentials": credentials,
             "where": where_words,
             "updates": update_words,
             "policy": policy_view(&policy, source),
@@ -1018,13 +1041,22 @@ mod tests {
             auto_apply: AutoApply::NoDestinations,
             ..UpgradePolicy::default()
         };
-        assert!(hold_words(&auto, Some(&green(&[]))).is_some());
-        assert_eq!(hold_words(&auto, Some(&green(&["whoView"]))), None);
+        assert!(hold_words(&auto, Some(&green(&[])), false).is_some());
+        assert_eq!(hold_words(&auto, Some(&green(&["whoView"])), false), None);
         assert_eq!(
-            hold_words(&UpgradePolicy::default(), Some(&green(&[]))),
+            hold_words(&UpgradePolicy::default(), Some(&green(&[])), false),
             None
         );
-        assert_eq!(hold_words(&auto, None), None);
+        assert_eq!(hold_words(&auto, None, false), None);
+    }
+
+    #[test]
+    fn the_sheet_never_says_an_update_that_moves_the_members_applies_on_its_own() {
+        let auto = UpgradePolicy {
+            auto_apply: AutoApply::NoDestinations,
+            ..UpgradePolicy::default()
+        };
+        assert_eq!(hold_words(&auto, Some(&green(&[])), true), None);
     }
 
     #[test]
@@ -1035,5 +1067,9 @@ mod tests {
         };
         let words = policy_words(&auto, "org");
         assert!(words[0].contains("removes no method"), "{words:?}");
+        assert!(
+            words[0].contains("moves none of the apps it created"),
+            "{words:?}"
+        );
     }
 }

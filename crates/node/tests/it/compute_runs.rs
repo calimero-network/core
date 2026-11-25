@@ -2,14 +2,10 @@
 //! on a lost job node, cancel, caps, the result method, usage and the queue. The app is the
 //! `compute` fixture (`apps/fixture-compute`).
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "a test's panic is its report; clippy.toml exempts #[test] fns, not their helpers"
-)]
 // Tests corrupt or drop a node's stored bytes directly, off any runtime path.
 #![allow(clippy::disallowed_methods)]
 
-mod common;
+use crate::common;
 use common::UploadBytes as _;
 
 use std::time::{Duration, Instant};
@@ -26,7 +22,7 @@ use calimero_node::files::noise_seed;
 use calimero_node::job_wire::{Report, ReportStatus, ReportUsage};
 use calimero_node::node::{ComputeLimits, PeerBlobs, JOB_CONTROL_TIMEOUT, JOB_POLL, SEGMENT_GRACE};
 use calimero_node::types::Caller;
-use calimero_node::Node;
+use calimero_node::{Config, Node};
 use common::{mpk_with, signed_up, typed, wire, Cluster, JobNode, PUBLISHER};
 use rand_chacha::rand_core::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -68,7 +64,20 @@ impl Rig {
     }
 
     async fn start_with(job_ids: &[u64], options: Value) -> Self {
-        let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
+        Self::start_configured(job_ids, options, |_| {}).await
+    }
+
+    /// [`Rig::start_with`], with `configure` applied to each replica's config before it starts.
+    async fn start_configured(
+        job_ids: &[u64],
+        options: Value,
+        configure: impl Fn(&mut Config),
+    ) -> Self {
+        let c = Cluster::start_with(3, |cfg| {
+            cfg.allow_unsigned_bundles = false;
+            configure(cfg);
+        })
+        .await;
         // A run's end is seen within 200 ms here, not the 2 s a cluster polls at.
         for n in c.nodes.iter().flatten() {
             n.node.set_compute_limits(test_limits());
@@ -1196,10 +1205,12 @@ async fn a_job_node_that_reports_but_never_hands_over_its_outputs_does_not_hold_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_output_that_takes_longer_than_the_shared_clients_timeout_is_still_fetched() {
-    // The shared client gives up after 3 s here, not the 30 s a cluster uses; the output
-    // takes 5 s.
-    calimero_node::testing::shared_http_timeout(Duration::from_secs(3));
-    let rig = Rig::start(&[JOB_A]).await;
+    // The replicas' shared client gives up after 3 s here, not the 30 s a cluster uses; the
+    // output takes 5 s.
+    let rig = Rig::start_configured(&[JOB_A], json!({}), |cfg| {
+        calimero_node::testing::shared_http_timeout(&cfg.data_dir, Duration::from_secs(3));
+    })
+    .await;
     rig.limits(ComputeLimits {
         lost_after: Duration::from_secs(20),
         ..test_limits()

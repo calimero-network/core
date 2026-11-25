@@ -237,7 +237,7 @@ async fn append(c: &Cluster, cmd: &Value) -> Result<Value, String> {
                 .write(serde_json::to_vec(cmd).unwrap())
                 .await
                 .unwrap();
-            return calimero_node::system::output(&out);
+            return calimero_node::system::output(&out).map_err(|e| e.to_string());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

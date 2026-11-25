@@ -163,10 +163,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./scripts/check-naming.sh
 
-      # Fleet nodes run at INFO and operators read their logs, so info! must not carry user data.
+      # Fleet nodes run at INFO and every line ships to the operator, so info!, warn!
+      # and error! must not carry user data or text from outside the node (F6).
       - name: No user data at info level
         if: ${{ !cancelled() }}
         run: python3 scripts/check-no-user-data-at-info.py
+
+      - name: Test the no-user-data check
+        if: ${{ !cancelled() }}
+        run: python3 scripts/tests/check-no-user-data-at-info-test.py
 
       - name: Test check-like-ci
         if: ${{ !cancelled() }}
@@ -256,7 +261,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' && matrix.shard == 1 }}
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-nextest@0.9.146,cargo-expand@1.0.127
 
@@ -521,8 +526,8 @@ jobs:
           if [ -n "${GITHUB_ACTIONS:-}" ]; then base="HEAD^1"; fi
           python3 scripts/check-api-compat.py ${base:+--base "$base"}
 
-  # Every app under apps/ is its own workspace, whose lockfile no other build updates:
-  # each must match its manifests, and change only when they need it to.
+  # Every app under apps/ and Rust client under sdks/clients/ is its own workspace, whose lockfile
+  # no other build updates: each must match its manifests, and change only when they need it to.
   app-lockfiles:
     name: App lockfiles
     needs: scope
@@ -542,7 +547,7 @@ jobs:
       - name: Test the check
         run: python3 scripts/tests/check-app-lockfiles-test.py
 
-      - name: Every app lockfile current, none rewritten without need
+      - name: Every app and client lockfile current, none rewritten without need
         run: |
           # In CI the checkout is the merge commit; locally, the merge base with origin/master.
           if [ -n "${GITHUB_ACTIONS:-}" ]; then base="HEAD^1"; fi
@@ -563,7 +568,7 @@ jobs:
 
       # Pinned so an upstream release cannot break CI; cargo-deny needs >= 0.19 for CVSS 4.0 advisories.
       - name: Install cargo-deny and cargo-machete
-        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-deny@0.19.9,cargo-machete@0.9.2
 
