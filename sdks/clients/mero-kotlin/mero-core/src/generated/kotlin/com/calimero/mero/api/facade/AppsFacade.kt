@@ -389,6 +389,22 @@ class AppsFacade internal constructor(
         api(null, null, emptySet()).apps.appOpenapi(app = app)
 
     /**
+     * An app's outbound requests
+     *
+     * The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
+     *
+     * **Who:** signed in (a session or an API key).
+     *
+     * `GET /apps/{app}/outbound-log` (`app_outbound_log`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun outboundLog(
+        app: kotlin.String,
+    ): AppOutboundLog200Response =
+        api(null, null, emptySet()).apps.appOutboundLog(app = app)
+
+    /**
      * The update policy an app follows
      *
      * For whoever may read the app. Its own policy where an owner or admin set one, else its organization's, else the defaults: nothing updates on its own, one approval applies an update.

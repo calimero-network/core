@@ -143,12 +143,12 @@ url = "2.5.2"
 # Trial only (review finding E7): a test generates one route group's OpenAPI paths from
 # its handlers and types and compares them with the hand-written registry.
 utoipa = { version = "6.0.0", default-features = false, features = ["macros"] }
-wasmtime = { version = "50.0.3", default-features = false }
-wasmtime-wasi = { version = "50.0.3", default-features = false }
-wasmparser = "0.261"
-wat = "1.243.0"
+wasmtime = { version = "51.0.0", default-features = false }
+wasmtime-wasi = { version = "51.0.0", default-features = false }
+wasmparser = "0.263"
+wat = "1.263.0"
 wit-bindgen = "0.63.0"
-wit-parser = "0.262.0"
+wit-parser = "0.263.0"
 zeroize = "1.8"
 
 
