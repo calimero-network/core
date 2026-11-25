@@ -3,9 +3,8 @@
 Oct 31, 2026 · Status: **largely implemented**: deployments, offers, deployer grants, the cluster
 owner, `/d/{deployment}/` and per-deployment hosts, `AppRecord::deployment` and
 `GET /deployments/{id}/orgs` (phases 1 to 3; `crates/node/src/system/deployments.rs`,
-`crates/node/src/api/deployments.rs`). The consent page names the deployment, and an organization
-owns one only holding a recovery key (section 9). Decided Nov 23, 2026 and not built yet:
-transfer (section 14). Dropped: migrating
+`crates/node/src/api/deployments.rs`). Decided Nov 23, 2026 and not built yet: the consent
+page naming the deployment, the recovery-key guard and transfer (section 14). Dropped: migrating
 old installs into deployments (section 14). Phase 5 is mdma's.
 
 A developer deploys apps from Calimero Cloud: their releases are installed on a
