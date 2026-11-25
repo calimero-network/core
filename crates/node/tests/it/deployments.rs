@@ -2158,6 +2158,7 @@ async fn an_instance_shows_its_update_and_who_may_approve_it() {
             "policy": { "autoApply": "never", "holdHours": 24, "secondApprover": false,
                 "source": "default" },
             "pendingApprovals": [],
+            "deployment": { "id": d, "name": "alpha", "owner": { "kind": "account", "name": "alice" } },
         })
     );
     let u = update_of(&bob, &inst).await;

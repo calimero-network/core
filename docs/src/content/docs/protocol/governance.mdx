@@ -628,6 +628,13 @@ Each step is tried only for a name the running release declares; the first
 value found is used, and the gate still sends it only to that secret's
 declared hosts.
 
+**Customers see who offers it**: the install and update sheets of an instance
+created from a deployment, and `GET /apps/{app}/update`, name the deployment
+with its id and its owner's kind and name ("Offered by acme-labs, run by the
+organization Acme Labs"). Names are not unique, so the id and the owner always
+come with the name. An instance from no deployment names none. This is
+read-only: nothing new is logged.
+
 **Releases**: `DELETE /packages/{p}[/{v}]` is refused for a release any
 deployment offers, whoever installed it first; a release no deployment
 offers keeps the rules it had (its first installer uninstalls it once no app
@@ -665,15 +672,6 @@ the reads above return as `host`
 
 These were decided for deployments but are not in the code yet. Until they ship, a deployment
 cannot change owner, and nothing stops an organization that owns one from losing every manager.
-
-**The consent page names the deployment.**
-The install and update sheets of an instance created from a deployment, and
-`GET /apps/{app}/update`, will name the deployment and its owner ("You are starting notes from
-acme-labs, run by the organization Acme Labs").
-Deployment names are not unique, so the owner and the deployment's id are always shown beside
-its name.
-An instance from no deployment names none.
-This is read-only: no log change.
 
 **A recovery key guards an org-owned deployment.**
 If every manager loses every passkey, nobody can sign for the deployment again, and its

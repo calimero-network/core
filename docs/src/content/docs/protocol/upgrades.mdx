@@ -39,6 +39,10 @@ New code reads the app's data, so an upgrade is one of the three decisions
   [consent page](/protocol/consent-page/)'s upgrade sheet. An instance from a
   deployment moves only to the release its deployment offers, which the sheet
   resolves for a person who never installed it; asking for it names no version.
+  Its deployment's managers choose that release, so `deployment` names the
+  deployment, and the install and upgrade sheets say who offers it ("Offered by
+  acme (deployment `<id>`), run by the organization Acme Labs"): deployment names
+  are not unique, so the id and the owner always come with the name.
 
   Each upgrades with a passkey session and a step-up over the exact upgrade
   (`POST /apps/{app}/upgrade { version | bundle }`, then the `412`
