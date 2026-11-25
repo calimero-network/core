@@ -5,6 +5,20 @@ edition = "2021"
 publish = false
 description = "A captcha service on the component SDK: other apps verify answers through synchronous xcalls"
 
+# What `meroctl app pack` signs into the manifest. Turnstile's siteverify takes the site's
+# secret in the form body, so the release binds it to that field on that path: the node
+# adds `secret=...` to every request there itself, and refuses a request that sets it.
+[package.metadata.calimero]
+package = "com.calimero.captcha"
+outbound = ["https://challenges.cloudflare.com/turnstile/v0/siteverify"]
+
+[package.metadata.calimero.secrets.TURNSTILE_SECRET]
+host = "challenges.cloudflare.com"
+paths = ["/turnstile/v0/siteverify"]
+bodyField = "secret"
+description = "Cloudflare Turnstile site secret"
+required = true
+
 [lib]
 crate-type = ["cdylib"]
 

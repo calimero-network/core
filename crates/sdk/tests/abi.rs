@@ -197,7 +197,7 @@ fn abi_lists_every_method_with_its_attributes() {
     );
 
     assert_eq!(abi_json["abiVersion"], 1);
-    assert_eq!(abi_json["world"], "calimero:app@0.5.6");
+    assert_eq!(abi_json["world"], "calimero:app@0.5.7");
     assert_eq!(
         abi_json["state"],
         json!({
@@ -357,7 +357,15 @@ fn u64_args_are_decimal_strings() {
     let out = app.view("echoStart", br#"{"start": "18446744073709551615"}"#);
     assert_eq!(ok_json(&out), json!("18446744073709551615"));
     let out = app.view("echoStart", br#"{"start": 1}"#);
-    assert_eq!(app_error(&out).0, "BadArgs");
+    let (code, fields) = app_error(&out);
+    assert_eq!(code, "BadArgs");
+    assert_eq!(
+        serde_json::from_str::<Value>(&fields).unwrap(),
+        json!({
+            "message": "start: invalid type: integer `1`, expected a u64 as a decimal string",
+            "param": "start",
+        })
+    );
     let out = app.view("echoStart", br#"{"start": "1", "label": "x"}"#);
     assert_eq!(ok_json(&out), json!("1"));
 }

@@ -15,6 +15,8 @@ testing = [
     "dep:calimero-app-host",
     "calimero-app-host/testing",
     "dep:calimero-app-engine-wasmtime",
+    "dep:calimero-primitives",
+    "dep:calimero-search",
     "dep:eyre",
     "dep:tempfile",
 ]
@@ -29,6 +31,7 @@ calimero-sdk-macros.workspace = true
 ciborium.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 
@@ -40,6 +43,8 @@ sha2.workspace = true
 calimero-app-host = { workspace = true, optional = true }
 calimero-app-engine-wasmtime = { workspace = true, optional = true }
 calimero-bundle = { workspace = true, optional = true }
+calimero-primitives = { workspace = true, optional = true }
+calimero-search = { workspace = true, optional = true }
 eyre = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 

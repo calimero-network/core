@@ -318,7 +318,7 @@ pub fn group(route: &str) -> &'static str {
         "/health" => "health",
         // What the cluster attests about its node releases: governance and deadlines.
         "/attestation" | "/releases" => "attestation",
-        "/internal/raft" => "raft",
+        "/internal/raft" | "/internal/raft-batch" => "raft",
         "/apps/{app}/intents" => "calls",
         "/apps/{app}/views" => "views",
         _ if route.starts_with("/auth/passkey/")
@@ -1012,6 +1012,7 @@ mod tests {
         assert_eq!(group("/orgs/{org}/teams/{team}"), "orgs");
         assert_eq!(group("/invites/{token}/redeem"), "orgs");
         assert_eq!(group("/internal/raft"), "raft");
+        assert_eq!(group("/internal/raft-batch"), "raft");
         assert_eq!(group("/internal/system/index"), "internal");
         assert_eq!(group("/ops/metrics"), "ops");
         // Who may install packages is a packages question.

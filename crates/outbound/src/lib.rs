@@ -10,24 +10,46 @@
 //! 2. **The app declared a prefix covering the URL** in its signed bundle
 //!    manifest (`outbound`): same host, and a path at or below the prefix's
 //!    at a `/`. A run gets a client only when its app declares one.
-//! 3. **The run writes on this node** (a call, a follow-up, a timer, a
+//! 3. **Egress is on for the app**: neither its organization nor the instance
+//!    turned it off. The node asks before every request ([`egress_gated`]), so
+//!    a switch turned off reaches a run already going; while it is off every
+//!    request is refused with [`EGRESS_OFF`], whatever the manifest declares
+//!    and whatever was approved.
+//! 4. **The run writes on this node** (a call, a follow-up, a timer, a
 //!    delivery) or is a component's action: never a view, `init`, a migration
 //!    or a compute run. The node and its component host decide that.
-//! 4. **The request fits**: `https` on port 443 to a DNS name that resolves
+//! 5. **The request fits**: `https` on port 443 to a DNS name that resolves
 //!    only to public addresses, no fragment, the size limits in
 //!    `calimero_primitives::outbound`, no redirect followed. How many one run
 //!    may send is the component host's bound (`MAX_HTTP_REQUESTS`).
 //!
 //! # Secrets
 //!
-//! A request names a secret as `{{secret:NAME}}` in a header value or the
-//! body. The node asks its [`SecretProvider`] for `NAME` **for the app the run
-//! belongs to**, identified by the node (package and signer of the installed
-//! application), never by the guest. A secret is substituted only into a
-//! request to one of the hosts it is bound to; any copy of it in the response
-//! is replaced with `[redacted]` before the guest sees it. The guest never
-//! reads a secret, so it cannot write one into state, where it would
-//! replicate to every member.
+//! An app never places, names or reads a secret in a request. Its signed
+//! manifest binds each credential it needs to one host, path prefixes there
+//! (`/v1/charges`, matched on whole segments; `/` for the whole host) and one
+//! place ([`calimero_bundle::BundleSecret`]): a header (`authorization`, written
+//! as `Bearer {}`) or a top-level field of a form-urlencoded or JSON body
+//! (Turnstile's `secret`). On every request a run sends to that host under one of
+//! those paths, the node attaches the value there itself (a request to another
+//! path of the host carries none) ([`OutboundService::prepare`]), and refuses a
+//! request that sets that header or field, or that still writes the retired
+//! placeholder `{{secret:NAME}}` anywhere. So the app cannot put a key where an
+//! honest upstream reads it as content and answers it back (a prompt asking for
+//! the key reversed, an "invalid value: ..." error): the reflection trick no
+//! redaction can follow through an arbitrary transform.
+//!
+//! The value is, in order: the instance owner's or its deployment managers'
+//! ([`AppIdentity::own`]), else the operator's [`SecretProvider`]'s for `NAME`
+//! **for the app the run belongs to**, identified by the node (package and
+//! signer of the installed application), never by the guest, and only where the
+//! operator's binding names the host too. As a second line, any copy of a value
+//! in the response, as sent or in a common encoding (the `redact` module), is
+//! replaced with `[redacted]` before the guest sees it. A failure reaches the
+//! guest and the log only as its [`FailureKind`], never in the transport's
+//! words. The guest never reads a secret, so it cannot write one into state,
+//! where it would replicate to every member. What a key can do at the host it is
+//! bound to is still the app's to use: bind least-privilege keys.
 //!
 //! Two providers: [`EnvSecrets`], the operator's own (environment variables
 //! named in the node config, each scoped to app packages and hosts), and
@@ -44,17 +66,26 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use borsh::BorshDeserialize;
+use calimero_bundle::{is_forbidden_header, BundleSecret, SecretPlacement, SECRET_FORMAT_SLOT};
 use calimero_primitives::outbound::{
     OutboundMethod, OutboundRequest, OutboundResponse, MAX_HEADERS, MAX_HEADER_BYTES,
-    MAX_REQUEST_BODY, MAX_RESPONSE_BODY, MAX_URL, SECRET_PREFIX, SECRET_SUFFIX, TIMEOUT_MS,
+    MAX_REQUEST_BODY, MAX_RESPONSE_BODY, MAX_URL, SECRETS_DOCS, SECRET_PLACEHOLDER, TIMEOUT_MS,
 };
 use eyre::{bail, eyre, Result as EyreResult};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
+mod connector;
+mod redact;
 mod settings;
 
+pub use connector::*;
+use redact::Redactor;
+pub use redact::{
+    MAX_ENCODED_SECRET_BYTES, MAX_REDACTION_PATTERNS, MAX_SECRETS_PER_REQUEST,
+    MIN_ENCODED_SECRET_BYTES, PATTERNS_PER_SECRET,
+};
 pub use settings::*;
 
 /// Sends a run's outbound request: borsh `OutboundRequest` in, borsh
@@ -71,27 +102,9 @@ pub trait OutboundHost: Send + Sync + fmt::Debug {
 /// The most prefixes one approval holds.
 pub const MAX_OUTBOUND_APPROVALS: usize = 64;
 
-/// What replaces a secret echoed in a response.
-const REDACTED: &[u8] = b"[redacted]";
-
-/// Headers a request may not set: the node sets what it must itself, and
-/// these would let a request reroute itself or carry a credential the operator
-/// never saw.
-const FORBIDDEN_HEADERS: &[&str] = &[
-    "host",
-    "connection",
-    "content-length",
-    "transfer-encoding",
-    "te",
-    "upgrade",
-    "cookie",
-    "proxy-authorization",
-    "proxy-connection",
-    "forwarded",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-real-ip",
-];
+/// The start of the refusal of a request that still writes `{{secret:NAME}}`.
+/// Stable: a developer searching for it finds the guide.
+pub const PLACEHOLDER_REFUSED: &str = "a request no longer names a secret as {{secret:NAME}}";
 
 /// The app a run belongs to, as this node installed it. Never from the guest.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,15 +113,14 @@ pub struct AppIdentity {
     pub package: String,
     /// The bundle signer's `did:key`.
     pub signer: String,
-    /// The secrets the release declares (its signed manifest's `secrets`), by name, with
-    /// the hosts each may go to. `Some`: only these names are filled, each only into a
-    /// request to one of its hosts (and to a host the operator bound it to). `None`: a
-    /// release that declares none, filled from the operator's bindings alone, as before.
-    pub secrets: Option<BTreeMap<String, Vec<String>>>,
-    /// Values set for declared names in merod: the instance owner's own (`PUT
+    /// The credentials the release binds (its signed manifest's `secrets`), by name: each
+    /// attached by the node to every request to its host, in its header or body field.
+    /// Empty for a release that binds none, whose requests carry no secret.
+    pub secrets: BTreeMap<String, BundleSecret>,
+    /// Values set for bound names in merod: the instance owner's own (`PUT
     /// /apps/{app}/secrets/{name}`), else its deployment managers' (`PUT
     /// /deployments/{id}/secrets/{name}`). One wins over the operator's for its name, and
-    /// goes only to that name's declared hosts. Empty for a release that declares none.
+    /// goes only where its binding says. Empty for a release that binds none.
     pub own: OwnSecrets,
 }
 
@@ -144,6 +156,50 @@ pub const NOT_APPROVED: &str = calimero_primitives::outbound::OutboundRefusal::N
 pub const AWAITING_APPROVAL: &str =
     calimero_primitives::outbound::OutboundRefusal::AwaitingApproval.word();
 
+/// The start of every refusal while the app's organization, or the instance,
+/// turned egress off. Stable: an app matches on it to tell its user why
+/// nothing can leave the cluster.
+pub const EGRESS_OFF: &str = calimero_primitives::outbound::OutboundRefusal::EgressOff.word();
+
+/// Whether egress is off for one app right now: `Some(who)` names who turned it
+/// off ("its organization", "the instance"). The node answers it from its
+/// replicated system state.
+pub type EgressCheck = Arc<dyn Fn() -> Option<&'static str> + Send + Sync>;
+
+/// `inner`, asking `off` before each request and refusing it with
+/// [`EGRESS_OFF`] while egress is off, before any other gate: nothing is
+/// resolved, filled in or sent.
+#[must_use]
+pub fn egress_gated(inner: Arc<dyn OutboundHost>, off: EgressCheck) -> Arc<dyn OutboundHost> {
+    Arc::new(EgressGated { inner, off })
+}
+
+/// [`egress_gated`]'s host.
+struct EgressGated {
+    inner: Arc<dyn OutboundHost>,
+    off: EgressCheck,
+}
+
+impl fmt::Debug for EgressGated {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EgressGated")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OutboundHost for EgressGated {
+    fn send(&self, request: &[u8]) -> Result<Vec<u8>, String> {
+        if let Some(who) = (self.off)() {
+            return Err(format!(
+                "{EGRESS_OFF}: {who} turned egress off, so no request leaves the cluster \
+                 for this app, whatever was approved"
+            ));
+        }
+        self.inner.send(request)
+    }
+}
+
 /// A secret, and the hosts it may be sent to.
 pub struct Secret {
     pub value: Zeroizing<String>,
@@ -159,7 +215,7 @@ impl fmt::Debug for Secret {
     }
 }
 
-/// Where the node gets the secrets an app's requests name.
+/// Where the node gets the operator's values of the secrets a release binds.
 pub trait SecretProvider: Send + Sync + fmt::Debug {
     /// `name` for `app`, or `None` when there is none for that app.
     ///
@@ -350,8 +406,10 @@ pub struct Prepared {
     pub host: String,
     pub headers: Vec<(String, Zeroizing<String>)>,
     pub body: Zeroizing<Vec<u8>>,
-    /// The secrets substituted, to redact from the response.
+    /// The secrets substituted, once per substitution.
     secrets: Vec<Zeroizing<String>>,
+    /// Their redaction from the response.
+    redactor: Redactor,
 }
 
 /// Header names and sizes only: the values and the body carry secrets.
@@ -486,6 +544,21 @@ impl OutboundService {
         context: String,
         sent: Arc<AtomicU64>,
     ) -> Option<Arc<dyn OutboundHost>> {
+        self.run_outbound(app, declared, BTreeMap::new(), approval, context, sent)
+    }
+
+    /// The raw client for a run, refusing every host of `reserved` (a declared
+    /// connector's host, by the connector's name); `None` when the app
+    /// declared no prefix this node can use.
+    fn run_outbound(
+        self: &Arc<Self>,
+        app: AppIdentity,
+        declared: Vec<String>,
+        reserved: BTreeMap<String, String>,
+        approval: Option<Approval>,
+        context: String,
+        sent: Arc<AtomicU64>,
+    ) -> Option<Arc<dyn OutboundHost>> {
         let declared: BTreeSet<String> = declared
             .into_iter()
             .filter(|u| u.len() <= MAX_URL && prefix(u).is_some())
@@ -497,6 +570,7 @@ impl OutboundService {
             service: Arc::clone(self),
             app,
             declared,
+            reserved,
             approval,
             context,
             sent,
@@ -537,10 +611,7 @@ impl OutboundService {
         if !self.any_host && !self.hosts.contains(&host) {
             bail!("{host} is not a host this node's operator allows");
         }
-        let Some(under) = declared
-            .iter()
-            .find(|d| prefix(d).is_some_and(|p| covers(&p, &url)))
-        else {
+        let Some(under) = covering(declared, &url) else {
             bail!(
                 "{} is under no URL prefix this app's manifest declares under `outbound`",
                 request.url
@@ -575,8 +646,20 @@ impl OutboundService {
             bail!("a GET has no body");
         }
 
-        let mut used = Vec::new();
-        let mut headers = Vec::with_capacity(request.headers.len());
+        refuse_placeholder(&request)?;
+
+        // The credentials the release binds to this host and a path prefix covering this
+        // request's path (normalized by the URL parser, so `..` and `%2e%2e` are gone): the
+        // node attaches each itself. A request to another path of the host gets none, and
+        // goes out as any other request under an approved prefix would: no key rides on it,
+        // so refusing it would only break the host's public endpoints.
+        let bound: Vec<(&String, &BundleSecret)> = app
+            .secrets
+            .iter()
+            .filter(|(_, s)| s.host.eq_ignore_ascii_case(&host) && s.applies_to(url.path()))
+            .collect();
+        let mut headers = Vec::with_capacity(request.headers.len() + bound.len());
+        let mut content_type = None;
         for (name, value) in request.headers {
             let lower = name.to_ascii_lowercase();
             if name.is_empty()
@@ -586,15 +669,64 @@ impl OutboundService {
             {
                 bail!("header {name:?} is malformed or too long");
             }
-            if FORBIDDEN_HEADERS.contains(&lower.as_str()) || lower.starts_with("proxy-") {
+            if is_forbidden_header(&lower) {
                 bail!("header {name} may not be set");
             }
-            let value = self.substitute(app, &host, value.into_bytes(), &mut used)?;
-            let value = String::from_utf8(value.to_vec())
-                .map_err(|_| eyre!("header {name} is not UTF-8"))?;
+            if let Some((secret, _)) = bound.iter().find(|(_, s)| {
+                matches!(s.placement(), Some(SecretPlacement::Header { name: h, .. }) if h == lower)
+            }) {
+                bail!(
+                    "header {name} carries secret {secret}, which this app's manifest binds \
+                     to it for {host}: the node sets it, so the request may not ({SECRETS_DOCS})"
+                );
+            }
+            if lower == "content-type" {
+                content_type = Some(value.clone());
+            }
             headers.push((name, Zeroizing::new(value)));
         }
-        let body = self.substitute(app, &host, request.body, &mut used)?;
+        let mut body = Zeroizing::new(request.body);
+        let mut used = Vec::new();
+        for (name, secret) in bound {
+            let Some(value) = self.value_of(app, name, &host)? else {
+                if secret.required {
+                    bail!(
+                        "secret {name} has no value for this app: its owner, its deployment \
+                         or this node's operator sets it"
+                    );
+                }
+                continue;
+            };
+            match secret.placement() {
+                Some(SecretPlacement::Header {
+                    name: header,
+                    format,
+                }) => {
+                    let filled =
+                        Zeroizing::new(format.replacen(SECRET_FORMAT_SLOT, value.as_str(), 1));
+                    if header.len() + filled.len() > MAX_HEADER_BYTES
+                        || filled.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
+                    {
+                        bail!("secret {name}'s value does not fit a header");
+                    }
+                    headers.push((header.to_owned(), filled));
+                }
+                Some(SecretPlacement::BodyField(field)) => {
+                    if request.method == OutboundMethod::Get {
+                        bail!(
+                            "secret {name} is bound to body field {field:?}, and a GET has no body"
+                        );
+                    }
+                    body = with_body_field(content_type.as_deref(), &body, field, &value).map_err(
+                        |why| eyre!("secret {name} is bound to body field {field:?}: {why}"),
+                    )?;
+                }
+                // `check_secrets` refused it at install.
+                None => bail!("secret {name} is bound to no place"),
+            }
+            used.push(value);
+        }
+        let redactor = Redactor::new(&used)?;
         Ok(Prepared {
             method: request.method,
             url,
@@ -602,66 +734,119 @@ impl OutboundService {
             headers,
             body,
             secrets: used,
+            redactor,
         })
     }
 
-    /// Replaces every `{{secret:NAME}}` in `bytes`.
-    fn substitute(
+    /// The value of secret `name` for `app`, to attach to a request to `host`: the
+    /// instance's own (or its deployment's), else the operator's when its binding names
+    /// `host` too; `None` when neither has one.
+    fn value_of(
         &self,
         app: &AppIdentity,
+        name: &str,
         host: &str,
-        bytes: Vec<u8>,
-        used: &mut Vec<Zeroizing<String>>,
-    ) -> EyreResult<Zeroizing<Vec<u8>>> {
-        let prefix = SECRET_PREFIX.as_bytes();
-        let suffix = SECRET_SUFFIX.as_bytes();
-        let mut out = Zeroizing::new(Vec::with_capacity(bytes.len()));
-        let mut rest = &bytes[..];
-        while let Some(start) = find(rest, prefix) {
-            out.extend_from_slice(&rest[..start]);
-            let after = &rest[start + prefix.len()..];
-            let end =
-                find(after, suffix).ok_or_else(|| eyre!("an unterminated {SECRET_PREFIX}"))?;
-            let name = core::str::from_utf8(&after[..end])
-                .map_err(|_| eyre!("a malformed secret name"))?;
-            if !is_secret_name(name) {
-                bail!("secret name {name:?} must be A-Z, 0-9 and _");
-            }
-            if let Some(declared) = &app.secrets {
-                let hosts = declared.get(name).ok_or_else(|| {
-                    eyre!("the release declares no secret {name} (its manifest's `secrets`)")
-                })?;
-                if !hosts.iter().any(|h| h == host) {
-                    bail!("the release declares secret {name} for other hosts than {host}");
-                }
-            }
-            // The instance's own value for a declared name, checked against its declared
-            // hosts above, wins over the operator's.
-            if let Some(value) = app.own.0.get(name).filter(|_| app.secrets.is_some()) {
-                out.extend_from_slice(value.as_bytes());
-                used.push(value.clone());
-                rest = &after[end + suffix.len()..];
-                continue;
-            }
-            let provider = self.secrets.as_ref().ok_or_else(|| {
-                eyre!(
-                    "no value for secret {name}: this node has no secrets for outbound requests, \
-                     and neither the app's owner nor its deployment set one"
-                )
-            })?;
-            let secret = provider
-                .secret(app, name)?
-                .ok_or_else(|| eyre!("this node has no secret {name} for {}", app.package))?;
-            if !secret.hosts.iter().any(|h| h == host) {
-                bail!("secret {name} may not be sent to {host}");
-            }
-            out.extend_from_slice(secret.value.as_bytes());
-            used.push(secret.value);
-            rest = &after[end + suffix.len()..];
+    ) -> EyreResult<Option<Zeroizing<String>>> {
+        if let Some(value) = app.own.0.get(name) {
+            return Ok(Some(value.clone()));
         }
-        out.extend_from_slice(rest);
-        Ok(out)
+        let Some(provider) = &self.secrets else {
+            return Ok(None);
+        };
+        let Some(secret) = provider.secret(app, name)? else {
+            return Ok(None);
+        };
+        if !secret.hosts.iter().any(|h| h == host) {
+            bail!("this node's operator binds secret {name} to other hosts than {host}");
+        }
+        Ok(Some(secret.value))
     }
+}
+
+/// Refuses a request that still writes the retired `{{secret:NAME}}` anywhere: in its
+/// URL (as written or percent-encoded), a header or its body. It would never be filled
+/// in, and the developer should learn why rather than send it.
+fn refuse_placeholder(request: &OutboundRequest) -> EyreResult<()> {
+    let needle = SECRET_PLACEHOLDER.as_bytes();
+    let url = request.url.to_ascii_lowercase();
+    let in_url = url.contains(SECRET_PLACEHOLDER) || url.contains("%7b%7bsecret:");
+    let in_headers = request
+        .headers
+        .iter()
+        .any(|(n, v)| n.contains(SECRET_PLACEHOLDER) || v.contains(SECRET_PLACEHOLDER));
+    if in_url || in_headers || find(&request.body, needle).is_some() {
+        bail!(
+            "{PLACEHOLDER_REFUSED}: bind the secret to a header or body field of its host in \
+             the manifest's `secrets`, and the node attaches it ({SECRETS_DOCS})"
+        );
+    }
+    Ok(())
+}
+
+/// `body` with the top-level `field` set to `value`: appended to a form-urlencoded body,
+/// or inserted first into a JSON object, the app's bytes otherwise as they were. Refused
+/// when the body sets `field` itself, or is neither (by its `Content-Type`).
+fn with_body_field(
+    content_type: Option<&str>,
+    body: &[u8],
+    field: &str,
+    value: &str,
+) -> Result<Zeroizing<Vec<u8>>, String> {
+    let media = content_type
+        .and_then(|c| c.split(';').next())
+        .map(|m| m.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let mut out = Zeroizing::new(Vec::with_capacity(
+        body.len() + field.len() + value.len() + 8,
+    ));
+    if media == "application/x-www-form-urlencoded" {
+        if url::form_urlencoded::parse(body).any(|(k, _)| k == field) {
+            return Err("the node sets it, so the request's body may not".to_owned());
+        }
+        out.extend_from_slice(body);
+        if !body.is_empty() && !body.ends_with(b"&") {
+            out.push(b'&');
+        }
+        let pair = Zeroizing::new(
+            url::form_urlencoded::Serializer::new(String::new())
+                .append_pair(field, value)
+                .finish(),
+        );
+        out.extend_from_slice(pair.as_bytes());
+        return Ok(out);
+    }
+    if media == "application/json" || media.ends_with("+json") {
+        let text = if body.iter().all(u8::is_ascii_whitespace) {
+            &b"{}"[..]
+        } else {
+            body
+        };
+        let parsed: serde_json::Value = serde_json::from_slice(text)
+            .map_err(|_| "the request's JSON body does not parse".to_owned())?;
+        let Some(object) = parsed.as_object() else {
+            return Err("the request's JSON body is not an object".to_owned());
+        };
+        if object.contains_key(field) {
+            return Err("the node sets it, so the request's body may not".to_owned());
+        }
+        // Splice after the opening brace, so the value never sits in a `Value`.
+        let open = text
+            .iter()
+            .position(|b| *b == b'{')
+            .ok_or_else(|| "the request's JSON body is not an object".to_owned())?;
+        let key = serde_json::to_string(field).map_err(|e| e.to_string())?;
+        let quoted = Zeroizing::new(serde_json::to_string(value).map_err(|e| e.to_string())?);
+        out.extend_from_slice(&text[..=open]);
+        out.extend_from_slice(key.as_bytes());
+        out.push(b':');
+        out.extend_from_slice(quoted.as_bytes());
+        if !object.is_empty() {
+            out.push(b',');
+        }
+        out.extend_from_slice(&text[open + 1..]);
+        return Ok(out);
+    }
+    Err("the request needs a form-urlencoded or JSON body, by its Content-Type".to_owned())
 }
 
 /// One run's client: the service, bound to the run's app and its declared URLs.
@@ -670,6 +855,8 @@ struct RunOutbound {
     service: Arc<OutboundService>,
     app: AppIdentity,
     declared: BTreeSet<String>,
+    /// Hosts reached only through a connector the app declares, by its name.
+    reserved: BTreeMap<String, String>,
     approval: Option<Approval>,
     context: String,
     /// Requests handed to the transport.
@@ -681,42 +868,106 @@ impl OutboundHost for RunOutbound {
         let started = Instant::now();
         let request = OutboundRequest::try_from_slice(request)
             .map_err(|e| format!("a malformed outbound request: {e}"))?;
-        let prepared = match self.service.prepare(
+        // The host alone, for the log: the rest of the URL (its path and query) is the
+        // app's, and can carry a user's data or a token.
+        let host = reqwest::Url::parse(&request.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+        let reserved = host
+            .as_deref()
+            .map(|h| h.trim_end_matches('.'))
+            .and_then(|h| Some((self.reserved.get(h)?, h)));
+        if let Some((connector, reserved_host)) = reserved {
+            warn!(
+                context = %self.context,
+                package = %self.app.package,
+                host = reserved_host,
+                connector = %connector,
+                refusal = "ConnectorHost",
+                "outbound request refused"
+            );
+            return Err(format!(
+                "{reserved_host} is reached only through the {connector} connector this app \
+                 declares, never by a raw request"
+            ));
+        }
+        let prepared =
+            match self
+                .service
+                .prepare(&self.app, &self.declared, self.approval.as_ref(), request)
+            {
+                Ok(prepared) => prepared,
+                Err(reason) => {
+                    // The node's name for the refusal, never its words: they quote the
+                    // request (its URL, a header or secret name the guest wrote) and this
+                    // line ships to the operator's log. The guest gets the words.
+                    let reason = reason.to_string();
+                    warn!(
+                        context = %self.context,
+                        package = %self.app.package,
+                        host = host.as_deref().unwrap_or("-"),
+                        refusal = refusal_kind(&reason),
+                        "outbound request refused"
+                    );
+                    return Err(reason);
+                }
+            };
+        let (status, body) = self.service.transmit(
             &self.app,
+            &self.context,
+            &self.sent,
             &self.declared,
-            self.approval.as_ref(),
-            request,
-        ) {
-            Ok(prepared) => prepared,
-            Err(reason) => {
-                warn!(context = %self.context, package = %self.app.package, %reason, "outbound request refused");
-                return Err(reason.to_string());
-            }
-        };
-        let _before = self.sent.fetch_add(1, Ordering::Relaxed);
-        let result = self.service.transport.send(&prepared);
-        let (status, mut body) = match result {
+            &prepared,
+            started,
+        )?;
+        borsh::to_vec(&OutboundResponse { status, body }).map_err(|e| e.to_string())
+    }
+}
+
+impl OutboundService {
+    /// Sends a prepared request, counts it in `sent`, logs it (with the prefix of
+    /// `declared` that covers it, never its path) and redacts its secrets from
+    /// the answer: every raw request and connector call ends here.
+    fn transmit(
+        &self,
+        app: &AppIdentity,
+        context: &str,
+        sent: &AtomicU64,
+        declared: &BTreeSet<String>,
+        prepared: &Prepared,
+        started: Instant,
+    ) -> Result<(u16, Vec<u8>), String> {
+        let _before = sent.fetch_add(1, Ordering::Relaxed);
+        let (status, body) = match self.transport.send(prepared) {
             Ok(answer) => answer,
-            Err(reason) => {
+            Err(error) => {
+                // Only the kind the node names, never the transport's words: they can
+                // quote what was sent (a secret, in any encoding), and this line ships
+                // to the operator's log while the reason goes to the guest.
+                let kind = FailureKind::of(&error);
                 warn!(
-                    context = %self.context,
-                    package = %self.app.package,
+                    context = %context,
+                    package = %app.package,
                     host = %prepared.host,
                     path = %prepared.url.path(),
-                    %reason,
+                    kind = kind.as_str(),
                     "outbound request failed"
                 );
-                return Err(format!("the request to {} failed: {reason}", prepared.host));
+                return Err(format!(
+                    "the request to {} failed: {}",
+                    prepared.host,
+                    kind.as_str()
+                ));
             }
         };
-        for secret in &prepared.secrets {
-            body = redact(&body, secret.as_bytes());
-        }
+        let body = prepared.redactor.redact(body);
         info!(
-            context = %self.context,
-            package = %self.app.package,
+            context = %context,
+            package = %app.package,
             host = %prepared.host,
-            path = %prepared.url.path(),
+            // The manifest's prefix that covers the URL, not its path: a path can
+            // name a user (`/users/{email}`), a prefix is what the app declared.
+            prefix = covering(declared, &prepared.url).map_or("-", String::as_str),
             status,
             request_bytes = prepared.body.len(),
             response_bytes = body.len(),
@@ -724,7 +975,7 @@ impl OutboundHost for RunOutbound {
             elapsed_ms = started.elapsed().as_millis() as u64,
             "outbound request"
         );
-        borsh::to_vec(&OutboundResponse { status, body }).map_err(|e| e.to_string())
+        Ok((status, body))
     }
 }
 
@@ -860,14 +1111,80 @@ pub fn is_public(ip: IpAddr) -> bool {
     }
 }
 
+/// Why a request to an upstream failed, as the node names it. Only this reaches
+/// the guest and the node's log: the transport's own words can quote the request,
+/// secrets included, and an upstream controls part of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailureKind {
+    /// No answer within the timeout.
+    Timeout,
+    /// No connection: the name did not resolve to a public address, or the
+    /// connection or TLS handshake failed.
+    Connect,
+    /// The answer was longer than [`MAX_RESPONSE_BODY`].
+    TooLarge,
+    /// The upstream answered with a redirect, which is never followed.
+    Redirect,
+    /// Anything else.
+    Other,
+}
+
+impl FailureKind {
+    /// The kind of `error`, from its typed causes only.
+    #[must_use]
+    pub fn of(error: &eyre::Report) -> Self {
+        for cause in error.chain() {
+            if cause.downcast_ref::<ResponseTooLarge>().is_some() {
+                return Self::TooLarge;
+            }
+            if let Some(e) = cause.downcast_ref::<reqwest::Error>() {
+                if e.is_timeout() {
+                    return Self::Timeout;
+                }
+                if e.is_redirect() {
+                    return Self::Redirect;
+                }
+                if e.is_connect() {
+                    return Self::Connect;
+                }
+            }
+        }
+        Self::Other
+    }
+
+    /// The kind's name, as logged and as the guest reads it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Connect => "connect",
+            Self::TooLarge => "too large",
+            Self::Redirect => "redirect",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// An answer longer than the cap.
+#[derive(Debug)]
+struct ResponseTooLarge(usize);
+
+impl fmt::Display for ResponseTooLarge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the response is longer than {} bytes", self.0)
+    }
+}
+
+impl std::error::Error for ResponseTooLarge {}
+
 async fn read_capped(mut response: reqwest::Response, max: usize) -> EyreResult<Vec<u8>> {
     if response.content_length().is_some_and(|n| n > max as u64) {
-        bail!("the response is longer than {max} bytes");
+        return Err(ResponseTooLarge(max).into());
     }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         if body.len() + chunk.len() > max {
-            bail!("the response is longer than {max} bytes");
+            return Err(ResponseTooLarge(max).into());
         }
         body.extend_from_slice(&chunk);
     }
@@ -906,6 +1223,27 @@ fn run_blocking<T: Send>(future: impl core::future::Future<Output = T> + Send) -
 /// A declared prefix this node can match against: `https`, a DNS host, no
 /// credentials, query or fragment. `None` for anything else, which then
 /// covers nothing.
+/// The prefix in `declared` that covers `url`, if any.
+fn covering<'a>(declared: &'a BTreeSet<String>, url: &reqwest::Url) -> Option<&'a String> {
+    declared
+        .iter()
+        .find(|d| prefix(d).is_some_and(|p| covers(&p, url)))
+}
+
+/// A refusal as the node's log names it: the word an app matches on
+/// ([`OutboundRefusal::word`]) for an approval refusal, `Invalid` for any other
+/// (a URL, header, size or secret the app got wrong). The full reason goes
+/// to the guest only.
+///
+/// [`OutboundRefusal::word`]: calimero_primitives::outbound::OutboundRefusal::word
+#[must_use]
+pub fn refusal_kind(reason: &str) -> &'static str {
+    calimero_primitives::outbound::OutboundRefusal::of(reason).map_or(
+        "Invalid",
+        calimero_primitives::outbound::OutboundRefusal::word,
+    )
+}
+
 fn prefix(declared: &str) -> Option<reqwest::Url> {
     let url = reqwest::Url::parse(declared).ok()?;
     let usable = url.scheme() == "https"
@@ -936,21 +1274,6 @@ fn covers(prefix: &reqwest::Url, url: &reqwest::Url) -> bool {
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-fn redact(body: &[u8], secret: &[u8]) -> Vec<u8> {
-    if secret.is_empty() {
-        return body.to_vec();
-    }
-    let mut out = Vec::with_capacity(body.len());
-    let mut rest = body;
-    while let Some(at) = find(rest, secret) {
-        out.extend_from_slice(&rest[..at]);
-        out.extend_from_slice(REDACTED);
-        rest = &rest[at + secret.len()..];
-    }
-    out.extend_from_slice(rest);
-    out
 }
 
 fn is_secret_name(name: &str) -> bool {
@@ -1054,3 +1377,6 @@ mod tests;
 
 #[cfg(test)]
 mod transport_tests;
+
+#[cfg(test)]
+mod log_tests;

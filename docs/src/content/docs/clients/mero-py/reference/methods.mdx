@@ -81,10 +81,11 @@ Generated from core's `docs/public/openapi.json`.
 | `secret_clear(app, name, confirm=None)` | `DELETE /apps/{app}/secrets/{name}` | Remove an app's own value of a secret. **passkey**. *Refusals:* `409 CLUSTER_NOT_UPGRADED` |
 | `secret_set(app, name, value, confirm=None)` | `PUT /apps/{app}/secrets/{name}` | Set an app's own value of a declared secret. **passkey**. *Refusals:* `400 BAD_SECRET`, `409 CLUSTER_NOT_UPGRADED`, `409 CONFLICT` |
 | `secrets(app)` | `GET /apps/{app}/secrets` | The secrets an app's release declares |
+| `set_egress(app, egress, confirm=None)` | `POST /apps/{app}/egress` | Turn one app's egress off or on. **passkey**. *Refusals:* `403 CONSENT_PAGE_REQUIRED` |
 | `storage(app)` | `GET /apps/{app}/storage` | What an app stores |
 | `transfer(app, to, confirm=None)` | `POST /apps/{app}/transfer` | Hand an app to another account. **passkey** |
 | `undelegate(app, target)` | `DELETE /apps/{app}/delegations/{target}` | Take back what an app may do on another as you. *Refusals:* `404 NOT_DELEGATED`, `409 FEATURE_NOT_ACTIVE` |
-| `undo(app, confirm=None)` | `POST /apps/{app}/undo` | Undo an app's last upgrade. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NO_RESTORE_POINT`, `409 RESTORE_POINT_UNAVAILABLE`, `409 UNDO_NOT_AS_NAMED`, `409 UNDO_STALE`, `409 UNDO_WINDOW_PASSED`, `409 UPGRADE_PENDING` |
+| `undo(app, confirm=None)` | `POST /apps/{app}/undo` | Undo an app's last upgrade. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NO_RESTORE_POINT`, `409 RESTORE_POINT_UNAVAILABLE`, `409 UNDO_NOT_AS_NAMED`, `409 UNDO_RELEASE_GONE`, `409 UNDO_STALE`, `409 UNDO_WINDOW_PASSED`, `409 UPGRADE_PENDING` |
 | `undo_view(app)` | `GET /apps/{app}/undo` | The upgrade an app may undo |
 | `unlink(app, name, confirm=None)` | `DELETE /apps/{app}/links/{name}` | Detach an app attached to an app. **passkey**. *Refusals:* `404 NOT_ATTACHED`, `409 FEATURE_NOT_ACTIVE` |
 | `update(app)` | `GET /apps/{app}/update` | Whether an update is available for an app |
@@ -229,6 +230,7 @@ Generated from core's `docs/public/openapi.json`.
 | `capabilities(org, account=…, team=…, capabilities, confirm=None)` | `POST /orgs/{org}/capabilities` | Set capabilities. **passkey** |
 | `create(name, recovery_key=…, capabilities=…)` | `POST /orgs` | Create an organization. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `409 FEATURE_NOT_ACTIVE`, `429 QUOTA_EXCEEDED` |
 | `delete(org, confirm=None)` | `DELETE /orgs/{org}` | Delete an organization. **passkey** |
+| `egress(org, egress, confirm=None)` | `POST /orgs/{org}/egress` | Turn the organization's egress off or on. **passkey**. *Refusals:* `403 CONSENT_PAGE_REQUIRED` |
 | `get(org)` | `GET /orgs/{org}` | One organization |
 | `invite_create(org, role, teams=…, ttl_secs=…, uses=…, all_apps=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/invites` | Make an invite. **passkey**. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `403 CANNOT_GRANT_UNHELD`, `409 FEATURE_NOT_ACTIVE` |
 | `invite_list(org)` | `GET /orgs/{org}/invites` | The organization's invites |

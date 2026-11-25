@@ -102,6 +102,12 @@ public struct QuoteVerifierOptions: Sendable {
     public var allowedRtmr3: [String]?
     /// TCB statuses accepted; `["UpToDate"]` by default. `Revoked` is refused even when listed.
     public var allowedTcbStatuses: [String]?
+    /// The oldest Intel TCB evaluation data (the collateral's
+    /// `tcbEvaluationDataNumber`) a TCB status may be computed against. It can
+    /// raise ``TeeTrust/defaultMinTcbEvaluationDataNumber``, never lower it:
+    /// the floor enforced is the higher of the two.
+    /// (== mero-js `minTcbEvaluationDataNumber`.)
+    public var minTcbEvaluationDataNumber: Int?
     /// Where to get collateral when the node sends none (it predates
     /// `includeCollateral`). Without it, such a node's quote is refused.
     public var fetchCollateral: (@Sendable (Data) async throws -> DcapCollateral)?
@@ -113,6 +119,7 @@ public struct QuoteVerifierOptions: Sendable {
         allowedMeasurements: [TrustedMeasurements]? = nil, allowedMrtd: [String]? = nil,
         allowedRtmr0: [String]? = nil, allowedRtmr1: [String]? = nil, allowedRtmr2: [String]? = nil,
         allowedRtmr3: [String]? = nil, allowedTcbStatuses: [String]? = nil,
+        minTcbEvaluationDataNumber: Int? = nil,
         fetchCollateral: (@Sendable (Data) async throws -> DcapCollateral)? = nil,
         now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) {
@@ -124,6 +131,7 @@ public struct QuoteVerifierOptions: Sendable {
         self.allowedRtmr2 = allowedRtmr2
         self.allowedRtmr3 = allowedRtmr3
         self.allowedTcbStatuses = allowedTcbStatuses
+        self.minTcbEvaluationDataNumber = minTcbEvaluationDataNumber
         self.fetchCollateral = fetchCollateral
         self.now = now
     }
@@ -133,12 +141,14 @@ public struct QuoteVerifierOptions: Sendable {
     public init(
         trusting trusted: TrustedReleaseOptions,
         dcapVerify: @escaping DcapVerify = { try Dcap.verify($0, collateral: $1, nowSecs: $2) },
+        minTcbEvaluationDataNumber: Int? = nil,
         fetchCollateral: (@Sendable (Data) async throws -> DcapCollateral)? = nil,
         now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) {
         self.init(
             dcapVerify: dcapVerify, allowedMeasurements: trusted.allowedMeasurements,
-            allowedTcbStatuses: trusted.allowedTcbStatuses, fetchCollateral: fetchCollateral, now: now)
+            allowedTcbStatuses: trusted.allowedTcbStatuses, minTcbEvaluationDataNumber: minTcbEvaluationDataNumber,
+            fetchCollateral: fetchCollateral, now: now)
     }
 }
 
@@ -152,6 +162,7 @@ public struct QuoteVerifier: TransportQuoteVerifier {
     let allowedImages: [String]
     let allowedRtmr: [[String]]
     let allowedStatuses: [String]
+    let tcbEvaluationDataFloor: Int
 
     public func verify(_ args: TransportQuoteArgs) async throws -> Bool {
         guard let quoteData = Data(base64Encoded: args.quoteB64) else {
@@ -173,6 +184,19 @@ public struct QuoteVerifier: TransportQuoteVerifier {
         }
         guard verified.status != "Revoked", allowedStatuses.contains(verified.status) else {
             throw TeeTrustError("The platform's TCB status is \(verified.status), which is not accepted")
+        }
+        // A status is only as current as the baseline that produced it. (A
+        // mock quote never gets here: it carries no signature, so no collateral.)
+        let minimum = tcbEvaluationDataFloor
+        guard let number = tcbEvaluationDataNumber(collateral.tcbInfo) else {
+            throw TeeTrustError(
+                "The TCB evaluation data the platform's TCB status was computed against is unknown "
+                    + "(minimum \(minimum))")
+        }
+        guard number >= minimum else {
+            throw TeeTrustError(
+                "The platform's TCB status was computed against Intel TCB evaluation data \(number), older than "
+                    + "the minimum \(minimum); point the collateral source at current collateral")
         }
         guard let td = verified.report.td10 else {
             throw TeeTrustError("The quote is a \(verified.report.type) quote, not a TDX one")
@@ -212,6 +236,9 @@ public struct QuoteVerifier: TransportQuoteVerifier {
 /// - its signatures verify against Intel's root, with collateral valid now;
 /// - the platform's TCB status is one allowed (`UpToDate` by default), and
 ///   never `Revoked`;
+/// - that status was computed against Intel TCB evaluation data no older than
+///   ``TeeTrust/defaultMinTcbEvaluationDataNumber`` (or the higher
+///   `minTcbEvaluationDataNumber`);
 /// - it is not a debug TD;
 /// - its measurements are those of a trusted image: one of
 ///   `allowedMeasurements` in full, and the MRTD and any RTMRs listed;
@@ -248,7 +275,18 @@ public func createQuoteVerifier(_ options: QuoteVerifierOptions) throws -> Quote
     }
     return QuoteVerifier(
         options: options, allowedMrtd: allowedMrtd, allowedImages: allowedImages, allowedRtmr: allowedRtmr,
-        allowedStatuses: options.allowedTcbStatuses ?? ["UpToDate"])
+        allowedStatuses: options.allowedTcbStatuses ?? ["UpToDate"],
+        tcbEvaluationDataFloor: max(
+            options.minTcbEvaluationDataNumber ?? TeeTrust.defaultMinTcbEvaluationDataNumber,
+            TeeTrust.defaultMinTcbEvaluationDataNumber))
+}
+
+/// The `tcbEvaluationDataNumber` of a collateral's TCB info, or `nil` when it names none.
+func tcbEvaluationDataNumber(_ tcbInfo: String) -> Int? {
+    guard let json = try? MeroJSON.decode(JSONValue.self, from: Data(tcbInfo.utf8)),
+        case .number(let raw)? = json["tcbEvaluationDataNumber"], let number = Int(exactly: raw), number >= 0
+    else { return nil }
+    return number
 }
 
 private func measurements(_ values: [String], _ label: String) throws -> [String] {
@@ -324,6 +362,23 @@ public struct TrustedReleaseOptions: Sendable, Equatable {
 /// Constants of TEE trust. (mero-js `PRODUCTION_PROFILE`, `NODE_RELEASE_SIGNER`,
 /// `DEFAULT_RELEASE_MIRROR`, `KMS_RELEASE_SIGNER`.)
 public enum TeeTrust {
+    /// The oldest Intel TCB evaluation data (`tcbEvaluationDataNumber` in the
+    /// collateral's TCB info) a quote's TCB status may be computed against.
+    ///
+    /// A status is only as current as the baseline that produced it. Intel
+    /// signs every baseline it ever published, so a collateral source serving
+    /// an older one passes every signature check and makes a platform that has
+    /// since fallen behind read `UpToDate`. A real quote whose collateral names
+    /// a lower number, or none, is refused;
+    /// ``QuoteVerifierOptions/minTcbEvaluationDataNumber`` can raise the floor,
+    /// never lower it.
+    ///
+    /// Mirrors core's `calimero_tee_attestation::DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER`
+    /// (crates/tee-attestation/src/policy.rs): raise the two together, or this
+    /// client trusts a node core's nodes refuse.
+    /// (== mero-js `DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER`.)
+    public static let defaultMinTcbEvaluationDataNumber = 20
+
     /// The one image profile a release publishes for production. The `debug`
     /// and `debug-read-only` images are signed and published beside it, but
     /// run with SSH and the operator's tooling inside the TD, so trusting one

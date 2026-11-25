@@ -5,6 +5,7 @@ Oct 27, 2026 · @Xabi
 Changes proposed after v0.14, in this repository (for @Xabi to fold into the current spec; D76 is a placeholder number, after the D53–D75 that later versions use):
 
 - D76: calls, timers and xcall deliveries may make outbound HTTP, recorded in their log entry so followers and retries never fetch again; S9 reworded, D12 narrowed. This reverses v0.6's "`Outcome` loses its `outbound` field".
+- Section 4: `storage` gains `put-checked`, `delete-checked` and `add-checked` (0.5.7): a write past the run's write count or bytes (D50) answers `limit-exceeded { limit, max, attempted }` instead of trapping; the SDK's writes return it as `StorageError::RunLimit` (`AppError` `RunLimit`). Events, xcalls and started actions past the bytes answer their own soft error. `put`, `delete` and `add` still trap for components built before.
 - Section 4: `context` gains `grant-scope` (0.5.6): the scope (JSON text) of the caller's grant on the instance, which its managers set for the app; the SDK table gains `env::grant_scope`.
 - Section 4: `types` gains `visitor-caller` and `context` gains `visitor` (0.5.6): the anonymous visitor a public link let in, when `caller` is `public` because of one (a component built before sees `public`); the SDK's `Caller` gains `Visitor { link, key }`.
 - Section 4: `context` gains `unit-of` (0.5.5): the app whose unit this one is a member of (the instance whose release created it), none otherwise; the SDK table gains `env::unit_of`.
@@ -312,7 +313,7 @@ State access (D46): the host core reads app state through a `StateView` trait, `
 Apps import nine Calimero interfaces (including types) and a fixed set of WASI interfaces that the host implements or stubs, and export one dispatcher; nothing else crosses the boundary.
 
 ```wit
-package calimero:app@0.5.6;
+package calimero:app@0.5.7;
 
 interface types {
   type account-id = string;
@@ -533,7 +534,7 @@ A component built against 0.5.0 keeps installing and running: the engine accepts
 
 A method declares itself a compute method in the ABI with `"kind": "compute"` and `"compute": { "fuel": u64, "memoryMib": u32, "wallSecs": u32, "result": "<method>" }`; `fuel` is required, memory defaults to 4,096 MiB and wall time to 900 s.
 `result` names a method of the app component's ABI that carries `"computeResult": true`.
-The compute component's ABI (world `calimero:app/compute@0.5.6`) lists the compute methods only, so the host does not look for the result methods there.
+The compute component's ABI (world `calimero:app/compute@0.5.7`) lists the compute methods only, so the host does not look for the result methods there.
 The host refuses at install (`BadAbi`) a compute method whose fuel is over 10^12, memory over 4,096 MiB or wall time over 900 s, or whose `result` is not a `computeResult` method; so does `compute` on any other kind.
 The SDK writes them from `#[app::compute(fuel = N, memory_mib = M, wall_secs = S, result = "method")]` on a method without `self`, and `#[app::compute_result]` on a call method.
 The node never lets a client reach either: `/intents` and `/views` answer `WrongKind` for a compute method and for a `computeResult` method, whoever the caller is.

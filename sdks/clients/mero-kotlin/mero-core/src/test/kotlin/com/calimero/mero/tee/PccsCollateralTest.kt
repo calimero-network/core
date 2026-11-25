@@ -64,12 +64,22 @@ class PccsCollateralTest {
     @Test
     fun `serves an agent quote verifier`() {
         val sample = TeeFixtures.SAMPLE_TD
-        val verifier =
-            createQuoteVerifier(
-                QuoteVerifierOptions(allowedMeasurements = listOf(TeeFixtures.IMAGE), fetchCollateral = { q -> PccsCollateral.fetch(q, "https://pccs.example", pccs.client) }, now = { AT }),
-            )
         val quote = TransportQuote(TeeFixtures.QUOTE_B64, Hex.encode(sample.reportData.copyOfRange(0, 32)), Hex.encode(sample.reportData.copyOfRange(32, 64)))
-        assertTrue(runBlocking { verifier.verify(quote) })
+        val fetch: suspend (ByteArray) -> DcapCollateral = { q -> PccsCollateral.fetch(q, "https://pccs.example", pccs.client) }
+        // This PCCS serves the 2025 sample, Intel's evaluation data 17: below the floor, so refused.
+        val verifier = createQuoteVerifier(QuoteVerifierOptions(allowedMeasurements = listOf(TeeFixtures.IMAGE), fetchCollateral = fetch, now = { AT }))
+        assertRefuses("Intel TCB evaluation data 17, older than the minimum 20") { runBlocking { verifier.verify(quote) } }
+        // The same collateral as it would read at the floor (signatures checked against the genuine copy).
+        val current =
+            createQuoteVerifier(
+                QuoteVerifierOptions(
+                    dcapVerify = TeeFixtures.GENUINE,
+                    allowedMeasurements = listOf(TeeFixtures.IMAGE),
+                    fetchCollateral = { q -> fetch(q).withEvaluationData(DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER) },
+                    now = { AT },
+                ),
+            )
+        assertTrue(runBlocking { current.verify(quote) })
     }
 
     @Test

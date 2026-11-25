@@ -8,7 +8,12 @@ export {
   transportKeyBinding,
 } from './sealed.js';
 export type { SealedFetchOptions, VerifyTransportQuote } from './sealed.js';
-export { PRODUCTION_PROFILE, createQuoteVerifier, trustedMeasurementsFromReleases } from './verify.js';
+export {
+  DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER,
+  PRODUCTION_PROFILE,
+  createQuoteVerifier,
+  trustedMeasurementsFromReleases,
+} from './verify.js';
 export type {
   DcapCollateral,
   DcapVerifiedReport,

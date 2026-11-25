@@ -88,10 +88,8 @@ fn a_turnstile_token_is_checked_with_cloudflare_from_the_call() {
     let mut t = app();
     t.mock_http("challenges.cloudflare.com", |r: &HttpRequest| {
         let body = String::from_utf8_lossy(&r.body).into_owned();
-        assert!(
-            body.starts_with("secret={{secret:TURNSTILE_SECRET}}&"),
-            "{body}"
-        );
+        // The app sends the token alone: the node attaches the bound secret.
+        assert!(body.starts_with("response="), "{body}");
         HttpResponse {
             status: 200,
             headers: Vec::new(),
