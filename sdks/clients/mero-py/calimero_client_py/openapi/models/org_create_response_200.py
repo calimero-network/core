@@ -6,6 +6,9 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
+from typing import Union
+
 T = TypeVar("T", bound="OrgCreateResponse200")
 
 
@@ -14,13 +17,17 @@ class OrgCreateResponse200:
     """
     Attributes:
         org_id (str):
+        team_id (Union[Unset, str]):
     """
 
     org_id: str
+    team_id: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         org_id = self.org_id
+
+        team_id = self.team_id
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -29,6 +36,8 @@ class OrgCreateResponse200:
                 "orgId": org_id,
             }
         )
+        if team_id is not UNSET:
+            field_dict["teamId"] = team_id
 
         return field_dict
 
@@ -37,8 +46,11 @@ class OrgCreateResponse200:
         d = dict(src_dict)
         org_id = d.pop("orgId")
 
+        team_id = d.pop("teamId", UNSET)
+
         org_create_response_200 = cls(
             org_id=org_id,
+            team_id=team_id,
         )
 
         org_create_response_200.additional_properties = d

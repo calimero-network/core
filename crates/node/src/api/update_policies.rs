@@ -290,7 +290,7 @@ async fn org_updates(
     headers: HeaderMap,
     Path(org): Path<String>,
     Query(q): Query<UpdatesQuery>,
-) -> ApiResult {
+) -> ApiResult<Json<OrgUpdates>> {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
@@ -318,12 +318,29 @@ async fn org_updates(
             updates.push(view);
         }
     }
-    Ok(Json(json!({
-        "org": org,
-        "policy": node.sys(|s| s.policy_json(&org, None))["policy"],
-        "updates": updates,
-        "next": next,
-    })))
+    // The organization's own policy, else the defaults (`SystemState::policy_json`'s).
+    let policy = node.sys(|s| {
+        s.orgs
+            .get(&org)
+            .and_then(|o| o.upgrade_policy)
+            .unwrap_or_default()
+    });
+    Ok(Json(OrgUpdates {
+        org,
+        policy,
+        updates,
+        next,
+    }))
+}
+
+/// `GET /orgs/{org}/updates`: a page of its apps with an update or a pending approval, each
+/// as `GET /apps/{app}/update` shows it with its `name`, and the organization's policy.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct OrgUpdates {
+    org: String,
+    policy: UpgradePolicy,
+    updates: Vec<Value>,
+    next: Option<String>,
 }
 
 pub(super) fn routes() -> Router<Arc<Node>> {
@@ -338,4 +355,36 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         )
         .route("/apps/{app}/upgrade-approvals", post(app_approve_upgrade))
         .route("/orgs/{org}/updates", get(org_updates))
+}
+
+/// `OrgUpdates` writes the bytes the `json!` it replaced wrote (review finding E7).
+#[cfg(test)]
+mod answer_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn the_updates_page_answers_as_before() {
+        let policy = UpgradePolicy::default();
+        let updates = vec![json!({ "available": null, "name": "App One" })];
+        for next in [Some("a9".to_owned()), None] {
+            let typed = OrgUpdates {
+                org: "o1".to_owned(),
+                policy,
+                updates: updates.clone(),
+                next: next.clone(),
+            };
+            let before = json!({
+                "org": "o1",
+                "policy": json!({ "org": "o1", "policy": policy })["policy"],
+                "updates": updates,
+                "next": next,
+            });
+            assert_eq!(
+                serde_json::to_string(&typed).expect("serializes"),
+                serde_json::to_string(&before).expect("serializes")
+            );
+        }
+    }
 }

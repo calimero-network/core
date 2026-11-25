@@ -10,6 +10,18 @@
 )]
 use super::*;
 
+/// What `SetEgress` answers: the switch as set, the organization's own, and the instance when
+/// one was named.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EgressSet {
+    pub org: OrgId,
+    pub egress: bool,
+    pub org_egress_off: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<AppId>,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     match cmd {
@@ -264,11 +276,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 }
             }
             let org_off = s.orgs.get(&org).is_some_and(|o| o.egress_off);
-            let mut out = json!({ "org": org, "egress": egress, "orgEgressOff": org_off });
-            if let Some(id) = app {
-                out["app"] = json!(id);
-            }
-            Ok(out)
+            Ok(json!(EgressSet {
+                org,
+                egress,
+                org_egress_off: org_off,
+                app,
+            }))
         }
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.

@@ -44,6 +44,7 @@ import com.calimero.mero.api.models.DeploymentSecretClear200Response
 import com.calimero.mero.api.models.DeploymentSecretSet200Response
 import com.calimero.mero.api.models.DeploymentSecretSetRequest
 import com.calimero.mero.api.models.DeploymentSecrets200Response
+import com.calimero.mero.api.models.DeploymentWithdraw200Response
 import com.calimero.mero.api.models.Error
 import com.calimero.mero.api.models.InviteKey
 import com.calimero.mero.api.models.SignUpInviteCreate200Response
@@ -986,7 +987,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * @param id 
      * @param app 
      * @param confirmOnly May be absent. (optional)
-     * @return DeploymentOffer200Response
+     * @return DeploymentWithdraw200Response
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -995,11 +996,11 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun deploymentWithdraw(id: kotlin.String, app: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeploymentOffer200Response = withContext(Dispatchers.IO) {
+    suspend fun deploymentWithdraw(id: kotlin.String, app: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeploymentWithdraw200Response = withContext(Dispatchers.IO) {
         val localVarResponse = deploymentWithdrawWithHttpInfo(id = id, app = app, confirmOnly = confirmOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentOffer200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentWithdraw200Response
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1020,16 +1021,16 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
      * @param id 
      * @param app 
      * @param confirmOnly May be absent. (optional)
-     * @return ApiResponse<DeploymentOffer200Response?>
+     * @return ApiResponse<DeploymentWithdraw200Response?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun deploymentWithdrawWithHttpInfo(id: kotlin.String, app: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeploymentOffer200Response?> = withContext(Dispatchers.IO) {
+    suspend fun deploymentWithdrawWithHttpInfo(id: kotlin.String, app: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeploymentWithdraw200Response?> = withContext(Dispatchers.IO) {
         val localVariableConfig = deploymentWithdrawRequestConfig(id = id, app = app, confirmOnly = confirmOnly)
 
-        return@withContext request<ConfirmOnly, DeploymentOffer200Response>(
+        return@withContext request<ConfirmOnly, DeploymentWithdraw200Response>(
             localVariableConfig
         )
     }

@@ -32,13 +32,17 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param orgId 
+ * @param teamId 
  */
 @Serializable
 
 data class OrgCreate200Response (
 
     @SerialName(value = "orgId")
-    val orgId: kotlin.String
+    val orgId: kotlin.String,
+
+    @SerialName(value = "teamId")
+    val teamId: kotlin.String? = null
 
 ) {
 

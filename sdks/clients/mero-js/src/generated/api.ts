@@ -13968,6 +13968,13 @@ export interface operations {
                     "application/json": {
                         deployment: string;
                         app: string;
+                        offer: {
+                            package: string;
+                            version: string;
+                            addedBy: string;
+                            /** Format: int64 */
+                            addedAt: number;
+                        };
                     };
                 };
             };
@@ -17309,6 +17316,7 @@ export interface operations {
                 content: {
                     "application/json": {
                         orgId: string;
+                        teamId?: string;
                     };
                 };
             };

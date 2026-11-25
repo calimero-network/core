@@ -16846,11 +16846,37 @@
                     },
                     "app": {
                       "type": "string"
+                    },
+                    "offer": {
+                      "type": "object",
+                      "properties": {
+                        "package": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        },
+                        "addedBy": {
+                          "type": "string"
+                        },
+                        "addedAt": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "package",
+                        "version",
+                        "addedBy",
+                        "addedAt"
+                      ]
                     }
                   },
                   "required": [
                     "deployment",
-                    "app"
+                    "app",
+                    "offer"
                   ]
                 }
               }
@@ -23319,6 +23345,9 @@
                   "type": "object",
                   "properties": {
                     "orgId": {
+                      "type": "string"
+                    },
+                    "teamId": {
                       "type": "string"
                     }
                   },

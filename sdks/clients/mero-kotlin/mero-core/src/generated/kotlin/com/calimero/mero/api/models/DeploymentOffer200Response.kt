@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.DeploymentOffer200ResponseOffer
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -33,6 +34,7 @@ import kotlinx.serialization.Contextual
  *
  * @param deployment 
  * @param app 
+ * @param offer 
  */
 @Serializable
 
@@ -42,7 +44,10 @@ data class DeploymentOffer200Response (
     val deployment: kotlin.String,
 
     @SerialName(value = "app")
-    val app: kotlin.String
+    val app: kotlin.String,
+
+    @SerialName(value = "offer")
+    val offer: DeploymentOffer200ResponseOffer
 
 ) {
 

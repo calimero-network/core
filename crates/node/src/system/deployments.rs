@@ -9,6 +9,66 @@
 )]
 use super::*;
 
+/// What `GrantDeployer` answers: the grant's key, whom it names and its terms.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeployerGranted {
+    pub key: String,
+    pub deployer: Deployer,
+    pub grant: DeployerGrant,
+}
+
+/// What `RevokeDeployer` answers: the key of the grant withdrawn.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeployerRevoked {
+    pub key: String,
+}
+
+/// What `CreateDeployment` answers: its id and record.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeploymentMade {
+    pub id: String,
+    pub deployment: Deployment,
+}
+
+/// What `OfferApp` answers: the offer now in force.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppOffered {
+    pub deployment: String,
+    pub app: String,
+    pub offer: Offer,
+}
+
+/// What `WithdrawApp` answers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppWithdrawn {
+    pub deployment: String,
+    pub app: String,
+}
+
+/// What `DeleteDeployment` answers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeploymentDeleted {
+    pub deployment: String,
+}
+
+/// What `SetDeploymentSecret` answers: never the value, its fingerprint.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentSecretSet {
+    pub deployment: String,
+    pub name: String,
+    pub fingerprint: String,
+    pub set_by: String,
+    pub set_at: u64,
+}
+
+/// What `ClearDeploymentSecret` answers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeploymentSecretCleared {
+    pub deployment: String,
+    pub name: String,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     match cmd {
@@ -189,7 +249,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 granted_by: actor,
             };
             let _prev = s.deployers.insert(key.clone(), grant.clone());
-            Ok(json!({ "key": key, "deployer": deployer, "grant": grant }))
+            Ok(json!(DeployerGranted {
+                key,
+                deployer,
+                grant
+            }))
         }
         SystemCmd::RevokeDeployer {
             deployer, actor, ..
@@ -197,7 +261,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             s.grants_deployers(&actor)?;
             let key = deployer.key();
             let _gone = s.deployers.remove(&key).ok_or("no such deployer grant")?;
-            Ok(json!({ "key": key }))
+            Ok(json!(DeployerRevoked { key }))
         }
         SystemCmd::SetDeploymentsGranted { proof: _ } => {
             let g = s
@@ -266,7 +330,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 created_by: actor,
                 created_at: at,
             };
-            let out = json!({ "id": id, "deployment": d });
+            let out = json!(DeploymentMade {
+                id: id.clone(),
+                deployment: d.clone(),
+            });
             let _prev = s.deployments.insert(id, d);
             Ok(out)
         }
@@ -310,7 +377,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 added_by: actor,
                 added_at: at,
             };
-            let out = json!({ "deployment": deployment, "app": app, "offer": offer });
+            let out = json!(AppOffered {
+                deployment: deployment.clone(),
+                app: app.clone(),
+                offer: offer.clone(),
+            });
             if let Some(d) = s.deployments.get_mut(&deployment) {
                 let _prev = d.apps.insert(app, offer);
             }
@@ -338,7 +409,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             if let Some(d) = s.deployments.get_mut(&deployment) {
                 let _gone = d.apps.remove(&app);
             }
-            Ok(json!({ "deployment": deployment, "app": app }))
+            Ok(json!(AppWithdrawn { deployment, app }))
         }
         SystemCmd::DeleteDeployment {
             deployment,
@@ -358,7 +429,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             }
             let _gone = s.deployments.remove(&deployment);
             let _secrets = s.deployment_secrets.remove(&deployment);
-            Ok(json!({ "deployment": deployment }))
+            Ok(json!(DeploymentDeleted { deployment }))
         }
         SystemCmd::SetDeploymentSecret {
             deployment,
@@ -400,12 +471,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 set_at: at,
             };
             // What the routes answer of it: never the value.
-            let out = json!({
-                "deployment": deployment,
-                "name": name,
-                "fingerprint": secret.fingerprint,
-                "setBy": secret.set_by,
-                "setAt": at,
+            let out = json!(DeploymentSecretSet {
+                deployment: deployment.clone(),
+                name: name.clone(),
+                fingerprint: secret.fingerprint.clone(),
+                set_by: secret.set_by.clone(),
+                set_at: at,
             });
             let _prev = s
                 .deployment_secrets
@@ -432,7 +503,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             {
                 let _empty = s.deployment_secrets.remove(&deployment);
             }
-            Ok(json!({ "deployment": deployment, "name": name }))
+            Ok(json!(DeploymentSecretCleared { deployment, name }))
         }
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.

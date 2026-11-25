@@ -243,7 +243,7 @@ class DeploymentsFacade internal constructor(
         id: kotlin.String,
         app: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentOffer200Response =
+    ): DeploymentWithdraw200Response =
         api(passkey, null, emptySet()).signUpAndDeployments.deploymentWithdraw(id = id, app = app)
 
     /**

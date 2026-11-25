@@ -10,6 +10,23 @@
 use super::*;
 use crate::proof::verify_consent;
 
+/// What an organization recovery's start answers: when it started and when it may finish
+/// (Unix seconds).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryStarted {
+    pub started_at: u64,
+    pub ready_at: u64,
+}
+
+/// What an organization recovery's finish answers: the organization and the owners it replaced.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryFinished {
+    pub org: OrgId,
+    pub previous_owners: Vec<AccountId>,
+}
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     let s = proofs.s;
@@ -414,7 +431,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                 started_at: at,
                 ready_at: at.saturating_add(crate::types::RECOVERY_DELAY_SECS),
             };
-            let out = json!({ "startedAt": pending.started_at, "readyAt": pending.ready_at });
+            let out = json!(RecoveryStarted {
+                started_at: pending.started_at,
+                ready_at: pending.ready_at,
+            });
             r.pending = Some(pending);
             Ok(out)
         }
@@ -473,7 +493,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                     app.owner.clone_from(&actor);
                 }
             }
-            Ok(json!({ "org": org, "previousOwners": previous }))
+            Ok(json!(RecoveryFinished {
+                org,
+                previous_owners: previous,
+            }))
         }
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.

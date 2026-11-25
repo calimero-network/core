@@ -36,7 +36,35 @@ mod routing;
 mod sign_up;
 mod updates;
 
-pub use approvals::egress_args;
+pub use approvals::{egress_args, EgressSet};
+pub use deployments::{
+    AppOffered, AppWithdrawn, DeployerGranted, DeployerRevoked, DeploymentDeleted, DeploymentMade,
+    DeploymentSecretCleared, DeploymentSecretSet,
+};
+pub use orgs::{OrgCreated, OrgDeleted, OrgRenamed, OrgSettingsSet, TeamCreated, TeamDeleted};
+pub use packages::PublisherBound;
+pub use recovery::{RecoveryFinished, RecoveryStarted};
+
+/// What `ScopeApps` answers: the organization's mode after, and each package's app team.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppTeamsScoped {
+    pub mode: crate::types::OrgMode,
+    pub teams: Vec<ScopedTeam>,
+}
+
+/// One package's app team in [`AppTeamsScoped`]: whether it was made, the instances moved onto
+/// it, the rows added, how it is joined now and how many lost it by a close.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopedTeam {
+    pub package: String,
+    pub team_id: TeamId,
+    pub created: bool,
+    pub apps: Vec<AppId>,
+    pub added: usize,
+    pub join: Option<TeamJoin>,
+    pub dropped: usize,
+}
 pub use rejection::{Rejection, RejectionKind};
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
@@ -4036,15 +4064,15 @@ impl SystemState {
                 None => {}
             }
             let join = o.teams.get(&team_id).map(|t| t.join);
-            report.push(json!({
-                "package": plan.package,
-                "teamId": team_id,
-                "created": created,
-                "apps": plan.instances,
-                "added": added,
-                "join": join,
-                "dropped": dropped,
-            }));
+            report.push(ScopedTeam {
+                package: plan.package.clone(),
+                team_id: team_id.clone(),
+                created,
+                apps: plan.instances.clone(),
+                added,
+                join,
+                dropped,
+            });
             for id in &plan.instances {
                 if let Some(a) = self.apps.get_mut(id) {
                     a.access = a.access.onto_team(team_id.clone());
@@ -4084,7 +4112,10 @@ impl SystemState {
             .orgs
             .get(org)
             .map_or(crate::types::OrgMode::Legacy, Org::mode);
-        Ok(json!({ "mode": mode, "teams": report }))
+        Ok(json!(AppTeamsScoped {
+            mode,
+            teams: report
+        }))
     }
 
     /// [`SystemCmd::MoveApp`], judged and applied as one step: every rule is
@@ -7414,5 +7445,7 @@ impl Machine for SystemMachine {
 #[cfg(test)]
 mod queue_tests;
 
+#[cfg(test)]
+mod answer_tests;
 #[cfg(test)]
 mod tests;

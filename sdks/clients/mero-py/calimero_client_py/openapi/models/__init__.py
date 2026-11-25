@@ -314,6 +314,7 @@ from .deployment_get_response_200_owner_kind import DeploymentGetResponse200Owne
 from .deployment_list_response_200 import DeploymentListResponse200
 from .deployment_offer_body import DeploymentOfferBody
 from .deployment_offer_response_200 import DeploymentOfferResponse200
+from .deployment_offer_response_200_offer import DeploymentOfferResponse200Offer
 from .deployment_orgs_response_200 import DeploymentOrgsResponse200
 from .deployment_orgs_response_200_orgs_item import DeploymentOrgsResponse200OrgsItem
 from .deployment_orgs_response_200_orgs_item_apps_item import (
@@ -1067,6 +1068,7 @@ __all__ = (
     "DeploymentListResponse200",
     "DeploymentOfferBody",
     "DeploymentOfferResponse200",
+    "DeploymentOfferResponse200Offer",
     "DeploymentOrgsResponse200",
     "DeploymentOrgsResponse200OrgsItem",
     "DeploymentOrgsResponse200OrgsItemAppsItem",

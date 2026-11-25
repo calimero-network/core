@@ -5781,9 +5781,23 @@ pub struct DeploymentDeleteResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentOfferResponseOffer {
+    pub package: String,
+    pub version: String,
+    #[serde(rename = "addedBy")]
+    pub added_by: String,
+    #[serde(rename = "addedAt")]
+    pub added_at: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentOfferResponse {
     pub deployment: String,
     pub app: String,
+    pub offer: DeploymentOfferResponseOffer,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -6712,6 +6726,9 @@ pub struct InviteRedeemResponse {
 pub struct OrgCreateResponse {
     #[serde(rename = "orgId")]
     pub org_id: String,
+    #[serde(rename = "teamId")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
