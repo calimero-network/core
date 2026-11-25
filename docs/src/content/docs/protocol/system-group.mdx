@@ -317,3 +317,97 @@ same command for the same reason:
 | `maxFuelPerDeveloperPerDay` | `"0"` (a decimal string; no limit) | not at apply: a client's call or an xcall delivery to any app of the developer, where it runs, against the developer's fuel today in its apps' usage books, refreshed from the peers every 5 s (Q20, D76). The developer is `usage::developer`'s, the identity usage is billed to: a deployment's owner for its instances, else the app's organization or owner (D78); `init`, timer ticks and event handlers still run, and count. Written only once every node runs a release that knows it (`409 UPGRADE_PENDING`) |
 
 `GET /auth/usage` shows an account what it uses against them.
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Refusals carry their kind
+
+Code: `system/rejection.rs`, `node::rejected`, `system::output`.
+
+A refusal is a `system::Rejection`: a `RejectionKind` and a message. The status and code a client
+sees come from the kind (`RejectionKind::status`, `code`), never from the wording: `apply` answers
+`{"err": <message>, "code": <code>}` and `system::output` reads the kind back from `code`.
+A refusal with its own status is a `Rejection` constant (`NOT_A_DEPLOYER`, `UNIT_MEMBER`, the update
+refusals) or made by `Rejection::quota`, `Rejection::sign_up` or `Stall::rejection`; a plain `&str`
+converts to `REJECTED` (400).
+
+### Decisions carry proofs
+
+Code: `proof.rs`, `system::authorize`, run before every command.
+
+Consent is logged as `{ subject, method, args, nonce, assertion }` (`api::consent` keeps the nonce
+in `Pending::Confirm`); `apply` rebuilds `confirm_challenge`, verifies it under a passkey of the
+actor (`calimero_identity::verify_consent`), checks the statement says what the command does, and
+spends it (`used_proofs`).
+Operator decisions carry an Ed25519 signature under `SystemState::operator_key` (`--operator-key`,
+recorded at genesis); ops routes answer `428 OPERATOR_SIGNATURE_REQUIRED` with the bytes to sign
+(`api::operator_proof`).
+An org run is consented once (`StartUpgradeRun { consent }`: `__upgrade_org`, its retry, or a
+publisher's `__upgrade_published` over every instance of its package); its per-app `UpgradeApp { run
+}` is judged by the run, found in whichever organization keeps it.
+`BindPublisher` carries a passkey consent over the key's current binding generation;
+`SetReleaseDeadline` the operator's signature (`cluster / __release_deadline / { version, after }`;
+`after: null` lifts it).
+Credentials and memberships carry the person's consent too (`account:<a>`: `__add_passkey {
+credentialId, publicKey }`, signed by a passkey the account already has; `__remove_passkey {
+credentialId }`; `__create_api_key`, `system::api_key_args`, the key's hash included; `org:<org>`:
+`__set_org_role { account, role }`, `__remove_member { account }`, `__set_team_member { team,
+account, lead, role, capabilities }`, `__remove_team_member { team, account }` (it takes the rows
+below the team too, `RemoveTeamMember { subtree }`), `__set_team_members { account, teams }` and
+`__remove_team_members { account, teams }` (one account's rows in up to `MAX_TEAM_BATCH` teams, each
+judged by the single command's rule, all or nothing: `SetTeamMembers`, `RemoveTeamMembers`,
+`system::team_members_args`, `system::remove_team_members_args`), `__delete_team { team, apps }`
+(only when the team's subtree holds apps, `system::team_apps`; `DeleteTeam { apps_need_consent }`),
+`__set_capabilities { team, account, capabilities }`, `__set_all_apps { account, allApps }`
+(`Org::all_apps`: each app team made after gives them a row; `all_apps_rows` on `ScopeApps`,
+`MoveApp`, `UpdateTeam`), `__set_default_capabilities { capabilities }` (a team's: `{ team,
+capabilities }`, `system::default_capabilities_args`), `__create_invite`, `system::invite_args`,
+`__revoke_invite { inviteKey }`, `__scope_apps { apps, shared }`, `system::scope_apps_args`).
+A step-up whose arguments the node makes (an API key, an invite token, the registered credential)
+goes through `api::consent_minted`: the first request keeps them, and what the retry needs but must
+not log (`Pending::Confirm::carry`), with the challenge.
+Invites are kept under the token's Ed25519 public key (`proof::invite_key`); `RedeemInvite` carries
+the token key's signature (`proof::sign_invite_redeem`), so a node that only saw the log cannot
+redeem one.
+A redemption that changes nothing for the account (a member at the invite's role or above, in every
+team it names) spends no use (`RedeemInvite { free_when_unchanged }`, which the API always sets;
+absent in an entry an earlier release logged, which replays spending one).
+The fleet carries the operator's signature (`cluster / __register_node { id, addr, zone }`,
+`__remove_node { id }`, `__set_quotas { quotas }`, `__set_pools { pools }`, `__set_price_table {
+table }`, `__set_org_quotas { payer, quotas }`; `<app> / __set_replicas { replicas }`, one signature
+for both of a move's writes: the union applies with it unspent, the target spends it).
+The configured peers come with `Genesis { nodes }`; `reconcile` registers nobody.
+The consent page (`consent_page::act`) logs the same consent as the API, its assertion made on the
+node's own origin (`apply` checks the signature and the statement, not the origin).
+Sessions too: a sign-up (`CreateAccount`) carries the new passkey's assertion over
+`system::account_args` (`account:<id> / __create_account`; `register/finish` answers `412` once the
+registration verifies, the pending `Pending::SignUp` keeps the account and the first refresh token,
+and the retry's `confirm` logs it); a sign-in's `CreateRefresh` carries the login assertion, whose
+challenge is that of `session / __sign_in / system::sign_in_args` (`api::NewSession`, made in
+`login_begin`); a refresh token stands for an Ed25519 key (`proof::refresh_key`, kept in
+`RefreshRecord::key`) that signs its exchange (`UseRefresh::signature`,
+`proof::refresh_use_message`; a record without a key is not exchanged); `SetSignCount` carries the
+assertion whose counter it records (`calimero_identity::assertion_counter`); `RevokeApiKey` the
+account's consent (`__revoke_api_key { keyId }`).
+A cluster requires these session proofs from `SystemState::session_proofs_from` on: a genesis this
+release logs (`Genesis { session_proofs: true }`), or in a cluster begun before, the
+`RequireSessionProofs` its first system leader on this release writes (`reconcile`).
+An entry before it (what an earlier release logged, replayed on restart) applies as it did, so
+replicas never diverge on it.
+The flags that name an earlier release's rule (`owner_in_org`, `owner_in_team`, `apps_need_consent`,
+`teams_seen`, `free_when_unchanged`, `subtree`, `accounts_in_app_team`, `member_child_teams`,
+`revoke_api_keys`, `by_release`, `close_drops_below`, `all_apps_rows`, `name_fits`) work the same
+way: from `SystemState::current_rules_from` on (the `RequireCurrentRules` the first system leader on
+this release writes from `reconcile` once the logged cluster version brings
+`Feature::CurrentRules`), `SystemMachine::run` reads them as set whatever the entry says
+(`SystemCmd::hold_to_current_rules`), and an organization's upgrade run is derived at apply
+([upgrade runs](/protocol/upgrades/)); before it, an entry applies as it was logged.
+The API keeps setting every flag, so a replica on the release before applies this release's entries
+alike.
+It is independent of `AttributeByRelease` (release attribution,
+[governance](/protocol/governance/)): `reconcile` writes each mark once, and each gates only its own
+rule from where it sits in the log.

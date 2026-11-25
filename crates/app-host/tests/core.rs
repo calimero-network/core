@@ -1364,8 +1364,9 @@ fn only_views_search_and_queries_are_bounded() {
     assert!(bare.search_query(&query(10, "eggs")).unwrap().is_err());
 }
 
-/// C7: a run makes at most `MAX_SEARCHES_PER_RUN` searches, and each one owes fuel for the
-/// documents it matched and the hits it returned; a host without host fuel owes none.
+/// C7: a request makes at most `MAX_SEARCHES_PER_RUN` searches, across its run and the views
+/// its xcalls reach, and each one owes fuel for the documents it matched and the hits it
+/// returned.
 #[test]
 fn searches_are_capped_per_run_and_owe_fuel() {
     let state = base(&[]);
@@ -1385,12 +1386,89 @@ fn searches_are_capped_per_run_and_owe_fuel() {
     );
     assert_eq!(view.take_host_fuel(), 0, "taken once");
 
-    let mut free = core_for(&state, &inv(InvocationKind::View))
+    // Another run of the same request (a view its xcall reached) shares the count: none left.
+    let mut target = core_for(&state, &inv(InvocationKind::View))
         .with_search(Arc::new(OneHit))
-        .with_host_fuel(false);
-    assert!(free.search_query(&query(10, "eggs")).unwrap().is_ok());
-    assert_eq!(free.storage_get(b"k"), Ok(None));
-    assert_eq!(free.take_host_fuel(), 0);
+        .with_search_budget(view.search_budget());
+    assert_eq!(
+        target.search_query(&query(10, "eggs")).unwrap(),
+        Err(calimero_app_host::SEARCH_TOO_MANY.to_owned())
+    );
+    // A fresh request has its own.
+    let mut fresh = core_for(&state, &inv(InvocationKind::View)).with_search(Arc::new(OneHit));
+    assert!(fresh.search_query(&query(10, "eggs")).unwrap().is_ok());
+}
+
+/// What a state call owes the host core is the table's: a state access and a fuel per byte
+/// of the key and the value (the engine takes `FUEL_HOST_CALL` itself).
+#[test]
+fn a_read_owes_what_the_fuel_table_says() {
+    let value = vec![1u8; 64 << 10];
+    let state = base(&[(b"big", &value)]);
+    let host = core_for(&state, &inv(InvocationKind::View));
+    assert_eq!(host.storage_get(b"big"), Ok(Some(value.clone())));
+    let mut host = host;
+    assert_eq!(
+        host.take_host_fuel(),
+        calimero_app_host::FUEL_STATE_ACCESS
+            + (3 + value.len()) as u64 * calimero_app_host::FUEL_PER_BYTE
+    );
+}
+
+/// Review of C7, findings 2 and 8: a host call owes for the bytes it was handed before it
+/// checks anything, so a refused or denied call costs fuel too; a denial is still
+/// `HostDenied`.
+#[test]
+fn refused_and_denied_calls_owe_for_the_bytes_they_were_handed() {
+    let state = base(&[]);
+    let mut view = core_for(&state, &inv(InvocationKind::View)).with_search(Arc::new(OneHit));
+    let long = "x".repeat(4_096);
+    assert!(view.search_query(&query(10, &long)).unwrap().is_err());
+    let owed = view.take_host_fuel();
+    assert!(owed >= 4_096, "a refused 4 KiB query owes {owed}");
+    assert!(view.search_query(&query(0, "eggs")).unwrap().is_err());
+    let owed = view.take_host_fuel();
+    assert!(owed >= 4, "a refused limit owes {owed}");
+
+    let mut call = core_for(&state, &inv(InvocationKind::Call));
+    let big = vec![0u8; 1 << 20];
+    assert!(call.xcall_call("other", "m", &big).unwrap().is_err());
+    let owed = call.take_host_fuel();
+    assert!(owed >= 1 << 20, "refused 1 MiB xcall arguments owe {owed}");
+
+    let mut call = core_for(&state, &inv(InvocationKind::Call)).with_search(Arc::new(OneHit));
+    assert!(matches!(
+        call.search_query(&query(10, &long)),
+        Err(HostDenied(_))
+    ));
+    let owed = call.take_host_fuel();
+    assert!(owed >= 4_096, "a denied 4 KiB query owes {owed}");
+}
+
+/// C7 with C10: a write refused with a run limit (`put-checked`, `delete-checked`,
+/// `add-checked`) is a soft error, and still owes for the bytes it was handed.
+#[test]
+fn writes_refused_with_a_run_limit_owe_for_the_bytes_they_were_handed() {
+    let state = base(&[]);
+    let per_byte = calimero_app_host::FUEL_PER_BYTE;
+
+    let mut call = core_for(&state, &inv(InvocationKind::Call));
+    let big = vec![0u8; MAX_RUN_BYTES + 1];
+    assert!(matches!(call.storage_put(b"k", &big), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), (1 + big.len()) as u64 * per_byte);
+
+    let mut call = core_for(&state, &inv(InvocationKind::Call));
+    for i in 0..MAX_WRITES {
+        call.storage_put(&i.to_be_bytes(), b"v").unwrap().unwrap();
+    }
+    call.take_host_fuel();
+    let key = vec![7u8; 1_000];
+    assert!(matches!(call.storage_put(&key, b"value"), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), (key.len() + 5) as u64 * per_byte);
+    assert!(matches!(call.storage_delete(&key), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), key.len() as u64 * per_byte);
+    assert!(matches!(call.storage_add(&key, 1), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), key.len() as u64 * per_byte);
 }
 
 #[test]
