@@ -6,7 +6,7 @@
  * nodes the client would attest and talk to. Synthetic data only.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CLOUD_ENVIRONMENTS, CalimeroClient, DEFAULT_DIRECTORY, cloudEnvironment } from './index.js';
 
@@ -42,7 +42,18 @@ describe('cloudEnvironment', () => {
   });
 
   it('is null for every other host, and for the apps domains themselves', () => {
-    for (const host of ['my-app.vercel.app', 'localhost', 'kv.example.com', 'apps.calimero.network', 'evilapps.calimero.network', 'apps.calimero.network.evil.com', '']) {
+    for (const host of [
+      'my-app.vercel.app',
+      'localhost',
+      'kv.example.com',
+      'apps.calimero.network',
+      'evilapps.calimero.network',
+      'apps.calimero.network.evil.com',
+      'apps.relay.staging.cloud.calimero.network',
+      'xapps.relay.staging.cloud.calimero.network',
+      'evil-apps.relay.staging.cloud.calimero.network.attacker.com',
+      '',
+    ]) {
       expect(cloudEnvironment(host), host).toBeNull();
     }
   });
@@ -145,5 +156,48 @@ describe('CalimeroClient.connect', () => {
     expect(prod.cluster).toBe('eu-shared-1');
     expect(staging.nodes).toEqual(['https://s1.example']);
     expect(asked).toEqual([`${DEFAULT_DIRECTORY}/eu-shared-1`, `${STAGING_DIRECTORY}/staging-1`]);
+  });
+});
+
+describe("CalimeroClient.connect's default directory follows the page's Calimero Cloud", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const routes = {
+    [`${DEFAULT_DIRECTORY}/c1`]: listing('c1', ['https://p1.example']),
+    [`${STAGING_DIRECTORY}/c1`]: listing('c1', ['https://s1.example']),
+    ['https://dir.example/c1']: listing('c1', ['https://x1.example']),
+  };
+
+  it("a page on staging's apps domain asks staging's directory", async () => {
+    vi.stubGlobal('location', { hostname: 'dlabel.apps.relay.staging.cloud.calimero.network' });
+    const { fetch, asked } = fake(routes);
+    const client = await CalimeroClient.connect({ cluster: 'c1', policy, fetch });
+    expect(asked).toEqual([`${STAGING_DIRECTORY}/c1`]);
+    expect(client.nodes).toEqual(['https://s1.example']);
+  });
+
+  it("production pages, every other host and Node (no location) ask production's", async () => {
+    expect(globalThis.location).toBeUndefined();
+    const hosts = [
+      undefined,
+      'abc.apps.calimero.network',
+      'localhost',
+      'evil-apps.relay.staging.cloud.calimero.network.attacker.com',
+      'xapps.relay.staging.cloud.calimero.network',
+    ];
+    for (const hostname of hosts) {
+      if (hostname) vi.stubGlobal('location', { hostname });
+      const { fetch, asked } = fake(routes);
+      await CalimeroClient.connect({ cluster: 'c1', policy, fetch });
+      expect(asked, hostname).toEqual([`${DEFAULT_DIRECTORY}/c1`]);
+    }
+  });
+
+  it('an explicit directory or environment wins over the page', async () => {
+    vi.stubGlobal('location', { hostname: 'dlabel.apps.relay.staging.cloud.calimero.network' });
+    const { fetch, asked } = fake(routes);
+    await CalimeroClient.connect({ cluster: 'c1', directory: 'https://dir.example', policy, fetch });
+    await CalimeroClient.connect({ cluster: 'c1', environment: 'production', policy, fetch });
+    expect(asked).toEqual(['https://dir.example/c1', `${DEFAULT_DIRECTORY}/c1`]);
   });
 });

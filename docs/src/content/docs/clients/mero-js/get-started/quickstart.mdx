@@ -69,6 +69,10 @@ client.deployment; // the deployment the page was opened for, or null
 - The manifest only says where the nodes are; each is still attested under
   your `policy`. `cloudEnvironment()` reads the page's hostname, which the
   browser checked over TLS: `'production'`, `'staging'`, or `null` elsewhere.
+- On a Calimero Cloud's apps domain the client also defaults to that Cloud's
+  servers: its directory (for a `{ cluster }` with no `environment`) and its
+  release and collateral mirrors (`CLOUD_ENVIRONMENTS[env].cloudUrl`). Explicit
+  options win.
 - `CLOUD_ENVIRONMENTS[env].trust` is what that Cloud's nodes need in
   `policy.release`: nothing for production (`locked-read-only` only); for
   staging, `profiles` (all three image profiles) with `allowDebugProfile`. With

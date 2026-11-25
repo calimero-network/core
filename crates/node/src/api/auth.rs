@@ -1115,8 +1115,12 @@ async fn upgrade_scope(
                 "an upgrade key needs an app that runs a signed package",
             )
         })?;
+    // A package with no release the account may use answers as a missing one.
     let signer = node
-        .sys(|s| s.packages.get(&package).map(|p| p.signer_id.clone()))
+        .sys(|s| {
+            s.package_used(&package, account, false)
+                .map(|p| p.signer_id.clone())
+        })
         .ok_or_else(|| ApiError::not_found("no such package"))?;
     if !node.sys(|s| s.may_upgrade(&app, account, owner_approves)) {
         return Err(ApiError::forbidden(if owner_approves {
@@ -1670,6 +1674,7 @@ async fn alias_set(
     Json(body): Json<AliasBody>,
 ) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
+    p.settings_write()?;
     let account = p.account()?;
     let app = node.canonical_app_id(&body.app);
     let rec = node.app(&app).await?;
@@ -1692,7 +1697,9 @@ async fn alias_delete(
     headers: HeaderMap,
     Path(alias): Path<String>,
 ) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.settings_write()?;
+    let account = p.account()?;
     let _ok = node
         .sys_write(&SystemCmd::SetAlias {
             account,

@@ -214,3 +214,35 @@ async fn another_organizations_members_never_show() {
     let e = members(&alice, "no-such-org").await.unwrap_err();
     assert!(status(&e).starts_with("404"), "{e}");
 }
+
+/// Security review: `POST /orgs/{org}/invites` took any `ttlSecs`, so an admin
+/// could mint an invite that outlived their removal by years (the consent page
+/// already held one to 90 days). The route holds it to the same bound, before
+/// the passkey is asked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_invites_life_is_bounded_on_every_path() {
+    let c = Cluster::start(1).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let org = new_org(&alice, "Acme").await;
+    for ttl in [0_u64, 90 * 24 * 3600 + 1, 3_000_000_000] {
+        let e = alice
+            .orgs()
+            .invite_create(
+                &org,
+                typed(json!({ "role": "admin", "ttlSecs": ttl })),
+                Some(&mut alice_pk),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("BAD_REQUEST"), "{ttl}: {e}");
+    }
+    let _ok = alice
+        .orgs()
+        .invite_create(
+            &org,
+            typed(json!({ "role": "member", "ttlSecs": 90 * 24 * 3600 })),
+            Some(&mut alice_pk),
+        )
+        .await
+        .unwrap();
+}

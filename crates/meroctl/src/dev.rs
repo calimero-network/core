@@ -45,20 +45,13 @@ pub enum DevCmd {
         /// The owner's passkey file that approves each update.
         #[arg(long)]
         dev_passkey: PathBuf,
+        /// The organization it is installed for and the instance created in (default:
+        /// your only one).
+        #[arg(long)]
+        org: Option<String>,
     },
     /// Push a build to its instances on every save (as `meroctl app watch`).
-    Watch {
-        #[arg(long)]
-        path: PathBuf,
-        #[arg(long = "instance", short = 'i', value_name = "INSTANCE")]
-        contexts: Vec<String>,
-        #[arg(long)]
-        dev_passkey: PathBuf,
-        #[arg(long)]
-        once: bool,
-        #[arg(long, default_value_t = 500)]
-        interval_ms: u64,
-    },
+    Watch(crate::app::WatchArgs),
 }
 
 pub async fn run(cmd: DevCmd, env: &Env) -> eyre::Result<()> {
@@ -69,12 +62,14 @@ pub async fn run(cmd: DevCmd, env: &Env) -> eyre::Result<()> {
             params,
             watch,
             dev_passkey,
+            org,
         } => {
-            let installed = crate::app::install_file(env, &path).await?;
+            let installed = crate::app::install_file(env, &path, org.as_deref()).await?;
             let text = |k: &str| installed[k].as_str().map(str::to_owned);
             let mut body = AppCreateRequest {
                 name: Some(name),
                 init_args: params.as_deref().map(json_arg).transpose()?,
+                org: org.clone(),
                 ..AppCreateRequest::default()
             };
             match text("bundle") {
@@ -89,17 +84,19 @@ pub async fn run(cmd: DevCmd, env: &Env) -> eyre::Result<()> {
             if watch {
                 let app = created.app_id;
                 // The build is installed already: the first push is the next save.
-                crate::app::watch(env, &path, &[app], &dev_passkey, false, 500, false).await?;
+                let a = crate::app::WatchArgs {
+                    path,
+                    contexts: vec![app],
+                    dev_passkey,
+                    once: false,
+                    interval_ms: 500,
+                    org,
+                };
+                crate::app::watch(env, &a, false).await?;
             }
             Ok(())
         }
-        DevCmd::Watch {
-            path,
-            contexts,
-            dev_passkey,
-            once,
-            interval_ms,
-        } => crate::app::watch(env, &path, &contexts, &dev_passkey, once, interval_ms, true).await,
+        DevCmd::Watch(a) => crate::app::watch(env, &a, true).await,
     }
 }
 

@@ -373,7 +373,7 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /packages/{package}/{version}/capabilities
      * A release&#39;s capabilities
-     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: &#x60;bundle&#x60; is the service WASM&#39;s hash, &#x60;outbound&#x60; the sorted prefixes it may call out to and &#x60;abi&#x60; the embedded &#x60;calimero:abi&#x60; verbatim (&#x60;null&#x60; when it embeds none). &#x60;destinations&#x60; is where an instance of it could send data, over the release and every app its &#x60;uses&#x60; would create with it (&#x60;members&#x60;, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both &#x60;null&#x60; while a release its &#x60;uses&#x60; would create is not installed here. &#x60;service&#x60; names the service whose card to read (default: the release&#39;s only one). A session bound to the package reads every release of it. &#x60;404&#x60; for a release the caller may not see, &#x60;400 NO_SUCH_SERVICE&#x60; for an unknown service or no &#x60;service&#x60; on a release with several, &#x60;400 BAD_REQUEST&#x60; for an over-long &#x60;service&#x60;.  **Who:** signed in (a session or an API key).
+     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: &#x60;bundle&#x60; is the service WASM&#39;s hash, &#x60;outbound&#x60; the sorted prefixes it may call out to and &#x60;abi&#x60; the embedded &#x60;calimero:abi&#x60; verbatim (&#x60;null&#x60; when it embeds none). &#x60;destinations&#x60; is where an instance of it could send data, over the release and every app its &#x60;uses&#x60; would create with it (&#x60;members&#x60;, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both &#x60;null&#x60; while a release its &#x60;uses&#x60; would create is not installed here. &#x60;service&#x60; names the service whose card to read (default: the release&#39;s only one). A session bound to the package reads what its account does (every release of it recorded before releases were public or private). &#x60;404&#x60; for a release the caller may not see, &#x60;400 NO_SUCH_SERVICE&#x60; for an unknown service or no &#x60;service&#x60; on a release with several, &#x60;400 BAD_REQUEST&#x60; for an over-long &#x60;service&#x60;.  **Who:** signed in (a session or an API key).
      * @param `package` 
      * @param version 
      * @param service  (optional)
@@ -407,7 +407,7 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /packages/{package}/{version}/capabilities
      * A release&#39;s capabilities
-     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: &#x60;bundle&#x60; is the service WASM&#39;s hash, &#x60;outbound&#x60; the sorted prefixes it may call out to and &#x60;abi&#x60; the embedded &#x60;calimero:abi&#x60; verbatim (&#x60;null&#x60; when it embeds none). &#x60;destinations&#x60; is where an instance of it could send data, over the release and every app its &#x60;uses&#x60; would create with it (&#x60;members&#x60;, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both &#x60;null&#x60; while a release its &#x60;uses&#x60; would create is not installed here. &#x60;service&#x60; names the service whose card to read (default: the release&#39;s only one). A session bound to the package reads every release of it. &#x60;404&#x60; for a release the caller may not see, &#x60;400 NO_SUCH_SERVICE&#x60; for an unknown service or no &#x60;service&#x60; on a release with several, &#x60;400 BAD_REQUEST&#x60; for an over-long &#x60;service&#x60;.  **Who:** signed in (a session or an API key).
+     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: &#x60;bundle&#x60; is the service WASM&#39;s hash, &#x60;outbound&#x60; the sorted prefixes it may call out to and &#x60;abi&#x60; the embedded &#x60;calimero:abi&#x60; verbatim (&#x60;null&#x60; when it embeds none). &#x60;destinations&#x60; is where an instance of it could send data, over the release and every app its &#x60;uses&#x60; would create with it (&#x60;members&#x60;, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both &#x60;null&#x60; while a release its &#x60;uses&#x60; would create is not installed here. &#x60;service&#x60; names the service whose card to read (default: the release&#39;s only one). A session bound to the package reads what its account does (every release of it recorded before releases were public or private). &#x60;404&#x60; for a release the caller may not see, &#x60;400 NO_SUCH_SERVICE&#x60; for an unknown service or no &#x60;service&#x60; on a release with several, &#x60;400 BAD_REQUEST&#x60; for an over-long &#x60;service&#x60;.  **Who:** signed in (a session or an API key).
      * @param `package` 
      * @param version 
      * @param service  (optional)
@@ -530,7 +530,7 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /packages/install
      * Install a release from the registry
-     * **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * For the organization &#x60;org&#x60; names (the caller a member, else &#x60;404&#x60;), else the caller&#39;s only one (&#x60;400 ORG_REQUIRED&#x60; in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller&#39;s account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. &#x60;404&#x60; when the registry serves it to neither.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param packageInstallRequest 
      * @return OpsPackageInstall200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -562,7 +562,7 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /packages/install
      * Install a release from the registry
-     * **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * For the organization &#x60;org&#x60; names (the caller a member, else &#x60;404&#x60;), else the caller&#39;s only one (&#x60;400 ORG_REQUIRED&#x60; in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller&#39;s account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. &#x60;404&#x60; when the registry serves it to neither.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param packageInstallRequest 
      * @return ApiResponse<OpsPackageInstall200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -823,8 +823,9 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /packages
      * Upload a signed release
-     * A signed &#x60;.mpk&#x60;, checked as an install from the registry is (signature, artifact digests, &#x60;minRuntimeVersion&#x60;, the package&#39;s pinned signer, every service compiles). Only with &#x60;--dev&#x60;; otherwise &#x60;403 UPLOADS_DISABLED&#x60;.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * A signed &#x60;.mpk&#x60;, checked as an install from the registry is (signature, artifact digests, &#x60;minRuntimeVersion&#x60;, the package&#39;s pinned signer, every service compiles). Only with &#x60;--dev&#x60;; otherwise &#x60;403 UPLOADS_DISABLED&#x60;. An upload is private to the organization &#x60;org&#x60; names (the caller a member, else &#x60;404&#x60;), else the caller&#39;s only one: &#x60;400 ORG_REQUIRED&#x60; in several; in none, it is private to the accounts that install it.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param body the &#x60;.mpk&#x60;
+     * @param org  (optional)
      * @return OpsPackageInstall200Response
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -834,8 +835,8 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun packageUpload(body: kotlin.ByteArray) : OpsPackageInstall200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = packageUploadWithHttpInfo(body = body)
+    suspend fun packageUpload(body: kotlin.ByteArray, org: kotlin.String? = null) : OpsPackageInstall200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = packageUploadWithHttpInfo(body = body, org = org)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as OpsPackageInstall200Response
@@ -855,16 +856,17 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /packages
      * Upload a signed release
-     * A signed &#x60;.mpk&#x60;, checked as an install from the registry is (signature, artifact digests, &#x60;minRuntimeVersion&#x60;, the package&#39;s pinned signer, every service compiles). Only with &#x60;--dev&#x60;; otherwise &#x60;403 UPLOADS_DISABLED&#x60;.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * A signed &#x60;.mpk&#x60;, checked as an install from the registry is (signature, artifact digests, &#x60;minRuntimeVersion&#x60;, the package&#39;s pinned signer, every service compiles). Only with &#x60;--dev&#x60;; otherwise &#x60;403 UPLOADS_DISABLED&#x60;. An upload is private to the organization &#x60;org&#x60; names (the caller a member, else &#x60;404&#x60;), else the caller&#39;s only one: &#x60;400 ORG_REQUIRED&#x60; in several; in none, it is private to the accounts that install it.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param body the &#x60;.mpk&#x60;
+     * @param org  (optional)
      * @return ApiResponse<OpsPackageInstall200Response?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun packageUploadWithHttpInfo(body: kotlin.ByteArray) : ApiResponse<OpsPackageInstall200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = packageUploadRequestConfig(body = body)
+    suspend fun packageUploadWithHttpInfo(body: kotlin.ByteArray, org: kotlin.String?) : ApiResponse<OpsPackageInstall200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = packageUploadRequestConfig(body = body, org = org)
 
         return@withContext request<kotlin.ByteArray, OpsPackageInstall200Response>(
             localVariableConfig
@@ -875,11 +877,17 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * To obtain the request config of the operation packageUpload
      *
      * @param body the &#x60;.mpk&#x60;
+     * @param org  (optional)
      * @return RequestConfig
      */
-    fun packageUploadRequestConfig(body: kotlin.ByteArray) : RequestConfig<kotlin.ByteArray> {
+    fun packageUploadRequestConfig(body: kotlin.ByteArray, org: kotlin.String?) : RequestConfig<kotlin.ByteArray> {
         val localVariableBody = body
-        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableQuery: MultiValueMap = mutableMapOf<kotlin.String, kotlin.collections.List<kotlin.String>>()
+            .apply {
+                if (org != null) {
+                    put("org", listOf(org.toString()))
+                }
+            }
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/octet-stream"
         localVariableHeaders["Accept"] = "application/json"

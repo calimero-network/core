@@ -53,7 +53,9 @@ class Packages(DeepCase):
 
     def exercise(self, w, s):
         pia = person(w, "pia")
-        pia.raw("post", "packages/install", {"package": s["package"], "version": s["v2"]})
+        # Her two instances made her an organization each: an install names one.
+        org = pia.get(f"apps/{s['app']}")["org"]
+        pia.raw("post", "packages/install", {"package": s["package"], "version": s["v2"], "org": org})
         pia.raw("post", f"apps/{s['app']}/upgrade", {"version": s["v2"]})
         check(s["v2"] in json.dumps(pia.get(f"apps/{s['app']}")), f"the app runs {s['v2']} after the upgrade")
         eq(pia.result(s["app"], "get", {"key": "release"}), s["v1"], "data across an upgrade on the new release")
@@ -64,6 +66,44 @@ class Packages(DeepCase):
 
 
 @case
+class ReleaseVisibility(DeepCase):
+    name = "release-visibility"
+    area = "Packages"
+    seeds = ("kv-b 1.0.0 installed from the registry by an account whose organization holds a second member, "
+             "who never installed it (a release recorded before it was public or private)")
+    verifies = ("the release from before keeps exactly its rule: the member lists it on every node and, on the "
+                "new release, creates an instance of it, and an account sharing no organization with its installer "
+                "does not list it on any node; kv-c installed on the new release, which the registry serves "
+                "to anyone, is public: an account in no organization lists it and creates an instance of it")
+
+    def populate(self, w):
+        ines, ivo = people(w, "ines", "ivo")
+        org = new_org(ines, "Ines Packages")
+        join(ines, org, ivo)
+        # A member creates apps only with CREATE_APP (bit 0), which no member holds by default.
+        ines.raw("post", f"orgs/{org}/capabilities", {"account": ivo.id, "capabilities": 1})
+        p, v = install(ines, w, "kv-b-1.0.0.mpk")
+        return {"org": org, "before": [p, v], "after": None}
+
+    def check(self, w, s):
+        ivo, isla = people(w, "ivo", "isla")
+        p, v = s["before"]
+        for n in w.members():
+            check(v in json.dumps(ivo.get(f"packages/{p}", node=n)), f"ivo lists {p}@{v} on node {n}")
+            refused(("NOT_FOUND", "404"), lambda n=n: isla.get(f"packages/{p}", node=n),
+                    f"isla, in no organization of its installer, does not list {p} on node {n}")
+        if s["after"]:
+            p, v = s["after"]
+            check(v in json.dumps(isla.get(f"packages/{p}")), f"isla lists the public {p}@{v}")
+
+    def exercise(self, w, s):
+        ines, ivo, isla = people(w, "ines", "ivo", "isla")
+        p, v = s["before"]
+        ivo.raw("post", "apps", {"name": "vis-before", "package": p, "version": v, "org": s["org"]})
+        p, v = install(ines, w, "kv-c-1.0.0.mpk")
+        isla.raw("post", "apps", {"name": "vis-after", "package": p, "version": v})
+        s["after"] = [p, v]
+
 class Services(DeepCase):
     name = "package-services"
     area = "Packages"
@@ -627,7 +667,8 @@ class UnclassifiedUpdates(DeepCase):
         s["pending"] = []
         eq(noa.get(f"apps/{s['waiting']}/update")["pendingApprovals"], [], "the approval spent")
         # The whole move on the new release: 1.0.0 back, an app on it, 1.0.0 gone again.
-        nia.raw("post", "packages/install", {"package": s["package"], "version": s["v1"]})
+        # Nia is in two organizations: an install names the one the fresh app goes to.
+        nia.raw("post", "packages/install", {"package": s["package"], "version": s["v1"], "org": s["org"]})
         fresh = self._app(w, s, "fresh", s["org"])
         nia.raw("delete", f"packages/{s['package']}/{s['v1']}")
         self._offered(w, s, fresh)
