@@ -306,8 +306,8 @@ pieces.
 
 The leader stamps each entry with the later of its own clock and the last
 applied entry's timestamp plus 1 ms, so an app's timestamps never go backwards,
-even across a leader change. Idempotency expiry and timer slots read these
-timestamps, never a node's local clock, so every replica judges them alike.
+even across a leader change. Idempotency expiry reads these timestamps, never
+a node's local clock, so every replica drops the same records.
 
 ## Timers
 
@@ -344,6 +344,6 @@ cannot make the node read or search without bound for little fuel.
 ## Views and upgrades
 
 A **view** runs the same way against a replica's applied state, with search
-available, and its writes are discarded ([Reads](/protocol/reads/)). An
+available; a write traps `HostDenied` ([Reads](/protocol/reads/)). An
 **upgrade** swaps the bundle; a named migration is refused
 `MigrationsNotSupported` ([Upgrades](/protocol/upgrades/)).
