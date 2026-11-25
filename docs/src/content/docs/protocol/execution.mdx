@@ -336,10 +336,12 @@ answers cannot make replicas disagree. Runs are still bounded and
 transactional: a call or view gets 200 000 000 fuel, 64 MiB of memory and 2 s
 of wall clock, an action 10 s, and one run writes at most 10 000 keys and
 1 MiB ([Limits](/protocol/limits/#execution-limits)); a trap or an app error
-leaves an empty diff. Fuel pays for host work too: each storage access, range
-batch, search and byte a host call moves costs fuel
+leaves an empty diff. Fuel pays for host work too, always: every host call, and
+each storage access, range batch, search and byte a call is handed or moves,
+costs fuel where the call happens, refused calls included
 ([What host work costs](/protocol/limits/#what-host-work-costs)), so a run
-cannot make the node read or search without bound for little fuel.
+cannot make the node read, copy or search without bound for little fuel, nor
+spend the fuel its host calls already owe.
 
 ## Views and upgrades
 
