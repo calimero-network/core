@@ -17,6 +17,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `no data directory: --data-dir DIR (or --node NAME)` | `run` without `--node` and without `--data-dir` | Pass one. |
 | `peer must be id=url` | A `--peers` entry without `=` | `--peers 1=https://n1/,2=https://n2/`. |
 | `a TDX node takes its storage key from mero-kms only` | `--storage-key` or `--storage-key-file` without `--dev` | Use `--kms-url` with `--kms-identity`, or add `--dev` on a development machine. |
+| `--dev attests with mock quotes, so it never takes a key from mero-kms` | `--dev` with `--kms-url` | A development node never asks mero-kms: drop `--kms-url` and `--kms-identity`, or run without `--dev`. |
 | `no storage key: pass --kms-url with --kms-identity` | TDX mode with no key source | As it says. |
 | `mero-kms needs both --kms-url and --kms-identity` | One of the two | Give both. |
 | `a TDX node needs MERO_TEE_VERSION and MERO_TEE_PROFILE` | Not running in a mero-tee image, or the image did not set them | Run in the image, or set `--tee-release`/`--tee-profile` (or `--peer-profiles`); for a local node use `--dev`. |
