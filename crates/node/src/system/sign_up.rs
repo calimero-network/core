@@ -11,6 +11,13 @@
 )]
 use super::*;
 
+/// What a sign-up invite's creation or withdrawal answers (`#InviteKey`): its key.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteKeyAnswer {
+    pub invite_key: String,
+}
+
 // This area's refusals. Each is `400 REJECTED`, the kind the bare message it
 // names was answered with; the message is what a client reads.
 
@@ -154,7 +161,7 @@ fn create_sign_up_invite(
         return Err(INVITE_EXPIRES_BEFORE_MADE);
     }
     let _prev = state.sign_up_invites.insert(invite_key.clone(), invite);
-    Ok(json!({ "inviteKey": invite_key }))
+    Ok(json!(InviteKeyAnswer { invite_key }))
 }
 
 /// Revoke a sign-up invite: whoever runs the cluster's sign-up.
@@ -168,5 +175,5 @@ fn revoke_sign_up_invite(
         .sign_up_invites
         .remove(&invite_key)
         .ok_or(NO_SUCH_SIGN_UP_INVITE)?;
-    Ok(json!({ "inviteKey": invite_key }))
+    Ok(json!(InviteKeyAnswer { invite_key }))
 }

@@ -12,6 +12,36 @@
 )]
 use super::*;
 
+/// What a release approval answers (`#ApprovedReleases`): the releases the scope approves now.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovedReleases {
+    pub approved_releases: BTreeSet<String>,
+}
+
+/// What `SetReleaseDeadline` answers (`#Deadlines`): every deadline after the change.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Deadlines {
+    pub deadlines: Vec<ReleaseDeadline>,
+}
+
+/// One release deadline: `after` RFC 3339, `afterSecs` Unix seconds.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseDeadline {
+    pub version: String,
+    pub after: String,
+    pub after_secs: u64,
+}
+
+/// What an outbound approval answers (`#OutboundApproved`): the approval the scope holds now
+/// for the package's publisher.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OutboundApproved {
+    pub signer: String,
+    pub approval: crate::types::OutboundApproval,
+}
+
 // This area's refusals. Each is `400 REJECTED`, the kind the bare message it
 // names was answered with; the message is what a client reads.
 
@@ -242,7 +272,9 @@ fn set_operator_release(
     }
     let releases = &mut state.operator_releases;
     approve_or_withdraw(releases, version, approved)?;
-    Ok(json!({ "approvedReleases": releases }))
+    Ok(json!(ApprovedReleases {
+        approved_releases: releases.clone()
+    }))
 }
 
 /// Add `version` to an approved set, or take it out; never the last one, as
@@ -286,7 +318,9 @@ fn set_release_deadline(
             let _gone = state.release_deadlines.remove(&version);
         }
     }
-    Ok(json!({ "deadlines": state.deadlines_json() }))
+    Ok(json!(Deadlines {
+        deadlines: state.deadlines_json()
+    }))
 }
 
 /// An organization approves (or withdraws) a release, where owners approve
@@ -312,7 +346,9 @@ fn set_release_approval(
         }
     };
     approve_or_withdraw(releases, version, approved)?;
-    Ok(json!({ "approvedReleases": releases }))
+    Ok(json!(ApprovedReleases {
+        approved_releases: releases.clone()
+    }))
 }
 
 /// Approve outbound prefixes for a package's signer, merged into the
@@ -355,7 +391,7 @@ fn set_outbound_approval(
         reviewed: merged.reviewed,
     };
     let _prev = approvals.insert(signer.clone(), approval.clone());
-    Ok(json!({ "signer": signer, "approval": approval }))
+    Ok(json!(OutboundApproved { signer, approval }))
 }
 
 /// The outbound approvals `scope` holds, for an actor who may change them:

@@ -11,6 +11,12 @@
 )]
 use super::*;
 
+/// What `UninstallPackage` answers (`#Uninstalled`): the versions it removed.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Uninstalled {
+    pub removed: Vec<String>,
+}
+
 // This area's refusals. Each is `400 REJECTED`, the kind the bare message it
 // names was answered with; the message is what a client reads.
 
@@ -424,7 +430,7 @@ fn uninstall_package(
         let _prev = state.packages.remove(package);
         state.forget_origins(package);
     }
-    Ok(json!({ "removed": gone }))
+    Ok(json!(Uninstalled { removed: gone }))
 }
 
 /// A release outside the ones being removed that ships `hash`: two releases

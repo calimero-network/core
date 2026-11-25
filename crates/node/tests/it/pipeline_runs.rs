@@ -9,13 +9,14 @@ use common::UploadBytes as _;
 use std::time::{Duration, Instant};
 
 use calimero_client::pipeline_events::PipelineEvent;
-use calimero_client::Client;
+use calimero_client::{Client, Request};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BLOB_IDLE_MS;
 use calimero_node::component::{FailedReason, FinalOutcome, RunRecord, MAX_ACTIVE_PIPELINE_RUNS};
 use calimero_node::node::ComputeLimits;
 use calimero_node::Node;
 use common::{mpk_with_pipelines, signed_up, typed, wire, Cluster, JobNode, PUBLISHER};
+use reqwest::Method;
 use serde_json::{json, Value};
 
 const JOB_A: u64 = 4;
@@ -315,12 +316,20 @@ impl Rig {
         panic!("upload kept failing");
     }
 
+    /// Sent raw so the status is checked: generated clients read only the documented `200`.
     async fn start_run(&self, pipeline: &str, inputs: Value, params: Value) -> String {
-        let started = self
-            .alice
-            .start_pipeline_run(&self.app, pipeline, inputs, params)
-            .await
-            .unwrap();
+        let req = Request::new(
+            Method::POST,
+            format!("apps/{}/pipelines/{pipeline}/runs", self.app),
+        )
+        .json(json!({ "inputs": inputs, "params": params }));
+        let resp = self.alice.transport().send(req).await.unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "start answers the documented status"
+        );
+        let started: Value = resp.json().await.unwrap();
         started["run"].as_str().unwrap().to_owned()
     }
 

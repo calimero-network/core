@@ -8,10 +8,8 @@ from ..types import UNSET, Unset
 
 from ..models.team_join import TeamJoin
 from ..models.team_role import TeamRole
-from ..types import UNSET, Unset
 from typing import cast
 from typing import cast, Union
-from typing import Union
 
 if TYPE_CHECKING:
     from ..models.team_view_apps_item import TeamViewAppsItem
@@ -25,7 +23,8 @@ T = TypeVar("T", bound="TeamView")
 class TeamView:
     """A team as `GET /orgs/{org}/teams/{team}` answers it: each member's row, the child teams the caller sees, its apps,
     and the caller's own row (`myRole`, `null` for none) and membership (`member`). `package` names the package of an
-    app team; it and `defaultCapabilities` are absent from an older node (1.0.0-rc.1 sends neither).
+    app team (`null` for any other), `defaultCapabilities` the capabilities a new member gets (`null`: the
+    organization's).
 
         Attributes:
             team_id (str):
@@ -33,13 +32,13 @@ class TeamView:
             parent (Union[None, str]):
             join (TeamJoin): Open (`everyone` who reaches the parent) or restricted (`invite`) membership.
             metadata (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            package (Union[None, str]):
+            default_capabilities (Union[None, int]):
             members (list['TeamViewMembersItem']):
             children (list[str]):
             apps (list['TeamViewAppsItem']):
             my_role (Union[None, TeamRole]):
             member (bool):
-            package (Union[None, Unset, str]):
-            default_capabilities (Union[None, Unset, int]):
     """
 
     team_id: str
@@ -47,13 +46,13 @@ class TeamView:
     parent: Union[None, str]
     join: TeamJoin
     metadata: Any
+    package: Union[None, str]
+    default_capabilities: Union[None, int]
     members: list["TeamViewMembersItem"]
     children: list[str]
     apps: list["TeamViewAppsItem"]
     my_role: Union[None, TeamRole]
     member: bool
-    package: Union[None, Unset, str] = UNSET
-    default_capabilities: Union[None, Unset, int] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -70,6 +69,12 @@ class TeamView:
         join = self.join.value
 
         metadata = self.metadata
+
+        package: Union[None, str]
+        package = self.package
+
+        default_capabilities: Union[None, int]
+        default_capabilities = self.default_capabilities
 
         members = []
         for members_item_data in self.members:
@@ -91,18 +96,6 @@ class TeamView:
 
         member = self.member
 
-        package: Union[None, Unset, str]
-        if isinstance(self.package, Unset):
-            package = UNSET
-        else:
-            package = self.package
-
-        default_capabilities: Union[None, Unset, int]
-        if isinstance(self.default_capabilities, Unset):
-            default_capabilities = UNSET
-        else:
-            default_capabilities = self.default_capabilities
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -112,6 +105,8 @@ class TeamView:
                 "parent": parent,
                 "join": join,
                 "metadata": metadata,
+                "package": package,
+                "defaultCapabilities": default_capabilities,
                 "members": members,
                 "children": children,
                 "apps": apps,
@@ -119,10 +114,6 @@ class TeamView:
                 "member": member,
             }
         )
-        if package is not UNSET:
-            field_dict["package"] = package
-        if default_capabilities is not UNSET:
-            field_dict["defaultCapabilities"] = default_capabilities
 
         return field_dict
 
@@ -146,6 +137,20 @@ class TeamView:
         join = TeamJoin(d.pop("join"))
 
         metadata = d.pop("metadata")
+
+        def _parse_package(data: object) -> Union[None, str]:
+            if data is None:
+                return data
+            return cast(Union[None, str], data)
+
+        package = _parse_package(d.pop("package"))
+
+        def _parse_default_capabilities(data: object) -> Union[None, int]:
+            if data is None:
+                return data
+            return cast(Union[None, int], data)
+
+        default_capabilities = _parse_default_capabilities(d.pop("defaultCapabilities"))
 
         members = []
         _members = d.pop("members")
@@ -180,39 +185,19 @@ class TeamView:
 
         member = d.pop("member")
 
-        def _parse_package(data: object) -> Union[None, Unset, str]:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(Union[None, Unset, str], data)
-
-        package = _parse_package(d.pop("package", UNSET))
-
-        def _parse_default_capabilities(data: object) -> Union[None, Unset, int]:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(Union[None, Unset, int], data)
-
-        default_capabilities = _parse_default_capabilities(
-            d.pop("defaultCapabilities", UNSET)
-        )
-
         team_view = cls(
             team_id=team_id,
             name=name,
             parent=parent,
             join=join,
             metadata=metadata,
+            package=package,
+            default_capabilities=default_capabilities,
             members=members,
             children=children,
             apps=apps,
             my_role=my_role,
             member=member,
-            package=package,
-            default_capabilities=default_capabilities,
         )
 
         team_view.additional_properties = d

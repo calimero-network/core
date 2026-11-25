@@ -14,6 +14,19 @@
 )]
 use super::*;
 
+/// An update policy at one scope as the API answers it (`#PolicyView`): the organization's
+/// (`app` absent) or an app's; `source` is where the policy in force comes from (`app`, `org`
+/// or `default`) and `own` the one set at this scope.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PolicyView {
+    pub org: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    pub policy: UpgradePolicy,
+    pub source: String,
+    pub own: Option<UpgradePolicy>,
+}
+
 use calimero_bundle::update::{classify, Reason, Release, Unit};
 
 use crate::types::{
@@ -186,7 +199,7 @@ fn set_upgrade_policy(
     organization
         .pending_upgrades
         .retain(|app_id, _| here.contains(app_id));
-    Ok(state.policy_json(org, app.as_deref()))
+    Ok(json!(state.policy_view(org, app.as_deref())))
 }
 
 /// Record the first approval of a red update, where the app's policy asks
@@ -735,26 +748,33 @@ impl SystemState {
     /// at that scope (`null`: none).
     #[must_use]
     pub fn policy_json(&self, org: &str, app: Option<&str>) -> Value {
+        json!(self.policy_view(org, app))
+    }
+
+    /// [`Self::policy_json`], typed.
+    #[must_use]
+    pub fn policy_view(&self, org: &str, app: Option<&str>) -> PolicyView {
         let o = self.orgs.get(org);
         match app.and_then(|id| self.apps.get(id)) {
             Some(a) => {
                 let (policy, source) = self.upgrade_policy_of(a);
-                json!({
-                    "org": org,
-                    "app": a.app_id,
-                    "policy": policy,
-                    "source": source,
-                    "own": o.and_then(|o| o.app_upgrade_policies.get(&a.app_id)),
-                })
+                PolicyView {
+                    org: org.to_owned(),
+                    app: Some(a.app_id.clone()),
+                    policy,
+                    source: source.to_owned(),
+                    own: o.and_then(|o| o.app_upgrade_policies.get(&a.app_id).copied()),
+                }
             }
             None => {
                 let own = o.and_then(|o| o.upgrade_policy);
-                json!({
-                    "org": org,
-                    "policy": own.unwrap_or_default(),
-                    "source": if own.is_some() { "org" } else { "default" },
-                    "own": own,
-                })
+                PolicyView {
+                    org: org.to_owned(),
+                    app: None,
+                    policy: own.unwrap_or_default(),
+                    source: if own.is_some() { "org" } else { "default" }.to_owned(),
+                    own,
+                }
             }
         }
     }

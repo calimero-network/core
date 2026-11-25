@@ -23,7 +23,6 @@
 
 package com.calimero.mero.api.models
 
-import com.calimero.mero.api.models.BackupKeyAnswerHolder
 import com.calimero.mero.api.models.BackupKeyAnswerKey
 
 import kotlinx.serialization.Serializable
@@ -41,8 +40,8 @@ import kotlinx.serialization.Contextual
 
 data class BackupKeyAnswer (
 
-    @SerialName(value = "holder")
-    val holder: BackupKeyAnswerHolder,
+    @Contextual @SerialName(value = "holder")
+    val holder: kotlinx.serialization.json.JsonElement?,
 
     @SerialName(value = "key")
     val key: BackupKeyAnswerKey?,
