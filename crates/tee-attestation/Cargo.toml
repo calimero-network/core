@@ -20,7 +20,9 @@ mock-attestation = []
 cli = ["dep:tokio"]
 
 [dependencies]
-# Names dcap-qvl's `HttpClient` return type for `NoNetwork`.
+# Only to name dcap-qvl's `HttpClient::get` return type (`anyhow::Result`) in
+# the `NoNetwork` and `RecordingHttp` transports; the crate's own errors are
+# `AttestationError`. deny.toml bans anyhow everywhere else (eyre is the standard).
 anyhow.workspace = true
 hex.workspace = true
 tracing.workspace = true
@@ -37,6 +39,8 @@ sha2.workspace = true
 dcap-qvl.workspace = true
 reqwest.workspace = true
 tdx-quote.workspace = true
+# Reads collateral `nextUpdate` (RFC 3339) to refuse superseded collateral.
+time.workspace = true
 
 # Server primitives for Quote type
 

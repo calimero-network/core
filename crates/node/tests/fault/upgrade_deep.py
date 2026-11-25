@@ -56,6 +56,16 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
+    ("Packages", "A passkey sign-in completed from a registered origin (a session bound to the package and naming it)",
+     "the harness's passkeys are the dev passkey's, which holds a credential under the cluster's rp-id only, and an "
+     "origin's own rp-id needs a credential made for that site in a browser; `package-origins` covers the begin "
+     "(the rp-id each registered origin gets and the refusal of any other), and the finish on a frontend the node "
+     "serves is `Bound`'s (the packages' own frontends)"),
+    ("Governance", "The egress switch (`POST /orgs/{org}/egress`, `POST /apps/{app}/egress`; `Org::egress_off`, "
+     "`AppRecord::egress_off`, `SetEgress`)",
+     "it ships as a hard cutover: `SetEgress` is ungated and a node of an earlier release cannot decode it, so a "
+     "cluster is recreated rather than rolled, and no release before it has the switch to seed. "
+     "`tests/it/egress.rs` covers the switch, its refusals and the consent page on one build"),
     ("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
      "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
      "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
@@ -83,6 +93,13 @@ NOT_COVERED = [
      "The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's "
      "single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` "
      "and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build"),
+    ("Apps", "Host work charged to fuel, and at most `MAX_SEARCHES_PER_RUN` searches per run (`calimero_app_host`'s fuel table)",
+     "it changes what a run may spend, not a stored shape: followers apply a call's diff and never run it, so "
+     "the log replays alike on either release, and below cluster version 1.0.0-rc.36 (`Feature::HostFuel`) "
+     "the new release runs calls without the charges, as the old one did; a search cap answers a view, which "
+     "is never logged. The deep cases' calls and searches run far within the default fuel on both releases. "
+     "`tests/engine.rs` (`reading_megabytes_of_state_costs_fuel`, `a_view_makes_at_most_max_searches_per_run`, "
+     "`a_host_without_host_fuel_charges_as_before`) covers it on one build"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "
@@ -97,7 +114,7 @@ NOT_COVERED = [
     ("Accounts", ("Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the "
                   "organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, "
                   "`setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, "
-                  "`deleteOrg`, `setCapabilities`, `setAllApps`) and the page's verifier link"),
+                  "`deleteOrg`, `setCapabilities`, `setAllApps`, `setEgress`) and the page's verifier link"),
      "a consent request is approved in a browser on the node's consent page; the cluster test "
      "`consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as "
      "the API's route, which the organization and team cases cover; a `createOrg` asked from an app's "
@@ -145,15 +162,6 @@ NOT_COVERED = [
      "release, which retires no node; one on the new release would stop placement on the old nodes before the roll "
      "and needs a deadline timed to the rollout. `a_release_deadline_stops_new_work_but_not_running_apps` "
      "(`cluster.rs`) covers retired nodes on one build"),
-    ("Packages", "Multi-service packages (`services`) and instances of a named service (`--service`)",
-     "not seeded yet: the suite installs the release's single-service kv bundle; `meroctl app pack --service` "
-     "writes one from components now, and the node's install of a named service is covered on one build "
-     "(`component_packages.rs`)"),
-    ("Packages", "Registered web origins of a package (`/package-origins`)",
-     "not seeded yet: an origin is added with its manager's passkey approval and is read only by the "
-     "served-frontend path above"),
-    ("Blobs and files", "Revoking a published blob's grants (`/blobs/{id}/revoke`)",
-     "not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow"),
     ("Pipelines", "A compute run's logs (`GET /apps/{app}/runs/{run}/logs`, `meroctl cloud compute pipeline logs`)",
      "the route is deprecated (`api-deprecations.toml`) and answers `{ logs: [] }`: a run keeps no log, as an app's "
      "log lines may hold user data, and no fixture method writes one, so there is no stored log to carry across a roll"),

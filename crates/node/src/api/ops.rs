@@ -594,7 +594,7 @@ async fn move_replicas(
     })
     .await;
     if let Err(e) = again {
-        warn!(app = %app_id, error = %e, "files made during the move were not handed over");
+        warn!(app = %app_id, status = e.status, code = %e.code, "files made during the move were not handed over");
     }
     if !grows {
         let _ok = node

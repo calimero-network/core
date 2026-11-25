@@ -92,11 +92,7 @@ fn recovery_pending(node: &Node, account: &str) -> Option<crate::types::PendingA
 }
 
 fn account_recovery_pending() -> ApiError {
-    ApiError::new(
-        409,
-        "RECOVERY_PENDING",
-        crate::system::ACCOUNT_RECOVERY_PENDING,
-    )
+    crate::node::rejected(crate::system::ACCOUNT_RECOVERY_PENDING)
 }
 
 fn no_account_recovery() -> ApiError {
@@ -104,7 +100,7 @@ fn no_account_recovery() -> ApiError {
 }
 
 pub(super) fn recovery_not_ready(ready_at: u64) -> ApiError {
-    ApiError::new(409, "RECOVERY_NOT_READY", crate::system::RECOVERY_NOT_READY)
+    crate::node::rejected(crate::system::RECOVERY_NOT_READY)
         .with_details(json!({ "readyAt": ready_at }))
 }
 
@@ -142,6 +138,7 @@ async fn account_recovery_begin(
             recovery_key: key,
             expires: now_secs() + CHALLENGE_TTL,
         },
+        None,
     )?;
     let (name, exclude): (String, Vec<Value>) = node.sys(|s| {
         s.accounts.get(&account).map_or_else(Default::default, |a| {
@@ -297,6 +294,7 @@ pub(super) struct RecoveryFinish {
 /// answer is the session.
 async fn account_recovery_finish(
     State(node): State<Arc<Node>>,
+    sealed: Option<Extension<SealedSession>>,
     Json(body): Json<RecoveryFinish>,
 ) -> ApiResult {
     let Some(confirm) = body.confirm else {
@@ -326,6 +324,7 @@ async fn account_recovery_finish(
                 session,
                 account: body.account_id,
             },
+            sealed.map(|Extension(s)| s),
         )?;
         return Err(confirm_required(
             "sign in with the passkey the recovery adds",

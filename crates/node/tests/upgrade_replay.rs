@@ -89,6 +89,7 @@ const NOT_RECORDED: &[(&str, &str)] = &[
     ("setClusterOwner", "only a cluster deployed with `--deployers owner` takes one, and governance is fixed at genesis"),
     ("setReleaseApproval", "only a cluster whose release approvals are the owners' takes one; the recording's are the operator's"),
     ("setReplicas", "it moves an app between nodes; a one-node cluster has nowhere to move it and logs nothing for the same set"),
+    ("setEgress", "the egress switch ships in a release after the pinned one, which has no route to write one"),
     ("upgradeFailed", "it notes an upgrade that failed after it was approved, which no release of the suite's packages does"),
 ];
 
@@ -305,16 +306,8 @@ async fn a_release_data_directory_replays_to_the_answers_that_release_gave() {
     }
 }
 
-/// A fixture's data directory: `datadir.tar.zst`, or `datadir.tar.gz` for the older ones.
+/// A fixture's data directory, `datadir.tar.gz`.
 fn unpack(fixture: &Path, into: &Path) {
-    let zst = fixture.join("datadir.tar.zst");
-    if zst.exists() {
-        let archive = std::fs::File::open(zst).unwrap();
-        tar::Archive::new(zstd::stream::read::Decoder::new(archive).unwrap())
-            .unpack(into)
-            .unwrap();
-        return;
-    }
     let archive = std::fs::read(fixture.join("datadir.tar.gz")).unwrap();
     tar::Archive::new(flate2::read::GzDecoder::new(&archive[..]))
         .unpack(into)

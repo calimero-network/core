@@ -994,6 +994,8 @@ impl Node {
     }
 
     /// The compute methods a compute component offers, with their caps, by its bundle hash.
+    /// Read from its ABI after the compute engine's checks, never by compiling it: the
+    /// component was compiled once, to verify it, when its release was installed.
     pub(crate) async fn caps_of_component(
         &self,
         bundle: &str,
@@ -1003,10 +1005,9 @@ impl Node {
         }
         let wasm = self.bundle_wasm(bundle).await?;
         let caps = off_workers(|| {
-            use calimero_app_host::Engine as _;
             self.compute_engine()
-                .prepare(bundle, &wasm)
-                .map(|p| crate::packages::pipelines::compute_caps(&p.abi))
+                .abi_of(&wasm)
+                .map(|abi| crate::packages::pipelines::compute_caps(&abi))
         })
         .map_err(|e| ApiError::internal(&e.to_string()))?;
         let caps = Arc::new(caps);

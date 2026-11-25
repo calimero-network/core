@@ -144,7 +144,7 @@ async fn append(c: &Cluster, cmd: &Value) -> Result<Value, String> {
                 .write(serde_json::to_vec(cmd).unwrap())
                 .await
                 .unwrap();
-            return calimero_node::system::output(&out);
+            return calimero_node::system::output(&out).map_err(|e| e.to_string());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -783,6 +783,8 @@ async fn frontends_open_the_deployed_release() {
         known["deployments"],
         json!([{ "id": d, "name": "alpha", "app": "site", "version": "1.0.0" }])
     );
+    // The page learns which cluster served it, to connect and to show.
+    assert_eq!(known["cluster"], json!(c.name));
     // Not another package's instance, nor an unknown one; files only.
     assert_eq!(get(format!("/app/{other}/")).await.unwrap().status(), 404);
     assert_eq!(get("/app/nope/".into()).await.unwrap().status(), 404);

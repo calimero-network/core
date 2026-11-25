@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use super::{RangeCursor, Store, MAX_KEY_BYTES, MAX_RANGE_BATCH};
 use crate::encoding::value;
+use crate::error::StorageError;
 
 #[derive(Default)]
 struct Inner {
@@ -134,7 +135,7 @@ impl Store for MemStore {
         found
     }
 
-    fn put(&mut self, k: &[u8], v: &[u8]) {
+    fn put(&mut self, k: &[u8], v: &[u8]) -> Result<(), StorageError> {
         host_limit(k);
         let mut inner = self.inner.borrow_mut();
         inner.calls += 1;
@@ -142,18 +143,20 @@ impl Store for MemStore {
         inner.written += k.len() + v.len();
         inner.ops.entry(k.to_vec()).or_default().0 += 1;
         inner.map.insert(k.to_vec(), v.to_vec());
+        Ok(())
     }
 
-    fn delete(&mut self, k: &[u8]) {
+    fn delete(&mut self, k: &[u8]) -> Result<(), StorageError> {
         host_limit(k);
         let mut inner = self.inner.borrow_mut();
         inner.calls += 1;
         inner.writes += 1;
         inner.written += k.len();
         inner.map.remove(k);
+        Ok(())
     }
 
-    fn add(&mut self, k: &[u8], delta: i64) {
+    fn add(&mut self, k: &[u8], delta: i64) -> Result<(), StorageError> {
         host_limit(k);
         let mut inner = self.inner.borrow_mut();
         inner.calls += 1;
@@ -169,6 +172,7 @@ impl Store for MemStore {
         let sum = value::int_to_vec(current + i128::from(delta)).expect("sum out of range");
         inner.written += k.len() + sum.len();
         inner.map.insert(k.to_vec(), sum);
+        Ok(())
     }
 
     fn range(&self, start: &[u8], end: &[u8], reverse: bool) -> MemCursor {

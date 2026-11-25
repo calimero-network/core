@@ -338,43 +338,48 @@ impl<T: Record, S: Store> Table<T, S> {
     }
 
     /// Move the index, unique and count entries from `old` to `new`; either may be absent.
-    fn reindex(&mut self, old: Option<&Entries>, new: Option<&Entries>) {
+    fn reindex(
+        &mut self,
+        old: Option<&Entries>,
+        new: Option<&Entries>,
+    ) -> Result<(), StorageError> {
         if let Some(old) = old {
             let keep =
                 |k: &Vec<u8>, list: Option<&Vec<Vec<u8>>>| list.is_some_and(|l| l.contains(k));
             for k in &old.indexes {
                 if !keep(k, new.map(|n| &n.indexes)) {
-                    self.store.delete(k);
+                    self.store.delete(k)?;
                 }
             }
             for (_, k) in &old.uniques {
                 if !new.is_some_and(|n| n.uniques.iter().any(|(_, nk)| nk == k)) {
-                    self.store.delete(k);
+                    self.store.delete(k)?;
                 }
             }
             for k in &old.counts {
                 if !keep(k, new.map(|n| &n.counts)) {
-                    self.store.add(k, -1);
+                    self.store.add(k, -1)?;
                 }
             }
         }
         if let Some(new) = new {
             for k in &new.indexes {
                 if !old.is_some_and(|o| o.indexes.contains(k)) {
-                    self.store.put(k, &new.record);
+                    self.store.put(k, &new.record)?;
                 }
             }
             for (_, k) in &new.uniques {
                 if !old.is_some_and(|o| o.uniques.iter().any(|(_, ok)| ok == k)) {
-                    self.store.put(k, &new.record);
+                    self.store.put(k, &new.record)?;
                 }
             }
             for k in &new.counts {
                 if !old.is_some_and(|o| o.counts.contains(k)) {
-                    self.store.add(k, 1);
+                    self.store.add(k, 1)?;
                 }
             }
         }
+        Ok(())
     }
 
     /// The encoded key of `(table, kind)`. Never over the key limit once a record key of this
@@ -410,12 +415,12 @@ impl<T: Record, S: Store> Table<T, S> {
         let len = self.table_row(LEN);
         let kept = self.table_row(LEN_KEPT);
         if self.store.get(&kept).is_some() {
-            self.store.add(&len, delta);
+            self.store.add(&len, delta)?;
             return Ok(());
         }
         let n = self.count_records()?;
-        self.store.put(&len, &value::to_vec(&n)?);
-        self.store.put(&kept, PRESENT);
+        self.store.put(&len, &value::to_vec(&n)?)?;
+        self.store.put(&kept, PRESENT)?;
         Ok(())
     }
 
@@ -436,8 +441,8 @@ impl<T: Record, S: Store> Table<T, S> {
             });
         }
         self.check_unique(&new, None)?;
-        self.store.put(&new.record, &bytes);
-        self.reindex(None, Some(&new));
+        self.store.put(&new.record, &bytes)?;
+        self.reindex(None, Some(&new))?;
         Ok(self.adjust_len(1)?)
     }
 
@@ -450,8 +455,8 @@ impl<T: Record, S: Store> Table<T, S> {
             .map(|o| self.entries(&o))
             .transpose()?;
         self.check_unique(&new, old.as_ref())?;
-        self.store.put(&new.record, &bytes);
-        self.reindex(old.as_ref(), Some(&new));
+        self.store.put(&new.record, &bytes)?;
+        self.reindex(old.as_ref(), Some(&new))?;
         if old.is_none() {
             self.adjust_len(1)?;
         }
@@ -555,8 +560,8 @@ impl<T: Record, S: Store> Table<T, S> {
         }
         let bytes = value::to_vec(&record)?;
         self.check_unique(&new, Some(&old))?;
-        self.store.put(&new.record, &bytes);
-        self.reindex(Some(&old), Some(&new));
+        self.store.put(&new.record, &bytes)?;
+        self.reindex(Some(&old), Some(&new))?;
         Ok(true)
     }
 
@@ -575,8 +580,8 @@ impl<T: Record, S: Store> Table<T, S> {
     /// caller moves the length ([`Table::adjust_len`]), once for every record it removed.
     fn remove_record(&mut self, record: &T) -> Result<(), StorageError> {
         let old = self.entries(record)?;
-        self.store.delete(&old.record);
-        self.reindex(Some(&old), None);
+        self.store.delete(&old.record)?;
+        self.reindex(Some(&old), None)?;
         Ok(())
     }
 
@@ -738,9 +743,9 @@ impl<T: Record, S: Store> Table<T, S> {
     /// returns how many records there were.
     pub fn clear(&mut self) -> Result<u64, StorageError> {
         let records = self.encode(&self.prefix("r", &[], &[]))?;
-        let removed = crate::commons::clear_prefix(&mut self.store, &records);
+        let removed = crate::commons::clear_prefix(&mut self.store, &records)?;
         let all = self.encode(self.name.parts())?;
-        let _ = crate::commons::clear_prefix(&mut self.store, &all);
+        let _ = crate::commons::clear_prefix(&mut self.store, &all)?;
         Ok(removed)
     }
 

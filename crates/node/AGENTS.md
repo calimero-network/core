@@ -48,6 +48,15 @@ is its command line.
   proof is judged in `system/<area>.rs`'s `authorize` and it applies in that
   module's `apply`; `system.rs` keeps the state, the shared rules and the two
   dispatchers. A new command names its area there and gets an arm in both.
+  A refusal is a `system::Rejection` (`system/rejection.rs`): a `RejectionKind`
+  and a message. The status and code a client sees come from the kind
+  (`RejectionKind::status`, `code`; `node::rejected`), never from the wording:
+  `apply` answers `{"err": <message>, "code": <code>}` and `system::output` reads
+  the kind back from `code`. A refusal with its own status is a `Rejection`
+  constant (`NOT_A_DEPLOYER`, `UNIT_MEMBER`, the update refusals) or made by
+  `Rejection::quota` / `Rejection::sign_up` / `Stall::rejection`; a plain
+  `&str` converts to `REJECTED` (400). Regression:
+  `a_refusals_status_comes_from_its_kind_not_its_wording`.
 - **Routing** (`node.rs`): system writes go to the system leader, calls and strong
   views to the app's leader (a strong view runs on the replica that takes it once it applied the leader's read index, `internal/app/index`, `Node::app_read_index`; else on the leader; regression `a_follower_answers_a_strong_view_after_a_read_index`), over **peer sealed channels** (`internal/*`) whose key
   is attested like any client's, plus the cluster secret (HMAC of K_c).
@@ -77,6 +86,11 @@ is its command line.
   never a scan of `apps`; `reconcile` uses `apps_on` and `app_of_group` too.
   Regressions: `system::routing::tests`
   (`routing_a_raft_message_does_not_scan_the_apps`, a scaling guard).
+  Heartbeats always travel batched per peer (`internal/raft-batch`,
+  `PeerTransport::send_batch`, B6); every item passes `admit_raft` as a message alone
+  does, only empty appends, at most `MAX_HEARTBEATS_PER_BATCH`; a batch a peer refuses
+  is sent again item by item. Regressions: `cluster::heartbeats_travel_batched_and_the_cluster_keeps_its_leader`,
+  `approval_bypasses::a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
   No interop with nodes before this (a hard cutover: clusters are recreated).
   Regression (`tests/it/approval_bypasses.rs`):
   `a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
@@ -272,7 +286,7 @@ is its command line.
   `/intents` and `/views` refuse a `__` method (`400 RESERVED_METHOD`), and an
   xcall or follow-up naming one is refused at the leader. Regression:
   `the_nodes_own_commands_cannot_be_called_as_methods`.
-- **Ceremonies** (`api::Pending`): a challenge lives on the node that began it, its id `{node}.{random}`; finishing elsewhere takes it from that node (`internal/challenge/take`), so it is used once. Budgets (`admit_pending`): ceremonies of callers not yet known (sign-in, sign-up, a recovery's finish) share `MAX_PENDING_CHALLENGES`; those of a known account (step-ups, passkey add, a recovery's start) draw on `MAX_CHALLENGES_PER_ACCOUNT` within `MAX_ACCOUNT_CHALLENGES`, so a full anonymous pool never blocks a step-up. Regressions: `a_sign_in_begun_on_one_node_finishes_on_another`, `api::tests::a_full_anonymous_pool_does_not_block_an_accounts_step_up`, `a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node` (`tests/it/consent_page.rs`: a step-up after an app-origin sign-in, asked and answered on every pair of nodes).
+- **Ceremonies** (`api::Pending`): a challenge lives on the node that began it, its id `{node}.{random}`; finishing elsewhere takes it from that node (`internal/challenge/take`), so it is used once. Budgets (`admit_pending`): ceremonies of callers not yet known (sign-in, sign-up, a recovery's finish) share `MAX_PENDING_CHALLENGES` and are never refused: one sealed session (`calimero_sealed::SealedSession`, set by `intercept`) holds at most `MAX_CEREMONIES_PER_SESSION`, its next begin displacing its own oldest, and a full pool displaces the oldest of the session holding the most, so a flood never locks other callers out (review finding D1). The store (`api::Ceremonies`) indexes ceremonies by expiry, by session and by each session's rank, so a begin, take, expiry or displacement is O(log n), never a scan of the pool. Not keyed on the peer IP: the node serves plain HTTP behind the operator's TLS front, where every client has the front's address, and `X-Forwarded-For` is written outside the TD. Those of a known account (step-ups, passkey add, a recovery's start) draw on `MAX_CHALLENGES_PER_ACCOUNT` within `MAX_ACCOUNT_CHALLENGES`, so a full anonymous pool never blocks a step-up. Regressions: `a_sign_in_begun_on_one_node_finishes_on_another`, `api::tests::a_full_anonymous_pool_does_not_block_an_accounts_step_up`, `api::tests::one_session_only_displaces_its_own_ceremonies`, `api::tests::a_full_pool_displaces_the_biggest_holder_then_the_oldest`, `a_flood_of_sign_in_begins_does_not_stop_another_clients_sign_in` (`tests/it/sessions.rs`), `a_step_up_after_an_app_origin_sign_in_is_answered_on_any_node` (`tests/it/consent_page.rs`: a step-up after an app-origin sign-in, asked and answered on every pair of nodes).
 - **Confirm methods**: `intents` answers `412 CONFIRM_REQUIRED` with a challenge over
   the exact call; the retry carries a passkey assertion, which is logged as consent.
 - **Bundles are blobs, not log entries**: `POST /bundles` stores the WASM in every
@@ -525,7 +539,9 @@ is its command line.
   through `uses` in `apps`. Lookup: `Node::outbound_for` -> `component::run_secrets`: the
   instance's own value, else its deployment's (`SystemState::deployment_secrets_of`,
   this node's system state at run time, not the app's log), else the operator's
-  in the gate; each only for a name the release declares. The deployment's
+  in the gate; each only for a name the release declares, and attached by the gate
+  where its binding says (`PackageVersion::secrets`, one host and one header or body
+  field each; the shape since 1.0.0-rc.37, a hard cutover). The deployment's
   only for a run of a release of a package it offers or an offered release
   references (`SystemState::deployment_covers`, over `used_releases`; any
   version: its signer is pinned): its
@@ -552,7 +568,7 @@ is its command line.
   sign-up invite only; an invite presented is checked on every policy).
   The invite is `SignUpRedemption { inviteKey, now, signature }`, the token
   key's `proof::sign_invite_redeem` over the new account, spent in
-  `used_proofs`; refusals start with `system::SIGN_UP_PREFIX` (`403
+  `used_proofs`; refusals are `Rejection::sign_up` (`403
   SIGN_UP_REFUSED`), and `register/begin` and `register/finish` refuse first
   (`api::refuse_sign_up`, fresh state before refusing; the finish before its
   challenge is spent). `SystemState::sign_up_invites` (`CreateSignUpInvite`,
@@ -663,10 +679,37 @@ is its command line.
   a bundle that is a signed release declaring prefixes; identity = (package,
   pinned signer), approval = `Org/Account::outbound_approvals[signer]`, set by
   whoever holds `MANAGE_APPLICATION` org-wide in the app's organization, with
-  `SetOutboundApproval` (`POST /orgs/{org}/outbound`, passkey consent; `merge_approval` at apply). The request is
+  `SetOutboundApproval` (`POST /orgs/{org}/outbound`, passkey consent; `merge_approval` at apply).
+  **Egress switch** (`SystemCmd::SetEgress { org, app?, egress }`, ungated: a hard cutover, an earlier
+  release cannot decode it;
+  `Org::egress_off`, `AppRecord::egress_off`, `SystemState::egress_off`): an organization's owner or
+  an admin turns egress off for every app of it or one instance (`POST /orgs/{org}/egress`, `POST
+  /apps/{app}/egress { egress }`, passkey over `org:<org> / __set_egress / { app, egress }`,
+  `system::egress_args`). `outbound_for` wraps every client in `calimero_outbound::egress_gated`,
+  which reads the system state before each request and refuses `EgressOff:` over every approval;
+  `SetOutboundApproval` for an organization whose switch is off is refused (`EGRESS_OFF`, `409`;
+  `api::refuse_egress_off` before the passkey, also on the consent page's `outbound`). Off is
+  instant; on again only through the consent page (`setEgress`, `consent_page::orgs::egress`, a
+  red `egressOn` attention), the route refusing any other principal `403 CONSENT_PAGE_REQUIRED`
+  (`Principal::consent_page`). `GET /apps/{app}/egress` answers `egress`, `offBy`, `summary`
+  (`egress::NO_EGRESS`); `GET /orgs/{org}` `egressOff`. Regressions: `tests/it/egress.rs`
+  (`egress_off_refuses_an_approved_host_whatever_the_approval`,
+  `an_instances_egress_is_turned_off_and_back_on_only_on_the_page`). The request is
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again. A component's calls, timers and deliveries get the same gate
   (D76, "Component executor").
+- **Operator logs** (review finding F6): `merod run` logs at `info,openraft=warn` and
+  every line ships to the operator, so `info!`, `warn!` and `error!` carry what the
+  node names (ids, hosts, kinds, codes, counts, lengths), never an error's words where
+  they can quote input. `log_safe::serde` names a serde_json error by category and
+  position (its words quote the entry), `log_safe::kind` an error by its `ApiError`
+  code, JSON, io or HTTP kind; an `ApiError` is logged as `status`/`code`, never
+  `message`. `StateTx::fail` reasons end up in the group's stop reason and three log
+  lines, so a decode failure passes `log_safe::serde`, not `{e}`. The words go to
+  the caller's answer or `debug!`. `scripts/check-no-user-data-at-info.py` enforces
+  it, `scripts/check-no-user-data-at-info.allow` lists lines whose text is the node's
+  own. Regressions: `component::tests::an_entry_that_does_not_decode_is_logged_without_its_contents`,
+  `log_safe::tests`, calimero-outbound's `log_tests`.
 - **Files** (`files.rs`, `files/seal.rs`, `files/wrap.rs`): a file is 64 KiB AES-256-GCM STREAM chunks
   (`FileSealer`, `FileOpener`) under a random data key.
   The nonce is 4 zero bytes then the big-endian chunk index; the AAD is `calimero.file.v1` then a last-chunk flag byte.
@@ -726,6 +769,11 @@ is its command line.
   (a read index), so a removal committed elsewhere holds before the next request; an event
   stream judges each event the same way (Events below). Regression:
   `a_revocation_holds_on_a_follower_that_has_not_applied_it_yet`.
+  The owner, admin and read-only checks made after `gate` (`manages_app`,
+  `may_handle_files`, `read_only_in`) read the app's record again from that state
+  (`api::fresh_record`), never the one the handler read before the round, so a transfer
+  or move committed elsewhere holds too. Regression:
+  `a_former_owner_does_not_manage_the_app_on_a_follower_behind_the_transfer`.
 - **Joining nodes**: a node started without `--bootstrap` waits; once
   `/ops/nodes` registers it, the system leader adds it to the system group as a
   learner (`Node::admit_registered_nodes`, from `reconcile`), it catches up and
@@ -905,7 +953,7 @@ is its command line.
   `apply_compute_final` settles the step of a linked run in the same apply: outputs pinned (+1 each, released when the record is dropped), outputs and results kept per run index (item rows, so `<step>.outputs` is in item order), a result up to `MAX_STEP_RESULT_BYTES` and a step's together up to `MAX_STEP_RESULTS_BYTES` (past it none are kept and `results_too_large` is set), failed items counted from the runs that failed or were cancelled; the step is `succeeded` once every run it will have is final and `failed_items` is at most `fan.allowed` (zero while the run is cancelled or stopping), else `failed` (one item over cancels its active runs and no more are created), and the run ended once every step is settled (inputs released; `succeededWithFailures` when a step tolerated failed items). `PipelineRun::fail_fast` (the pipeline's `failFast`) makes the first failed step set `stopping`, end the pending steps `cancelled` and flag the running steps' runs.
   The leader's loop (`Node::drive_pipelines`, beside `drive_runs`) is stateless: `plan` decides every pending step from the records (start when its needs succeeded, `skipped` for no items, `upstreamFailed` when one failed, `cancelled` for a cancelled or stopping run) and the next `More` wave of each running fan-out (`maxParallel` less its active runs, the app's room, `MAX_STEP_RUNS`), and each wave is also cut so its encoded runs stay within `MAX_DECISION_RUNS_BYTES` (a run that cannot fit one decision alone fails the step with `RUN_TOO_LARGE`), and each decision is proposed only while it still applies (the step pending, or the fan-out's next index unchanged). A pipeline whose definition is gone (`pipeline_by_hash` answers 404) gets `Failed{PIPELINE_UNAVAILABLE}` for its steps that have not started or have runs left to create.
   A step in another package's module (`bundle_of`) is built with that module's caps (`caps_of_component` per bundle) and `StepRun::compute_bundle` (none for `self`); apply accepts only a bundle the run pinned (`UNKNOWN_MODULE` fails the step), writes it as the `RunRecord`'s `compute_bundle`, and the cache key uses it. Owner, payer, `bundle` (usage) and file keys stay the app's; the job node is pushed the module's component like any compute component. Regression: `a_step_runs_another_packages_module_under_the_callers_keys_and_payer`.
-  It keeps only caches of immutable data, a pipeline by hash (`Node::pipeline_by_hash`) and a compute component's caps (`caps_of_component`).
+  It keeps only caches of immutable data, a pipeline by hash (`Node::pipeline_by_hash`) and a compute component's caps (`caps_of_component`, read from its ABI with the compute engine's `abi_of`, never by compiling it: the install compiled it once to verify it; regression `reading_a_compute_components_caps_compiles_nothing`).
   A step's args are its `args` with `params.x` replaced by the run's value or the default and `<step>.result` by that step's result as JSON; no args is no bytes; its inputs are `inputs.x` and `<step>.outputs`, deduplicated, at most `MAX_PIPELINE_RUN_INPUTS` (10,000, which the job node's admission and `MAX_ASSIGNMENT_BYTES` (8 MiB) allow; a run an app starts keeps `MAX_RUN_INPUTS`).
   A `forEach` step makes one run per batch of items; its inputs are the step's `inputs` references in the order written with the run's item files where `item` stands (first when it is not listed), and `item` in `args` is the item (a file id or a result value; a list for a batch above 1). `collect: <step>.outputs` is one run over all of that step's outputs in item order, then its other `inputs`. A step's `pool` is carried on `StepRun::pool` into `RunRecord::pool`; `AcquireRun { pool }` then puts the slot in that pool (`RUN_NO_POOL` when the cluster lacks it or its `maxMemoryMib` is below the run's memory), so `pick_job` uses only its job nodes. A step without `pool` keeps `pool_for`. The leader proposes `pool` only while `Node::nodes_behind_release` is empty (an older node would drop it), else `None`. Regression: `a_steps_pool_places_its_runs_on_that_pools_job_node`, `a_named_pool_waits_until_every_node_runs_this_release`.
   Only those who may handle the app's files (`api::may_handle_files`: its owner, its organization's members) start, cancel or retry a run, even where an `anyone` grant admits others (`403 FORBIDDEN`); anyone who reaches the app reads it without results or file hashes. Regression: `only_those_who_handle_the_apps_files_start_cancel_or_retry_a_pipeline`.
@@ -1277,12 +1325,26 @@ is its command line.
   The component is prepared from the bundle read before the lock, so the call
   also answers a conflict when the state names another bundle by then (an
   upgrade applied in between; `call_component` compares `AppState::bundle`).
-- **Runs leave the async workers** (`node::off_workers`): a WASM run (call,
-  timer tick, init, strong view) happens inside the group's
-  proposal lock, on the machine's read lock, from borrowed state, so it cannot
-  move to `spawn_blocking`; it goes through `block_in_place`, which hands the
-  worker's other tasks (Raft heartbeats, the system group, HTTP) to another
-  worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
+- **Runs leave the async workers** (`node::off_workers`): a logged WASM run (call,
+  timer tick, init, a compute run's result method) happens inside the group's
+  proposal lock, so it cannot move to `spawn_blocking`; it goes through
+  `block_in_place`, which hands the worker's other tasks (Raft heartbeats, the system
+  group, HTTP) to another worker meanwhile. Regression:
+  `a_long_run_does_not_hold_an_async_worker`.
+- **Logged runs hold no read lock** (C2; `calimero_log::Group::propose_led_staged`,
+  `LoggedRun`): each of those proposals is staged. Its read step, under the applied
+  state's read lock, makes the checks, takes the unique ids and an owned `LoggedRun`
+  (`AppMachine::view`, an O(1) `imbl` clone, the blobs, runs provider, secrets,
+  `base_index`); its run step, with the lock released, runs the guest, pushes its files
+  and builds the entry. The proposal lock is held throughout, so calls on one app still
+  take turns and each builds on the one before (no self-conflict). An entry that commits
+  while a run runs (a barrier, a membership change) now applies at once and the app's
+  reads go on, where they waited for the whole run before (a reader queued behind the
+  waiting apply); the run's entry then fails its `base_index` check and `Node::call`
+  runs it again, its synchronous xcalls replayed under their keys. Regressions:
+  `a_logged_run_waiting_in_a_host_call_holds_up_no_apply_or_read_of_its_app` (an entry
+  waited 1.0 s and a read 0.96 s for the run before),
+  `a_call_whose_app_moved_on_while_it_ran_runs_again_and_answers_once`.
 - **Disk work leaves the async workers** (`node/disk.rs`): a store write (a blob, a
   bundle, a file segment, a node row) waits for the disk, and RocksDB writes in
   groups, so even an unsynced one queues behind another group's fsync. The node
@@ -1338,11 +1400,11 @@ is its command line.
   `removed`), `newMethods`/`removedMethods`. A single upgrade keeps the members where they are; a
   unit's moves its direct members as `unit_plan` does. The class decides how it applies:
   under `secondApprover` a red one takes two approvers (C8), under `noDestinations` a
-  green one of a unit with no destination before or after that removes no method applies on
-  its own, moving the app alone (C9).
+  green one of a unit with no destination before or after applies on its own, unless it
+  removes a method or would move the unit's members (C9).
   Regressions: `a_units_destinations_are_judged_over_its_members`
   (`tests/it/consent_page.rs`), `calimero_bundle::update::tests`,
-  `an_update_whose_members_differ_applies_on_its_own_and_moves_the_instance_alone`
+  `an_update_that_would_move_the_units_members_waits_for_a_person`
   (`tests/auto_updates.rs`).
 - **Update classes and policies** (C8; `system/updates.rs`, `api/update_policies.rs`;
   docs: protocol upgrades "The class at apply", "Update policies"): every `UpgradeApp`
@@ -1399,9 +1461,9 @@ is its command line.
   (`StartUpgradeRun` drops any other run's, whatever the entry lists), and its members are
   the instance's `links` (`upgrade_run_apps`). `POST /apps/{app}/upgrade-approvals` answers `approval` in the
   `pendingApprovals` shape (`api::upgrades::approval_json`).
-  The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
-  `autoApply` (`noDestinations`: a green update that removes no method, of an app whose
-  unit has no destinations before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
+  The apply errors carry their code (each a `system::Rejection` of its own `RejectionKind`).
+  `autoApply` (`noDestinations`: a green update that removes no method and moves none of
+  the apps it created, of an app whose unit has no destinations before or after) and `holdHours` act through C9 (below). Routes: `GET|POST /orgs/{org}/upgrade-policy`, `GET|POST
   /apps/{app}/upgrade-policy` (`policy_json`), `GET /apps/{app}/update` adds `policy`,
   `pendingApprovals`, `available.approvalsNeeded`/`approvedBy`
   (`api::upgrades::update_view`), `GET /orgs/{org}/updates?after=` (owners and admins,
@@ -1451,7 +1513,9 @@ is its command line.
   `UpgradeApp { auto }` carries no consent (`apps::authorize` admits it only with that
   actor); apply judges `SystemState::auto_update_gate`: policy, green class (and
   `check_class`), newer release of its package, not a unit member, the logged unit with
-  no destination before or after, the hold (`at` >= `installedAt`, or the deployment
+  no destination before or after, a release that keeps the unit's members where they
+  are (`moves_members` over `release_of_use`, which `unit_members` picks with too;
+  `UpgradeApp { members_stay }`, `Feature::AutoUpdateMembersStay`, rc.36), the hold (`at` >= `installedAt`, or the deployment
   offer's `addedAt`, + `holdHours`), a restore point
   (`AUTO_UPDATE_REFUSED`, `HOLD_NOT_OVER`, `RESTORE_POINT_REQUIRED`;
   `UpgradeRecord::auto`). Every update decision's time is `types::update_now`
@@ -1741,7 +1805,7 @@ is its command line.
   client routes and relative tails served as the bundle's, its CSP plus the cluster's API
   origins and the attestation mirror (`ATTESTATION_MIRROR`, where clients get the release's
   measurements and Intel's collateral; regression
-  `a_served_page_may_reach_the_cluster_and_the_attestation_mirror`) in `connect-src`, `/.well-known/calimero.json` (with the deployments
+  `a_served_page_may_reach_the_cluster_and_the_attestation_mirror`) in `connect-src`, `/.well-known/calimero.json` (the node's `cluster` and the deployments
   offering the package); an unknown label under
   D is a 404, never a node route. Each package is also at
   `{cluster_label(config.cluster, package)}.D` on its cluster, the same site
@@ -2082,7 +2146,13 @@ is its command line.
   `internal/call`) wait to apply it (`Node::sys_fresh_from`, whose doc is the
   argument that this is as fresh as a round of their own) instead of running
   another. Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
+  A credential that cannot be valid costs no round (`api::credential`, D4): an
+  API key not of `new_api_key`'s shape, or one a caught-up read found missing in
+  the last `UNKNOWN_API_KEY_TTL` (`UnknownApiKeys`, `MAX_UNKNOWN_API_KEYS`), a
+  visitor credential whose signature fails, a session token its issuer did not
+  sign; a missing key waits (`sys_until`) only when the round did not catch up.
   Regressions: `a_call_costs_one_system_read_round`,
+  `a_credential_that_cannot_be_valid_costs_no_system_read_round`,
   `a_revocation_committed_before_the_round_holds_on_a_leader_behind`
   (`tests/it/access_gate.rs`).
 - **Declared views**: a call (`/intents`) of a method the ABI declares `#[app::view]`
@@ -2224,7 +2294,11 @@ API and system group:
 
 - **Engine and host** (`node/component.rs`): one `WasmtimeEngine` per node
   (`Node::app_engine`), compiled artifacts cached under `<data_dir>/components`, each
-  with a MAC under a key derived from K_c (S8). `Node::prepared_for` prepares a bundle
+  with a MAC under a key derived from K_c (S8); the engine deletes another wasmtime's or
+  config's artifacts at start, and `Node::sweep_component_cache` (every
+  `COMPONENT_CACHE_SWEEP_EVERY`, 1 hour, the first an hour after start) those of bundles no
+  app uses or this node keeps prepared, once an hour unmodified
+  (`the_component_cache_keeps_only_what_apps_run`). `Node::prepared_for` prepares a bundle
   once (single-flight, Ruling 44; `concurrent_first_uses_of_a_bundle_prepare_it_once`).
   `POST /bundles` and package installs run the engine's `prepare` on a component
   (a core module is refused, see "SDK 0.12 apps").
@@ -2314,6 +2388,14 @@ API and system group:
   `an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_replica`
   (`testing`: `Node::hold_system_log` makes a node refuse the system group's Raft
   messages while its app groups go on), `removed_member_stops_receiving_org_events`.
+  Every stream `gate` lets open (events, presence, a pipeline run's events, an event
+  stream proxied from another replica) also judges the principal that opened it before
+  each batch it sends, on the same fresh state (`api::still_admitted`,
+  `Principal::admitted_on`): an account no longer reaching the app, a revoked API key or
+  an ended session ends it; a session token's own expiry does not (a refresh). Regressions:
+  `a_removed_member_stops_receiving_presence`,
+  `a_revoked_key_or_session_stops_its_event_and_presence_streams`,
+  `a_removed_member_stops_receiving_a_runs_events`.
 - **Usage** (Q20, `component::RunUsage`, `DayUsage`): each `componentInit`,
   `componentCall` and `componentTick` outcome carries `usage { fuel, wallMs, writes,
   bytesWritten, events }`, measured by the leader (`Outcome::from_host`; a `HostDenied`
@@ -2401,10 +2483,15 @@ API and system group:
   for every table whose declared fields are what it was built with, across an upgrade
   too; a table that is new or whose fields changed starts from a new index and one no
   longer declared is dropped; when the keys since are unknown (the first search after a
-  start, keys the ring lost, a mark another view moved meanwhile) each index is compared
+  start, keys the ring lost, a view on an older state than the indexes hold) each index is compared
   with the state (`TableIndex::reconcile`: every record's document digest,
   `calimero_search::index::doc_digest`, against the one the index holds) and only what
-  differs is indexed again. A view that never searches indexes nothing. Indexes are kept
+  differs is indexed again. A view that never searches indexes nothing. A view searches
+  the state it reads and no other (C4): once the indexes reach its state it keeps a
+  point-in-time snapshot of them (a tantivy `Searcher` and the document keys per table,
+  `AppIndexes::snapshot`) for all its searches, and the views queued on earlier states
+  (`AppEntry::waiting`, weak) are brought up first, in order (`AppEntry::due`), so the
+  shared indexes never jump past a live view's state. Indexes are kept
   under `<data dir>/search/<sha256(app)>/<sha256(table)>` (tantivy `MmapDirectory`) only
   when `Config::kms_keys.disk` is set (`--kms-disk-evidence`: mero-tee's LUKS2 data disk
   with integrity, keyed by mero-kms and opened inside the TD), since tantivy writes its
@@ -2422,7 +2509,9 @@ API and system group:
   its uncommitted changes never reach a later commit. Regressions:
   `at_most_max_open_writers_stay_open_across_every_apps_indexes`,
   `preparing_a_views_search_indexes_nothing_until_it_queries`,
-  `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`,
+  `a_view_whose_indexes_a_later_upgrade_moved_searches_its_own_state`,
+  `a_view_searches_the_state_it_reads_while_a_later_view_moves_the_indexes`,
+  `a_view_that_searches_after_a_later_view_did_searches_its_own_state`,
   `an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps`,
   `an_index_kept_on_disk_catches_up_after_a_restart_reindexing_only_what_changed`,
   `an_index_on_disk_under_other_fields_is_made_anew`. The run
@@ -2442,7 +2531,7 @@ API and system group:
   D27 key and `CallRequest::action`, which alone reaches `allow(action)` methods), run on
   the runtime while the action's thread waits; `NodeHttp` sends through `outbound_for`
   (the signed release's prefixes, the owner's approval, the operator's hosts,
-  `{{secret:..}}`, at most `MAX_HTTP_REQUESTS` (8) per run). The end is logged as `componentActionEnd`: a
+  the credentials the release binds, attached by the gate, at most `MAX_HTTP_REQUESTS` (8) per run). The end is logged as `componentActionEnd`: a
   timeout retries (`action_retry`, `retry_after_ms`) until `MAX_ATTEMPTS`, an app error,
   trap or removed method fails at once; a failure sends `ActionFailed { actionId,
   method, reason }` to the starter (an event with an `Accounts` audience) and runs
@@ -2452,7 +2541,7 @@ API and system group:
 - **Outbound HTTP from calls** (D76; `RunExtras::outbound`, `TimedHttp`): calls (but a
   read-only member's), timers and deliveries get `NodeHttp` over `outbound_for`, as actions
   do, each response awaited at most `CALL_FETCH_TIMEOUT` (1.5 s, inside the 2 s budget;
-  then the app's fetch gets an error). The host core records each exchange
+  then the app's fetch gets an error), and never past the run's deadline (below). The host core records each exchange
   (`Outcome::http`, `component::HttpRecord`: the request with its placeholders, the
   redacted response, bodies cut to 64 KiB with their lengths) in the call's entry,
   whatever its status; followers never fetch, and a keyed retry replays. Tests:
@@ -2466,13 +2555,29 @@ API and system group:
   host core's derived key, `Caller::App(source)` and `CallRequest::sync_from` (the target
   checks the boundary again and runs it as `xcall-deliver`, so it reaches no further); a
   view through `Node::view` (strong). The run's thread waits at most `SYNC_XCALL_WAIT`
-  (3 s) while the runtime runs it; two apps calling each other at once both time out.
+  (3 s) while the runtime runs it, and never past its own deadline; two apps calling each
+  other at once both end `Timeout` at their deadline.
   A batch (`xcall.batch`, `NodeXcall::batch`) prepares each request as the same call or
   view would (`prepare_call`, `prepare_view`), spawns them all on the runtime and waits for
   them with one `SYNC_XCALL_WAIT` deadline (`wait_all`), so a run holds its own proposal lock
   for the slowest request, not their sum; requests to one target take turns on its lock.
   Tests: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
   (`apps/fixture-captcha`), `joined_sync_calls_run_at_once_and_a_rerun_replays_them`.
+- **A run's deadline covers its host calls** (C2): wasmtime's epoch deadline is checked only
+  while the guest's code runs, so a run waiting in a host call used to wait as long as the
+  host did (a sync xcall up to `SYNC_XCALL_WAIT`, past a 2 s budget). `run_with` (and the
+  action runner) take `deadline = now + budget.wall_clock` and hand it to the host core
+  (`HostCore::with_deadline`) and to every host that waits: `TimedHttp` (the lesser of its
+  `timeout` and the time left; actions' outbound goes through it too), `NodeXcall`
+  (`wait_all`) and `NodeAction` (`wait`). A wait that ends at or past the deadline ends the
+  run `Trap(Timeout, WALL_CLOCK_EXCEEDED)`, the status an overrun in the guest's own code
+  gets. Deterministic: the deadline only decides whether the leader, before the log, gets
+  an outcome to propose; a `Timeout` is never logged (`Outcome::is_retryable`; a call,
+  tick, `init` or delivery is run again) and replicas apply the logged outcome without
+  running anything, so no entry and no apply differs, and nothing is gated. Regression:
+  `a_run_waiting_in_a_host_call_ends_at_its_own_deadline` (`tests/it/component_cluster.rs`;
+  a 600 ms run waiting on two 600 ms calls in turn answered after 1.22 s before, at its
+  deadline after).
 - **Files** (`node/component/files.rs`; tests `component_files.rs`): a file is a sealed blob.
   It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
   A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key (`backup::file_key`, not the TEE key) and the app's blob records.
@@ -2567,8 +2672,8 @@ rollback epoch in the attested KMS evidence, search indexes that survive a resta
 ```bash
 cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
 # the integration tests are one binary, `it` (tests/it/main.rs: a module per file), so one
-# test is <module>::<test>; auto_updates, compute_runs (process-wide test hooks) and
-# scenarios (its own main) stay binaries of their own (docs: contribute/testing)
+# test is <module>::<test>; auto_updates (process-wide test hooks) and scenarios (its
+# own main) stay binaries of their own (docs: contribute/testing)
 cargo test -p calimero-node --test it cluster::        # one module (a filter: any prefix)
 cargo test -p calimero-node --test it component_cluster::end_to_end -- --exact --nocapture
 cargo test -p calimero-node --test auto_updates -- --test-threads 1

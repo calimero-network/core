@@ -97,8 +97,9 @@ impl Watchlist {
     pub fn enrich(ctx: &mut ActionCtx, domain: String) -> app::Result<()> {
         let known: Option<String> = ctx.view("industry", &DomainArg { domain: &domain })?;
         let request = Request::get(format!("https://enrich.example.com/v1/{domain}"))
-            .header("Idempotency-Key", &ctx.key())
-            .header("Authorization", "Bearer {{secret:ENRICH_KEY}}");
+            // ENRICH_KEY is bound in the manifest to this host's Authorization header:
+            // the node attaches it.
+            .header("Idempotency-Key", &ctx.key());
         let answer: Answer = ctx.fetch(&request)?.json()?;
         if known.as_deref() != Some(answer.industry.as_str()) {
             ctx.call::<(), _>(
@@ -218,7 +219,7 @@ It cannot carry `confirm`, `public` or `allow(action)`.
     { from: 1, to: 0, label: 'result: "a.T.S.0"', dashed: true },
     { from: 1, to: 3, label: 'run enrich as the starter (10 s budget)' },
     { from: 3, to: 1, label: 'ctx.view("industry")' },
-    { from: 3, to: 4, label: 'ctx.fetch (outbound gate, {{secret:..}})' },
+    { from: 3, to: 4, label: 'ctx.fetch (outbound gate attaches bound secrets)' },
     { from: 4, to: 3, label: 'response', dashed: true },
     { from: 3, to: 2, label: 'ctx.call("applyIndustry"): its own entry' },
     { from: 1, to: 2, label: 'componentActionEnd: done' },
@@ -263,8 +264,8 @@ past that fails at once.
 - `fetch` reaches only a URL under a prefix the signed release's manifest
   declares under `outbound`, approved by the organization (or, per governance,
   the operator) and allowed by the operator.
-  `{{secret:NAME}}` in a header or the body is filled in by the node and
-  redacted from the response.
+  A credential the manifest binds to the host (a header or body field) is
+  attached by the node, never by the app, and redacted from the response.
   Declaring and approving prefixes, and setting secrets, are in
   [Call an external service](/build/guides/outbound/).
   `Request::get(url)`, `Request::post(url, body)` and `.header(name, value)`

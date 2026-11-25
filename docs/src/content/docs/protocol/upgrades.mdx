@@ -256,8 +256,8 @@ make an update red. The class decides how an update applies: a red one waits
 for an owner's or admin's approval, for two of them under a `secondApprover`
 policy ([A second approver](#a-second-approver)), and a green one applies on its
 own only under a `noDestinations` policy, when the app's unit has no destination
-before or after it and the update removes no method, moving the app alone
-([Updates that apply on their own](#updates-that-apply-on-their-own));
+before or after it and the update removes no method and moves none of the apps
+it created ([Updates that apply on their own](#updates-that-apply-on-their-own));
 any other green update waits for one owner's or admin's approval.
 
 ### The class at apply
@@ -317,7 +317,7 @@ force and its `source`). Moving an app to another organization drops its own.
 | Field | Default | Effect |
 | --- | --- | --- |
 | `secondApprover` | off | A red (or unclassified) update needs two distinct owners or admins |
-| `autoApply` | `never` | `noDestinations`: a green update that removes no method, of an app whose unit has no destinations before or after it (no data leaves Calimero), applies on its own after the hold ([Updates that apply on their own](#updates-that-apply-on-their-own)) |
+| `autoApply` | `never` | `noDestinations`: a green update that removes no method and moves none of the apps it created, of an app whose unit has no destinations before or after it (no data leaves Calimero), applies on its own after the hold ([Updates that apply on their own](#updates-that-apply-on-their-own)) |
 | `holdHours` | 24 | How long a green update waits before applying on its own: 24 to 168 (`400 BAD_UPGRADE_POLICY`) |
 
 Nothing updates on its own by default.
@@ -372,11 +372,11 @@ node's updates page shows.
 
 ## Updates that apply on their own
 
-Under a `noDestinations` policy, a green update that removes no method applies
-without anyone's approval once its hold has passed (`Feature::AutoUpdates`, 1.0.0-rc.34). The
-system leader looks every `AUTO_UPDATE_EVERY` (5 s; `node::auto_updates`,
-from `reconcile`) for apps it would move and the releases each could move to,
-newest first (`SystemState::auto_update_candidates`), classifies each move as
+Under a `noDestinations` policy, a green update that removes no method and moves
+none of the apps it created applies without anyone's approval once its hold has
+passed (`Feature::AutoUpdates`, 1.0.0-rc.34). The system leader looks every
+`AUTO_UPDATE_EVERY` (5 s; `node::auto_updates`, from `reconcile`) for apps it
+would move and the releases each could move to, newest first (`SystemState::auto_update_candidates`), classifies each move as
 any upgrade does, and runs the first green one of each app through the usual
 path, restore point first (`api::upgrades::auto_upgrade`), at most
 `MAX_AUTO_UPDATES_PER_PASS` (16) apps a pass; an app it skips does not count.
@@ -394,6 +394,9 @@ authority, and apply judges it again from the log alone
 - it moves the app along its package to a newer release; never back;
 - the app is no unit's member (a member moves with its unit) and its unit, as
   the log holds it, has no destination before or after the move;
+- its release keeps the unit's members where they are: its `uses` resolve each
+  member to the release it runs, as creating the instance would pick it (from
+  1.0.0-rc.36, `autoUpdateMembersStay`; `SystemState::moves_members`);
 - its hold has passed: the upgrade's own `at` is at least `holdHours` after the
   release was logged, its install (`installedAt`) or, for an instance of a
   deployment, its deployment's offer of exactly that release (`addedAt`).
@@ -419,9 +422,11 @@ a backoff it keeps in memory (`AUTO_UPDATE_RETRY_FIRST_SECS`, 60 s, doubling to
 `AUTO_UPDATE_RETRY_MAX_SECS`, 1 hour), and remembers a move it found not green
 for `NOT_GREEN_KEPT_SECS` (1 hour), so the next pass reaches the apps after
 it. Neither is replicated: a new leader starts without them, which only means
-the work is done again. The record says `lastUpgrade.auto: true`. Only the app moves:
-an update that would move its members (an `upgrade-unit`) waits for an owner or
-admin.
+the work is done again. The record says `lastUpgrade.auto: true`. Only the app moves,
+so an update whose release would move its members (its lock pins a member at
+another release) is refused and waits for an owner or admin, who moves the unit
+whole (`upgrade-unit`). Below 1.0.0-rc.36 it applied to the app alone and left
+the members where they were.
 
 ### Restore points and undo
 
@@ -776,6 +781,7 @@ the cluster's system log; the other nodes go on.
 | `currentRules` | `RequireCurrentRules`, the system leader's one-time mark after which every entry applies under this release's rules; an earlier release cannot read it. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.19 |
 | `wholeUnits` | `CreateApp` of a unit member with its instance's deployment (`unit_offer`, the offer that covers it), and `DeleteApp` taking an instance's unit with it (`members`); an earlier release ignores both fields, so it would refuse the member as not offered and keep the members running | 1.0.0-rc.32 |
 | `deploymentSecrets` | `SetDeploymentSecret` and `ClearDeploymentSecret`, a deployment's managers setting a secret's value for every instance created from it; an earlier release cannot read them, so an instance led from it would send the operator's value, or none, where another leader sends the deployment's | 1.0.0-rc.32 |
+| `autoUpdateMembersStay` | `UpgradeApp` with `members_stay`: an update on its own is refused where its release would move the unit's members; an earlier release ignores the field and applies it to the app alone, leaving the members behind. Once the logged cluster version brings it, an entry without the flag is judged by it too | 1.0.0-rc.36 |
 | `ownerApprovedUpgrades` | `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey` with `owner_approves`: only an owner or admin of the app's organization upgrades it, starts a run of it or makes and uses an upgrade key for it; an earlier release ignores the field and would apply a member's, a team lead's or a publisher's upgrade where a later one refuses it. Once the logged cluster version brings it, an entry without the flag is judged by it too | 1.0.0-rc.33 |
 | `upgradeInDeployment` | `UpgradeApp` with `in_deployment`: an instance from a deployment moves only to the release its deployment offers; an earlier release ignores the field and would move it where a later one refuses | 1.0.0-rc.32 |
 | `expireProofs` | `ExpireProofs`, the system leader's one-time mark after which a sign-in's or sign-up's proof is forgotten once the session it opened expires (at a later entry's own time), and a sign-in whose session expired by then is refused; an earlier release cannot read it, and would keep every proof. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.31 |

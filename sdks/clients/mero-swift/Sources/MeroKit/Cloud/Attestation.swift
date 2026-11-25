@@ -45,6 +45,7 @@ public struct CloudReleasePolicy: Sendable {
     /// could name an old release with a flaw since fixed.
     public var minReleaseVersion: String
     /// The image profile trusted; ``TeeTrust/productionProfile`` (`locked-read-only`) by default.
+    /// Not with ``profiles``.
     public var profile: String
     /// Trust a debug profile. Its image is readable by the operator: testing only.
     public var allowDebugProfile: Bool
@@ -65,11 +66,23 @@ public struct CloudReleasePolicy: Sendable {
     /// how old it may be. A mirror cannot forge collateral, but it can replay
     /// an older, still valid copy; this shortens that window.
     public var maxCollateralAgeDays: Double?
+    /// Refuse collateral whose TCB info names Intel TCB evaluation data older
+    /// than this. Raises ``TeeTrust/defaultMinTcbEvaluationDataNumber`` (core's
+    /// floor), never lowers it. (== mero-js `minTcbEvaluationDataNumber`.)
+    public var minTcbEvaluationDataNumber: Int?
     /// Override the release signer (defaults to the mero-tee node release workflow).
     public var identity: String?
     public var issuer: String?
     /// The current time in milliseconds. For tests.
     public var now: @Sendable () -> Int64
+    /// Trust any of these image profiles, as core's `Measurements::Release`
+    /// `allowed_profiles` and mero-js `release.profiles` do: the one the node
+    /// names is used when it is listed, and the quote must still be that
+    /// profile's signed image, so naming another profile only gets a node
+    /// refused. For a cluster whose profile the client does not know:
+    /// staging's (``CloudEnvironment/staging``). A listed debug profile still
+    /// needs ``allowDebugProfile``. When set, ``profile`` stays at its default.
+    public var profiles: [String]?
 
     public init(
         minReleaseVersion: String, profile: String = TeeTrust.productionProfile, allowDebugProfile: Bool = false,
@@ -77,8 +90,9 @@ public struct CloudReleasePolicy: Sendable {
         dcapVerify: @escaping DcapVerify = { try Dcap.verify($0, collateral: $1, nowSecs: $2) },
         fetchCollateral: (@Sendable (Data) async throws -> DcapCollateral)? = nil,
         collateralSource: String = TeeTrust.defaultCollateralMirror, maxCollateralAgeDays: Double? = nil,
-        identity: String? = nil,
-        issuer: String? = nil, now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
+        minTcbEvaluationDataNumber: Int? = nil, identity: String? = nil,
+        issuer: String? = nil, now: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
+        profiles: [String]? = nil
     ) {
         self.minReleaseVersion = minReleaseVersion
         self.profile = profile
@@ -88,10 +102,39 @@ public struct CloudReleasePolicy: Sendable {
         self.fetchCollateral = fetchCollateral
         self.collateralSource = collateralSource
         self.maxCollateralAgeDays = maxCollateralAgeDays
+        self.minTcbEvaluationDataNumber = minTcbEvaluationDataNumber
         self.identity = identity
         self.issuer = issuer
         self.now = now
+        self.profiles = profiles
     }
+}
+
+/// The profile a real quote is judged against: ``CloudReleasePolicy/profile``,
+/// or, with ``CloudReleasePolicy/profiles``, the one the node names when it is
+/// listed (mero-js `trustedProfile`). Every listed debug profile needs
+/// ``CloudReleasePolicy/allowDebugProfile``, so the list never trusts one silently.
+func trustedProfile(_ doc: AttestationDoc, _ policy: CloudReleasePolicy) throws -> String {
+    guard let profiles = policy.profiles else { return policy.profile }
+    guard policy.profile == TeeTrust.productionProfile else {
+        throw TeeTrustError("give CloudReleasePolicy.profile or profiles, not both")
+    }
+    guard !profiles.isEmpty else {
+        throw TeeTrustError("CloudReleasePolicy.profiles is empty, so no image would be trusted")
+    }
+    let debug = profiles.filter { $0 != TeeTrust.productionProfile }
+    guard debug.isEmpty || policy.allowDebugProfile else {
+        let listed = debug.map { "\"\($0)\"" }.joined(separator: ", ")
+        throw TeeTrustError(
+            "CloudReleasePolicy.profiles lists \(listed), which an operator can read: "
+                + "pass allowDebugProfile to trust them")
+    }
+    let named = doc.release?.profile ?? ""
+    guard profiles.contains(named) else {
+        throw TeeTrustError(
+            "The node runs profile \"\(named)\", which is not one of \(profiles.joined(separator: ", "))")
+    }
+    return named
 }
 
 /// What a ``CalimeroClient`` trusts a node to be. (== mero-js `CloudPolicy`.)
@@ -247,7 +290,7 @@ private func verifyRelease(
     }
     let trusted = try trustSignedRelease(
         TrustSignedReleaseOptions(
-            release: release, profile: policy.profile, minReleaseVersion: policy.minReleaseVersion,
+            release: release, profile: try trustedProfile(doc, policy), minReleaseVersion: policy.minReleaseVersion,
             allowDebugProfile: policy.allowDebugProfile, identity: policy.identity, issuer: policy.issuer))
     let source = policy.collateralSource == "intel" ? IntelPcs.defaultBaseURL : policy.collateralSource
     let fetchCollateral = freshCollateral(
@@ -256,7 +299,9 @@ private func verifyRelease(
         }, maxCollateralAgeDays: policy.maxCollateralAgeDays, now: policy.now)
     let verifier = try createQuoteVerifier(
         QuoteVerifierOptions(
-            trusting: trusted, dcapVerify: policy.dcapVerify, fetchCollateral: fetchCollateral, now: policy.now))
+            trusting: trusted, dcapVerify: policy.dcapVerify,
+            minTcbEvaluationDataNumber: policy.minTcbEvaluationDataNumber, fetchCollateral: fetchCollateral,
+            now: policy.now))
     return try await verifier.verify(args)
 }
 
@@ -298,5 +343,11 @@ public let defaultMinRelease = "2.3.109"
 extension CloudPolicy {
     /// A production cluster's: real quotes only, from a signed mero-tee release
     /// at or above ``defaultMinRelease``, `locked-read-only` profile.
-    public static let production = CloudPolicy(release: CloudReleasePolicy(minReleaseVersion: defaultMinRelease))
+    public static let production = CloudEnvironment.production.policy()
+
+    /// A staging cluster's: real quotes only, from a signed mero-tee release at
+    /// or above ``defaultMinRelease``, of any of staging's image profiles, debug
+    /// ones included (``CloudEnvironment/staging``). Testing only: never in a
+    /// build people install from the App Store.
+    public static let staging = CloudEnvironment.staging.policy()
 }

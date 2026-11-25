@@ -19,6 +19,9 @@ const PAGES_PER_MIB: u32 = 16;
 pub const CALL_WALL_CLOCK: Duration = Duration::from_secs(2);
 /// Epoch deadline for an action run (spec section 5, D12).
 pub const ACTION_WALL_CLOCK: Duration = Duration::from_secs(10);
+/// The detail of a run that used its whole wall-clock budget, in its own code or waiting
+/// in a host call (`HostCore::with_deadline`).
+pub const WALL_CLOCK_EXCEEDED: &str = "wall clock exceeded";
 
 /// Which entry point of `handle` runs, mirroring the WIT `invocation-kind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

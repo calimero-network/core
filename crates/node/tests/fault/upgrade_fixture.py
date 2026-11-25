@@ -12,7 +12,7 @@ Run it with the pinned release's merod and meroctl (`--from-dir`, laid out by
 `scripts/fetch-release.sh`); `scripts/upgrade-path.sh` does so on every `Upgrade path` run,
 so what it writes is not committed. Each fixture it writes (`<out>` and `<out>-cases`) holds:
 
-- `datadir.tar.zst`: `node1/`, the data directory of a one-node cluster
+- `datadir.tar.gz`: `node1/`, the data directory of a one-node cluster
   (`merod run --dev`, cluster `upgrade-replay`, so its storage key is the dev
   key of that name) after the data set below, and then every upgrade case's seed
   (`upgrade_cases/`), was written through the public API and the node stopped.
@@ -243,11 +243,8 @@ def record(frm: Path, out: Path, port: int, part: str) -> None:
             return None
         return info
 
-    # zstd: fast, and far smaller than gzip on the seeded packages, which repeat each other's bytes.
-    plain = work / "datadir.tar"
-    with tarfile.open(plain, "w") as tar:
+    with tarfile.open(out / "datadir.tar.gz", "w:gz", compresslevel=1) as tar:
         tar.add(cl.dir(1), arcname="node1", filter=keep)
-    subprocess.run(["zstd", "-3", "-q", "-f", str(plain), "-o", str(out / "datadir.tar.zst")], check=True)
     (out / "expected.json").write_text(json.dumps({
         "release": version,
         "merod": subprocess.run([str(frm / "merod"), "--version"], capture_output=True, text=True).stdout.strip(),
@@ -264,7 +261,7 @@ def record(frm: Path, out: Path, port: int, part: str) -> None:
         "reads": reads,
     }, indent=1, sort_keys=True) + "\n")
     shutil.rmtree(work, ignore_errors=True)
-    print(f"upgrade fixture of {version}: {out} ({(out / 'datadir.tar.zst').stat().st_size} bytes, "
+    print(f"upgrade fixture of {version}: {out} ({(out / 'datadir.tar.gz').stat().st_size} bytes, "
           f"{len(reads)} reads, snapshots held: {held or 'none'}, {status['system']['applied']} entries)")
     if status["system"]["applied"] >= SNAPSHOT_EVERY:
         raise SystemExit(f"the {part} part holds {status['system']['applied']} entries: the log takes a snapshot at "

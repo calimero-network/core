@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard, TryLockError};
 
 use openraft::storage::RaftStateMachine;
 use openraft::{
@@ -30,7 +30,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::digest::{DigestAt, StateDigest, DIGEST_EVERY, DIGEST_KEPT};
-use crate::store::{load_generation, off_workers, Db, GroupState, StateTx, Transaction};
+use crate::store::{
+    load_generation, off_workers, wait_off_workers, Db, GroupState, StateTx, Transaction,
+};
 use crate::types::{
     Bytes, Entry, GroupId, LogId, SnapshotMeta, StorageError, StoredMembership, TypeConfig,
 };
@@ -91,6 +93,24 @@ impl<M> Applied<M> {
 }
 
 pub type Shared<M> = Arc<RwLock<Applied<M>>>;
+
+/// Read a group's applied state from async code, without holding an async worker
+/// while it waits. An apply holds the write lock while its batch commits, so no
+/// reader sees a state the disk does not hold, and that commit queues behind any
+/// other write's fsync (RocksDB writes in groups): a reader that waited for the
+/// lock on a worker stopped the worker, every group's heartbeats with it, for as
+/// long as the disk took. A free lock is taken at once; a held one is waited for
+/// through [`wait_off_workers`]. Regression:
+/// `a_state_read_waiting_for_an_apply_behind_the_disk_leaves_the_worker_free`.
+pub(crate) fn read_applied<M>(
+    shared: &RwLock<Applied<M>>,
+) -> LockResult<RwLockReadGuard<'_, Applied<M>>> {
+    match shared.try_read() {
+        Ok(st) => Ok(st),
+        Err(TryLockError::Poisoned(p)) => Err(p),
+        Err(TryLockError::WouldBlock) => wait_off_workers(|| shared.read()),
+    }
+}
 
 /// Where a group stands, committed with the state it describes.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -1046,16 +1066,22 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
 
     async fn begin_receiving_snapshot(&mut self) -> Result<Box<tokio::fs::File>, StorageError> {
         let path = self.snapshot_path(&format!("g{}-recv-{}.snap", self.group, hex_id()));
-        if let Some(old) = self.receiving.replace(path.clone()) {
-            let _removed = std::fs::remove_file(old);
-        }
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(io)?;
+        let old = self.receiving.replace(path.clone());
+        // An unlink and a create wait on the file system's journal, which a
+        // slow disk holds like an fsync: on the blocking pool.
+        let file = off_workers(move || {
+            if let Some(old) = old {
+                let _removed = std::fs::remove_file(old);
+            }
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .write(true)
+                .open(&path)
+                .map_err(io)
+        })
+        .await?;
         Ok(Box::new(tokio::fs::File::from_std(file)))
     }
 
