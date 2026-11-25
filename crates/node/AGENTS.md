@@ -1316,12 +1316,26 @@ is its command line.
   The component is prepared from the bundle read before the lock, so the call
   also answers a conflict when the state names another bundle by then (an
   upgrade applied in between; `call_component` compares `AppState::bundle`).
-- **Runs leave the async workers** (`node::off_workers`): a WASM run (call,
-  timer tick, init, strong view) happens inside the group's
-  proposal lock, on the machine's read lock, from borrowed state, so it cannot
-  move to `spawn_blocking`; it goes through `block_in_place`, which hands the
-  worker's other tasks (Raft heartbeats, the system group, HTTP) to another
-  worker meanwhile. Regression: `a_long_run_does_not_hold_an_async_worker`.
+- **Runs leave the async workers** (`node::off_workers`): a logged WASM run (call,
+  timer tick, init, a compute run's result method) happens inside the group's
+  proposal lock, so it cannot move to `spawn_blocking`; it goes through
+  `block_in_place`, which hands the worker's other tasks (Raft heartbeats, the system
+  group, HTTP) to another worker meanwhile. Regression:
+  `a_long_run_does_not_hold_an_async_worker`.
+- **Logged runs hold no read lock** (C2; `calimero_log::Group::propose_led_staged`,
+  `LoggedRun`): each of those proposals is staged. Its read step, under the applied
+  state's read lock, makes the checks, takes the unique ids and an owned `LoggedRun`
+  (`AppMachine::view`, an O(1) `imbl` clone, the blobs, runs provider, secrets,
+  `base_index`); its run step, with the lock released, runs the guest, pushes its files
+  and builds the entry. The proposal lock is held throughout, so calls on one app still
+  take turns and each builds on the one before (no self-conflict). An entry that commits
+  while a run runs (a barrier, a membership change) now applies at once and the app's
+  reads go on, where they waited for the whole run before (a reader queued behind the
+  waiting apply); the run's entry then fails its `base_index` check and `Node::call`
+  runs it again, its synchronous xcalls replayed under their keys. Regressions:
+  `a_logged_run_waiting_in_a_host_call_holds_up_no_apply_or_read_of_its_app` (an entry
+  waited 1.0 s and a read 0.96 s for the run before),
+  `a_call_whose_app_moved_on_while_it_ran_runs_again_and_answers_once`.
 - **Disk work leaves the async workers** (`node/disk.rs`): a store write (a blob, a
   bundle, a file segment, a node row) waits for the disk, and RocksDB writes in
   groups, so even an unsynced one queues behind another group's fsync. The node
