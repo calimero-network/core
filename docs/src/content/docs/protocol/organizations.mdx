@@ -484,7 +484,7 @@ organization value). Admins and team leads hold them all where they manage.
 | `1 << 0` | `CREATE_APP` | Creating an app in the organization (on its team, or org-wide) |
 | `1 << 1` | `INVITE_MEMBERS` | Minting an invite (org-wide, or on each team it names, where a team's default capabilities count) |
 | `1 << 2` | `JOIN_OPEN_TEAMS` | Inheritance into open teams (granted by default) |
-| `1 << 3` | `MANAGE_MEMBERS` | Adding non-lead rows and setting capabilities in a team |
+| `1 << 3` | `MANAGE_MEMBERS` | Adding non-lead rows and setting capabilities in a team: below admin, only a team the holder sees, and only capabilities the holder has organization-wide (from cluster version 1.0.0-rc.38, `heldTeamGrants`) |
 | `1 << 4` | `MANAGE_APPLICATION` | Approving the organization's outbound hosts (org-wide only). Upgrading its apps and its upgrade runs are its owner's and admins' alone from 1.0.0-rc.33 ([App upgrades](/protocol/governance/#app-upgrades)); before, this capability gave them too (on the app's team, or org-wide) |
 | `1 << 5` | `CREATE_TEAM` | Creating a top-level team (or moving one to the top) without being an admin |
 | `1 << 6` | `DELETE_TEAM` | Deleting a team one does not manage |
@@ -784,7 +784,7 @@ like any other app. No node ever holds a private half.
 
 | Holder | Read | Set |
 | --- | --- | --- |
-| An organization | `GET /orgs/{org}/backup-key` (any member) | `POST /orgs/{org}/backup-key { publicKey }` by an org-wide `MANAGE_APPLICATION` holder, with a passkey (`org:<org> / __set_backup_key / { publicKey }`, `412` first) |
+| An organization | `GET /orgs/{org}/backup-key` (any member) | `POST /orgs/{org}/backup-key { publicKey }` by its owner or an admin (an org-wide `MANAGE_APPLICATION` holder below cluster version 1.0.0-rc.38, `backupKeyApprovers`), with a passkey (`org:<org> / __set_backup_key / { publicKey }`, `412` first) |
 | The operator | `GET /ops/backup-key` | `POST /ops/backup-key { publicKey }`, signed with the operator key (`operator / __set_backup_key / { publicKey }`; [The operator](/protocol/operator/#the-recovery-disk)) |
 
 `publicKey` is 64 lowercase hex characters (`400 BAD_BACKUP_KEY` otherwise).

@@ -35,6 +35,10 @@ pub enum RejectionKind {
     CannotGrantUnheld,
     /// `400 UNKNOWN_CAPABILITIES`: [`super::UNKNOWN_CAPABILITIES`].
     UnknownCapabilities,
+    /// `403 TEAM_NOT_SEEN`: [`super::TEAM_NOT_SEEN`].
+    TeamNotSeen,
+    /// `403 INVITE_CREATOR_LACKS`: [`super::INVITE_CREATOR_LACKS`].
+    InviteCreatorLacks,
     /// `404 UNDECLARED_SECRET`: [`super::UNDECLARED_SECRET`].
     UndeclaredSecret,
     /// `409 OUTSIDE_DEPLOYMENT`: [`super::OUTSIDE_DEPLOYMENT`].
@@ -83,7 +87,7 @@ pub enum RejectionKind {
 
 impl RejectionKind {
     /// Every kind, for reading one back from its code.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 34] = [
         Self::Rejected,
         Self::QuotaExceeded,
         Self::ReleaseDeadline,
@@ -94,6 +98,8 @@ impl RejectionKind {
         Self::PersonalOrgsEnded,
         Self::CannotGrantUnheld,
         Self::UnknownCapabilities,
+        Self::TeamNotSeen,
+        Self::InviteCreatorLacks,
         Self::UndeclaredSecret,
         Self::OutsideDeployment,
         Self::NotFound,
@@ -132,6 +138,8 @@ impl RejectionKind {
             Self::PersonalOrgsEnded => "PERSONAL_ORGS_ENDED",
             Self::CannotGrantUnheld => crate::node::CANNOT_GRANT_UNHELD,
             Self::UnknownCapabilities => crate::node::UNKNOWN_CAPABILITIES,
+            Self::TeamNotSeen => "TEAM_NOT_SEEN",
+            Self::InviteCreatorLacks => "INVITE_CREATOR_LACKS",
             Self::UndeclaredSecret => "UNDECLARED_SECRET",
             Self::OutsideDeployment => "OUTSIDE_DEPLOYMENT",
             Self::NotFound => "NOT_FOUND",
@@ -162,7 +170,11 @@ impl RejectionKind {
     pub const fn status(self) -> u16 {
         match self {
             Self::Rejected | Self::UnknownCapabilities | Self::BadUpgradePolicy => 400,
-            Self::SignUpRefused | Self::DeployNotGranted | Self::CannotGrantUnheld => 403,
+            Self::SignUpRefused
+            | Self::DeployNotGranted
+            | Self::CannotGrantUnheld
+            | Self::TeamNotSeen
+            | Self::InviteCreatorLacks => 403,
             Self::UndeclaredSecret | Self::NotFound => 404,
             Self::QuotaExceeded => 429,
             Self::ReleaseDeadline

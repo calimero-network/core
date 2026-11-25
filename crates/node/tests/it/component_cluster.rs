@@ -11142,3 +11142,110 @@ async fn the_operators_run_follows_no_offer_that_no_longer_serves() {
     let r = bob.apps().get(&app).await.map(wire).unwrap();
     assert_eq!(r["release"]["version"], json!("0.1.0"), "{r}");
 }
+
+/// Security review: an API key's scope (`apps`, `methods`, `readOnly`) was
+/// enforced only by `gate`, so on the routes that read an app's record or
+/// change settings a key scoped to one app reached every app its account
+/// reaches: it read another app's record and rewrote its metadata, and
+/// changed the organization's. Now `within` holds a key to its apps on every
+/// route that names one, settings writes refuse a read-only or method-scoped
+/// key, and an organization's settings need an unscoped key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_api_keys_scope_holds_on_every_route_not_only_calls() {
+    let c = Cluster::start(3).await;
+    let (alice, mut apk) = signed_up(&c, 0, "alice").await;
+    let org = alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let mut apps = Vec::new();
+    for name in ["kept", "other"] {
+        apps.push(
+            alice
+                .apps()
+                .create(typed(
+                    json!({ "name": name, "bundle": &bundle, "org": org }),
+                ))
+                .await
+                .map(|a| a.app_id)
+                .unwrap(),
+        );
+    }
+    let (kept, other) = (&apps[0], &apps[1]);
+
+    let scoped = alice
+        .auth()
+        .apikey_create(typed(json!({ "apps": [kept] })), Some(&mut apk))
+        .await
+        .map(|k| k.key)
+        .unwrap();
+    let agent = c.client(1);
+    agent.use_api_key(&scoped).await;
+
+    // Its own app as before.
+    let _ok = agent.apps().get(kept).await.unwrap();
+    let _ok = agent
+        .apps()
+        .metadata(kept, json!({ "label": "mine" }))
+        .await
+        .unwrap();
+    // Another app of the same account: neither its record nor its metadata.
+    let e = agent.apps().get(other).await.unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let e = agent
+        .apps()
+        .metadata(other, json!({ "label": "taken" }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let listed: Value = agent.apps().list(None, None).await.map(wire).unwrap();
+    let ids: Vec<&str> = listed["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["appId"].as_str())
+        .collect();
+    assert_eq!(ids, [kept.as_str()], "{listed}");
+    // Nor the organization's settings.
+    let e = agent
+        .orgs()
+        .metadata(&org, json!({ "label": "taken" }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let o: Value = alice.orgs().get(&org).await.map(wire).unwrap();
+    assert_ne!(o["metadata"]["label"], json!("taken"), "{o}");
+    let a: Value = alice.apps().get(other).await.map(wire).unwrap();
+    assert_ne!(a["metadata"]["label"], json!("taken"), "{a}");
+
+    // A read-only key reads its app and changes none of its settings.
+    let read_only = alice
+        .auth()
+        .apikey_create(
+            typed(json!({ "readOnly": true, "apps": [kept] })),
+            Some(&mut apk),
+        )
+        .await
+        .map(|k| k.key)
+        .unwrap();
+    let reader = c.client(2);
+    reader.use_api_key(&read_only).await;
+    let _ok = reader.apps().get(kept).await.unwrap();
+    let e = reader
+        .apps()
+        .metadata(kept, json!({ "label": "changed" }))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+}

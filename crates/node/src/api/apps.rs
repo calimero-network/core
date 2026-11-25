@@ -961,9 +961,14 @@ async fn app_list(
         .and_then(|p| p.caller.account().map(str::to_owned));
     let bound = p.as_ref().and_then(|p| p.bound_app().map(str::to_owned));
     let reader = crate::report::Reader::Account(account.as_deref().unwrap_or_default());
+    let key = p.as_ref().and_then(|p| p.api_key.clone());
     let apps: Vec<Value> = node.sys(|s| {
         s.apps
             .values()
+            .filter(|a| {
+                key.as_ref()
+                    .is_none_or(|k| super::key_scoped_to(k, &a.app_id))
+            })
             .filter(|a| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
             .filter(|a| s.may_reach(a, account.as_deref()))
             .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
@@ -1490,6 +1495,7 @@ async fn app_metadata(
     let p = signed_in(&node, &headers).await?;
     let actor = p.account()?;
     p.within(&node, &node.app(&app_id).await?)?;
+    p.settings_write()?;
     let _ok = node
         .sys_write(&SystemCmd::SetAppMetadata {
             app_id,
