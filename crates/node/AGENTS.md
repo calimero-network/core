@@ -305,7 +305,7 @@ is its command line.
   registry, which any node can fetch it from again). An account installs for an
   organization (`Node::install_org`): `org`, which it must be a member of (else `404`),
   else its only one (`api::apps::only_org`; several `400 ORG_REQUIRED`). Public or
-  private (`PackageVersion::visibility`, `Feature::PrivateReleases`, rc.37;
+  private (`PackageVersion::visibility`, `Feature::PrivateReleases`, rc.38;
   `Node::fetch_for_install`): the registry URL's credential (userinfo) is left out
   first, and a release served so is public (a `401` or `403` to that fetch,
   `RegistryStatus`, counts as not public; any other failure is `503`); else it is fetched with the credential

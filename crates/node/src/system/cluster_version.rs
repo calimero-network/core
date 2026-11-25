@@ -402,7 +402,8 @@ impl Feature {
             Self::OffersOnly | Self::UndoToInstalledRelease | Self::AutoUpdateMembersStay => {
                 "1.0.0-rc.36"
             }
-            Self::PrivateReleases | Self::HostFuel => "1.0.0-rc.37",
+            Self::HostFuel => "1.0.0-rc.37",
+            Self::PrivateReleases => "1.0.0-rc.38",
         }
     }
 }
@@ -1003,6 +1004,7 @@ mod tests {
     const RC35: &str = "1.0.0-rc.35";
     const RC36: &str = "1.0.0-rc.36";
     const RC37: &str = "1.0.0-rc.37";
+    const RC38: &str = "1.0.0-rc.38";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1555,7 +1557,7 @@ mod tests {
             .filter(|f| f.names_an_entry())
             .partition(|f| {
                 ![
-                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36, RC37,
+                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36, RC37, RC38,
                 ]
                 .contains(&f.since())
             });
@@ -1647,7 +1649,8 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC34);
         let (rc35, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC35);
-        let (rc36, rc37): (Vec<Feature>, Vec<Feature>) =
+        // rc.37 brings no feature an entry names (`hostFuel` is a rule).
+        let (rc36, rc38): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC36);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
@@ -1867,10 +1870,10 @@ mod tests {
         for &feature in &rc36 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.37's for every node on rc.37: who may use a release (an rc.36 node drops both
-        // fields).
-        assert_eq!(rc37, [Feature::PrivateReleases]);
-        for &feature in &rc37 {
+        // rc.38's for every node on rc.38: who may use a release (an rc.36 or rc.37 node
+        // drops both fields).
+        assert_eq!(rc38, [Feature::PrivateReleases]);
+        for &feature in &rc38 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -1878,14 +1881,14 @@ mod tests {
             );
         }
         for n in &mut nodes {
-            n.release = RC37;
+            n.release = RC38;
         }
         let raise = SystemCmd::SetClusterVersion {
-            version: RC37.into(),
-            nodes: (1..=3).map(|id| (id, RC37.to_owned())).collect(),
+            version: RC38.into(),
+            nodes: (1..=3).map(|id| (id, RC38.to_owned())).collect(),
         };
         propose(&mut nodes, &raise).unwrap();
-        for &feature in &rc37 {
+        for &feature in &rc38 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));
