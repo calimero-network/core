@@ -23,7 +23,7 @@ use super::super::public_links::{
 /// The browser's assertion as the registry's `#Assertion` names it: `calimero_identity::Assertion`
 /// lives in another crate, which would need utoipa as a dependency to derive it there.
 #[derive(utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
+#[schema(rename_all = "camelCase")]
 #[allow(dead_code, reason = "a schema only: read by the derive, never built")]
 pub(in crate::api) struct Assertion {
     credential_id: String,
