@@ -170,6 +170,17 @@ export async function signedCall(p, fn, arg) {
   return p.page.evaluate(fn, arg);
 }
 
+/** Save the page as it is now, in the light and the dark theme: `<name>-light.png`, `<name>-dark.png`. */
+export async function shoot(p, name) {
+  fs.mkdirSync(SCREENSHOTS, { recursive: true });
+  for (const colorScheme of ['light', 'dark']) {
+    // Reduced motion: the page then switches theme without a colour transition mid-shot.
+    await p.page.emulateMedia({ colorScheme, reducedMotion: 'reduce' });
+    await p.page.screenshot({ path: path.join(SCREENSHOTS, `${name}-${colorScheme}.png`), fullPage: true });
+  }
+  await p.page.emulateMedia({ colorScheme: null, reducedMotion: null });
+}
+
 /**
  * Record every passkey prompt `p`'s pages ask: ms since the last trusted click, and the requests
  * sent in between. The first `refuse` prompts fail at once with `NotAllowedError`, as a browser

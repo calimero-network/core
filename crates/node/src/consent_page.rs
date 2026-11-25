@@ -3385,6 +3385,42 @@ fn redirect(r: &ConsentRequest, id: &str, result: &str) -> String {
 struct ApproveBody {
     #[serde(default)]
     confirm: Option<ConfirmBody>,
+    /// The organization chosen on an install sheet that offered a choice (`chooseOrg`).
+    #[serde(default)]
+    org: Option<String>,
+}
+
+/// `req` with the organization chosen on its install sheet: one the account is a member of,
+/// asked for exactly when the sheet offered a choice, so the passkey signs it as `org`.
+fn with_chosen_org(
+    node: &Node,
+    mut req: ConsentRequest,
+    org: Option<String>,
+) -> Result<ConsentRequest, ApiError> {
+    let offered = req.model["install"]["chooseOrg"].is_array();
+    let account = req.account.clone();
+    match (&mut req.action, org) {
+        (Action::Install { install, .. }, Some(org)) if offered => {
+            if !node.sys(|s| s.member_of(&org, &account)) {
+                return Err(ApiError::not_found("no such organization"));
+            }
+            install.org = Some(org);
+        }
+        (Action::Install { .. }, None) if offered => {
+            return Err(ApiError::bad_request(
+                crate::api::apps::ORG_REQUIRED,
+                "choose the organization this is for",
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(ApiError::bad_request(
+                "BAD_REQUEST",
+                "this request has no organization to choose",
+            ));
+        }
+        _ => {}
+    }
+    Ok(req)
 }
 
 /// The facts the page showed, checked again before the passkey is asked and
@@ -3498,7 +3534,10 @@ fn still_current(node: &Node, req: &ConsentRequest) -> Result<(), ApiError> {
 /// approval, written as the request's account, and where to go next.
 async fn approve(node: &Arc<Node>, id: &str, body: &[u8]) -> Result<Value, ApiError> {
     let body: ApproveBody = if body.is_empty() {
-        ApproveBody { confirm: None }
+        ApproveBody {
+            confirm: None,
+            org: None,
+        }
     } else {
         serde_json::from_slice(body)
             .map_err(|e| ApiError::bad_request("BAD_REQUEST", &e.to_string()))?
@@ -3514,6 +3553,7 @@ async fn approve(node: &Arc<Node>, id: &str, body: &[u8]) -> Result<Value, ApiEr
     }
     let (sys_index, _caught_up) = node.sys_fresh_index().await;
     still_current(node, &req)?;
+    let req = with_chosen_org(node, req, body.org)?;
     let confirmed = body.confirm.is_some();
     // One approval at a time: the passkey's answer is taken once.
     if confirmed {
