@@ -345,7 +345,8 @@ cannot be replayed to make the name served.
 
 A custom domain's sessions are only as safe as its DNS: whoever controls the
 name can serve their own page there and use its passkeys, though only for
-that package. The package's host keeps only Calimero's DNS in that trust base.
+that package. On the package's host, that trust rests on the apps domain's
+DNS alone.
 
 **Why its own origin.** An app's page is third-party code. Served from the
 cluster's own origin, it could reach anything the signed-in account can. On its

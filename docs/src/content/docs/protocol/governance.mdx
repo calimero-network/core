@@ -387,13 +387,23 @@ attested with the rest (`Governance::deployments`, `--deployments`):
 - **`granted`**: an account installs only with a live **deployer grant**:
   its own (`account:<id>`), or, holding `MANAGE_APPLICATION` organization-wide,
   one its organization holds (`org:<id>`). A grant may end (`until`), judged
-  at the install's own time, never a node's clock. Everyone else still signs
-  up and creates instances of the releases they see (the operator's catalog,
-  their organization's); creating one from a release the cluster lacks
-  installs it from the registry first, and that install needs a grant. The
-  API refuses before it fetches or stores anything (`403
-  DEPLOY_NOT_GRANTED`), and `apply` refuses `InstallPackage` and `PutBundle`
-  again. The operator's own installs need none.
+  at the install's own time, never a node's clock. The API refuses before it
+  fetches or stores anything (`403 DEPLOY_NOT_GRANTED`), and `apply` refuses
+  `InstallPackage` and `PutBundle` again. The operator's own installs need
+  none.
+
+  Everyone else still signs up and creates instances from a
+  [deployment's](#deployments) offers, or of a release the operator
+  installed (its catalog). Any other instance outside every offer is a live
+  deployer's: a customer who sees a release some other way, or a deployer
+  whose grant was revoked, is refused (`POST /apps`, `403
+  DEPLOY_NOT_GRANTED`), and so is an upgrade moving such an instance into
+  another package (`SystemState::creates_outside_offers`,
+  `upgrades_outside_offers`). `CreateApp` and `UpgradeApp` refuse the same
+  where they apply once the cluster version brings `offersOnly`
+  (1.0.0-rc.36); an earlier entry replays as it applied. So on a granted
+  cluster every instance is either the operator's catalog or attributable to
+  a deployer.
 
 Who grants deployers (`Governance::deployers`, `--deployers`):
 
