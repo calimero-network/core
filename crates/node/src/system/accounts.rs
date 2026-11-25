@@ -52,10 +52,11 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             hash,
             record,
             consent,
+            then,
             ..
         } => {
             let (st, used) = proofs.fresh(proofs.consent_of(&record.account, consent)?)?;
-            let args = api_key_args(hash, record);
+            let args = api_key_args(hash, record, then);
             proofs.states(
                 &st,
                 &format!("account:{}", record.account),
@@ -409,9 +410,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             owner_approves,
             ..
         } => {
-            if !s.accounts.contains_key(&record.account) {
-                return Err("unknown account".into());
-            }
+            s.api_key_room(&record.account)?;
             if let Some(scope) = &record.upgrades {
                 s.upgrade_key_fits_as_logged(
                     &record,
@@ -419,14 +418,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
                     OwnerRule::logged(owner_in_org, owner_in_team),
                     s.owner_approves(owner_approves),
                 )?;
-            }
-            let keys = s
-                .api_keys
-                .values()
-                .filter(|k| k.account == record.account)
-                .count();
-            if keys >= s.quotas.max_api_keys_per_account as usize {
-                return Err(Rejection::quota("API keys"));
             }
             let id = record.key_id.clone();
             let _prev = s.api_keys.insert(hash, record);
