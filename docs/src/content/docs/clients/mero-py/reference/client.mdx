@@ -21,8 +21,7 @@ organization recovery flows, and the event streams.
 
 ```python
 Client(base_url, allow_mock=False, app_hash=None, tee_profiles=None,
-       min_release=None, allow_debug_profiles=False, nodes=None,
-       ca_bundle=None)
+       min_release=None, allow_debug_profiles=False, nodes=None)
 ```
 
 A connection to one node of a cluster. The node is trusted only once its
@@ -37,22 +36,19 @@ sent until the first request.
 | `min_release` | The oldest mero-tee release accepted. |
 | `allow_debug_profiles` | Accept a release's debug profiles (whose memory the host can read). |
 | `nodes` | Other nodes of the same cluster, in the order the client moves to them when a node answers `421 WRONG_NODE` or is unavailable (see [failover](#failover)). Each is attested under the same policy. `node_url()` names the node in use, `node_urls()` all of them. |
-| `ca_bundle` | Path of a PEM file whose certificates are trusted as TLS roots on top of the built-in public ones (a private or staging CA), for every node, leader and directory the client reaches. `None` trusts the public roots only. A file that cannot be read raises the `OSError` it stands for (`FileNotFoundError`), one with no usable certificate `ValueError`, at construction. The event streams, `attestation()` and `verify_app_cluster()` still trust the public roots only (they run on core's own client). |
 
 ### `Client.connect`
 
 ```python
 Client.connect(cluster, *, tee_profiles=None, min_release=None, allow_mock=False,
-               app_hash=None, allow_debug_profiles=False, directory=None, zone=None,
-               ca_bundle=None)
+               app_hash=None, allow_debug_profiles=False, directory=None, zone=None)
 ```
 
 Returns a client for the cluster named `cluster`, using the nodes the Calimero
 Cloud node directory lists for it: `GET {directory}/{cluster}`, with
 `directory` defaulting to
 `https://manager.cloud.calimero.network/api/v2/directory`. The policy
-arguments mean what they do for the constructor, and `ca_bundle` covers the
-directory too.
+arguments mean what they do for the constructor.
 
 - Entries that are not an `http(s)` URL with a positive integer `weight` are
   dropped. An unknown cluster (`404`), a directory that cannot be reached, or a

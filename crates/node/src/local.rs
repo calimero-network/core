@@ -106,7 +106,6 @@ pub async fn start_on(
             ),
             attestation: Mode::Mock,
             allow_mock_peers: true,
-            tls_extra_roots: Vec::new(),
             sealed_required: false,
             rp_id: "localhost".into(),
             origins: origins.clone(),

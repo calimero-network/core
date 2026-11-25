@@ -132,10 +132,6 @@ pub struct Config {
     pub attestation: Mode,
     /// Accept mock quotes from peers (development only).
     pub allow_mock_peers: bool,
-    /// Extra CA roots for HTTPS to peers, job nodes and attestation fetches,
-    /// on top of the web roots (`--tls-extra-roots`, [`crate::peer_tls`]).
-    /// Empty: the web roots alone.
-    pub tls_extra_roots: Vec<reqwest::Certificate>,
     /// Refuse requests that are not sealed (except attestation and health).
     pub sealed_required: bool,
     pub rp_id: String,
@@ -1118,9 +1114,7 @@ impl Node {
         #[cfg(feature = "testing")]
         let http_timeout =
             crate::testing::shared_http_timeout_override(&config.data_dir).unwrap_or(http_timeout);
-        let http = crate::peer_tls::peer_client(&config.tls_extra_roots)
-            .timeout(http_timeout)
-            .build()?;
+        let http = reqwest::Client::builder().timeout(http_timeout).build()?;
         #[cfg(feature = "testing")]
         let quoter = quoter.for_node(&config.public_url);
         let compiler = crate::compile::Compiler::default();

@@ -23,7 +23,6 @@ use url::Url;
 
 use super::prelude::*;
 use super::recover::Node;
-use super::tls::ExtraRoots;
 
 /// One node of the cluster: core's client, and the sealed channel the
 /// generated client's requests take.
@@ -75,15 +74,16 @@ const OWN_HEADERS: [&str; 6] = [
 impl SealedNode {
     /// A node at `url`, attested under `policy` before the first request
     /// (core's client and the channel each attest on first use).
-    /// The channel trusts `roots` for TLS on top of the public roots.
-    pub(crate) fn connect(url: &str, policy: Policy, roots: &ExtraRoots) -> eyre::Result<Self> {
+    pub(crate) fn connect(url: &str, policy: Policy) -> eyre::Result<Self> {
         let client = Client::connect(url, policy.clone())?;
         let base: Url = if url.ends_with('/') {
             url.parse()?
         } else {
             format!("{url}/").parse()?
         };
-        let http = roots.builder().timeout(Duration::from_secs(60)).build()?;
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()?;
         let sealed = SealedTransport::attested(
             base.clone(),
             http.clone(),

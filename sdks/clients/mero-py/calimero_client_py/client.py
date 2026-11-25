@@ -18,7 +18,7 @@ import base64
 import json
 import os
 import secrets
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import _native, facade
 from ._facade import Group
@@ -105,11 +105,6 @@ def _session(v: Any) -> Dict[str, Any]:
     return {k: v[k] for k in _SESSION}
 
 
-def _path(p: Any) -> Optional[str]:
-    """`ca_bundle` as the native client takes it: a path as text, or None."""
-    return None if p is None else os.fspath(p)
-
-
 def _json_arg(v: Any) -> Any:
     """An argument the client sends as JSON: `None` is `{}`, as it always was."""
     return {} if v is None else v
@@ -140,16 +135,6 @@ class Client:
     release's debug profiles (whose memory the host can read) are refused
     unless `allow_debug_profiles`.
 
-    `ca_bundle`: the path of a PEM file whose certificates are trusted as
-    TLS roots on top of the built-in public ones (a private or staging CA,
-    such as Let's Encrypt's staging roots on a non-production cluster),
-    for every node, leader and directory the client reaches. None (the
-    default) trusts the public roots only. A file that cannot be read
-    raises the `OSError` it stands for (`FileNotFoundError`), one with no
-    usable certificate `ValueError`, here rather than at the first request.
-    The event streams, `attestation()` and `verify_app_cluster()` go
-    through core's own client and trust the public roots only.
-
     The routes: `client.api()` is a client for the generated calls in
     `calimero_client_py.openapi.api`, sealed to the node:
 
@@ -167,7 +152,6 @@ class Client:
         min_release: Optional[str] = None,
         allow_debug_profiles: bool = False,
         nodes: Optional[List[str]] = None,
-        ca_bundle: Optional[Union[str, "os.PathLike[str]"]] = None,
     ):
         self._init(
             _SealedClient(
@@ -178,7 +162,6 @@ class Client:
                 min_release,
                 allow_debug_profiles,
                 nodes,
-                _path(ca_bundle),
             )
         )
 
@@ -200,7 +183,6 @@ class Client:
         allow_debug_profiles: bool = False,
         directory: Optional[str] = None,
         zone: Optional[str] = None,
-        ca_bundle: Optional[Union[str, "os.PathLike[str]"]] = None,
     ) -> "Client":
         """Connect to the cluster named `cluster`, by the nodes the Calimero
         Cloud node directory lists for it (`GET {directory}/{cluster}`).
@@ -214,7 +196,6 @@ class Client:
         node. Raises `CloudError` (code `DIRECTORY`; the status is the
         directory's, `404` for an unknown cluster, 0 when it could not be
         reached) when the directory lists no usable node.
-        `ca_bundle` is the constructor's, and covers the directory too.
         """
         client = cls.__new__(cls)
         client._init(
@@ -227,7 +208,6 @@ class Client:
                 allow_debug_profiles=allow_debug_profiles,
                 directory=directory,
                 zone=zone,
-                ca_bundle=_path(ca_bundle),
             )
         )
         return client

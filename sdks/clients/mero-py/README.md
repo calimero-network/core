@@ -122,15 +122,6 @@ client = Client.connect("eu-shared-1", tee_profiles=["..."], zone="europe-west4-
 print(client.node_url, client.node_urls)  # the node in use, and the rest in order
 ```
 
-A cluster whose nodes have certificates from a private or staging CA (Let's
-Encrypt's staging roots on a non-production cluster): `ca_bundle` is a PEM file
-whose certificates are trusted on top of the built-in public roots, for the
-nodes and the directory. Without it only the public roots are trusted.
-
-```python
-client = Client(node_url, tee_profiles=["..."], ca_bundle="/etc/ssl/staging-roots.pem")
-```
-
 Organizations, teams and invites:
 
 ```python

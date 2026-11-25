@@ -39,7 +39,6 @@ pub mod metrics;
 pub mod node;
 pub mod origins;
 pub mod packages;
-pub mod peer_tls;
 pub mod placement;
 pub mod presence;
 pub mod proof;

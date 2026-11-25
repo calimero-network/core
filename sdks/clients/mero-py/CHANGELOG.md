@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **refactor!: `ca_bundle` is removed.** `Client(...)` and `Client.connect(...)`
+  no longer take `ca_bundle`; passing it raises `TypeError` (unexpected
+  keyword argument). It was added for nodes whose certificates came from Let's
+  Encrypt's staging CA; staging nodes now have publicly trusted certificates
+  (Google Trust Services), so the built-in public roots verify every node,
+  leader and the node directory. Drop the argument.
 - **feat: `ca_bundle`, extra trusted TLS roots.** `Client(..., ca_bundle=path)`
   and `Client.connect(..., ca_bundle=path)` take a PEM file whose certificates
   are trusted as roots on top of the built-in public ones, for every node
