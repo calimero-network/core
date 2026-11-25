@@ -38,7 +38,10 @@ pub use format::{OtherStore, STORE_FORMAT};
 pub use machine::{
     read_snapshot_file, read_snapshot_rows, Applied, Machine, PortableRow, Shared, SNAPSHOT_FORMAT,
 };
-pub use network::{BoxFuture, RpcRequest, RpcResponse, Transport};
+use network::Batcher;
+pub use network::{
+    BoxFuture, RpcRequest, RpcResponse, Transport, HEARTBEAT_BATCH_WINDOW, MAX_HEARTBEATS_PER_BATCH,
+};
 use store::{Db, LogStore};
 pub use store::{GroupState, StateTx};
 pub use types::{Bytes, GroupId, NodeId, Raft};
@@ -114,6 +117,35 @@ pub enum Proposal {
     Reply(Vec<u8>),
 }
 
+/// One step of a staged build ([`Group::propose_led_staged`]).
+pub enum Stage<'m, M, P> {
+    /// On the applied state, under its read lock: the machine and the log's applied index.
+    /// Answer [`Staged::Run`] with everything the slow part needs, owned.
+    Read(&'m M, u64),
+    /// After the read lock is released (the proposal lock is still held): what the read
+    /// step handed on. Answer [`Staged::Done`].
+    Run(P),
+}
+
+/// A one-step builder as a staged one: everything in [`Stage::Read`].
+fn at_once<M>(
+    stage: Stage<'_, M, std::convert::Infallible>,
+    build: &mut impl FnMut(&M, u64) -> Proposal,
+) -> Staged<std::convert::Infallible> {
+    match stage {
+        Stage::Read(m, applied) => Staged::Done(build(m, applied)),
+        Stage::Run(never) => match never {},
+    }
+}
+
+/// What a step of a staged build answers.
+pub enum Staged<P> {
+    /// The proposal.
+    Done(Proposal),
+    /// Go on in [`Stage::Run`] with this, once the read lock is released.
+    Run(P),
+}
+
 /// The result of a proposal.
 #[derive(Debug)]
 pub struct Proposed {
@@ -162,7 +194,7 @@ pub const RESTART_MAX: Duration = Duration::from_secs(300);
 /// What a group needs to start its Raft core again ([`Group::restart`]).
 struct Reopen {
     db: Arc<Db>,
-    transport: Arc<dyn Transport>,
+    batcher: Arc<Batcher>,
     config: Arc<openraft::Config>,
     applied_tx: Arc<watch::Sender<u64>>,
     /// Set once the engine stops or removes the group: no restart after that.
@@ -176,6 +208,11 @@ trait RpcTarget: Send + Sync {
     /// Delete the group's data from this node (after [`Self::shutdown`]): a
     /// snapshot build openraft still runs records nothing for it after.
     fn drop_data(&self) -> eyre::Result<()>;
+    /// The engine's heartbeat tick ([`heartbeat_ticker`]): send the group's
+    /// heartbeats if it leads here. openraft's own heartbeat timer is off
+    /// (`enable_heartbeat: false`), so every group's go out together and
+    /// those to one peer join one batch.
+    fn tick(&self) -> BoxFuture<()>;
 }
 
 /// One Raft group on this node.
@@ -268,7 +305,7 @@ impl<M: Machine> Group<M> {
         let log = LogStore::new(self.id, Arc::clone(&self.reopen.db));
         let network = network::Network {
             group: self.id,
-            transport: Arc::clone(&self.reopen.transport),
+            batcher: Arc::clone(&self.reopen.batcher),
         };
         let raft = Raft::new(self.node, Arc::clone(&self.reopen.config), network, log, sm).await?;
         // Checked and swapped under the lock `shutdown` closes the group
@@ -411,14 +448,27 @@ impl<M: Machine> Group<M> {
         Ok(())
     }
 
-    fn build<F>(&self, build: &mut F) -> Result<(Proposal, u64), WriteError>
+    /// One build: its read step on the applied state, under the read lock; then, with the
+    /// lock released, its run step if the read step asked for one.
+    fn build<P, F>(&self, build: &mut F) -> Result<(Proposal, u64), WriteError>
     where
-        F: FnMut(&M, u64) -> Proposal,
+        F: FnMut(Stage<'_, M, P>) -> Staged<P>,
     {
-        let st = machine::read_applied(&self.shared)
-            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
-        let applied = st.applied_index();
-        Ok((build(&st.machine, applied), applied))
+        let (staged, applied) = {
+            let st = machine::read_applied(&self.shared)
+                .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+            let applied = st.applied_index();
+            (build(Stage::Read(&st.machine, applied)), applied)
+        };
+        match staged {
+            Staged::Done(proposal) => Ok((proposal, applied)),
+            Staged::Run(handed) => match build(Stage::Run(handed)) {
+                Staged::Done(proposal) => Ok((proposal, applied)),
+                Staged::Run(_) => Err(WriteError::Unavailable(
+                    "a staged build asked to run twice".into(),
+                )),
+            },
+        }
     }
 
     async fn append(&self, cmd: Vec<u8>) -> Result<Proposed, WriteError> {
@@ -449,13 +499,13 @@ impl<M: Machine> Group<M> {
     /// it is confirmed with a majority before it is answered, and built again
     /// on the confirmed state when entries committed in between. `build` may
     /// therefore run twice.
-    pub async fn propose<F>(&self, build: F) -> Result<Proposed, WriteError>
+    pub async fn propose<F>(&self, mut build: F) -> Result<Proposed, WriteError>
     where
         F: FnMut(&M, u64) -> Proposal,
     {
         let _guard = self.propose_lock.lock().await;
         self.leads_here().await?;
-        self.propose_held(build).await
+        self.propose_held(|stage| at_once(stage, &mut build)).await
     }
 
     /// [`Self::propose`], handing the builder the [`Leadership`] the check that
@@ -468,17 +518,42 @@ impl<M: Machine> Group<M> {
     where
         F: FnMut(&M, u64, Leadership) -> Proposal,
     {
+        self.propose_led_staged(|stage, leadership| {
+            at_once(stage, &mut |m: &M, applied| build(m, applied, leadership))
+        })
+        .await
+    }
+
+    /// [`Self::propose_led`] in two steps, so a slow build (a guest run that may wait in its
+    /// host calls) holds the proposal lock but not the applied state's read lock: an entry
+    /// that commits meanwhile applies, and the group's readers read, while it runs.
+    ///
+    /// `build` gets [`Stage::Read`] on the applied state under the read lock and answers a
+    /// proposal ([`Staged::Done`]) or what the rest needs ([`Staged::Run`], owned: `P`
+    /// cannot borrow the machine); the lock is released and `build` gets [`Stage::Run`]
+    /// with it and answers the proposal. A `Reply` may build again ([`Self::propose`]),
+    /// both steps each time.
+    ///
+    /// Ordering (the contract): proposals on one group run one at a time, from the read step
+    /// through the commit (the proposal lock), so a read step sees every earlier proposal of
+    /// this node applied. An entry from elsewhere (a barrier, a membership change, an
+    /// earlier leader's) may apply between the read step and the append; it is before this
+    /// entry in the log either way, and the machine's base check refuses this entry at apply
+    /// (`conflict`), so the caller builds again.
+    pub async fn propose_led_staged<P, F>(&self, mut build: F) -> Result<Proposed, WriteError>
+    where
+        F: FnMut(Stage<'_, M, P>, Leadership) -> Staged<P>,
+    {
         let _guard = self.propose_lock.lock().await;
         let leadership = self.led_term().await?;
         self.catch_up(leadership).await?;
-        self.propose_held(|m, applied| build(m, applied, leadership))
-            .await
+        self.propose_held(|stage| build(stage, leadership)).await
     }
 
     /// The body of a proposal, with the proposal lock held and leadership checked.
-    async fn propose_held<F>(&self, mut build: F) -> Result<Proposed, WriteError>
+    async fn propose_held<P, F>(&self, mut build: F) -> Result<Proposed, WriteError>
     where
-        F: FnMut(&M, u64) -> Proposal,
+        F: FnMut(Stage<'_, M, P>) -> Staged<P>,
     {
         let (proposal, built_at) = self.build(&mut build)?;
         let output = match proposal {
@@ -830,6 +905,14 @@ impl<M: Machine> RpcTarget for Group<M> {
         })
     }
 
+    fn tick(&self) -> BoxFuture<()> {
+        let raft = self.raft();
+        Box::pin(async move {
+            // A follower ignores it; a stopped core answers an error.
+            let _ = raft.trigger().heartbeat().await;
+        })
+    }
+
     fn drop_data(&self) -> eyre::Result<()> {
         // openraft does not wait for a snapshot build when its core shuts
         // down. Under both locks no build is between its check and its write
@@ -927,10 +1010,65 @@ impl StoreWatch {
 pub struct Engine {
     node: NodeId,
     db: Arc<Db>,
-    transport: Arc<dyn Transport>,
+    batcher: Arc<Batcher>,
     config: Config,
-    groups: RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>,
+    groups: Arc<RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>>,
+    /// Whether the heartbeat ticker ([`heartbeat_ticker`]) runs.
+    ticking: AtomicBool,
     factory: RwLock<Option<GroupFactory>>,
+    removals: Removals,
+}
+
+/// The groups whose data a removal is deleting now ([`Engine::remove_group`]),
+/// each with how many removals of it run: none of them starts until its last
+/// removal has finished, so no start opens a state a removal deletes under it.
+#[derive(Clone, Default)]
+struct Removals(Arc<std::sync::Mutex<HashMap<GroupId, u32>>>);
+
+impl Removals {
+    fn contains(&self, id: GroupId) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&id)
+    }
+
+    /// Mark `id` removed until the answer drops (once its data is deleted, or
+    /// the removal is given up).
+    fn begin(&self, id: GroupId) -> Removal {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(id)
+            .or_default() += 1;
+        Removal {
+            of: self.clone(),
+            id,
+        }
+    }
+}
+
+/// One removal of a group in progress ([`Removals::begin`]).
+struct Removal {
+    of: Removals,
+    id: GroupId,
+}
+
+impl Drop for Removal {
+    fn drop(&mut self) {
+        let mut running = self
+            .of
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = running.get_mut(&self.id) {
+            *n -= 1;
+            if *n == 0 {
+                let _done = running.remove(&self.id);
+            }
+        }
+    }
 }
 
 impl Engine {
@@ -956,10 +1094,12 @@ impl Engine {
         Ok(Arc::new(Self {
             node,
             db,
-            transport,
+            batcher: Arc::new(Batcher::new(transport)),
             config,
-            groups: RwLock::new(HashMap::new()),
+            groups: Arc::new(RwLock::new(HashMap::new())),
+            ticking: AtomicBool::new(false),
             factory: RwLock::new(None),
+            removals: Removals::default(),
         }))
     }
 
@@ -1071,6 +1211,9 @@ impl Engine {
         if self.hosts(id) {
             eyre::bail!("group {id} is already running on this node");
         }
+        if self.removals.contains(id) {
+            eyre::bail!("group {id} is being removed from this node");
+        }
         let config = openraft::Config {
             cluster_name: format!("group-{id}"),
             heartbeat_interval: self.config.heartbeat_ms,
@@ -1082,6 +1225,9 @@ impl Engine {
             // the node's body limit and give it time to arrive.
             snapshot_max_chunk_size: SNAPSHOT_CHUNK_BYTES,
             install_snapshot_timeout: 10_000,
+            // The engine's ticker sends every group's heartbeats at once, so
+            // those to one peer travel in one batch ([`heartbeat_ticker`]).
+            enable_heartbeat: false,
             ..Default::default()
         }
         .validate()?;
@@ -1102,16 +1248,22 @@ impl Engine {
         let log = LogStore::new(id, Arc::clone(&self.db));
         let network = network::Network {
             group: id,
-            transport: Arc::clone(&self.transport),
+            batcher: Arc::clone(&self.batcher),
         };
         let raft = Raft::new(self.node, Arc::clone(&config), network, log, sm).await?;
+        if !self.ticking.swap(true, Ordering::AcqRel) {
+            drop(tokio::spawn(heartbeat_ticker(
+                Arc::downgrade(&self.groups),
+                Duration::from_millis(self.config.heartbeat_ms),
+            )));
+        }
         let group = Arc::new(Group {
             id,
             node: self.node,
             raft: RwLock::new(raft),
             reopen: Reopen {
                 db: Arc::clone(&self.db),
-                transport: Arc::clone(&self.transport),
+                batcher: Arc::clone(&self.batcher),
                 config,
                 applied_tx,
                 closed: AtomicBool::new(false),
@@ -1123,11 +1275,23 @@ impl Engine {
             propose_lock: Mutex::new(()),
             caught_up: std::sync::atomic::AtomicU64::new(0),
         });
-        let _prev = self
-            .groups
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, Arc::clone(&group) as Arc<dyn RpcTarget>);
+        // Checked under the lock a removal takes the group out under: a
+        // removal that began while this opened the group wins.
+        let removing = {
+            let mut groups = self
+                .groups
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let removing = self.removals.contains(id);
+            if !removing {
+                let _prev = groups.insert(id, Arc::clone(&group) as Arc<dyn RpcTarget>);
+            }
+            removing
+        };
+        if removing {
+            group.shutdown().await;
+            eyre::bail!("group {id} is being removed from this node");
+        }
         drop(tokio::spawn(supervise(Arc::downgrade(&group))));
         Ok(group)
     }
@@ -1140,20 +1304,40 @@ impl Engine {
             .contains_key(&id)
     }
 
-    /// Stop a group and delete its data from this node.
+    /// Stop a group and delete its data from this node. Idempotent: a group
+    /// this node does not run has whatever data it left deleted.
+    ///
+    /// The delete runs on tokio's blocking pool and is awaited there: it is a
+    /// write, which queues behind any other write's fsync (RocksDB writes in
+    /// groups), and it first waits for an apply holding the group's state, so
+    /// on an async worker it stopped every group's heartbeats for as long as
+    /// the disk took. Until it finishes the group is refused a start
+    /// ([`Self::start_group`]): it is out of the engine then but its rows are
+    /// not yet gone. Regressions (`tests/slow_disk.rs`):
+    /// `removing_a_group_behind_the_disk_leaves_the_worker_free`,
+    /// `a_group_being_removed_does_not_start_again_until_its_data_is_gone`.
     pub async fn remove_group(&self, id: GroupId) -> eyre::Result<()> {
-        let target = self
-            .groups
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&id);
-        match target {
-            Some(t) => {
-                t.shutdown().await;
-                t.drop_data()
-            }
-            None => self.db.drop_group(id),
+        let (target, removal) = {
+            let mut groups = self
+                .groups
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (groups.remove(&id), self.removals.begin(id))
+        };
+        if let Some(t) = &target {
+            t.shutdown().await;
         }
+        let db = Arc::clone(&self.db);
+        // Once started, the delete runs to its end even if this future is
+        // dropped; the group stays refused a start until it has.
+        tokio::task::spawn_blocking(move || {
+            let _removal = removal;
+            match target {
+                Some(t) => t.drop_data(),
+                None => db.drop_group(id),
+            }
+        })
+        .await?
     }
 
     /// Whether the store is still open: it closes, releasing its lock, once
@@ -1175,6 +1359,44 @@ impl Engine {
         for t in targets {
             t.shutdown().await;
         }
+    }
+
+    /// Dispatch a batch of RPCs that arrived from a peer, each to its group
+    /// at once; the answers in order.
+    pub async fn handle_rpc_batch(&self, items: Vec<(GroupId, RpcRequest)>) -> Vec<RpcResponse> {
+        let mut answers = Vec::with_capacity(items.len());
+        let mut unhosted = Vec::new();
+        {
+            let groups = self
+                .groups
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (i, (group, request)) in items.into_iter().enumerate() {
+                match groups.get(&group) {
+                    Some(t) => answers.push(Some(tokio::spawn(t.handle(request)))),
+                    None => {
+                        answers.push(None);
+                        unhosted.push((i, group, request));
+                    }
+                }
+            }
+        }
+        let mut late = HashMap::new();
+        for (i, group, request) in unhosted {
+            let _prev = late.insert(i, self.handle_rpc(group, request).await);
+        }
+        let mut out = Vec::with_capacity(answers.len());
+        for (i, task) in answers.into_iter().enumerate() {
+            out.push(match task {
+                Some(t) => t
+                    .await
+                    .unwrap_or_else(|e| RpcResponse::Error(e.to_string())),
+                None => late
+                    .remove(&i)
+                    .unwrap_or_else(|| RpcResponse::Error("no answer".to_owned())),
+            });
+        }
+        out
     }
 
     /// Dispatch an RPC that arrived from a peer.
@@ -1210,5 +1432,32 @@ impl Engine {
             }
         };
         target.handle(request).await
+    }
+}
+
+/// Every `every` (`Config::heartbeat_ms`), send every hosted group's
+/// heartbeats at once, so those to one peer join one batch
+/// ([`network::Batcher`]). Ends with the engine.
+async fn heartbeat_ticker(
+    groups: Weak<RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>>,
+    every: Duration,
+) {
+    let mut tick = tokio::time::interval(every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let _at = tick.tick().await;
+        let Some(groups) = groups.upgrade() else {
+            return;
+        };
+        let targets: Vec<_> = groups
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        drop(groups);
+        for t in targets {
+            t.tick().await;
+        }
     }
 }

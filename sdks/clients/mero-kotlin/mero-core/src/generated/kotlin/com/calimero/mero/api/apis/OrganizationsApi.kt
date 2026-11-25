@@ -27,6 +27,7 @@ import java.io.IOException
 import okhttp3.Call
 import okhttp3.HttpUrl
 
+import com.calimero.mero.api.models.AppSetEgress200Response
 import com.calimero.mero.api.models.AppTeamList200Response
 import com.calimero.mero.api.models.AppTeamsScope200Response
 import com.calimero.mero.api.models.AppTeamsScopeRequest
@@ -48,6 +49,7 @@ import com.calimero.mero.api.models.OrgCapabilitiesRequest
 import com.calimero.mero.api.models.OrgCreate200Response
 import com.calimero.mero.api.models.OrgCreateRequest
 import com.calimero.mero.api.models.OrgDelete200Response
+import com.calimero.mero.api.models.OrgEgressRequest
 import com.calimero.mero.api.models.OrgMembers200Response
 import com.calimero.mero.api.models.OrgOutboundApprovalRequest
 import com.calimero.mero.api.models.OrgPolicySetRequest
@@ -1267,6 +1269,83 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     }
 
     /**
+     * POST /orgs/{org}/egress
+     * Turn the organization&#39;s egress off or on
+     * &#x60;egress: false&#x60; turns egress off for every app of the organization: from each app&#39;s next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization&#39;s or the operator&#39;s) says, and the organization approves no new outbound host (&#x60;409 EGRESS_OFF&#x60;). &#x60;egress: true&#x60; turns it back on, a red change made only on the consent page (&#x60;kind: setEgress&#x60;); from any other client &#x60;403 CONSENT_PAGE_REQUIRED&#x60;. The owner or an admin, with a passkey (&#x60;412&#x60; first); &#x60;403&#x60; to a member below admin, &#x60;404&#x60; to anyone outside it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param org 
+     * @param orgEgressRequest 
+     * @return AppSetEgress200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun orgEgress(org: kotlin.String, orgEgressRequest: OrgEgressRequest) : AppSetEgress200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = orgEgressWithHttpInfo(org = org, orgEgressRequest = orgEgressRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppSetEgress200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /orgs/{org}/egress
+     * Turn the organization&#39;s egress off or on
+     * &#x60;egress: false&#x60; turns egress off for every app of the organization: from each app&#39;s next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization&#39;s or the operator&#39;s) says, and the organization approves no new outbound host (&#x60;409 EGRESS_OFF&#x60;). &#x60;egress: true&#x60; turns it back on, a red change made only on the consent page (&#x60;kind: setEgress&#x60;); from any other client &#x60;403 CONSENT_PAGE_REQUIRED&#x60;. The owner or an admin, with a passkey (&#x60;412&#x60; first); &#x60;403&#x60; to a member below admin, &#x60;404&#x60; to anyone outside it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param org 
+     * @param orgEgressRequest 
+     * @return ApiResponse<AppSetEgress200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun orgEgressWithHttpInfo(org: kotlin.String, orgEgressRequest: OrgEgressRequest) : ApiResponse<AppSetEgress200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgEgressRequestConfig(org = org, orgEgressRequest = orgEgressRequest)
+
+        return@withContext request<OrgEgressRequest, AppSetEgress200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation orgEgress
+     *
+     * @param org 
+     * @param orgEgressRequest 
+     * @return RequestConfig
+     */
+    fun orgEgressRequestConfig(org: kotlin.String, orgEgressRequest: OrgEgressRequest) : RequestConfig<OrgEgressRequest> {
+        val localVariableBody = orgEgressRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/orgs/{org}/egress".replace("{"+"org"+"}", encodeURIComponent(org.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
      * GET /orgs/{org}
      * One organization
      * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its &#x60;mode&#x60; (from its app teams), the accounts that may approve its releases (&#x60;releaseApprovers&#x60;), the keys it publishes under (&#x60;publishes&#x60;), and &#x60;newWorkStopped&#x60;: the release whose passed deadline stops new work in it (&#x60;after&#x60;, RFC 3339), &#x60;null&#x60; when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).  **Who:** signed in (a session or an API key).
@@ -1516,7 +1595,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/outbound
      * Approve outbound prefixes for the organization&#39;s apps
-     * The owner; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * The owner; &#x60;412&#x60; first. &#x60;409 EGRESS_OFF&#x60; while the organization&#39;s egress is off.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param orgOutboundApprovalRequest 
      * @return OutboundApproved
@@ -1549,7 +1628,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/outbound
      * Approve outbound prefixes for the organization&#39;s apps
-     * The owner; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * The owner; &#x60;412&#x60; first. &#x60;409 EGRESS_OFF&#x60; while the organization&#39;s egress is off.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param orgOutboundApprovalRequest 
      * @return ApiResponse<OutboundApproved?>
@@ -2906,7 +2985,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/recovery
      * Set the organization&#39;s recovery key
-     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first. An organization that owns a deployment keeps its key: removing it is &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.36 (rotating stays allowed).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first. An organization that owns a deployment keeps its key: removing it is &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.37 (rotating stays allowed).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param recoverySetRequest 
      * @return kotlinx.serialization.json.JsonObject
@@ -2939,7 +3018,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/recovery
      * Set the organization&#39;s recovery key
-     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first. An organization that owns a deployment keeps its key: removing it is &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.36 (rotating stays allowed).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first. An organization that owns a deployment keeps its key: removing it is &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.37 (rotating stays allowed).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param recoverySetRequest 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>

@@ -100,6 +100,7 @@
     release: "Server version approval", upgrade: "Update request", upgradeUnit: "Update request",
     outbound: "Outbound access", createOrg: "New organization", createInvite: "Invite",
     acceptInvite: "Invitation", install: "New app", updatePolicy: "Update policy", updates: "Updates",
+    setEgress: "Data leaving the cluster",
   };
   // The updates page (`updates`): approving unlocks its list instead of leaving.
   var hub = false;
@@ -204,6 +205,11 @@
     var where = section(x, "Where your data can go");
     bullets(where, has(i.destinations) ? i.destinations : ["Nowhere outside Calimero."]);
     where.appendChild(el("p", i.where, "small muted"));
+    if (has(i.credentials)) {
+      var creds = section(x, "Credentials the node attaches");
+      bullets(creds, i.credentials);
+      creds.appendChild(el("p", "Calimero adds each to its request itself; the app never reads it.", "small muted"));
+    }
     var up = section(x, "Updates");
     bullets(up, i.updates);
     if (i.payer) x.appendChild(el("p", i.payer + " pays for this app; you have no Calimero bill for it.", "note-box"));
@@ -578,6 +584,7 @@
     plainList(t, "New sign-in addresses", f.newLoginOrigins);
     plainList(t, "Sign-in addresses dropped", f.droppedLoginOrigins);
     diff(t, "Outbound addresses (approved separately)", u.outbound);
+    plainList(t, "Secrets, new or bound elsewhere", u.secrets && u.secrets.words);
     diff(t, "Frontend aliases", f.aliases);
     diff(t, "Interfaces used", u.interfaces && u.interfaces.uses);
     diff(t, "Interfaces exported", u.interfaces && u.interfaces.exports);

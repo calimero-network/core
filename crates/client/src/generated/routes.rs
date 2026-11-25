@@ -923,6 +923,25 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Turn one app's egress off or on.
+    ///
+    /// `POST /apps/{app}/egress` (`app_set_egress`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn set_egress(
+        self,
+        app: &str,
+        egress: bool,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<AppSetEgressResponse> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "egress", &egress)?;
+        let body = Value::Object(fields);
+        let req =
+            Request::new(Method::POST, format!("apps/{}/egress", route::segment(app))).json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
     /// What an app stores.
     ///
     /// `GET /apps/{app}/storage` (`app_storage`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
@@ -2894,6 +2913,25 @@ impl Orgs<'_> {
     ) -> Result<OrgDeleteResponse> {
         let body = Value::Object(Map::new());
         let req = Request::new(Method::DELETE, format!("orgs/{}", route::segment(org))).json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Turn the organization's egress off or on.
+    ///
+    /// `POST /orgs/{org}/egress` (`org_egress`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn egress(
+        self,
+        org: &str,
+        egress: bool,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<OrgEgressResponse> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "egress", &egress)?;
+        let body = Value::Object(fields);
+        let req =
+            Request::new(Method::POST, format!("orgs/{}/egress", route::segment(org))).json(body);
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 

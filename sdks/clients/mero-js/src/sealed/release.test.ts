@@ -17,7 +17,7 @@ import {
 } from './release.js';
 import { chainsToFulcio } from './sigstore.js';
 import { FULCIO_AUTHORITIES, REKOR_LOGS } from './sigstore-trust-root.js';
-import type { DcapCollateral } from './verify.js';
+import type { DcapCollateral, DcapVerify } from './verify.js';
 import { fromBase64, parseCertificate, pemCertificate, verifyEcdsa } from './x509.js';
 
 // Real mero-tee releases, as the release workflow published them: each
@@ -360,11 +360,21 @@ const sampleTd = dcapVerify(QUOTE, COLLATERAL, AT / 1000).report.data as { repor
 const NONCE = hex(sampleTd.reportData.slice(0, 32));
 const SUFFIX = hex(sampleTd.reportData.slice(32));
 const QUOTE_B64 = Buffer.from(QUOTE).toString('base64');
+// The sample collateral is Intel's TCB evaluation data 17 (June 2025), below the
+// floor every verifier enforces (core's DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER, 20).
+// `genuine` verifies the quote's signatures against the genuine collateral while
+// the floor reads CURRENT, the same collateral naming 20 (only Intel can re-sign it).
+const CURRENT: DcapCollateral = {
+  ...COLLATERAL,
+  tcb_info: COLLATERAL.tcb_info.replace(/"tcbEvaluationDataNumber":\d+/, '"tcbEvaluationDataNumber":20'),
+};
+const genuine: DcapVerify = (quote, collateral, nowSecs) =>
+  dcapVerify(quote, collateral === CURRENT ? COLLATERAL : collateral, nowSecs);
 
 describe('createSignedReleaseVerifier', () => {
-  const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: COLLATERAL };
+  const args = { quoteB64: QUOTE_B64, nonce: NONCE, reportDataSuffix: SUFFIX, collateral: CURRENT };
   const verifier = (release: () => Promise<SignedNodeRelease>, minReleaseVersion = '2.3.86') =>
-    createSignedReleaseVerifier({ dcapVerify, release, profile: 'locked-read-only', minReleaseVersion, now: () => AT });
+    createSignedReleaseVerifier({ dcapVerify: genuine, release, profile: 'locked-read-only', minReleaseVersion, now: () => AT });
 
   it('verifies the quote against the signed release, and refuses an image not of it', async () => {
     const release = vi.fn(async () => signed('2.3.87'));

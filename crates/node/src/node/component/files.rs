@@ -1052,7 +1052,7 @@ impl Node {
             return;
         }
         if let Err(e) = self.count_file_bytes(app_id, delta).await {
-            warn!(app = %app_id, error = %e.message, "file bytes not refunded");
+            warn!(app = %app_id, status = e.status, code = %e.code, "file bytes not refunded");
         }
     }
 

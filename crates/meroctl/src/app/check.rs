@@ -480,6 +480,21 @@ fn say(r: &Reason) -> String {
             who(member.as_ref()),
             list(methods)
         ),
+        Reason::SecretBindingChanged {
+            member,
+            name,
+            before,
+            after,
+        } => match before {
+            None => format!(
+                "{} now has the node attach {name}: {after}",
+                who(member.as_ref())
+            ),
+            Some(before) => format!(
+                "{} binds {name} elsewhere: {before} → {after}",
+                who(member.as_ref())
+            ),
+        },
         Reason::Unclassified {
             member,
             package,
