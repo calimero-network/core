@@ -1726,7 +1726,7 @@ impl Node {
     /// key lives as long as the process holding it). `None` when the claim
     /// does not hold: no such node, removed, or another key there.
     ///
-    /// The attestation runs in a task of its own ([`detach`]): it takes
+    /// The attestation runs in a task of its own (`detach`): it takes
     /// longer than a Raft RPC may (about a second on TDX), and a caller that
     /// gives up must not abort it, or no RPC from that peer is ever taken.
     pub async fn identify_peer(&self, key: [u8; 32], claimed: NodeId) -> Option<PeerIdentity> {
@@ -3000,7 +3000,7 @@ impl Node {
 
     /// When `app` last committed a write (Unix milliseconds,
     /// [`crate::app::AppMachine::last_write_ms`]), as a replica applied it:
-    /// [`Self::replica_progress`]'s. `None` before the app's first write, and
+    /// `Self::replica_progress`'s. `None` before the app's first write, and
     /// when no replica answered.
     pub async fn last_write_ms(&self, app: &AppRecord) -> Option<u64> {
         self.replica_progress(app).await?.last_write_ms
@@ -3822,7 +3822,7 @@ impl Node {
     }
 
     /// Write encrypted snapshots of the app groups this node leads, and of
-    /// the system group when it leads it ([`Self::back_up`]).
+    /// the system group when it leads it (`Self::back_up`).
     pub async fn backup(&self) -> eyre::Result<usize> {
         self.back_up(false).await
     }

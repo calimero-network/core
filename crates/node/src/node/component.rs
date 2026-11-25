@@ -851,7 +851,7 @@ impl Node {
     }
 
     /// Deletes the compiled artifacts in `<data_dir>/components` no app uses any more (see
-    /// [`Self::live_bundles`] and what this node keeps prepared), and those of another
+    /// `Self::live_bundles` and what this node keeps prepared), and those of another
     /// wasmtime or engine config, each once unmodified for
     /// [`calimero_app_engine_wasmtime::CACHE_SWEEP_GRACE`], so a release just installed keeps
     /// its artifact until an app is made from it. Blocking file work: run off the async

@@ -6,9 +6,9 @@
 //! `x-calimero-group`, with the same names in snake case.
 //!
 //! - `types.rs`: the components and the operations' inline bodies and answers
-//!   as Rust types ([`types`]);
+//!   as Rust types (`types`);
 //! - `routes.rs`: one async method per operation on its group's accessor
-//!   (`client.orgs()`), sending through the client's `Transport` ([`routes`]).
+//!   (`client.orgs()`), sending through the client's `Transport` (`routes`).
 //!
 //! The output is formatted with `rustfmt` (the repository's `rustfmt.toml`)
 //! and checked in, so building the client needs no generator. Its test

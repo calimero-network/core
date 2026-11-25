@@ -308,7 +308,7 @@ const POST_PROCESSING_VERSION: u32 = 2;
 ///   (path relative to its root, length, bytes), so `Cargo.toml`, `Cargo.lock` and `src/` count;
 /// - the nearest `rust-toolchain.toml` / `rust-toolchain` at or above `crate_dir`;
 /// - the output of `rustc -V` run in `crate_dir` (the toolchain that builds the guest);
-/// - this crate's version, [`POST_PROCESSING_VERSION`] and the source of this file.
+/// - this crate's version, `POST_PROCESSING_VERSION` and the source of this file.
 pub fn cache_key(crate_dir: &Path, also_hash: &[&Path]) -> EyreResult<String> {
     let mut hasher = Sha256::new();
     let mut part = |label: &str, bytes: &[u8]| {

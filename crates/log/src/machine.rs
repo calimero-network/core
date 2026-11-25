@@ -156,9 +156,9 @@ pub const CHECKPOINT_KEY: &[u8] = b"\0calimero.log.checkpoint";
 /// The newest snapshot file format this release reads, and the one it writes when a row spans
 /// frames: the number in the file's first line, `CALIMERO-SNAPSHOT-<format>\n`. Format 1 (every
 /// release since the store, backups included) holds each row in one frame, so a row past
-/// [`MAX_FRAME_BYTES`] (an in-memory machine's checkpoint: the whole system state) could not be
-/// read back. Format 2 lets a row span frames ([`PIECE`]). A file with no such row is written
-/// as format 1 ([`WHOLE_ROWS_FORMAT`]), which the release before reads: a rollout never sends
+/// `MAX_FRAME_BYTES` (an in-memory machine's checkpoint: the whole system state) could not be
+/// read back. Format 2 lets a row span frames (`PIECE`). A file with no such row is written
+/// as format 1 (`WHOLE_ROWS_FORMAT`), which the release before reads: a rollout never sends
 /// a node a format it cannot read that it read before. A change to the framing, or to the rows
 /// a snapshot carries (`format::STORE_FORMAT`), raises it.
 pub const SNAPSHOT_FORMAT: u32 = 2;
@@ -497,7 +497,7 @@ pub struct StateMachine<M: Machine> {
 
 impl<M: Machine> Clone for StateMachine<M> {
     /// Another handle on the same group state, to run disk work on tokio's
-    /// blocking pool ([`crate::store::off_workers`]).
+    /// blocking pool (`crate::store::off_workers`).
     fn clone(&self) -> Self {
         Self {
             group: self.group,

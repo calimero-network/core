@@ -50,7 +50,7 @@
 //! # What the consent binds
 //!
 //! - **Release**: `{ version, policyDigest }`, the digest of the release's
-//!   Sigstore-verified `published-mrtds.json` ([`release_digest`]), so a
+//!   Sigstore-verified `published-mrtds.json` (`release_digest`), so a
 //!   re-published release with other measurements under the same tag is not
 //!   the one approved. A node that cannot fetch them refuses the approval
 //!   (`503`); on mock attestation, where no node checks measurements, the

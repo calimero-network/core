@@ -1941,7 +1941,7 @@ impl SystemState {
     }
 
     /// The releases approved to hold `app`'s data: its organization's (or its
-    /// publisher's, [`Self::approved_for_bundle`]). Empty means none was ever
+    /// publisher's, [`Self::approved_for_release`]). Empty means none was ever
     /// recorded, which leaves the app unrestricted.
     #[must_use]
     pub fn approved_releases(&self, app: &AppRecord) -> Option<&BTreeSet<String>> {
@@ -4651,7 +4651,7 @@ impl SystemState {
     }
 
     /// Whether `account` may reach `app` at all: through one of its grants
-    /// ([`Self::grants_reach`]). Nobody without an account does.
+    /// (`Self::grants_reach`). Nobody without an account does.
     #[must_use]
     pub fn may_reach(&self, app: &AppRecord, account: Option<&str>) -> bool {
         account.is_some_and(|a| self.grants_reach(app, a))
@@ -5755,7 +5755,7 @@ pub enum SystemCmd {
     /// files, compute runs and quotas go to the target's payer; its access to
     /// the target's app team of its package (organization access in a legacy
     /// target); `bring_members` adds the people of its organization who
-    /// reach it to the target too. [`SystemState::move_app`] has the rules.
+    /// reach it to the target too. `SystemState::move_app` has the rules.
     MoveApp {
         app_id: AppId,
         to_org: OrgId,
@@ -5768,7 +5768,7 @@ pub enum SystemCmd {
         #[serde(default)]
         bring_members: bool,
         /// Random, from the API: a new app team's id derives from it
-        /// ([`app_team_id`]), so every replica makes the same one.
+        /// (`app_team_id`), so every replica makes the same one.
         #[serde(default)]
         nonce: String,
         /// An app team made in the target gives a row to each of its members
@@ -6165,7 +6165,7 @@ pub enum SystemCmd {
         /// `maxOrgsPerAccount`, and it starts with the release and outbound
         /// approvals the account holds for apps outside an organization, so
         /// an instance created there runs where one outside would.
-        /// Left out when false ([`cluster_version::Feature::PersonalOrg`]).
+        /// Left out when false.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         personal: bool,
         /// A package whose app team the new organization starts with, made
@@ -6732,7 +6732,7 @@ pub enum SystemCmd {
         team: TeamId,
         actor: AccountId,
         /// The actor's passkey consent, over the apps that go with the team
-        /// (`org:<org> / __delete_team / { team, apps }`, [`team_apps`]).
+        /// (`org:<org> / __delete_team / { team, apps }`, [`SystemState::team_apps`]).
         #[serde(default)]
         consent: Value,
         /// A team whose subtree holds apps needs `consent`. The API always
@@ -6939,7 +6939,7 @@ pub enum SystemCmd {
         #[serde(default)]
         shared: Option<bool>,
         /// Random, from the API: new teams' ids derive from it
-        /// ([`app_team_id`]), so every replica makes the same ones.
+        /// (`app_team_id`), so every replica makes the same ones.
         nonce: String,
         actor: AccountId,
         consent: Value,

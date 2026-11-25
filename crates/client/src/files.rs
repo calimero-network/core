@@ -173,7 +173,7 @@ impl Client {
     }
 
     /// Upload a sealed file of `size` bytes for component app `app`; answers `{ blobId, id, size, sha256, index }`.
-    /// Up to [`FILE_PART_BYTES`] it is one request, else a session of parts, each resent after a `503`.
+    /// Up to `FILE_PART_BYTES` it is one request, else a session of parts, each resent after a `503`.
     ///
     /// # Errors
     /// The node's refusal (`413`, `429` over quota, ...), or a transport failure that outlasted the retries.
