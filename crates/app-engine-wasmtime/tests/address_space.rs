@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use calimero_app_build::build_in_repo_cache;
 use calimero_app_engine_wasmtime::{WasmtimeEngine, SLOT_RESERVATION_BYTES};
+
 use calimero_app_host::{
     Budget, Caller, Directory, Engine, HostCore, Invocation, InvocationKind, OrgRole, Status,
 };
@@ -65,11 +66,8 @@ fn an_engine_without_the_address_space_falls_back_to_bounds_checked_slots() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/crunch");
     let component = build_in_repo_cache(&dir).unwrap().app.component;
 
-    let cache = tempfile::tempdir().unwrap();
-    let unlimited = WasmtimeEngine::new(cache.path().to_path_buf(), &[5; 32]).unwrap();
-    assert_eq!(unlimited.memory_reservation(), SLOT_RESERVATION_BYTES);
-    drop(unlimited);
-
+    // No engine with the full pool may exist first: its epoch thread keeps the pool's
+    // address space mapped after the engine is dropped.
     let limit = libc::rlimit {
         rlim_cur: ADDRESS_SPACE_LIMIT,
         rlim_max: ADDRESS_SPACE_LIMIT,
@@ -79,6 +77,7 @@ fn an_engine_without_the_address_space_falls_back_to_bounds_checked_slots() {
 
     let cache = tempfile::tempdir().unwrap();
     let engine = WasmtimeEngine::new(cache.path().to_path_buf(), &[5; 32]).unwrap();
+    assert_ne!(engine.memory_reservation(), SLOT_RESERVATION_BYTES);
     assert_eq!(engine.memory_reservation(), 64 << 20);
     let app = engine.prepare("crunch", &component).unwrap();
     let out = engine.invoke(
