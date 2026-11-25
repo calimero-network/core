@@ -44,6 +44,10 @@ pub const MAX_MPK_BYTES: usize = crate::node::MAX_BLOB_BYTES;
 /// The header naming the account a private install is for, sent with the registry's credential.
 pub const INSTALL_ACCOUNT_HEADER: &str = "x-calimero-install-account";
 
+/// The refusal when the registry takes the install account as linked to no Cloud developer.
+pub const ACCOUNT_NOT_LINKED: &str = "ACCOUNT_NOT_LINKED";
+const REGISTRY_NOT_LINKED: &str = "account_not_linked"; // the registry's `error` for it
+
 /// How a create or upgrade reaches the release it names, besides the account's own rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Via {
@@ -266,9 +270,11 @@ impl Node {
                 .with_header(INSTALL_ACCOUNT_HEADER, actor)
                 .map_err(|e| ApiError::internal(&format!("{e:#}")))?;
         }
-        match Self::fetch_from(registry, package, version).await? {
-            Some(mpk) => Ok((mpk, Visibility::Private)),
-            None => Err(not_for_this_account(package, version)),
+        match Self::fetch_raw(registry, package, version).await {
+            Ok(Some(mpk)) => Ok((mpk, Visibility::Private)),
+            Ok(None) => Err(not_for_this_account(package, version)),
+            Err(e) if actor != OPERATOR && refused_as_not_linked(&e) => Err(account_not_linked()),
+            Err(e) => Err(unreachable_registry(e)),
         }
     }
 
@@ -919,8 +925,25 @@ impl Node {
 /// `404`: the registry does not serve `package@version` to this account.
 fn not_for_this_account(package: &str, version: &str) -> ApiError {
     ApiError::not_found(&format!(
-        "the registry has no {package}@{version} for this account; a private package needs this cluster account linked to its Calimero Cloud developer in the console"
+        "the registry has no {package}@{version} for this account"
     ))
+}
+
+/// Whether the registry refused the install account as linked to no Calimero Cloud developer:
+/// `403 { "error": "account_not_linked" }`, which it answers for any package name.
+fn refused_as_not_linked(e: &eyre::Report) -> bool {
+    e.downcast_ref::<RegistryStatus>().is_some_and(|r| {
+        r.status == StatusCode::FORBIDDEN && r.error.as_deref() == Some(REGISTRY_NOT_LINKED)
+    })
+}
+
+/// `403 ACCOUNT_NOT_LINKED`: what the person does about [`refused_as_not_linked`].
+fn account_not_linked() -> ApiError {
+    ApiError::new(
+        403,
+        ACCOUNT_NOT_LINKED,
+        "the registry installs private packages only for a node account linked to a Calimero Cloud developer: link this account in Calimero Cloud, under your node accounts, then install again",
+    )
 }
 
 /// A registry's `401` or `403`: it serves nothing without a sign-in.

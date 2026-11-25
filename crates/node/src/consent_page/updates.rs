@@ -40,7 +40,7 @@ use super::{hosts, phrase, release_facts, Action, UpgradeSubject};
 use crate::api::Principal;
 use crate::error::ApiError;
 use crate::node::Node;
-use crate::system::PackageRef;
+use crate::system::{PackageRef, PackageVersion, Visibility};
 use crate::types::{now_secs, AppRecord, AutoApply, UpgradePolicy};
 
 /// The most apps the updates page reads across the person's organizations: each one with
@@ -413,7 +413,7 @@ pub(super) async fn install_request(
     node: &Node,
     p: &Principal,
     account: &str,
-    subject: InstallSubject,
+    mut subject: InstallSubject,
 ) -> Result<(Action, Value), ApiError> {
     let package = subject.package;
     let frontend = p.bound_app() == Some(package.as_str());
@@ -470,6 +470,28 @@ pub(super) async fn install_request(
         })
         .ok_or_else(|| ApiError::not_found("no such release"))?;
     let facts = release_facts(node, &package, &target).await?;
+    let named = subject.org.is_some() || subject.new_org.is_some();
+    let (filled, choose_org) = org_choices(node, account, named, &release, &target).await?;
+    if filled.is_some() {
+        subject.org = filled;
+    }
+    let private_to = node.sys(|s| {
+        (target.visibility_shown() == Some(crate::system::Visibility::Private)).then(|| {
+            let mut names: Vec<String> = s
+                .release_orgs_of(&target, account)
+                .map(|o| o.name.clone())
+                .collect();
+            names.sort();
+            format!(
+                "Private to {}",
+                if names.is_empty() {
+                    "you".to_owned()
+                } else {
+                    phrase(&names)
+                }
+            )
+        })
+    });
     let app_name = facts
         .manifest
         .metadata
@@ -567,19 +589,29 @@ pub(super) async fn install_request(
         })
         .flatten()
     });
-    let mut points = vec![json!(format!(
-        "{} is created for you{}: {app_name} {}{}.",
-        subject.name,
-        org_name
-            .as_ref()
-            .map_or_else(String::new, |o| format!(" in {o}")),
-        release.version,
-        if members {
-            " and the apps it creates with it"
-        } else {
-            ""
-        }
-    ))];
+    let created = |org: Option<&str>| {
+        format!(
+            "{} is created for you{}: {app_name} {}{}.",
+            subject.name,
+            org.map_or_else(String::new, |o| format!(" in {o}")),
+            release.version,
+            if members {
+                " and the apps it creates with it"
+            } else {
+                ""
+            }
+        )
+    };
+    // Each choice carries its own first point, which the page shows once it is chosen.
+    let choose_org = choose_org.map(|orgs| {
+        orgs.into_iter()
+            .map(|mut o| {
+                o["point"] = json!(created(o["name"].as_str()));
+                o
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut points = vec![json!(created(org_name.as_deref()))];
     points.push(json!(if members {
         format!("{where_words} That includes the apps it creates.")
     } else {
@@ -615,6 +647,8 @@ pub(super) async fn install_request(
             "updates": update_words,
             "policy": policy_view(&policy, source),
             "payer": payer,
+            "chooseOrg": choose_org,
+            "privateTo": private_to,
         },
         "before": "Until you approve, nothing is created.",
         "after": format!(
@@ -639,6 +673,59 @@ pub(super) async fn install_request(
         },
         model,
     ))
+}
+
+/// Where the instance goes when the subject names no organization (`named`) and the release
+/// makes none of its own: of a private release's organizations the person is in, the only one
+/// (filled in) or those to choose from; else (none) all of theirs, to choose when several.
+async fn org_choices(
+    node: &Node,
+    account: &str,
+    named: bool,
+    release: &PackageRef,
+    target: &PackageVersion,
+) -> Result<(Option<String>, Option<Vec<Value>>), ApiError> {
+    use crate::system::cluster_version::Feature;
+    if named
+        || node
+            .require_features(&[Feature::OrdinaryOrgs])
+            .await
+            .is_err()
+        || crate::api::apps::instance_org_of(node, Some(release)).await?
+            == calimero_bundle::InstanceOrg::Standalone
+    {
+        return Ok((None, None));
+    }
+    let (mut orgs, private): (Vec<(String, String)>, bool) = node.sys(|s| {
+        let named = |o: &crate::types::Org| (o.name.clone(), o.org_id.clone());
+        let private: Vec<_> = if target.visibility_shown() == Some(Visibility::Private) {
+            s.release_orgs_of(target, account).map(named).collect()
+        } else {
+            Vec::new()
+        };
+        if private.is_empty() {
+            let all = s
+                .orgs_of(account)
+                .into_iter()
+                .filter_map(|id| s.orgs.get(id));
+            (all.map(named).collect(), false)
+        } else {
+            (private, true)
+        }
+    });
+    orgs.sort();
+    Ok(match orgs.as_slice() {
+        [(_, only)] if private => (Some(only.clone()), None),
+        [_, _, ..] => (
+            None,
+            Some(
+                orgs.into_iter()
+                    .map(|(name, org)| json!({ "orgId": org, "name": name }))
+                    .collect(),
+            ),
+        ),
+        _ => (None, None),
+    })
 }
 
 // ---------------------------------------------------------------- update policy

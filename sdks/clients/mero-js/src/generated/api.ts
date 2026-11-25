@@ -4081,7 +4081,7 @@ export interface paths {
         put?: never;
         /**
          * Install a release from the registry
-         * @description For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither.
+         * @description For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).
          *
          *     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
          */
@@ -6685,7 +6685,7 @@ export interface components {
             auto?: boolean;
             undo?: boolean;
         };
-        /** @description A package and the releases of it the caller may see, oldest first; `latest` is the newest of those. */
+        /** @description A package and the releases of it the caller may see, oldest first; `latest` is the newest of those. A release's `visibility`: `public` (everyone here uses it; a release the operator installed, the cluster's catalog, is always), `private` (members of the organizations it was installed for; none: the accounts that installed it), absent for one recorded before the node kept it. `orgs`: of a private release's organizations, only those the caller is a member of. */
         Package: {
             package: string;
             signerId: string;
@@ -6709,6 +6709,12 @@ export interface components {
                 installedBy: string;
                 /** Format: int64 */
                 installedAt: number;
+                /** @enum {string} */
+                visibility?: "public" | "private";
+                orgs?: {
+                    orgId: string;
+                    name: string;
+                }[];
             }[];
         };
         /** @description An API key as the account's list shows it (never its secret): `apps` and `methods` are `null` for every one; `upgrades` makes it an upgrade key. */
@@ -7164,7 +7170,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ACCOUNT_NOT_LINKED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21453,7 +21459,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ACCOUNT_NOT_LINKED`; `DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
                 headers: {
                     [name: string]: unknown;

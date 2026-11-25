@@ -453,8 +453,10 @@ from .package_origin import PackageOrigin
 from .package_ref import PackageRef
 from .package_versions_item import PackageVersionsItem
 from .package_versions_item_components import PackageVersionsItemComponents
+from .package_versions_item_orgs_item import PackageVersionsItemOrgsItem
 from .package_versions_item_services import PackageVersionsItemServices
 from .package_versions_item_source import PackageVersionsItemSource
+from .package_versions_item_visibility import PackageVersionsItemVisibility
 from .page import Page
 from .part_taken import PartTaken
 from .passkey_add_finish_body import PasskeyAddFinishBody
@@ -1135,8 +1137,10 @@ __all__ = (
     "PackageRef",
     "PackageVersionsItem",
     "PackageVersionsItemComponents",
+    "PackageVersionsItemOrgsItem",
     "PackageVersionsItemServices",
     "PackageVersionsItemSource",
+    "PackageVersionsItemVisibility",
     "Page",
     "PartTaken",
     "PasskeyAdded",

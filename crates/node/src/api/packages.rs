@@ -140,6 +140,17 @@ pub(super) fn package_json(
         versions: versions
             .iter()
             .map(|v| PackageVersionView {
+                visibility: v.visibility_shown(),
+                orgs: if v.visibility_shown() == Some(crate::system::Visibility::Private) {
+                    s.release_orgs_of(v, who)
+                        .map(|o| ReleaseOrg {
+                            org_id: o.org_id.clone(),
+                            name: o.name.clone(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
                 version: v.version.clone(),
                 mpk: v.mpk.clone(),
                 size: v.mpk_size,
@@ -180,6 +191,20 @@ pub(super) struct PackageVersionView {
     outbound: Vec<String>,
     installed_by: String,
     installed_at: u64,
+    /// Left out for a release recorded before the node kept it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    visibility: Option<crate::system::Visibility>,
+    /// Of a private release's organizations, only those the caller is a member of.
+    #[serde(default)]
+    orgs: Vec<ReleaseOrg>,
+}
+
+/// An organization a private [`PackageVersionView`] is for.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ReleaseOrg {
+    org_id: String,
+    name: String,
 }
 
 /// The packages the caller may see (`package_json`): on a cluster several
