@@ -1,6 +1,5 @@
 package com.calimero.mero
 
-import com.calimero.mero.api.models.ConsentResult as ConsentResultAnswer
 import com.calimero.mero.api.models.ConsentResultOutcome
 import com.calimero.mero.tee.compareReleaseVersions
 import kotlinx.serialization.Serializable
@@ -13,6 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.net.URLEncoder
+import com.calimero.mero.api.models.ConsentResult as ConsentResultAnswer
 import com.calimero.mero.api.models.OrgRole as ApiOrgRole
 import com.calimero.mero.api.models.TeamRole as ApiTeamRole
 

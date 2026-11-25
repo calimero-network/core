@@ -42,7 +42,6 @@ import com.calimero.mero.UnavailableError
 import com.calimero.mero.WebAuthenticationCancelled
 import com.calimero.mero.WrongNode
 import com.calimero.mero.api.models.ApikeyCreateRequestUpgrades
-import com.calimero.mero.api.models.ConsentResult as ConsentResultAnswer
 import com.calimero.mero.api.models.SignUp
 import com.calimero.mero.app.CalimeroAppBackend
 import com.calimero.mero.app.OrgConsentNotApproved
@@ -98,6 +97,7 @@ import java.security.spec.X509EncodedKeySpec
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import com.calimero.mero.api.models.ConsentResult as ConsentResultAnswer
 import com.calimero.mero.api.models.OrgRole as ApiOrgRole
 import com.calimero.mero.api.models.TeamRole as ApiTeamRole
 
