@@ -137,7 +137,7 @@ replaces each, are side by side in [Sessions & authority](/protocol/sessions-and
    `default-src 'none'`, `connect-src 'self'`, `frame-ancestors 'none'`,
    `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control:
    no-store`. It reads `GET /consent/{id}/model` and shows it.
-3. **Passkey.** *Approve* posts `POST /consent/{id}/approve`. The node runs the
+3. **Passkey.** The page posts `POST /consent/{id}/approve` once it shows the request, and again before the node's challenge expires, so *Approve* asks the authenticator inside its click: browsers show a passkey prompt only close to the click that asked for it. The node runs the
    very route a signed-in client would run (`/apps/{app}/upgrade`,
    `/orgs/{org}/releases`, `/orgs/{org}/outbound`; `"scope": "account"` is the
    account's only organization (below cluster version 1.0.0-rc.32 its
@@ -145,8 +145,9 @@ replaces each, are side by side in [Sessions & authority](/protocol/sessions-and
    when it is in several, `409 NO_ORGANIZATION` in none),
    since an account approves nothing of its own) with the arguments frozen in the request, so the
    `412 CONFIRM_REQUIRED` challenge commits to exactly what the page showed.
-   The page asks the authenticator for a user-verified assertion and posts it
-   back as `confirm`. The node checks that the passkey is one of the request's
+   On *Approve* the page asks the authenticator for a user-verified assertion and posts it
+   back as `confirm`.
+   A prompt the browser refuses at once without showing it, or a challenge the node no longer holds (`EXPIRED_CHALLENGE`, `UNKNOWN_CHALLENGE`), turns the button into *Confirm with your passkey*, whose click asks again. The node checks that the passkey is one of the request's
    account, checks its authority again, writes the approval with the
    assertion as consent, and marks the request approved. *Decline* posts
    `/consent/{id}/decline`; nothing is approved.

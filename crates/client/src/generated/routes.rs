@@ -522,6 +522,17 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// An app's outbound requests.
+    ///
+    /// `GET /apps/{app}/outbound-log` (`app_outbound_log`). Who: signed in (a session or an API key).
+    pub async fn outbound_log(self, app: &str) -> Result<AppOutboundLogResponse> {
+        let req = Request::new(
+            Method::GET,
+            format!("apps/{}/outbound-log", route::segment(app)),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// A pipeline run's receipt.
     ///
     /// `GET /apps/{app}/pipeline-runs/{run}/receipt` (`pipeline_receipt_receipt`). Who: signed in (a session or an API key).

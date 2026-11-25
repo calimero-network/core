@@ -10,6 +10,13 @@
   var withdrawing = false;
   // Checks that call for care: listed under Details, and repeated up top.
   var cautions = [];
+  var CHALLENGE_FRESH_MS = 4 * 60 * 1000; // the node keeps a passkey challenge 5 minutes
+  var INSTANT_MS = 1000; // a refusal sooner than this came back with no prompt shown
+  // The approve challenge (the node's 412), asked before the click: browsers show
+  // a passkey prompt only close to the click that asked for it.
+  var challenge = null, asking = null, refresh = 0;
+  // A prompt the browser refused without showing it: one more click asks again.
+  var AGAIN = {};
 
   function el(tag, text, cls) {
     var e = document.createElement(tag);
@@ -663,29 +670,63 @@
     $("status").textContent = "Returning you to the app…";
   }
 
-  function approve() {
-    step(1);
-    post("/approve").then(function (r) {
+  // Ask the node for the approve challenge now, and again before the node forgets it.
+  function prepare() {
+    challenge = null;
+    clearTimeout(refresh);
+    var p = post("/approve").then(function (r) {
       if (r.status !== 412) throw new Error((r.body && r.body.message) || "unexpected answer " + r.status);
-      var d = r.body.details;
-      step(2);
-      return navigator.credentials.get({ publicKey: {
-        challenge: b64urlToBytes(d.challenge),
-        rpId: d.rpId,
-        allowCredentials: (d.allowCredentials || []).map(function (c) { return { type: "public-key", id: b64urlToBytes(c) }; }),
-        userVerification: "required",
-        timeout: 120000,
-      } }).then(function (cred) {
-        step(3);
-        return post("/approve", { confirm: { challengeId: d.challengeId, assertion: {
-          credentialId: bytesToB64url(cred.rawId),
-          authenticatorData: bytesToB64url(cred.response.authenticatorData),
-          clientDataJson: bytesToB64url(cred.response.clientDataJSON),
-          signature: bytesToB64url(cred.response.signature),
-        } } });
+      if (asking === p) {
+        challenge = { d: r.body.details, at: Date.now() };
+        refresh = setTimeout(prepare, CHALLENGE_FRESH_MS);
+      }
+      return r.body.details;
+    });
+    p.catch(function () { if (asking === p) asking = null; });
+    return (asking = p);
+  }
+  // The passkey over `d`, then the approval. Called inside the click when `d` was ready.
+  function ask(d) {
+    step(2);
+    var started = Date.now();
+    return navigator.credentials.get({ publicKey: {
+      challenge: b64urlToBytes(d.challenge),
+      rpId: d.rpId,
+      allowCredentials: (d.allowCredentials || []).map(function (c) { return { type: "public-key", id: b64urlToBytes(c) }; }),
+      userVerification: "required",
+      timeout: 120000,
+    } }).then(function (cred) {
+      step(3);
+      challenge = asking = null;
+      clearTimeout(refresh);
+      return post("/approve", { confirm: { challengeId: d.challengeId, assertion: {
+        credentialId: bytesToB64url(cred.rawId),
+        authenticatorData: bytesToB64url(cred.response.authenticatorData),
+        clientDataJson: bytesToB64url(cred.response.clientDataJSON),
+        signature: bytesToB64url(cred.response.signature),
+      } } }).then(function (r) {
+        if (r.status === 200) return r;
+        var code = r.body && r.body.error;
+        if (code === "EXPIRED_CHALLENGE" || code === "UNKNOWN_CHALLENGE") {
+          return prepare().then(function () { throw AGAIN; });
+        }
+        prepare();
+        throw new Error((r.body && r.body.message) || "refused: " + r.status);
       });
-    }).then(function (r) {
-      if (r.status !== 200) throw new Error((r.body && r.body.message) || "refused: " + r.status);
+    }, function (e) {
+      throw e && e.name === "NotAllowedError" && Date.now() - started < INSTANT_MS ? AGAIN : e;
+    });
+  }
+  function approve() {
+    var c = challenge;
+    var asked;
+    if (c && Date.now() - c.at < CHALLENGE_FRESH_MS) {
+      asked = ask(c.d);
+    } else {
+      step(1);
+      asked = (c || !asking ? prepare() : asking).then(ask);
+    }
+    asked.then(function (r) {
       if (hub) {
         // Unlocked: the page reads its list afresh.
         location.reload();
@@ -693,7 +734,15 @@
       }
       finished();
       leave(r.body.redirect);
-    }).catch(function (e) { step(0); busy(false, (withdrawing ? "Not withdrawn: " : "Not approved: ") + e.message); });
+    }).catch(function (e) {
+      step(0);
+      if (e === AGAIN) {
+        $("approve-label").textContent = "Confirm with your passkey";
+        busy(false, "Your browser wants one more tap before it shows the passkey prompt.");
+        return;
+      }
+      busy(false, (withdrawing ? "Not withdrawn: " : "Not approved: ") + e.message);
+    });
   }
   function decline() {
     busy(true, "Declining…");
@@ -707,6 +756,7 @@
   $("decline").addEventListener("click", decline);
   load()
     .then(render)
+    .then(function () { if (!$("actions").hidden) prepare(); })
     .catch(function (e) {
       document.querySelectorAll(".host").forEach(function (h) { h.textContent = location.host; });
       $("headline").textContent = "Nothing to approve here";

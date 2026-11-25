@@ -718,6 +718,10 @@ pub struct Node {
     pub conflicts: std::sync::atomic::AtomicU64,
     /// Per-app usage of the runs this node made, for `/metrics` ([`crate::usage`]).
     pub usage: Usage,
+    /// The outbound requests this node's runs made, per instance, for the
+    /// instance's owner and managers (`GET /apps/{app}/outbound-log`): in memory
+    /// only, never logged or a metric ([`calimero_outbound::OutboundAudit`]).
+    pub outbound_audit: Arc<calimero_outbound::OutboundAudit>,
 }
 
 /// One read-index round on the system group at a time. A caller may take the
@@ -1206,6 +1210,7 @@ impl Node {
             replica_strong_views: std::sync::atomic::AtomicU64::new(0),
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
+            outbound_audit: Arc::default(),
             starting: tokio::sync::Mutex::new(()),
             component_search: crate::component::search::ComponentSearch::new(search_root),
             this: Mutex::new(Weak::new()),
@@ -2714,6 +2719,7 @@ impl Node {
             approval,
             app_id.to_owned(),
             sent,
+            Arc::clone(&self.outbound_audit),
         )?;
         // The egress switch, asked before each request on this node's system state, so one
         // turned off refuses the next request of a run already going, over every approval.
@@ -2730,7 +2736,46 @@ impl Node {
                         .map(crate::system::EgressOff::who)
                 })
             }),
+            Arc::clone(&self.outbound_audit),
+            app_id.to_owned(),
         ))
+    }
+
+    /// `app`'s outbound audit: the entries of every replica that answers and of
+    /// this node, newest first, at most [`calimero_outbound::MAX_AUDIT_ENTRIES`].
+    /// Each node keeps the requests its own runs made, so a leader change splits
+    /// an instance's requests across nodes; `partial` says a replica did not answer.
+    pub async fn outbound_log(&self, app: &AppRecord) -> Value {
+        let mut entries = self.outbound_audit.entries(&app.app_id);
+        let mut partial = false;
+        let body = json!({ "app": app.app_id });
+        for id in app.replicas.iter().filter(|id| **id != self.config.node_id) {
+            let Some(addr) = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone())) else {
+                partial = true;
+                continue;
+            };
+            let theirs = self
+                .peer_forward(&addr, "internal/outbound-log", &body)
+                .await
+                .ok()
+                .and_then(|v| {
+                    serde_json::from_value::<Vec<calimero_outbound::AuditEntry>>(
+                        v["entries"].clone(),
+                    )
+                    .ok()
+                });
+            match theirs {
+                Some(theirs) => entries.extend(
+                    theirs
+                        .into_iter()
+                        .take(calimero_outbound::MAX_AUDIT_ENTRIES),
+                ),
+                None => partial = true,
+            }
+        }
+        entries.sort_by_key(|e| core::cmp::Reverse(e.at_ms));
+        entries.truncate(calimero_outbound::MAX_AUDIT_ENTRIES);
+        json!({ "entries": entries, "partial": partial })
     }
 
     /// This node as the `Arc` it lives in, for work that outlives a borrowed request.

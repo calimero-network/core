@@ -136,15 +136,17 @@ fn egress_on() -> EgressCheck {
 /// The clients of a shop run declaring `outbound` and `connectors`, with every
 /// connector prefix and `outbound` approved.
 fn run(upstream: &Arc<Upstream>, outbound: &[&str], connectors: Vec<ConnectorGrant>) -> RunClients {
-    run_with_egress(upstream, outbound, connectors, egress_on())
+    run_with_egress(upstream, outbound, connectors, egress_on(), Arc::default())
 }
 
-/// [`run`], asking `egress` before each request or call.
+/// [`run`], asking `egress` before each request or call and recording each in
+/// `audit` under `ctx`.
 fn run_with_egress(
     upstream: &Arc<Upstream>,
     outbound: &[&str],
     connectors: Vec<ConnectorGrant>,
     egress: EgressCheck,
+    audit: Arc<OutboundAudit>,
 ) -> RunClients {
     let mut approved: Vec<String> = outbound.iter().map(|p| (*p).to_owned()).collect();
     for g in &connectors {
@@ -159,6 +161,7 @@ fn run_with_egress(
         "ctx".to_owned(),
         Arc::default(),
         egress,
+        audit,
     )
 }
 
@@ -412,6 +415,7 @@ fn a_connector_call_goes_through_every_gate_of_a_raw_request() {
             "ctx".to_owned(),
             Arc::default(),
             egress_on(),
+            Arc::default(),
         )
     };
     let approved = || Some(approving(&[INTENTS, &format!("{INTENTS}/")]));
@@ -464,6 +468,7 @@ fn a_connector_call_goes_through_every_gate_of_a_raw_request() {
         "ctx".to_owned(),
         Arc::clone(&sent),
         egress_on(),
+        Arc::default(),
     );
     let _out = call(&clients, "stripe", "createPaymentIntent", input).unwrap();
     assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -612,6 +617,7 @@ fn egress_off_refuses_a_connector_call_before_anything_is_sent() {
                 .load(std::sync::atomic::Ordering::Relaxed)
                 .then_some("its organization")
         }),
+        Arc::default(),
     );
     let input = r#"{"amount":2000,"currency":"usd"}"#;
     let err = call(&clients, "stripe", "createPaymentIntent", input).unwrap_err();
@@ -628,4 +634,153 @@ fn egress_off_refuses_a_connector_call_before_anything_is_sent() {
     off.store(false, std::sync::atomic::Ordering::Relaxed);
     let _out = call(&clients, "stripe", "createPaymentIntent", input).expect("egress back on");
     assert_eq!(upstream.sent().len(), 1);
+}
+
+/// What the audit test compares of an entry: method, host, path, status, failure,
+/// secret names.
+type Seen<'a> = (
+    &'a str,
+    &'a str,
+    &'a str,
+    Option<u16>,
+    Option<AuditFailure>,
+    Vec<String>,
+);
+
+/// The instance's outbound audit lists every connector call, sent or refused, as
+/// its connector's host and its operation's declared path (never the id the input
+/// put in it), the connector's binding name once attached; and a raw request to a
+/// declared connector's host as refused. Never a value.
+#[test]
+fn connector_calls_are_in_the_audit_with_the_declared_path_and_binding_name() {
+    let upstream = Upstream::answering(200, r#"{"id":"pi_1","status":"succeeded"}"#);
+    let audit = Arc::new(OutboundAudit::default());
+    let off = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let switch = Arc::clone(&off);
+    let clients = run_with_egress(
+        &upstream,
+        &["https://api.openai.com/v1/"],
+        vec![stripe_grant()],
+        Arc::new(move || {
+            switch
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .then_some("its organization")
+        }),
+        Arc::clone(&audit),
+    );
+    let _out = call(
+        &clients,
+        "stripe",
+        "createPaymentIntent",
+        r#"{"amount":2000,"currency":"usd"}"#,
+    )
+    .expect("sent");
+    let _out = call(
+        &clients,
+        "stripe",
+        "retrievePaymentIntent",
+        r#"{"id":"pi_secretish_1"}"#,
+    )
+    .expect("sent");
+    let _err = call(&clients, "stripe", "createRefund", "{}").unwrap_err();
+    let _err = call(
+        &clients,
+        "stripe",
+        "createPaymentIntent",
+        r#"{"amount":"x"}"#,
+    )
+    .unwrap_err();
+    let _err = clients
+        .http
+        .as_ref()
+        .expect("a raw client")
+        .send(&raw("https://api.stripe.com/v1/refunds", ""))
+        .unwrap_err();
+    off.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _err = call(
+        &clients,
+        "stripe",
+        "createPaymentIntent",
+        r#"{"amount":2000,"currency":"usd"}"#,
+    )
+    .unwrap_err();
+
+    let entries = audit.entries_at("ctx", audit::now_ms());
+    let seen: Vec<Seen<'_>> = entries
+        .iter()
+        .map(|e| {
+            (
+                e.method.as_str(),
+                e.host.as_str(),
+                e.path.as_str(),
+                e.status,
+                e.failure,
+                e.secrets.clone(),
+            )
+        })
+        .collect();
+    let key = || vec!["STRIPE_SECRET_KEY".to_owned()];
+    assert_eq!(
+        seen,
+        [
+            (
+                "POST",
+                "api.stripe.com",
+                "/v1/payment_intents",
+                Some(200),
+                None,
+                key()
+            ),
+            (
+                "GET",
+                "api.stripe.com",
+                "/v1/payment_intents/{id}",
+                Some(200),
+                None,
+                key()
+            ),
+            (
+                "",
+                "api.stripe.com",
+                "",
+                None,
+                Some(AuditFailure::Refused),
+                vec![]
+            ),
+            (
+                "POST",
+                "api.stripe.com",
+                "/v1/payment_intents",
+                None,
+                Some(AuditFailure::Refused),
+                vec![]
+            ),
+            (
+                "POST",
+                "api.stripe.com",
+                "/v1/refunds",
+                None,
+                Some(AuditFailure::Refused),
+                vec![]
+            ),
+            (
+                "POST",
+                "api.stripe.com",
+                "/v1/payment_intents",
+                None,
+                Some(AuditFailure::EgressOff),
+                vec![]
+            ),
+        ]
+    );
+    assert!(entries[0].request_bytes > 0, "the built body's size");
+    assert_eq!(
+        entries[0].response_bytes,
+        r#"{"id":"pi_1","status":"succeeded"}"#.len() as u64
+    );
+    let json = serde_json::to_string(&entries).unwrap();
+    assert!(
+        !json.contains(STRIPE_KEY) && !json.contains("pi_secretish_1"),
+        "{json}"
+    );
 }
