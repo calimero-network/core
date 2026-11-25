@@ -250,10 +250,7 @@ impl Node {
         match Self::fetch_raw(self.registry(false)?, package, version).await {
             Ok(Some(mpk)) => return Ok((mpk, Visibility::Public)),
             Ok(None) => {}
-            Err(e)
-                if e.downcast_ref::<RegistryStatus>().is_some_and(|r| {
-                    matches!(r.status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-                }) => {}
+            Err(e) if asks_sign_in(&e) => {}
             Err(e) => return Err(unreachable_registry(e)),
         }
         let url = self.registry_url()?;
@@ -788,15 +785,27 @@ impl Node {
         v: &PackageVersion,
     ) -> Result<Arc<[u8]>, ApiError> {
         let mpk: Arc<[u8]> = match v.source {
-            // Public: served to anyone. Private, or recorded before: with the credential,
-            // naming no account, pinned by the recorded hash below.
+            // Public: served to anyone, else (the publisher made it private since) with the
+            // credential. Private, or recorded before: with it, naming no account. Pinned by the
+            // recorded hash below.
             BundleSource::Registry => {
                 let public = v.visibility == Some(Visibility::Public);
-                Self::fetch_from(self.registry(!public)?, package, &v.version)
-                    .await?
-                    .ok_or_else(|| {
-                        ApiError::not_found(&format!("the registry has no {package}@{}", v.version))
-                    })?
+                let anonymous = if public {
+                    match Self::fetch_raw(self.registry(false)?, package, &v.version).await {
+                        Ok(found) => found,
+                        Err(e) if asks_sign_in(&e) => None,
+                        Err(e) => return Err(unreachable_registry(e)),
+                    }
+                } else {
+                    None
+                };
+                match anonymous {
+                    Some(mpk) => Some(mpk),
+                    None => Self::fetch_from(self.registry(true)?, package, &v.version).await?,
+                }
+                .ok_or_else(|| {
+                    ApiError::not_found(&format!("the registry has no {package}@{}", v.version))
+                })?
             }
             BundleSource::Upload => match self.engine.get_blob(&v.mpk) {
                 Ok(Some(b)) => b.into(),
@@ -906,6 +915,12 @@ fn not_for_this_account(package: &str, version: &str) -> ApiError {
     ApiError::not_found(&format!(
         "the registry has no {package}@{version} for this account; a private package needs this cluster account linked to its Calimero Cloud developer in the console"
     ))
+}
+
+/// A registry's `401` or `403`: it serves nothing without a sign-in.
+fn asks_sign_in(e: &eyre::Report) -> bool {
+    e.downcast_ref::<RegistryStatus>()
+        .is_some_and(|r| matches!(r.status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN))
 }
 
 /// `503`: the registry did not serve a fetch.

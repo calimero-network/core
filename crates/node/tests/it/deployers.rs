@@ -954,3 +954,60 @@ async fn a_release_is_fetched_again_with_the_credential_only_while_it_is_private
         "{public:?}"
     );
 }
+
+/// A release recorded public that the publisher later makes private is still fetched again:
+/// the anonymous fetch is refused, so it goes on with the credential (no account).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_public_release_made_private_later_is_still_fetched_again() {
+    let registry = Registry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    registry.publish("com.test.public", "1.0.0");
+    let _ok = alice
+        .packages()
+        .install("com.test.public", "1.0.0", None)
+        .await
+        .unwrap();
+    for (code, flip) in [(404, true), (401, false), (403, false)] {
+        if flip {
+            registry
+                .private
+                .lock()
+                .unwrap()
+                .insert("com.test.public@1.0.0".into(), vec![]);
+            registry
+                .authorized
+                .lock()
+                .unwrap()
+                .push("com.test.public@1.0.0".into());
+        }
+        *registry.anonymous.lock().unwrap() = Some(code);
+        let node = &c.nodes[1].as_ref().unwrap().node;
+        let _caught_up = node.sys_fresh().await;
+        let v = node
+            .sys(|s| {
+                s.packages
+                    .get("com.test.public")?
+                    .versions
+                    .get("1.0.0")
+                    .cloned()
+            })
+            .unwrap();
+        let _mpk = node
+            .release_mpk("com.test.public", &v)
+            .await
+            .unwrap_or_else(|e| panic!("{code}: {e}"));
+    }
+    let asked: Vec<_> = registry
+        .asked()
+        .into_iter()
+        .filter(|(_, _, account)| account.is_none())
+        .map(|(_, credential, _)| credential)
+        .collect();
+    assert_eq!(
+        asked[1..],
+        [false, true, false, true, false, true],
+        "each re-fetch asks anonymously, then with the credential: {asked:?}"
+    );
+}
