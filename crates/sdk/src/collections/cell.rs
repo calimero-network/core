@@ -54,7 +54,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> Cell<T, S> {
     /// Set the value.
     pub fn set(&mut self, v: &T) -> Result<(), StorageError> {
         let key = self.storage_key()?;
-        self.store.put(&key, &value::to_vec(v)?);
+        self.store.put(&key, &value::to_vec(v)?)?;
         Ok(())
     }
 
@@ -97,7 +97,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> Cell<T, S> {
     /// Remove the value.
     pub fn clear(&mut self) -> Result<(), StorageError> {
         let key = self.storage_key()?;
-        self.store.delete(&key);
+        self.store.delete(&key)?;
         Ok(())
     }
 }

@@ -63,9 +63,12 @@ InstallPackage { package, signer_id, release }
 
 Because the log orders every command and every replica applies the same
 commands to the same state, there is one verdict. A refused command is still
-committed, as a no-op with its reason, and the node that proposed it turns the
-reason into the HTTP answer (`400 REJECTED`, or `429 QUOTA_EXCEEDED` for a
-reason that starts with "quota exceeded").
+committed, as a no-op with its reason: a kind and a message
+(`system::Rejection`), answered as `{"err": <message>, "code": <code>}`. The
+node that proposed it turns the kind into the HTTP answer (`400 REJECTED` by
+default, `429 QUOTA_EXCEEDED` for a quota, `403 SIGN_UP_REFUSED`, `409
+RELEASE_DEADLINE` and the other codes a refusal names); the message only
+explains it, so rewording one never changes the status a client sees.
 
 ## Decisions carry their proof
 
@@ -320,6 +323,17 @@ same command for the same reason:
 Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
 unless another crate is named. The design and its reasons are above; a module's own detail is in its
 `//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Refusals carry their kind
+
+Code: `system/rejection.rs`, `node::rejected`, `system::output`.
+
+A refusal is a `system::Rejection`: a `RejectionKind` and a message. The status and code a client
+sees come from the kind (`RejectionKind::status`, `code`), never from the wording: `apply` answers
+`{"err": <message>, "code": <code>}` and `system::output` reads the kind back from `code`.
+A refusal with its own status is a `Rejection` constant (`NOT_A_DEPLOYER`, `UNIT_MEMBER`, the update
+refusals) or made by `Rejection::quota`, `Rejection::sign_up` or `Stall::rejection`; a plain `&str`
+converts to `REJECTED` (400).
 
 ### Decisions carry proofs
 

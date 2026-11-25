@@ -580,12 +580,12 @@ pub(super) fn apply(
     s: &mut SystemState,
     version: String,
     nodes: &BTreeMap<u64, String>,
-) -> Result<Value, &'static str> {
+) -> Result<Value, crate::system::Rejection> {
     if version.len() > MAX_RELEASE_VERSION_BYTES
         || semver::Version::parse(&version).is_err()
         || nodes.values().any(|v| v.len() > MAX_RELEASE_VERSION_BYTES)
     {
-        return Err(BAD_VERSION);
+        return Err(BAD_VERSION.into());
     }
     let registered: Vec<u64> = s
         .replica_nodes()
@@ -593,19 +593,19 @@ pub(super) fn apply(
         .filter(|id| !s.removed_nodes.contains(id))
         .collect();
     if registered.is_empty() || !nodes.keys().copied().eq(registered.iter().copied()) {
-        return Err(NOT_EVERY_NODE);
+        return Err(NOT_EVERY_NODE.into());
     }
     if nodes
         .values()
         .any(|v| compare_versions(v, &version) == Ordering::Less)
     {
-        return Err(ABOVE_A_NODE);
+        return Err(ABOVE_A_NODE.into());
     }
     if s.cluster_version
         .as_deref()
         .is_some_and(|c| compare_versions(&version, c) != Ordering::Greater)
     {
-        return Err(NOT_FORWARD);
+        return Err(NOT_FORWARD.into());
     }
     s.cluster_version = Some(version.clone());
     Ok(json!({ "clusterVersion": version }))
@@ -1256,7 +1256,7 @@ mod tests {
             })),
             Feature::DeclaredSecrets => install(json!({
                 "outbound": ["https://api.example.com/"],
-                "secrets": { "API_KEY": { "hosts": ["api.example.com"] } },
+                "secrets": { "API_KEY": { "host": "api.example.com", "paths": ["/"], "header": "x-api-key" } },
             })),
             Feature::HostFuel => unreachable!("no entry names hostFuel"),
             Feature::NamedPool => entry(json!({
@@ -1295,13 +1295,11 @@ mod tests {
         /// Apply `cmd` as a node on this release does: an entry it cannot
         /// decode (it uses a feature newer than the release) is skipped as
         /// `malformed command`, as `SystemMachine::apply` does.
-        fn apply(&mut self, cmd: &SystemCmd) -> Result<Value, String> {
+        fn apply(&mut self, cmd: &SystemCmd) -> Result<Value, crate::system::Rejection> {
             if check(Some(self.release), &cmd.features()).is_err() {
                 return Err("malformed command".into());
             }
-            self.machine
-                .run_authorized(cmd.clone())
-                .map_err(str::to_owned)
+            self.machine.run_authorized(cmd.clone())
         }
 
         fn state(&self) -> Value {
@@ -1369,7 +1367,8 @@ mod tests {
     fn an_entry_an_older_node_cannot_decode_splits_the_state() {
         let mut nodes = cluster(&[RC15, RC15, RC14]);
         let cmd = uses(Feature::OrgQuotas);
-        let answers: Vec<Result<Value, String>> = nodes.iter_mut().map(|n| n.apply(&cmd)).collect();
+        let answers: Vec<Result<Value, crate::system::Rejection>> =
+            nodes.iter_mut().map(|n| n.apply(&cmd)).collect();
         assert!(answers[0].is_ok() && answers[1].is_ok(), "{answers:?}");
         assert_eq!(answers[2], Err("malformed command".into()));
         assert!(
@@ -1898,20 +1897,29 @@ mod tests {
         };
         // Every registered node, and only those.
         let two = [(1, RC16), (2, RC16)];
-        assert_eq!(m.run_authorized(set(RC16, &two)), Err(NOT_EVERY_NODE));
+        assert_eq!(
+            m.run_authorized(set(RC16, &two)),
+            Err(NOT_EVERY_NODE.into())
+        );
         let four = [(1, RC16), (2, RC16), (3, RC16), (4, RC16)];
-        assert_eq!(m.run_authorized(set(RC16, &four)), Err(NOT_EVERY_NODE));
+        assert_eq!(
+            m.run_authorized(set(RC16, &four)),
+            Err(NOT_EVERY_NODE.into())
+        );
         // Never above what a node supports.
         let behind = [(1, RC16), (2, RC16), (3, RC15)];
-        assert_eq!(m.run_authorized(set(RC16, &behind)), Err(ABOVE_A_NODE));
+        assert_eq!(
+            m.run_authorized(set(RC16, &behind)),
+            Err(ABOVE_A_NODE.into())
+        );
         assert!(m.run_authorized(set("not a version", &behind)).is_err());
         let _ok = m.run_authorized(set(RC15, &behind)).unwrap();
         assert_eq!(m.state.cluster_version.as_deref(), Some(RC15));
         let all = [(1, RC16), (2, RC16), (3, RC16)];
         let _ok = m.run_authorized(set(RC16, &all)).unwrap();
         // Never back, never the same again.
-        assert_eq!(m.run_authorized(set(RC16, &all)), Err(NOT_FORWARD));
-        assert_eq!(m.run_authorized(set(RC15, &all)), Err(NOT_FORWARD));
+        assert_eq!(m.run_authorized(set(RC16, &all)), Err(NOT_FORWARD.into()));
+        assert_eq!(m.run_authorized(set(RC15, &all)), Err(NOT_FORWARD.into()));
         assert_eq!(m.state.cluster_version.as_deref(), Some(RC16));
         // A removed node is not named.
         let _ok = m

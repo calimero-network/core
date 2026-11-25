@@ -2374,7 +2374,9 @@ async fn oversized_entry_is_host_denied() {
         .await
         .unwrap();
     // 1,000 keys of 1,000 bytes, each with its event: within every per-run limit
-    // (writes, events, event size), but about 2 MB of diff and events.
+    // (writes, events, event size), but about 2 MB of diff and events. The write or event
+    // that would pass the run's 1 MiB is the typed `RunLimit` the app passes on (C10), not
+    // a trap.
     let e = alice
         .apps()
         .call(
@@ -2386,8 +2388,42 @@ async fn oversized_entry_is_host_denied() {
         )
         .await
         .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+    assert_eq!(e.details().unwrap()["code"], "RunLimit", "{e}");
+    assert_eq!(e.details().unwrap()["fields"]["limit"], "bytes", "{e}");
+    // One value of 900 KiB: within the run's 1 MiB, but its entry (base64) is over the
+    // log's cap, so the node logs the run as a `HostDenied` trap.
+    let e = alice
+        .apps()
+        .call(
+            &app,
+            "fillQuiet",
+            Some(json!({ "n": 1, "size": 900 * 1024 })),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("TRAP"), "{e}");
     assert_eq!(e.details().unwrap()["kind"], "HostDenied", "{e}");
+    // The write after the run's 10,000th: the typed `RunLimit` with its number (C10).
+    let e = alice
+        .apps()
+        .call(
+            &app,
+            "fillQuiet",
+            Some(json!({ "n": 10_001, "size": 1 })),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+    assert_eq!(
+        e.details().unwrap()["fields"],
+        json!({ "limit": "writes", "max": "10000", "attempted": "10001" }),
+        "{e}"
+    );
     let v = alice
         .apps()
         .view(
@@ -5768,7 +5804,7 @@ fn mpk_using(
     mpk_full(package, version, wasm, key, outbound, None, uses)
 }
 
-/// [`mpk_declaring`], also declaring `secrets` (name -> hosts) in the signed manifest.
+/// [`mpk_declaring`], also declaring `secrets` (name -> host, each bound to its `Authorization` header) in the signed manifest.
 fn mpk_with_secrets(
     package: &str,
     version: &str,
@@ -5780,8 +5816,9 @@ fn mpk_with_secrets(
     mpk_full(package, version, wasm, key, outbound, secrets, Value::Null)
 }
 
-/// [`mpk_declaring`], also declaring `secrets` (name -> hosts) and `uses` (the manifest's
-/// JSON for it) in the signed manifest.
+/// [`mpk_declaring`], also declaring `secrets` (name -> host, each required and bound to
+/// that host's `Authorization: Bearer {}` under its `outbound` prefix's path) and `uses` (the manifest's JSON for it) in the
+/// signed manifest.
 fn mpk_full(
     package: &str,
     version: &str,
@@ -5789,6 +5826,49 @@ fn mpk_full(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
     secrets: Option<&[(&str, &str)]>,
+    uses: Value,
+) -> Vec<u8> {
+    // Each bound under the path of the release's prefix on its host (`/` without one).
+    let path_on = |host: &str| {
+        outbound
+            .iter()
+            .filter_map(|o| o.strip_prefix("https://"))
+            .find_map(|rest| {
+                let (h, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+                (h == host && !path.is_empty()).then_some(path)
+            })
+            .unwrap_or("/")
+    };
+    let secrets = secrets.map(|s| {
+        s.iter()
+            .map(|(name, host)| {
+                (
+                    (*name).to_owned(),
+                    calimero_bundle::BundleSecret {
+                        required: true,
+                        ..calimero_bundle::BundleSecret::header(
+                            host,
+                            &[path_on(host)],
+                            "authorization",
+                            Some("Bearer {}"),
+                        )
+                    },
+                )
+            })
+            .collect()
+    });
+    mpk_bound(package, version, wasm, key, outbound, secrets, uses)
+}
+
+/// [`mpk_declaring`], also binding `secrets` and declaring `uses` (the manifest's JSON for
+/// it) in the signed manifest.
+fn mpk_bound(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    secrets: Option<std::collections::BTreeMap<String, calimero_bundle::BundleSecret>>,
     uses: Value,
 ) -> Vec<u8> {
     use sha2::Digest;
@@ -5818,20 +5898,7 @@ fn mpk_full(
         instance_org: None,
         guests: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
-        secrets: secrets.map(|s| {
-            s.iter()
-                .map(|(name, host)| {
-                    (
-                        (*name).to_owned(),
-                        calimero_bundle::BundleSecret {
-                            hosts: vec![(*host).to_owned()],
-                            description: String::new(),
-                            required: true,
-                        },
-                    )
-                })
-                .collect()
-        }),
+        secrets,
         uses: serde_json::from_value(uses).unwrap(),
         services: None,
         pipelines: Vec::new(),
@@ -5882,7 +5949,8 @@ pub(crate) async fn eventually(
 
 /// D12, D17, D22, S9, R14: an action runs on the app's leader outside the log, reads
 /// through a view, calls out over `wasi:http` only to a prefix the signed manifest
-/// declares and the owner approved (with a secret the node fills in and redacts), and
+/// declares and the owner approved (with a secret its manifest binds to a header, which
+/// the node attaches and redacts), and
 /// writes through a keyed call to an `allow(action)` method no client can call. One that
 /// fails (a refused request, an app error) fails for good and `onActionFailed` hears.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -5915,12 +5983,13 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let _ = alice
         .packages()
-        .upload(mpk_declaring(
+        .upload(mpk_with_secrets(
             PACKAGE,
             "0.1.0",
             &kv_wasm(),
             &publisher,
             &[PREFIX],
+            Some(&[("ECHO_KEY", "echo.outbound.test")]),
         ))
         .await
         .unwrap();
@@ -5993,9 +6062,12 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
     let got = got.as_str().unwrap();
     assert!(got.starts_with("200 "), "{got}");
     assert!(got.contains("/v1/enrich?v=acme.com"), "{got}");
-    // The secret went out and came back redacted.
+    // The node attached the bound header; it came back redacted.
     assert!(!got.contains("s3cret-value"), "{got}");
-    assert!(got.contains("[redacted]"), "{got}");
+    assert!(
+        got.contains(r#""authorization":"Bearer [redacted]""#),
+        "{got}"
+    );
 
     // No client calls an `allow(action)` method, and a call or view never calls out.
     let e = alice
@@ -6027,12 +6099,14 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
     );
 }
 
-/// A release that declares its secrets gets only those, and only to their hosts: the same
-/// action that reached the echo host with `ECHO_KEY` fails once the running release
-/// declares another name, though the operator bound `ECHO_KEY` to the package; a release
-/// whose secret names a host no outbound prefix covers is refused at install.
+/// A release's credentials are attached by the node where its manifest binds them, and
+/// only those: the same action reaches the echo host with `ECHO_KEY` in the bound
+/// `Authorization` header (the app's request names no secret), and fails once the running
+/// release binds another name, required, that nobody set, though the operator bound
+/// `ECHO_KEY` to the package; a release whose secret names a host no outbound prefix
+/// covers is refused at install.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_release_fills_only_the_secrets_it_declares() {
+async fn a_release_gets_only_the_credentials_it_binds_attached_by_the_node() {
     const PREFIX: &str = "https://echo.outbound.test/v1/";
     const HOST: &str = "echo.outbound.test";
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
@@ -6075,7 +6149,6 @@ async fn a_release_fills_only_the_secrets_it_declares() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_SECRETS"), "{e}");
-
     let mut apps = Vec::new();
     for (package, name) in packages.iter().zip(["ECHO_KEY", "OTHER_KEY"]) {
         let _ = alice
@@ -6136,7 +6209,8 @@ async fn a_release_fills_only_the_secrets_it_declares() {
         apps.push(app);
     }
 
-    // Declares ECHO_KEY for the echo host: filled and redacted.
+    // Binds ECHO_KEY to the echo host's Authorization header: attached by the node, one
+    // value of its length, and redacted on the way back.
     let got = eventually(
         &alice,
         &apps[0],
@@ -6145,15 +6219,21 @@ async fn a_release_fills_only_the_secrets_it_declares() {
         |v| v.is_string(),
     )
     .await;
-    assert!(got.as_str().unwrap().starts_with("200 "), "{got}");
-    assert!(got.as_str().unwrap().contains("[redacted]"), "{got}");
-    // Declares only OTHER_KEY: the request naming ECHO_KEY never leaves.
+    let got = got.as_str().unwrap();
+    assert!(got.starts_with("200 "), "{got}");
+    assert!(
+        got.contains(r#""authorization":"Bearer [redacted]""#),
+        "{got}"
+    );
+    assert!(got.contains(r#""secretBytes":[12]"#), "{got}");
+    assert!(!got.contains("s3cret-value"), "{got}");
+    // Binds only OTHER_KEY, required, which nobody set: the request never leaves.
     let failures = eventually(&alice, &apps[1], "actionFailures", json!({}), |f| {
         f["enrich"].is_string()
     })
     .await;
     let failure = failures["enrich"].as_str().unwrap();
-    assert!(failure.contains("declares no secret ECHO_KEY"), "{failure}");
+    assert!(failure.contains("OTHER_KEY has no value"), "{failure}");
     assert_eq!(
         strong_view(&alice, &apps[1], "enrichment", json!({ "key": "acme" })).await,
         Value::Null
@@ -7781,10 +7861,11 @@ async fn a_run_waiting_in_a_host_call_ends_at_its_own_deadline() {
 }
 
 /// D76: a call makes an outbound request itself. The forms app (kv) asks the captcha
-/// service (a signed release declaring Turnstile's siteverify) inside its call; the
-/// service checks the token with Turnstile from its own call, through the outbound gate
-/// (declared, approved, the operator's host and secret), and the forms app writes only
-/// on a pass. A spent token does not pass again.
+/// service (a signed release declaring Turnstile's siteverify, and binding
+/// `TURNSTILE_SECRET` to its `secret` body field) inside its call; the service checks the
+/// token with Turnstile from its own call, through the outbound gate (declared, approved,
+/// the operator's host and secret, which the node attaches to the form itself), and the
+/// forms app writes only on a pass. A spent token does not pass again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
     const PACKAGE: &str = "com.calimero.captcha";
@@ -7816,12 +7897,24 @@ async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let _ = alice
         .packages()
-        .upload(mpk_declaring(
+        .upload(mpk_bound(
             PACKAGE,
             "0.1.0",
             &wasm("fixture-captcha"),
             &publisher,
             &[calimero_outbound::TURNSTILE_VERIFY_URL],
+            Some(
+                [(
+                    "TURNSTILE_SECRET".to_owned(),
+                    calimero_bundle::BundleSecret::body_field(
+                        HOST,
+                        &["/turnstile/v0/siteverify"],
+                        "secret",
+                    ),
+                )]
+                .into(),
+            ),
+            Value::Null,
         ))
         .await
         .unwrap();

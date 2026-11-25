@@ -1001,7 +1001,7 @@ pub struct UnitMember {
     pub extra: Map<String, Value>,
 }
 
-/// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
+/// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "code")]
 pub enum UpdateReason {
@@ -1036,6 +1036,13 @@ pub enum UpdateReason {
         methods: Vec<String>,
         member: Option<String>,
         package: String,
+    },
+    #[serde(rename = "secretBindingChanged")]
+    SecretBindingChanged {
+        after: String,
+        member: Option<String>,
+        name: String,
+        before: Option<String>,
     },
     #[serde(rename = "unclassified")]
     Unclassified {
@@ -3722,7 +3729,16 @@ impl<'de> Deserialize<'de> for AppSecretsResponseSecretsValueSource {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppSecretsResponseSecretsValue {
-    pub hosts: Vec<String>,
+    pub host: String,
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(rename = "bodyField")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_field: Option<String>,
+    pub binding: String,
     pub description: String,
     pub required: bool,
     pub source: AppSecretsResponseSecretsValueSource,
@@ -7214,6 +7230,8 @@ pub struct PackageCapabilitiesResponse {
     pub outbound: Vec<String>,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub secrets: Value,
+    #[serde(rename = "secretBindings")]
+    pub secret_bindings: Vec<String>,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub uses: Value,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).

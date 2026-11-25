@@ -10,10 +10,7 @@
 use super::*;
 
 /// Judge the proof a command of this area carries ([`super::authorize`]).
-pub(super) fn authorize(
-    proofs: &Proofs<'_>,
-    cmd: &SystemCmd,
-) -> Result<Option<String>, &'static str> {
+pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
     let s = proofs.s;
     match cmd {
         // An update applying on its own carries no person's consent: the app's policy is
@@ -95,7 +92,7 @@ pub(super) fn authorize(
                     .as_ref()
                     .is_some_and(|t| t.package != package || t.version != version)
             {
-                return Err(NOT_IN_RUN);
+                return Err(NOT_IN_RUN.into());
             }
             Ok(None)
         }
@@ -123,7 +120,7 @@ pub(super) fn authorize(
                         && a["targets"] == json!(run.targets)
                 })?;
                 if run.team.is_some() || run.cascade {
-                    return Err("the consent is for another change");
+                    return Err("the consent is for another change".into());
                 }
             } else if st.method == "__upgrade_published" {
                 // A publisher's run over every instance of its package: no
@@ -132,7 +129,7 @@ pub(super) fn authorize(
                     a["package"] == json!(run.package) && a["version"] == json!(run.version)
                 })?;
                 if run.team.is_some() || run.cascade {
-                    return Err("the consent is for another change");
+                    return Err("the consent is for another change".into());
                 }
             } else if st.method == "__upgrade_org_retry" {
                 // A retry repeats a run of the same org under its terms.
@@ -241,11 +238,11 @@ pub(super) fn authorize(
             signature,
         } => {
             if !s.app_invites.contains_key(invite_key) {
-                return Err(super::APP_INVITE_GONE);
+                return Err(super::APP_INVITE_GONE.into());
             }
             let used = crate::proof::verify_invite_redeem(invite_key, account, *now, signature)?;
             if s.used_proofs.contains(&used) {
-                return Err("that redemption was used already");
+                return Err("that redemption was used already".into());
             }
             Ok(Some(used))
         }
@@ -280,7 +277,7 @@ pub(super) fn authorize(
             proofs.states(&st, app_id, "__set_replicas", &|a| *a == args)?;
             let wanted: BTreeSet<u64> = replicas.iter().copied().collect();
             if wanted.len() != replicas.len() {
-                return Err("a node is named twice");
+                return Err("a node is named twice".into());
             }
             if wanted == target {
                 return Ok(Some(used));
@@ -290,7 +287,7 @@ pub(super) fn authorize(
             if wanted == union {
                 return Ok(None);
             }
-            Err("the consent is for another change")
+            Err("the consent is for another change".into())
         }
         SystemCmd::RestoreApp {
             app_id,
@@ -310,7 +307,7 @@ pub(super) fn authorize(
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
-pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let index = m.index;
     let s = &mut m.state;
     match cmd {
@@ -321,30 +318,30 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let mut app = *app;
             if !s.bundles.contains_key(&app.bundle) {
-                return Err("unknown bundle");
+                return Err("unknown bundle".into());
             }
             if app.components.is_app() && s.is_compute_bundle(&app.bundle) {
-                return Err(COMPUTE_NOT_AN_APP);
+                return Err(COMPUTE_NOT_AN_APP.into());
             }
             if !s.ships_compute(&app.bundle, app.compute_bundle.as_deref()) {
-                return Err(COMPUTE_NOT_SHIPPED);
+                return Err(COMPUTE_NOT_SHIPPED.into());
             }
             if app
                 .release
                 .as_ref()
                 .is_some_and(|r| !s.release_ships(r, &app.bundle))
             {
-                return Err(RELEASE_NOT_SHIPPED);
+                return Err(RELEASE_NOT_SHIPPED.into());
             }
             if s.components_of(app.release.as_ref()) != app.components {
-                return Err(COMPONENTS_NOT_RELEASES);
+                return Err(COMPONENTS_NOT_RELEASES.into());
             }
             let owned = s.apps.values().filter(|a| a.owner == app.owner).count();
             if owned >= s.quotas.max_apps_per_account as usize {
-                return Err("quota exceeded: apps");
+                return Err(Rejection::quota("apps"));
             }
             if s.apps.contains_key(&app.app_id) {
-                return Err("app exists");
+                return Err("app exists".into());
             }
             if let Some(id) = &app.deployment {
                 let d = s.deployments.get(id).ok_or("no such deployment")?;
@@ -362,10 +359,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     }
                 };
                 if !covered {
-                    return Err("the deployment does not offer the release this app would run");
+                    return Err(
+                        "the deployment does not offer the release this app would run".into(),
+                    );
                 }
             } else if unit_offer.is_some() {
-                return Err("a unit's offer comes with the deployment that makes it");
+                return Err("a unit's offer comes with the deployment that makes it".into());
             } else if (offers_only || s.cluster_brings(cluster_version::Feature::OffersOnly))
                 && !s.creates_outside_offers(&app.owner, app.release.as_ref(), app.created_at)
             {
@@ -375,13 +374,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 let o = s.orgs.get(&app.org);
                 let member = o.and_then(|o| o.role(&app.owner));
                 if !member.is_some_and(|r| r >= OrgRole::Member) {
-                    return Err("owner is not a member of the organization");
+                    return Err("owner is not a member of the organization".into());
                 }
                 // CREATE_APP: admins and the team's leads hold it,
                 // a member only when granted (not by default).
                 let team = app.access.the_team().map(String::as_str);
                 if !o.is_some_and(|o| o.may(&app.owner, team, crate::types::caps::CREATE_APP)) {
-                    return Err("creating apps here needs the CREATE_APP capability");
+                    return Err("creating apps here needs the CREATE_APP capability".into());
                 }
                 // In an organization whose apps have app teams, a package
                 // with none is a new app there: an admin installs it.
@@ -390,7 +389,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                         && o.app_team(package).is_none()
                         && !o.role(&app.owner).is_some_and(|r| r >= OrgRole::Admin)
                     {
-                        return Err(ONLY_ADMINS_INSTALL);
+                        return Err(ONLY_ADMINS_INSTALL.into());
                     }
                 }
             }
@@ -399,7 +398,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // A team's app is created by someone who writes the team (each team it admits).
             for team in app.access.teams() {
                 if !o.is_some_and(|o| o.writes_team(&app.owner, team)) {
-                    return Err("not a member of that team");
+                    return Err("not a member of that team".into());
                 }
             }
             s.next_group = s.next_group.max(1) + 1;
@@ -429,26 +428,26 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             restore_point,
         } => {
             if !s.bundles.contains_key(&bundle) {
-                return Err("unknown bundle");
+                return Err("unknown bundle".into());
             }
             let components = s.components_of(release.as_ref());
             if components.is_app() && s.is_compute_bundle(&bundle) {
-                return Err(COMPUTE_NOT_AN_APP);
+                return Err(COMPUTE_NOT_AN_APP.into());
             }
             if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
-                return Err(COMPUTE_NOT_SHIPPED);
+                return Err(COMPUTE_NOT_SHIPPED.into());
             }
             if release
                 .as_ref()
                 .is_some_and(|r| !s.release_ships(r, &bundle))
             {
-                return Err(RELEASE_NOT_SHIPPED);
+                return Err(RELEASE_NOT_SHIPPED.into());
             }
             if s.apps
                 .get(&app_id)
                 .is_some_and(|a| a.components != components)
             {
-                return Err(COMPONENTS_CHANGED);
+                return Err(COMPONENTS_CHANGED.into());
             }
             let operator = s.governance().app_upgrades == Authority::Operator;
             let to = s.governing(release.as_ref(), &bundle, at);
@@ -458,14 +457,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .is_none_or(|a| s.upgrade_keeps_authority(s.governing_release(a), to));
             if !by_operator && !keeps {
                 return Err(
-                        "an app whose owner upgrades it is not moved to a release its publisher upgrades",
+                        "an app whose owner upgrades it is not moved to a release its publisher upgrades".into(),
                     );
             }
             if by_operator != operator {
                 return Err(if operator {
-                    "this cluster's apps are upgraded by its operator"
+                    "this cluster's apps are upgraded by its operator".into()
                 } else {
-                    "this cluster's apps are upgraded by their owners"
+                    "this cluster's apps are upgraded by their owners".into()
                 });
             }
             let owner_approves = s.owner_approves(owner_approves);
@@ -498,9 +497,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             };
             if !allowed {
                 return Err(if owner_approves {
-                    NOT_AN_UPGRADE_APPROVER
+                    NOT_AN_UPGRADE_APPROVER.into()
                 } else {
                     "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization"
+                        .into()
                 });
             }
             // Only a deployment's managers decide which release its instances
@@ -661,7 +661,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // Only an owner or admin of the organization starts a run there; a
             // publisher's run then covers the organizations the starter is one of.
             if owner_approves && run.by != OPERATOR && !s.approves_upgrades(&org, &run.by) {
-                return Err(NOT_AN_UPGRADE_APPROVER);
+                return Err(NOT_AN_UPGRADE_APPROVER.into());
             }
             // Member targets are a unit's, stated by its consent (`__upgrade_unit`, held to
             // them in `authorize`); any other run keeps none, whatever its entry lists, so
@@ -679,13 +679,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 // version and scope. Its id names one run in the cluster,
                 // as `UpgradeApp { run }` finds it in any organization.
                 if !s.orgs.contains_key(&org) {
-                    return Err("no such organization");
+                    return Err("no such organization".into());
                 }
                 if s.orgs
                     .values()
                     .any(|o| o.upgrade_runs.contains_key(&run.run_id))
                 {
-                    return Err("that run exists");
+                    return Err("that run exists".into());
                 }
                 run.apps = s.upgrade_run_apps(&org, &run, &consent, by_release, owner_approves);
                 run.done.clear();
@@ -694,7 +694,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
             if o.upgrade_runs.contains_key(&run.run_id) {
-                return Err("that run exists");
+                return Err("that run exists".into());
             }
             while o.upgrade_runs.len() >= crate::types::UPGRADE_RUNS_KEPT {
                 let oldest = o
@@ -725,13 +725,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             app,
         } => {
             if alias.is_empty() || alias.chars().count() > MAX_LABEL_CHARS {
-                return Err("an alias is 1 to 64 characters");
+                return Err("an alias is 1 to 64 characters".into());
             }
             let a = s.accounts.get_mut(&account).ok_or("unknown account")?;
             match app {
                 Some(app) => {
                     if a.aliases.len() >= MAX_ALIASES && !a.aliases.contains_key(&alias) {
-                        return Err("too many aliases");
+                        return Err("too many aliases".into());
                     }
                     let _prev = a.aliases.insert(alias, app);
                 }
@@ -750,7 +750,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if !s.accounts.contains_key(&to) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             let org = s.apps.get(&app_id).ok_or("no such app")?.org.clone();
             // An org's app stays with a member of the org (as `CreateApp`),
@@ -767,25 +767,25 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     s.personal_org_of(&to),
                 ) {
                     (true, Some(theirs)) => to_org = Some(theirs.clone()),
-                    (true, None) => return Err(NO_PERSONAL_ORG),
-                    _ => return Err(super::NEW_OWNER_NOT_A_MEMBER),
+                    (true, None) => return Err(NO_PERSONAL_ORG.into()),
+                    _ => return Err(super::NEW_OWNER_NOT_A_MEMBER.into()),
                 }
             }
             let app = s.apps.get(&app_id).ok_or("no such app")?;
             if !owner_in_org && app.owner != actor {
-                return Err("only the owner may transfer");
+                return Err("only the owner may transfer".into());
             }
             if owner_in_org
                 && !s.manages_app_as_logged(app, &actor, OwnerRule::logged(true, owner_in_team))
             {
-                return Err(ONLY_MANAGERS_TRANSFER);
+                return Err(ONLY_MANAGERS_TRANSFER.into());
             }
             // An app going to its new owner's personal organization takes its
             // files to that organization's quota.
             let held = s.app_file_bytes.get(&app_id).copied().unwrap_or(0);
             if let Some(new_payer) = &to_org {
                 if s.file_bytes(new_payer).saturating_add(held) > s.payer_quotas(new_payer).2 {
-                    return Err("quota exceeded: file bytes");
+                    return Err(Rejection::quota("file bytes"));
                 }
             }
             s.set_app_file_bytes(&app_id, 0);
@@ -842,7 +842,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             };
             let app = s.apps.get(&app_id).ok_or("no such app")?;
             if !may_delete(s, app) {
-                return Err("only the owner or an org admin may delete");
+                return Err("only the owner or an org admin may delete".into());
             }
             // An entry from before the whole-unit rule deletes the app alone.
             let unit = match members {
@@ -854,14 +854,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     let unit = s.unit_of(&app_id);
                     let named: BTreeSet<AppId> = named.into_iter().collect();
                     if named.len() != unit.len() || !unit.iter().all(|m| named.contains(m)) {
-                        return Err(UNIT_NOT_AS_NAMED);
+                        return Err(UNIT_NOT_AS_NAMED.into());
                     }
                     if unit
                         .iter()
                         .filter_map(|m| s.apps.get(m))
                         .any(|m| !may_delete(s, m))
                     {
-                        return Err("deleting a unit takes whoever may delete each of its apps");
+                        return Err(
+                            "deleting a unit takes whoever may delete each of its apps".into()
+                        );
                     }
                     unit
                 }
@@ -888,22 +890,22 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if !s.bundles.contains_key(&bundle) {
-                return Err(RESTORE_BUNDLE_GONE);
+                return Err(RESTORE_BUNDLE_GONE.into());
             }
             if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
-                return Err(COMPUTE_NOT_SHIPPED);
+                return Err(COMPUTE_NOT_SHIPPED.into());
             }
             let distinct: BTreeSet<u64> = replicas.iter().copied().collect();
             let Some(&seed) = replicas.first() else {
-                return Err("a restore names its replicas");
+                return Err("a restore names its replicas".into());
             };
             if distinct.len() != replicas.len()
                 || replicas.iter().any(|id| s.replica_node(id).is_none())
             {
-                return Err("a restore's replicas are distinct registered nodes");
+                return Err("a restore's replicas are distinct registered nodes".into());
             }
             if !s.apps.contains_key(&app_id) {
-                return Err("no such app");
+                return Err("no such app".into());
             }
             let group = s.next_group.max(1) + 1;
             s.next_group = group;
@@ -927,7 +929,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         SystemCmd::FinishRestore { app_id, group } => {
             let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
             if app.group != group || app.restore.is_none() {
-                return Err("no restore of that app into that group is under way");
+                return Err("no restore of that app into that group is under way".into());
             }
             // An undo's restore is done: its restore point is spent. Only an app an
             // `UndoUpgrade` reverted has one marked undone, so earlier logs replay alike.
@@ -951,7 +953,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !s.owner_acts_as_logged(app, &actor, OwnerRule::logged(owner_in_org, owner_in_team))
                 && !s.may_set_access(app, &access, &actor)
             {
-                return Err("only the app's owner, an organization admin, or whoever manages its team's apps (MANAGE_APPLICATION) may change its access");
+                return Err("only the app's owner, an organization admin, or whoever manages its team's apps (MANAGE_APPLICATION) may change its access".into());
             }
             // The instance's public links stay as they are: made and revoked with their own
             // consent, never here.
@@ -987,10 +989,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let from = s.apps.get(&source).ok_or("no such app")?;
             let to = s.apps.get(&target).ok_or("no such app to delegate to")?;
             if source == target {
-                return Err("an app is not delegated to itself");
+                return Err("an app is not delegated to itself".into());
             }
             if !s.may_reach(from, Some(&account)) || !s.may_reach(to, Some(&account)) {
-                return Err("only who reaches both apps lets one act on the other as them");
+                return Err("only who reaches both apps lets one act on the other as them".into());
             }
             let distinct: BTreeSet<&String> = methods.iter().collect();
             if methods.is_empty()
@@ -998,7 +1000,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 || distinct.len() != methods.len()
                 || !methods.iter().all(|m| calimero_bundle::is_use_method(m))
             {
-                return Err("not a list of methods to delegate");
+                return Err("not a list of methods to delegate".into());
             }
             let _was = s
                 .delegations
@@ -1017,7 +1019,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let app = s.apps.get(&invite.app).ok_or("no such app")?;
             if !s.manages_grants(app, &actor) {
-                return Err("only whoever may change the instance's access invites its guests");
+                return Err(
+                    "only whoever may change the instance's access invites its guests".into(),
+                );
             }
             // Whether guests are allowed is judged when someone redeems it (a member always
             // may): an invite is made whatever the switches say now.
@@ -1026,20 +1030,20 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .as_ref()
                 .is_some_and(|v| !crate::types::scope_fits(v))
             {
-                return Err("an invite's scope is at most 256 bytes of JSON");
+                return Err("an invite's scope is at most 256 bytes of JSON".into());
             }
             if invite.uses_left == 0 || invite.uses_left > super::MAX_APP_INVITE_USES {
-                return Err("an instance invite admits 1 to 1000 uses");
+                return Err("an instance invite admits 1 to 1000 uses".into());
             }
             if invite.expires_at
                 > invite
                     .created_at
                     .saturating_add(super::MAX_APP_INVITE_TTL_SECS)
             {
-                return Err("an instance invite lasts at most 90 days");
+                return Err("an instance invite lasts at most 90 days".into());
             }
             if s.app_invites.contains_key(&invite_key) || s.invites.contains_key(&invite_key) {
-                return Err("invite exists");
+                return Err("invite exists".into());
             }
             if s.app_invites
                 .values()
@@ -1048,7 +1052,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 >= super::MAX_APP_INVITES_PER_APP
                 || s.app_invites.len() >= super::MAX_APP_INVITES
             {
-                return Err("quota exceeded: instance invites");
+                return Err(Rejection::quota("instance invites"));
             }
             let invite = crate::types::AppInvite {
                 created_by: actor,
@@ -1065,27 +1069,29 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let app = s.apps.get(&link.app).ok_or("no such app")?;
             if !s.manages_grants(app, &actor) {
-                return Err("only whoever may change the instance's access makes its public links");
+                return Err(
+                    "only whoever may change the instance's access makes its public links".into(),
+                );
             }
             if !s.orgs.get(&app.org).is_some_and(|o| o.allow_public_links) {
-                return Err(super::PUBLIC_LINKS_OFF);
+                return Err(super::PUBLIC_LINKS_OFF.into());
             }
             if link.rate_per_minute == 0 || link.rate_per_minute > super::MAX_PUBLIC_LINK_RATE {
-                return Err("a public link admits 1 to 600 calls a minute per visitor");
+                return Err("a public link admits 1 to 600 calls a minute per visitor".into());
             }
             if link.label.as_ref().is_some_and(|l| {
                 l.chars().count() > super::MAX_PUBLIC_LINK_LABEL_CHARS
                     || l.chars().any(char::is_control)
             }) {
-                return Err("a public link's label is one line of at most 64 characters");
+                return Err("a public link's label is one line of at most 64 characters".into());
             }
             if s.public_link(&link_key).is_some() {
-                return Err("public link exists");
+                return Err("public link exists".into());
             }
             if app.access.links().len() >= super::MAX_PUBLIC_LINKS_PER_APP
                 || s.public_link_count() >= super::MAX_PUBLIC_LINKS
             {
-                return Err("quota exceeded: public links");
+                return Err(Rejection::quota("public links"));
             }
             // One more grant of the instance.
             let app_id = link.app.clone();
@@ -1110,7 +1116,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let app = s.apps.get(&app_id).ok_or(super::PUBLIC_LINK_GONE)?;
             let link = app.access.link(&link_key).ok_or(super::PUBLIC_LINK_GONE)?;
             if link.created_by != actor && !s.manages_grants(app, &actor) {
-                return Err("only the link's creator or whoever may change the instance's access revokes it");
+                return Err("only the link's creator or whoever may change the instance's access revokes it".into());
             }
             let access = app.access.without_link(&link_key);
             if let Some(app) = s.apps.get_mut(&app_id) {
@@ -1131,7 +1137,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .ok_or(super::APP_INVITE_GONE)?;
             let app = s.apps.get(&app_id).ok_or("no such app")?;
             if inv.created_by != actor && !s.manages_grants(app, &actor) {
-                return Err("only the invite's creator or whoever manages the instance's guests may revoke it");
+                return Err("only the invite's creator or whoever manages the instance's guests may revoke it".into());
             }
             let _gone = s.app_invites.remove(&invite_key);
             Ok(Value::Null)
@@ -1143,14 +1149,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             ..
         } => {
             if !s.accounts.contains_key(&account) {
-                return Err("unknown account");
+                return Err("unknown account".into());
             }
             let inv = s
                 .app_invites
                 .get(&invite_key)
                 .ok_or(super::APP_INVITE_GONE)?;
             if inv.expires_at <= now || inv.uses_left == 0 {
-                return Err(INVITE_EXPIRED);
+                return Err(INVITE_EXPIRED.into());
             }
             let app = s.apps.get(&inv.app).ok_or(super::APP_INVITE_GONE)?;
             // A member of its organization is named on it (a member grant); anyone else is a
@@ -1169,7 +1175,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Ok(answer);
             }
             if app.access.named_count() >= crate::types::MAX_ACCOUNT_GRANTS {
-                return Err("quota exceeded: an instance names at most 1000 accounts");
+                return Err(Rejection::quota("an instance names at most 1000 accounts"));
             }
             let access = app.access.naming(&account, inv.scope.clone());
             let app_id = inv.app.clone();
@@ -1195,24 +1201,24 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             let app = s.apps.get(&app_id).ok_or("no such app")?;
             if !s.manages_app(app, &actor) {
-                return Err(ONLY_MANAGERS_LINK);
+                return Err(ONLY_MANAGERS_LINK.into());
             }
             if !calimero_bundle::is_use_name(&name) {
-                return Err("not a reference's name");
+                return Err("not a reference's name".into());
             }
             if app.links.contains_key(&name) {
-                return Err("a unit member is linked at create and stays");
+                return Err("a unit member is linked at create and stays".into());
             }
             if let Some(t) = &target {
                 let to = s.apps.get(t).ok_or("no such app to attach")?;
                 if *t == app_id || to.org != app.org {
-                    return Err("only another app of the same organization is attached");
+                    return Err("only another app of the same organization is attached".into());
                 }
                 if !s.manages_app(to, &actor) {
-                    return Err(ONLY_MANAGERS_LINK);
+                    return Err(ONLY_MANAGERS_LINK.into());
                 }
                 if !app.attached.contains_key(&name) && app.attached.len() >= MAX_ATTACHED {
-                    return Err("too many attached apps");
+                    return Err("too many attached apps".into());
                 }
             }
             let a = s.apps.get_mut(&app_id).ok_or("no such app")?;
@@ -1239,7 +1245,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !s.owner_acts_as_logged(app, &actor, OwnerRule::logged(owner_in_org, owner_in_team))
                 && !admin
             {
-                return Err("only the owner or an org admin sets an app's metadata");
+                return Err("only the owner or an org admin sets an app's metadata".into());
             }
             if let Some(a) = s.apps.get_mut(&app_id) {
                 a.metadata = metadata;

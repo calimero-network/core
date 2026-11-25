@@ -553,7 +553,7 @@ entry that says so (`in_deployment`, set once the cluster version brings
 the rule; an earlier entry replays as it applied.
 
 **Secrets**: a value a manager sets for a secret its offered releases declare
-fills `{{secret:NAME}}` for every instance created from the deployment that
+is the value the node attaches where the release binds `NAME`, for every instance created from the deployment that
 set no value of its own (`PUT /apps/{app}/secrets/{name}`), and goes before
 the operator's: the instance's value, then the deployment's, then the
 operator's. Only for a name the release the instance runs declares, only
@@ -850,8 +850,8 @@ Code: `Governance::sign_up`, `--sign-up open|invite|closed`, left out of the gov
 org invite, which joins the org, or a cluster sign-up invite; `closed`: a sign-up invite only; an
 invite presented is checked on every policy).
 The invite is `SignUpRedemption { inviteKey, now, signature }`, the token key's
-`proof::sign_invite_redeem` over the new account, spent in `used_proofs`; refusals start with
-`system::SIGN_UP_PREFIX` (`403 SIGN_UP_REFUSED`), and `register/begin` and `register/finish` refuse
+`proof::sign_invite_redeem` over the new account, spent in `used_proofs`; refusals are
+`Rejection::sign_up` (`403 SIGN_UP_REFUSED`), and `register/begin` and `register/finish` refuse
 first (`api::refuse_sign_up`, fresh state before refusing; the finish before its challenge is
 spent).
 `SystemState::sign_up_invites` (`CreateSignUpInvite`, `RevokeSignUpInvite`, bounded by

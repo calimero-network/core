@@ -1006,7 +1006,7 @@ Only a `__upgrade_unit` consent keeps `targets` on a run (`StartUpgradeRun` drop
 whatever the entry lists), and its members are the instance's `links` (`upgrade_run_apps`).
 `POST /apps/{app}/upgrade-approvals` answers `approval` in the `pendingApprovals` shape
 (`api::upgrades::approval_json`).
-The apply errors carry their code (`system::UPDATE_REFUSALS`, `node::update_code`).
+The apply errors carry their code (each a `system::Rejection` of its own `RejectionKind`).
 `autoApply` (`noDestinations`: a green update that removes no method and moves none of the apps it
 created, of an app whose unit has no destinations before or after) and `holdHours` act through C9
 (below).

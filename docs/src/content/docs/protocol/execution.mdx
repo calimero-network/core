@@ -178,8 +178,10 @@ log, on the app's leader. A call can also make recorded requests itself
 - **Outbound** (S9, R14). A request leaves only through the same gate as
   above. The URL must sit under a prefix the signed release's manifest
   declares, whoever governance gives outbound approvals (the app's organization, or the operator) must have approved it, the operator's hosts apply, and
-  an action run sends at most 8 requests (`MAX_HTTP_REQUESTS`). `{{secret:NAME}}` is filled in by the node and
-  redacted from the response. Bodies are bounded in-memory buffers, so a guest
+  an action run sends at most 8 requests (`MAX_HTTP_REQUESTS`). A credential the
+  manifest binds to the host (`secrets`: one header or body field) is attached by
+  the node, never placed by the app, and redacted from the response
+  ([Secrets](/protocol/secrets/)). Bodies are bounded in-memory buffers, so a guest
   cannot block a node thread.
 - **End** (D22). Success, or an app error, a fault or out-of-fuel, ends the
   action at once. A timeout is retried with backoff, 5 attempts in all. The
@@ -194,8 +196,8 @@ A component's call, timer or xcall delivery may send requests itself (up to 8 pe
 write it guards, such as a captcha service verifying a Turnstile token:
 
 - **The same gate as actions.** A URL the signed release declares under
-  `outbound`, its organization (or, per governance, the operator) approved and the operator allows; `{{secret:NAME}}` is
-  filled in by the node and redacted from the response. Views, `init` and
+  `outbound`, its organization (or, per governance, the operator) approved and the operator allows; a credential the
+  manifest binds to the host is attached by the node and redacted from the response. Views, `init` and
   migrations cannot send (`HostDenied`), nor can a read-only member's call.
 - **Once, recorded.** The leader sends it while it runs the call, before
   proposing. The call's log entry records the exchange (`Outcome::http`: the
@@ -429,7 +431,8 @@ The leader's timer poll (`Node::run_actions`) runs pending ones it is not runnin
 `view` (`Node::view`, strong) and `call` (`call_component` with the D27 key and
 `CallRequest::action`, which alone reaches `allow(action)` methods), run on the runtime while the
 action's thread waits; `NodeHttp` sends through `outbound_for` (the signed release's prefixes, the
-owner's approval, the operator's hosts, `{{secret:..}}`, at most `MAX_HTTP_REQUESTS` (8) per run).
+owner's approval, the operator's hosts, the credentials the release binds, attached by the gate, at
+most `MAX_HTTP_REQUESTS` (8) per run).
 The end is logged as `componentActionEnd`: a timeout retries (`action_retry`, `retry_after_ms`)
 until `MAX_ATTEMPTS`, an app error, trap or removed method fails at once; a failure sends
 `ActionFailed { actionId, method, reason }` to the starter (an event with an `Accounts` audience)

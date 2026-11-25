@@ -227,7 +227,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .await
         .unwrap();
     let refused = calimero_node::system::output(&out).unwrap_err();
-    assert!(refused.contains("manager"), "{refused}");
+    assert!(refused.message().contains("manager"), "{refused}");
 
     // What alice may not register.
     for (body, code) in [

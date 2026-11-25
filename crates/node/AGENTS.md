@@ -34,6 +34,9 @@ that implements it. A module's own detail is in its `//!` doc. Read
 - **`Area` dispatch.** Each `SystemCmd` belongs to one `system::Area` (`SystemCmd::area`,
   exhaustive). Its proof is judged in `system/<area>.rs`'s `authorize` and it applies in that
   module's `apply`; `system.rs` keeps the state, the shared rules and the two dispatchers.
+- **Refusals carry their kind** (`system/rejection.rs`). A refusal is a `Rejection`: a
+  `RejectionKind` and a message. The status and code a client sees come from the kind, never from
+  the wording.
 - **Routing** (`node.rs`). System writes go to the system leader; calls and strong views go to
   the app's leader (a strong view may run on a replica that applied the leader's read index).
 - **Peer channels are attested.** Nodes talk over sealed channels (`internal/*`) whose key is

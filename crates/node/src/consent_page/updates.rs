@@ -101,6 +101,15 @@ pub fn reason_words(r: &Reason) -> String {
             of(member),
             methods.join(", ")
         ),
+        Reason::SecretBindingChanged {
+            member,
+            before,
+            after,
+            ..
+        } => match before {
+            None => format!("{}Newly {after}.", of(member)),
+            Some(before) => format!("{}Now {after}; it {before}.", of(member)),
+        },
         Reason::Unclassified {
             member,
             package,
@@ -509,6 +518,11 @@ pub(super) async fn install_request(
         }));
     }
     let destinations: Vec<String> = unit.egress().into_iter().collect();
+    // The credentials the node attaches for it, each where its signed binding says.
+    let credentials: Vec<String> = std::iter::once(&unit.app)
+        .chain(unit.members.values())
+        .flat_map(|r| r.secrets.iter().map(|(name, b)| b.describe(name)))
+        .collect();
     let members = !unit.members.is_empty();
     let where_words = if destinations.is_empty() {
         "Your data stays in Calimero.".to_owned()
@@ -597,6 +611,7 @@ pub(super) async fn install_request(
             "newOrg": subject.new_org.as_ref().map(|o| o.name.clone()),
             "creates": creates,
             "destinations": hosts(destinations.iter().map(String::as_str)),
+            "credentials": credentials,
             "where": where_words,
             "updates": update_words,
             "policy": policy_view(&policy, source),

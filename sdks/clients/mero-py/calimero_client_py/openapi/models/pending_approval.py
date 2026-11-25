@@ -13,6 +13,7 @@ from typing import cast, Union
 if TYPE_CHECKING:
     from ..models.update_reason_type_4 import UpdateReasonType4
     from ..models.update_reason_type_3 import UpdateReasonType3
+    from ..models.update_reason_type_7 import UpdateReasonType7
     from ..models.update_reason_type_1 import UpdateReasonType1
     from ..models.update_reason_type_6 import UpdateReasonType6
     from ..models.update_reason_type_0 import UpdateReasonType0
@@ -40,7 +41,7 @@ class PendingApproval:
             expires_at (int):
             class_ (PendingApprovalClass):
             reasons (list[Union['UpdateReasonType0', 'UpdateReasonType1', 'UpdateReasonType2', 'UpdateReasonType3',
-                'UpdateReasonType4', 'UpdateReasonType5', 'UpdateReasonType6']]):
+                'UpdateReasonType4', 'UpdateReasonType5', 'UpdateReasonType6', 'UpdateReasonType7']]):
     """
 
     app: str
@@ -60,6 +61,7 @@ class PendingApproval:
             "UpdateReasonType4",
             "UpdateReasonType5",
             "UpdateReasonType6",
+            "UpdateReasonType7",
         ]
     ]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -67,6 +69,7 @@ class PendingApproval:
     def to_dict(self) -> dict[str, Any]:
         from ..models.update_reason_type_4 import UpdateReasonType4
         from ..models.update_reason_type_3 import UpdateReasonType3
+        from ..models.update_reason_type_7 import UpdateReasonType7
         from ..models.update_reason_type_1 import UpdateReasonType1
         from ..models.update_reason_type_6 import UpdateReasonType6
         from ..models.update_reason_type_0 import UpdateReasonType0
@@ -105,6 +108,8 @@ class PendingApproval:
                 reasons_item = reasons_item_data.to_dict()
             elif isinstance(reasons_item_data, UpdateReasonType5):
                 reasons_item = reasons_item_data.to_dict()
+            elif isinstance(reasons_item_data, UpdateReasonType6):
+                reasons_item = reasons_item_data.to_dict()
             else:
                 reasons_item = reasons_item_data.to_dict()
 
@@ -132,6 +137,7 @@ class PendingApproval:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.update_reason_type_4 import UpdateReasonType4
         from ..models.update_reason_type_3 import UpdateReasonType3
+        from ..models.update_reason_type_7 import UpdateReasonType7
         from ..models.update_reason_type_1 import UpdateReasonType1
         from ..models.update_reason_type_6 import UpdateReasonType6
         from ..models.update_reason_type_0 import UpdateReasonType0
@@ -170,6 +176,7 @@ class PendingApproval:
                 "UpdateReasonType4",
                 "UpdateReasonType5",
                 "UpdateReasonType6",
+                "UpdateReasonType7",
             ]:
                 try:
                     if not isinstance(data, dict):
@@ -231,13 +238,23 @@ class PendingApproval:
                     return componentsschemas_update_reason_type_5
                 except:  # noqa: E722
                     pass
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    componentsschemas_update_reason_type_6 = (
+                        UpdateReasonType6.from_dict(data)
+                    )
+
+                    return componentsschemas_update_reason_type_6
+                except:  # noqa: E722
+                    pass
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_update_reason_type_6 = UpdateReasonType6.from_dict(
+                componentsschemas_update_reason_type_7 = UpdateReasonType7.from_dict(
                     data
                 )
 
-                return componentsschemas_update_reason_type_6
+                return componentsschemas_update_reason_type_7
 
             reasons_item = _parse_reasons_item(reasons_item_data)
 

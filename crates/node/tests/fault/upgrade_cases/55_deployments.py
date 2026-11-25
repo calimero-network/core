@@ -75,7 +75,8 @@ class DeploymentUsedSecrets(DeepCase):
         dex = person(w, "dex")
         used = _pack(dex, w, USED, "1.0.0", _component(w, "used-secrets"), {
             "outbound": [f"https://{HOST}/"],
-            "secrets": {"NEAR_AI_API_KEY": {"hosts": [HOST], "required": True}},
+            "secrets": {"NEAR_AI_API_KEY": {"host": HOST, "paths": ["/"], "header": "authorization",
+                                            "format": "Bearer {}", "required": True}},
         })
         notes = _pack(dex, w, NOTES, "1.0.0", _component(w, "uses-secrets"), {
             "uses": {"inference": {"package": USED, "range": "^1", "version": "1.0.0"}},
