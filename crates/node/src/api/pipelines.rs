@@ -515,7 +515,7 @@ async fn start_launch(
                 worst_case: cost.map(|cap| cap.worst_case.to_string()),
                 retry_of,
             };
-            Ok((StatusCode::ACCEPTED, Json(json!(answer))))
+            Ok((StatusCode::OK, Json(json!(answer))))
         }
         (_, Some(TOO_MANY_PIPELINE_RUNS)) => Err(ApiError::new(
             429,

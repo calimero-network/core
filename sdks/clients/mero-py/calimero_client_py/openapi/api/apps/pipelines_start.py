@@ -122,7 +122,7 @@ def sync_detailed(
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
-    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
 
     **Who:** signed in (a session or an API key).
 
@@ -162,7 +162,7 @@ def sync(
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
-    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
 
     **Who:** signed in (a session or an API key).
 
@@ -197,7 +197,7 @@ async def asyncio_detailed(
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
-    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
 
     **Who:** signed in (a session or an API key).
 
@@ -235,7 +235,7 @@ async def asyncio(
     """Start a pipeline run
 
      The owner and the organization's members. Starts a run of a pipeline the app's release registers.
-    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+    `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
 
     **Who:** signed in (a session or an API key).
 
