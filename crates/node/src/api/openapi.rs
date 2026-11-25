@@ -1982,6 +1982,18 @@ fn components() -> Vec<Component> {
         )
         .of::<super::undo::UndoPart>(),
         component(
+            "OutboundAuditEntry",
+            "One outbound request of an instance: `atMs` (Unix milliseconds, the node's clock), `method`, `host` and `path` (no query string, at most 128 bytes, `pathTruncated` when cut; both empty for a URL that did not parse), the host's `status` or, absent that, the `failure` that stopped it (`malformed`, `refused` by a gate, `notApproved`, `awaitingApproval`, `egressOff` (egress turned off), `secret` (a credential binding refused, or a `{{secret:` placeholder), `failed` in transit), the names of the credential bindings the node attached in `secrets` (for a `secret` refusal, the binding refused), and the request's and response's body sizes. Never a secret value, a body, a query string or a header.",
+            r#"{ atMs: uint, method: string, host: string, path: string, pathTruncated: bool, status?: uint, failure?: "malformed" | "refused" | "notApproved" | "awaitingApproval" | "egressOff" | "secret" | "failed", secrets: string[], requestBytes: uint, responseBytes: uint }"#,
+        )
+        .of::<calimero_outbound::AuditEntry>(),
+        component(
+            "OutboundLog",
+            "An instance's outbound requests, newest first (`entries`), merged from every replica; `partial`: a replica did not answer, so its runs' requests may be missing.",
+            "{ entries: #OutboundAuditEntry[], partial: bool }",
+        )
+        .of::<crate::node::OutboundLog>(),
+        component(
             "UsageDay",
             "What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.",
             "{ date: string, runs: u64, fuel: u64, wallMs: u64, writes: u64, bytesWritten: u64, events: u64 }",
@@ -2488,6 +2500,10 @@ fn operations() -> Vec<Op> {
         get("/apps/{app}/usage", "app_usage", SignedIn, "An app's runs per day")
             .about("The owner or an organization admin: `today` and the 30 `days` before it, figures as decimal strings; `wallMs` is information only.")
             .ok("#AppUsage")
+            .errors(&[(403, "FORBIDDEN")]),
+        get("/apps/{app}/outbound-log", "app_outbound_log", SignedIn, "An app's outbound requests")
+            .about("The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.")
+            .ok("#OutboundLog")
             .errors(&[(403, "FORBIDDEN")]),
         get("/apps/{app}/abi", "app_abi", AppAccess, "An app's ABI")
             .about("The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document, free-form here: its format is the ABI's, not this API's.")

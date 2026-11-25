@@ -338,3 +338,25 @@ fn report_and_restore_answers_answer_as_before() {
         &json!({ "apps": 1, "accounts": 2, "index": 3 }),
     );
 }
+
+#[test]
+fn outbound_log_answers_as_before() {
+    let sent = json!({
+        "atMs": 1_700_000_000_000_u64, "method": "GET", "host": "echo.outbound.test",
+        "path": "/v1/enrich", "pathTruncated": false, "status": 200, "secrets": ["ECHO_KEY"],
+        "requestBytes": 0, "responseBytes": 12,
+    });
+    let refused = json!({
+        "atMs": 1_700_000_000_001_u64, "method": "POST", "host": "", "path": "",
+        "pathTruncated": false, "failure": "notApproved", "secrets": [],
+        "requestBytes": 3, "responseBytes": 0,
+    });
+    writes_as_before::<calimero_outbound::AuditEntry>(&sent);
+    writes_as_before::<calimero_outbound::AuditEntry>(&refused);
+    for partial in [false, true] {
+        writes_as_before::<crate::node::OutboundLog>(
+            &json!({ "entries": [refused.clone(), sent.clone()], "partial": partial }),
+        );
+        writes_as_before::<crate::node::OutboundLog>(&json!({ "entries": [], "partial": partial }));
+    }
+}

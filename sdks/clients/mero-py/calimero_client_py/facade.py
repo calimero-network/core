@@ -67,6 +67,7 @@ from .openapi.api.apps import app_metadata as _app_metadata
 from .openapi.api.apps import app_method as _app_method
 from .openapi.api.apps import app_move as _app_move
 from .openapi.api.apps import app_openapi as _app_openapi
+from .openapi.api.apps import app_outbound_log as _app_outbound_log
 from .openapi.api.apps import app_policy as _app_policy
 from .openapi.api.apps import app_policy_set as _app_policy_set
 from .openapi.api.apps import app_run as _app_run
@@ -572,6 +573,12 @@ _APP_MOVE = Operation(
 _APP_OPENAPI = Operation(
     _app_openapi,
     "app_openapi",
+    body="none",
+    answer="json",
+)
+_APP_OUTBOUND_LOG = Operation(
+    _app_outbound_log,
+    "app_outbound_log",
     body="none",
     answer="json",
 )
@@ -1467,6 +1474,20 @@ class Apps(Group):
         Returns: AppOpenApi
         """
         return self._run(_APP_OPENAPI, (app,), {}, None)
+
+    def outbound_log(self, *, app):
+        """An app's outbound requests (`GET /apps/{app}/outbound-log`, `app_outbound_log`).
+
+        The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
+
+        **Who:** signed in (a session or an API key).
+
+        Args:
+            app: path
+
+        Returns: AppOutboundLogResponse200
+        """
+        return self._run(_APP_OUTBOUND_LOG, (app,), {}, None)
 
     def pipeline_receipt_receipt(self, *, app, run, version=UNSET):
         """A pipeline run's receipt (`GET /apps/{app}/pipeline-runs/{run}/receipt`, `pipeline_receipt_receipt`).

@@ -93,6 +93,11 @@ NOT_COVERED = [
      "The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's "
      "single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` "
      "and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build"),
+    ("Apps", "An instance's outbound audit (`GET /apps/{app}/outbound-log`, `meroctl instance outbound-log`)",
+     "it stores nothing: each node keeps its runs' requests in memory (`calimero_outbound::OutboundAudit`), which "
+     "a restart or a roll empties by design, so there is no data to carry across releases; the suite's clusters "
+     "also run with outbound off. `an_instances_owner_reads_its_outbound_requests_without_values` "
+     "(`component_cluster.rs`) and `calimero_outbound`'s audit tests cover it on one build"),
     ("Apps", "Host work charged to fuel, and at most `MAX_SEARCHES_PER_RUN` searches per request (`calimero_app_host`'s fuel table)",
      "it changes what a run may spend, not a stored shape: followers apply a call's diff and never run it, so "
      "the log replays alike on either release, and a search cap answers a view, which is never logged. The "
