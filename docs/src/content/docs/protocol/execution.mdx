@@ -120,7 +120,7 @@ The `calimero:app` world (`crates/app-wit/wit/calimero-app.wit`):
 | Interface | What it does on a cluster |
 | --- | --- |
 | `storage` | The app's replicated state: `get`, `put`, `delete`, the commutative `add`, ordered `range` |
-| `context` | The caller, the app's id and owner, its organization, the caller's role and teams there (`org-role-strict` on a read index), the applied index, unique ids, and starting an [action](#actions-component-apps) |
+| `context` | The caller, the app's id and owner, its organization, the caller's role and teams there (`org-role-strict` answers as `org-role`, from the node's replica of the system state), the applied index, unique ids, and starting an [action](#actions-component-apps) |
 | `events` | Emit an event to an audience (`all`, the caller, listed accounts, a team, the org's members or admins); a removed member stops receiving at once |
 | `blobs`, `files` | The app's [blobs](/protocol/blobs/) and sealed files |
 | `search` | The app's own full-text indexes, in views |

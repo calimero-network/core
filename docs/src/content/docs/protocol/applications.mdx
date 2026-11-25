@@ -98,7 +98,9 @@ the request verifies the release (`Node::verify_release`):
    needs](/protocol/upgrades/#the-runtime-a-release-needs)).
 3. The package's **pinned signer**: the first release of a package pins its
    publisher key (`did:key`); a release signed by any other key is refused.
-4. Each service's WASM compiles.
+4. Each service's WASM compiles, imports nothing outside the `calimero:app`
+   world ([What the host offers](/protocol/execution/#what-the-host-offers-a-cloud-run)),
+   and carries an ABI of a supported `abiVersion`; otherwise `400 BAD_BUNDLE`.
 5. A registry install got the package and version it asked for.
 6. No WASM it ships (a service or a compute component) ships in a release of
    another package signed by another key (`409`): a WASM belongs to one
@@ -215,7 +217,10 @@ prefixes, and have no pinned signer.
 The node reads the ABI a component embeds (its `calimero:abi` section) for what
 it acts on: which methods are views and confirm methods, whom each method admits
 (accounts, API keys, other apps, the system), its timers, and the tables search
-indexes. A method the ABI does not name is refused (default-deny).
+indexes. A method the ABI does not name is refused (default-deny). These facts
+are trusted because they are part of the component's bytes, which a release's
+publisher signs, so an operator cannot mark a method public or a view a
+write ([App interface](/build/app-abi/)).
 
 ## Frontends
 
