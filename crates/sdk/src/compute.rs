@@ -10,12 +10,13 @@ use serde_json::json;
 
 use crate::blob::BlobRef;
 use crate::error::{AppError, Result};
+use crate::AbiType;
 
 #[cfg(not(target_arch = "wasm32"))]
 const NOT_A_RUN_OUTPUT: &str = "NOT_A_RUN_OUTPUT"; // what the host answers for an id that is no done run's output
 
 /// The id of a compute run: opaque, safe to store and to send in JSON.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, AbiType)]
 #[serde(transparent)]
 pub struct RunId(String);
 
@@ -184,7 +185,7 @@ pub fn publish(output: &BlobRef) -> Result<BlobRef> {
 }
 
 /// How a compute run ended, as its result method is told.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, AbiType)]
 #[serde(rename_all = "lowercase")]
 pub enum ComputeStatus {
     Done,
@@ -193,7 +194,7 @@ pub enum ComputeStatus {
 }
 
 /// A file a run wrote: its reference, plaintext size and plaintext SHA-256 (hex).
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, AbiType)]
 pub struct ComputeOutput {
     pub id: BlobRef,
     #[serde(with = "crate::json::u64_str")]
@@ -202,7 +203,7 @@ pub struct ComputeOutput {
 }
 
 /// What a run cost.
-#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, AbiType)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputeUsage {
     pub cpu_seconds: f64,
@@ -213,7 +214,7 @@ pub struct ComputeUsage {
 
 /// The outcome a `#[app::compute_result]` method takes as its one parameter. `reason` names the
 /// failure as the run's record does; `result` is the method's return as base64, set only when done.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, AbiType)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputeOutcome {
     pub run: RunId,

@@ -163,7 +163,7 @@ impl VerificationResult {
     /// express), and `is_valid()` stays crypto-only for them:
     /// - `crates/context/src/handlers/admit_tee_node.rs` — per-group
     ///   `TeeAdmissionPolicy` (MRTD/RTMR allowlists + `tcb_status_allowed`);
-    /// - `crates/merod/src/kms/mod.rs` — `enforce_attestation_policy`
+    /// - `crates/kms-client/src/kms.rs` — `enforce_attestation_policy`
     ///   (measurement + TCB allowlists for KMS self-attestation);
     /// - the mero-tee KMS `get_key.rs` `enforce_attestation_policy` on the
     ///   key-release side (external consumer of this crate).
