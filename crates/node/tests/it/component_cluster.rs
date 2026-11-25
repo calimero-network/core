@@ -2374,7 +2374,9 @@ async fn oversized_entry_is_host_denied() {
         .await
         .unwrap();
     // 1,000 keys of 1,000 bytes, each with its event: within every per-run limit
-    // (writes, events, event size), but about 2 MB of diff and events.
+    // (writes, events, event size), but about 2 MB of diff and events. The write or event
+    // that would pass the run's 1 MiB is the typed `RunLimit` the app passes on (C10), not
+    // a trap.
     let e = alice
         .apps()
         .call(
@@ -2386,8 +2388,42 @@ async fn oversized_entry_is_host_denied() {
         )
         .await
         .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+    assert_eq!(e.details().unwrap()["code"], "RunLimit", "{e}");
+    assert_eq!(e.details().unwrap()["fields"]["limit"], "bytes", "{e}");
+    // One value of 900 KiB: within the run's 1 MiB, but its entry (base64) is over the
+    // log's cap, so the node logs the run as a `HostDenied` trap.
+    let e = alice
+        .apps()
+        .call(
+            &app,
+            "fillQuiet",
+            Some(json!({ "n": 1, "size": 900 * 1024 })),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("TRAP"), "{e}");
     assert_eq!(e.details().unwrap()["kind"], "HostDenied", "{e}");
+    // The write after the run's 10,000th: the typed `RunLimit` with its number (C10).
+    let e = alice
+        .apps()
+        .call(
+            &app,
+            "fillQuiet",
+            Some(json!({ "n": 10_001, "size": 1 })),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+    assert_eq!(
+        e.details().unwrap()["fields"],
+        json!({ "limit": "writes", "max": "10000", "attempted": "10001" }),
+        "{e}"
+    );
     let v = alice
         .apps()
         .view(

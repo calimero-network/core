@@ -272,6 +272,16 @@ impl Kv {
         Ok(())
     }
 
+    /// Writes `n` keys (`quiet-0` ..) of `size` bytes each without events, so only the run's
+    /// write limits (10,000 writes, 1 MiB) stop it: the refused write's typed `RunLimit`.
+    pub fn fill_quiet(&mut self, n: u32, size: u32) -> app::Result<()> {
+        let value = "x".repeat(size as usize);
+        for i in 0..n {
+            let _event = self.upsert(&format!("quiet-{i}"), &value)?;
+        }
+        Ok(())
+    }
+
     /// Never returns: runs until the node's fuel or wall-clock budget stops it.
     pub fn spin(&mut self) -> app::Result<()> {
         let mut n: u64 = 0;

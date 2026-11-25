@@ -55,9 +55,9 @@ pub fn find_notes(&self, text: String) -> app::Result<Vec<Note>> {
   views searching meanwhile, change nothing it sees. The index is never behind
   the state a view reads, so a view never waits for indexing to catch up; the
   first search of a view after writes pays for indexing what they touched.
-- The test harness (`TestApp`) answers searches with a plain scan: records whose
-  declared fields contain every word of the query, all scored the same. Assert
-  which records match, not their order.
+- The test harness (`TestApp`) answers searches with the node's own index
+  (`calimero-search`), built from the view's state: the same words, ranking,
+  scores, snippets and pages a node gives for that state.
 
 ## Limits
 
