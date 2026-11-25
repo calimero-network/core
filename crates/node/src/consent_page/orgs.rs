@@ -1,6 +1,6 @@
 //! The consent page's organization kinds beyond creating, inviting and
 //! joining (`createOrg`, `createInvite`, `acceptInvite`, in the parent): what
-//! an app's frontend, refused every organization route since #4934, asks the
+//! an app's frontend, refused every organization route, asks the
 //! person to approve for a "server" (an organization) it manages.
 //!
 //! - Membership: `leaveOrg`, `removeMember`, `setMemberRole`,

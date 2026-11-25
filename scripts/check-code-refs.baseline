@@ -2,27 +2,6 @@
 # A file may only go down: after cleaning one, run
 #   python3 scripts/check-code-refs.py --update-baseline
 # and commit the smaller numbers. Never raise one by hand.
-bare-issue 1 crates/log/benches/heartbeats.rs
-bare-issue 1 crates/node/src/api/apps.rs
-bare-issue 1 crates/node/src/api/orgs.rs
-bare-issue 1 crates/node/src/api/undo.rs
-bare-issue 1 crates/node/src/component.rs
-bare-issue 1 crates/node/src/consent_page/orgs.rs
-bare-issue 1 crates/node/src/node/component.rs
-bare-issue 1 crates/node/src/system.rs
-bare-issue 1 crates/node/tests/it/access_gate.rs
-bare-issue 1 crates/node/tests/it/approval_bypasses.rs
-bare-issue 1 crates/node/tests/it/consent_page.rs
-bare-issue 1 crates/outbound/AGENTS.md
-bare-issue 1 sdks/clients/mero-py/src/client/account_recovery.rs
-bare-issue 1 sdks/clients/mero-py/src/error.rs
-bare-issue 2 crates/log/AGENTS.md
-bare-issue 2 crates/node/src/api.rs
-bare-issue 2 crates/node/tests/it/slow_compile.rs
-bare-issue 2 crates/outbound/src/connector/tests.rs
-bare-issue 3 sdks/clients/mero-py/src/client/recover.rs
-bare-issue 6 crates/node/AGENTS.md
-bare-issue 14 crates/node/src/system/cluster_version.rs
 bare-tag 1 apps/fixture-captcha/src/lib.rs
 bare-tag 1 apps/fixture-files/src/lib.rs
 bare-tag 1 crates/app-abi/src/abi.rs

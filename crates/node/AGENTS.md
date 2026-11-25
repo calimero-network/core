@@ -765,7 +765,7 @@ is its command line.
   `a_flood_of_attestations_does_not_stall_the_node` (`testing::slow_quotes` makes each
   quote block its thread).
 - **Access is judged fresh**: every request carrying a credential, every gated request, an anonymous
-  `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
+  `GET /apps/{app}` and every client call's leader read the system state through `sys_fresh`
   (a read index), so a removal committed elsewhere holds before the next request; an event
   stream judges each event the same way (Events below). Regression:
   `a_revocation_holds_on_a_follower_that_has_not_applied_it_yet`.
@@ -1121,7 +1121,7 @@ is its command line.
   stated in the consent, `delete_team_args`) it keeps them too, without the team's grants (a
   list left empty: the owner alone), answered as `keptApps`; absent, they are deleted. The
   API takes `grants` on `POST /apps` (absent: `[org]`; a request still naming the old `access` is refused `400 ACCESS_REMOVED`, never read as no grants: regression `guests::an_old_clients_access_field_is_refused_not_read_as_no_grants`) and `POST /apps/{app}/access`, and
-  answers them on `GET /apps/{app}` and a move. A hard cutover (#5194, rc.33, `hard-cutover:` in
+  answers them on `GET /apps/{app}` and a move. A hard cutover (rc.33, `hard-cutover:` in
   `.github/upgrade-from`): no earlier access shape is read, so clusters are recreated.
   Regressions: `system::tests::an_instances_access_is_a_list_of_grants`,
   `guests::a_team_and_two_partners_reach_one_instance_by_their_grants`,
@@ -2237,7 +2237,7 @@ is its command line.
   `TransferApp` of an app leaving a personal organization (to the new owner's) is refused when that organization's quota would not hold its files.
   The exception is `maxFuelPerDeveloperPerDay` (Q20, D76, D78; `"0"`, the default,
   is no limit; a decimal string in JSON, a number refused, `system::decimal_u64`). It
-  is charged to the app's developer, `usage::developer` (#4839), the same identity
+  is charged to the app's developer, `usage::developer`, the same identity
   usage is billed to: the owner of the deployment an app was created from, else the
   app's organization or owner. So two payers' instances of one developer's
   deployment share one cap. The fuel lives in the app groups' usage books, so it is
@@ -2257,8 +2257,8 @@ is its command line.
   registered node's attested release is this node's or newer
   (`Node::nodes_behind_release`, as D71 gates `base_seq`), else `409 UPGRADE_PENDING`
   (`api::UPGRADE_PENDING`, one code for every such release gate), judged before the
-  operator is asked to sign (`__set_quotas`, #4791): an older node would drop the
-  field and its snapshots would reset the cap. Accepted gap (#4809): an older node
+  operator is asked to sign (`__set_quotas`): an older node would drop the
+  field and its snapshots would reset the cap. Accepted gap ([#4809](https://github.com/calimero-network/core/issues/4809)): an older node
   added after the cap is set, then sent a quota change itself, writes the quotas
   without the cap; the runbook says not to add nodes older than `1.0.0-rc.12` then,
   and the W19 minimum-release gate closes it. Usage reads (`app_usage`,
@@ -2405,7 +2405,7 @@ API and system group:
   newest one held, so a far-future stamp never erases the real days
   (`a_far_future_entry_does_not_erase_the_real_days`); followers never measure, so
   every replica's book is the same (a snapshot carries it in `Head`). Timeouts are
-  not logged, so not counted (#4736); views are not counted (Q9); actions and compute
+  not logged, so not counted ([#4736](https://github.com/calimero-network/core/issues/4736)); views are not counted (Q9); actions and compute
   runs are not in the book yet. The API gives every figure as a decimal string (D20):
   `/apps/{app}/usage`, `bundleBytes`, `developerFuelToday`, `developerWritesToday`
   in `/auth/usage`, and `developerFuelToday`, `developerWritesToday` in
