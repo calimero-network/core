@@ -17,6 +17,7 @@ const TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300); 
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15); // connect timeout for an artifact fetch
 /// Maximum size of a fetched application artifact; bounds memory against a hostile or lying `Content-Length`.
 const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_REFUSAL_BYTES: u64 = 16 * 1024; // a refusal's body, read only for its JSON `error`
 
 /// The one artifact client. An artifact lives at its coordinates on the one
 /// configured registry, so a redirect is refused rather than followed to
@@ -69,6 +70,13 @@ fn is_local_or_private_v4(ip: Ipv4Addr) -> bool {
 pub struct RegistryStatus {
     pub status: StatusCode,
     pub url: Url,
+    /// The `error` of a JSON body `{ "error": ... }`, when the registry sent one.
+    pub error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct Refusal {
+    error: String,
 }
 
 impl std::fmt::Display for RegistryStatus {
@@ -155,11 +163,13 @@ impl AppSource for HttpRegistry {
             return Ok(None);
         }
         if !response.status().is_success() {
-            return Err(RegistryStatus {
-                status: response.status(),
-                url,
-            }
-            .into());
+            let status = response.status();
+            let error = read_body_capped(response, MAX_REFUSAL_BYTES)
+                .await
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Refusal>(&b).ok())
+                .map(|r| r.error);
+            return Err(RegistryStatus { status, url, error }.into());
         }
         let bytes = read_body_capped(response, MAX_ARTIFACT_BYTES).await?;
         Ok(Some(bytes.into()))

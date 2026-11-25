@@ -134,7 +134,7 @@ fn a_package_answers_as_before() {
     let p = package();
     assert_eq!(
         text(&packages::package_json(&s, &p, "alice", true)),
-        r#"{"package":"p1","signerId":"did:key:z6Mk","owner":"alice","latest":"1.2.0","versions":[{"version":"1.0.0","mpk":"h1","size":100,"source":"upload","services":{"app":"c1"},"components":"app","metadata":{"title":"One"},"outbound":["https://api.example.com/"],"installedBy":"alice","installedAt":5},{"version":"1.2.0","mpk":"h2","size":200,"source":"registry","services":{},"components":"computeOnly","metadata":null,"outbound":[],"installedBy":"bob","installedAt":6}]}"#
+        r#"{"package":"p1","signerId":"did:key:z6Mk","owner":"alice","latest":"1.2.0","versions":[{"version":"1.0.0","mpk":"h1","size":100,"source":"upload","services":{"app":"c1"},"components":"app","metadata":{"title":"One"},"outbound":["https://api.example.com/"],"installedBy":"alice","installedAt":5,"orgs":[]},{"version":"1.2.0","mpk":"h2","size":200,"source":"registry","services":{},"components":"computeOnly","metadata":null,"outbound":[],"installedBy":"bob","installedAt":6,"orgs":[]}]}"#
     );
     assert!(packages::package_json(&s, &p, "carol", false).is_none());
 }

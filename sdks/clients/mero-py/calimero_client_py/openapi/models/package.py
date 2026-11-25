@@ -17,14 +17,18 @@ T = TypeVar("T", bound="Package")
 
 @_attrs_define
 class Package:
-    """A package and the releases of it the caller may see, oldest first; `latest` is the newest of those.
+    """A package and the releases of it the caller may see, oldest first; `latest` is the newest of those. A release's
+    `visibility`: `public` (everyone here uses it; a release the operator installed, the cluster's catalog, is always),
+    `private` (members of the organizations it was installed for; none: the accounts that installed it), absent for one
+    recorded before the node kept it. `orgs`: of a private release's organizations, only those the caller is a member
+    of.
 
-    Attributes:
-        package (str):
-        signer_id (str):
-        owner (str):
-        latest (str):
-        versions (list['PackageVersionsItem']):
+        Attributes:
+            package (str):
+            signer_id (str):
+            owner (str):
+            latest (str):
+            versions (list['PackageVersionsItem']):
     """
 
     package: str
