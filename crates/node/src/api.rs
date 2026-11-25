@@ -77,6 +77,8 @@ mod deployments;
 mod deprecation;
 mod exports;
 mod files;
+#[cfg(test)]
+mod golden;
 mod internal;
 #[cfg(test)]
 mod openapi;
@@ -1263,17 +1265,28 @@ fn session_token_for(
     Ok((token, expires_at))
 }
 
+/// A session as the API answers it (`#Session`): a sign-up's, a sign-in's, a recovery's and a
+/// refresh's.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SessionAnswer {
+    account_id: String,
+    session_token: String,
+    expires_at: u64,
+    refresh_token: String,
+}
+
 fn session_answer(
     account: &str,
     (token, expires_at): &(String, u64),
     new: &NewSession,
-) -> Json<Value> {
-    Json(json!({
-        "accountId": account,
-        "sessionToken": token,
-        "expiresAt": expires_at,
-        "refreshToken": new.refresh,
-    }))
+) -> Json<SessionAnswer> {
+    Json(SessionAnswer {
+        account_id: account.to_owned(),
+        session_token: token.clone(),
+        expires_at: *expires_at,
+        refresh_token: new.refresh.clone(),
+    })
 }
 
 // ---------------------------------------------------------------- public

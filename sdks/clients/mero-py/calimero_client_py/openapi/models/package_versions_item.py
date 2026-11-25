@@ -6,6 +6,7 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..models.package_versions_item_components import PackageVersionsItemComponents
 from ..models.package_versions_item_source import PackageVersionsItemSource
 from ..models.package_versions_item_visibility import PackageVersionsItemVisibility
 from ..types import UNSET, Unset
@@ -29,6 +30,7 @@ class PackageVersionsItem:
         size (int):
         source (PackageVersionsItemSource):
         services (PackageVersionsItemServices):
+        components (PackageVersionsItemComponents):
         metadata (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
         outbound (list[str]):
         installed_by (str):
@@ -42,6 +44,7 @@ class PackageVersionsItem:
     size: int
     source: PackageVersionsItemSource
     services: "PackageVersionsItemServices"
+    components: PackageVersionsItemComponents
     metadata: Any
     outbound: list[str]
     installed_by: str
@@ -63,6 +66,8 @@ class PackageVersionsItem:
         source = self.source.value
 
         services = self.services.to_dict()
+
+        components = self.components.value
 
         metadata = self.metadata
 
@@ -92,6 +97,7 @@ class PackageVersionsItem:
                 "size": size,
                 "source": source,
                 "services": services,
+                "components": components,
                 "metadata": metadata,
                 "outbound": outbound,
                 "installedBy": installed_by,
@@ -121,6 +127,8 @@ class PackageVersionsItem:
 
         services = PackageVersionsItemServices.from_dict(d.pop("services"))
 
+        components = PackageVersionsItemComponents(d.pop("components"))
+
         metadata = d.pop("metadata")
 
         outbound = cast(list[str], d.pop("outbound"))
@@ -149,6 +157,7 @@ class PackageVersionsItem:
             size=size,
             source=source,
             services=services,
+            components=components,
             metadata=metadata,
             outbound=outbound,
             installed_by=installed_by,

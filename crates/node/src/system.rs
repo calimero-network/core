@@ -36,8 +36,11 @@ mod routing;
 mod sign_up;
 mod updates;
 
-pub use approvals::egress_args;
+pub use approvals::{egress_args, ApprovedReleases, Deadlines, OutboundApproved, ReleaseDeadline};
+pub use packages::Uninstalled;
 pub use rejection::{Rejection, RejectionKind};
+pub use sign_up::InviteKeyAnswer;
+pub use updates::PolicyView;
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -4785,11 +4788,15 @@ impl SystemState {
 
     /// The deadlines as the read APIs show them, oldest release first.
     #[must_use]
-    pub fn deadlines_json(&self) -> Vec<Value> {
+    pub fn deadlines_json(&self) -> Vec<ReleaseDeadline> {
         let mut out: Vec<(&String, &u64)> = self.release_deadlines.iter().collect();
         out.sort_by(|a, b| compare_versions(a.0, b.0));
         out.into_iter()
-            .map(|(r, after)| json!({ "version": r, "after": rfc3339(*after), "afterSecs": after }))
+            .map(|(r, after)| ReleaseDeadline {
+                version: r.clone(),
+                after: rfc3339(*after),
+                after_secs: *after,
+            })
             .collect()
     }
 

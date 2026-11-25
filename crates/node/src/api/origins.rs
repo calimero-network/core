@@ -83,7 +83,7 @@ pub(super) async fn list(
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
     managed(&node, &account, &package).await?;
-    let origins: Vec<Value> = node.sys(|s| {
+    let origins: Vec<crate::origins::OriginView> = node.sys(|s| {
         s.origins_of(&package)
             .map(|(origin, o)| origin_json(origin, o))
             .collect()

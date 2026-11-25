@@ -116,59 +116,91 @@ async fn package_install(
 /// none, so a package they may not use is not listed and answers `404`.
 /// `frontend`: `who` came through `p`'s own frontend
 /// ([`SystemState::sees_release_from`]).
-fn package_json(
+pub(super) fn package_json(
     s: &SystemState,
     p: &crate::system::PackageRecord,
     who: &str,
     frontend: bool,
-) -> Option<Value> {
+) -> Option<PackageAnswer> {
     let mut versions: Vec<&crate::system::PackageVersion> =
         s.releases_used(&p.name, who, frontend).collect();
     if versions.is_empty() {
         return None;
     }
     versions.sort_by(|a, b| crate::system::compare_versions(&a.version, &b.version));
-    Some(json!({
-        "package": p.name,
-        "signerId": p.signer_id,
-        "owner": p.owner,
-        "latest": versions.last().map(|v| v.version.clone()),
-        "versions": versions.iter().map(|v| with_kind(s, v, who, json!({
-            "version": v.version,
-            "mpk": v.mpk,
-            "size": v.mpk_size,
-            "source": v.source,
-            "services": v.services,
-            "components": v.components,
-            "metadata": v.metadata,
-            "outbound": v.outbound,
-            "installedBy": v.installed_by,
-            "installedAt": v.installed_at,
-        }))).collect::<Vec<_>>(),
-    }))
+    Some(PackageAnswer {
+        package: p.name.clone(),
+        signer_id: p.signer_id.clone(),
+        owner: p.owner.clone(),
+        latest: versions.last()?.version.clone(),
+        versions: versions
+            .iter()
+            .map(|v| PackageVersionView {
+                visibility: v.visibility_shown(),
+                orgs: if v.visibility_shown() == Some(crate::system::Visibility::Private) {
+                    s.release_orgs_of(v, who)
+                        .map(|o| ReleaseOrg {
+                            org_id: o.org_id.clone(),
+                            name: o.name.clone(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+                version: v.version.clone(),
+                mpk: v.mpk.clone(),
+                size: v.mpk_size,
+                source: v.source,
+                services: v.services.clone(),
+                components: v.components,
+                metadata: v.metadata.clone(),
+                outbound: v.outbound.clone(),
+                installed_by: v.installed_by.clone(),
+                installed_at: v.installed_at,
+            })
+            .collect(),
+    })
 }
 
-/// `release` with `v`'s kind (`visibility`, left out when recorded before it was kept) and
-/// `orgs`: of a private release's organizations, only those `who` is a member of.
-fn with_kind(
-    s: &SystemState,
-    v: &crate::system::PackageVersion,
-    who: &str,
-    mut release: Value,
-) -> Value {
-    let kind = v.visibility_shown();
-    let orgs: Vec<Value> = if kind == Some(crate::system::Visibility::Private) {
-        s.release_orgs_of(v, who)
-            .map(|o| json!({ "orgId": o.org_id, "name": o.name }))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    if let Some(kind) = kind {
-        release["visibility"] = json!(kind);
-    }
-    release["orgs"] = json!(orgs);
-    release
+/// A package as the API answers it (`#Package`): the releases the caller sees, oldest first.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PackageAnswer {
+    package: String,
+    signer_id: String,
+    owner: String,
+    latest: String,
+    versions: Vec<PackageVersionView>,
+}
+
+/// One release of a [`PackageAnswer`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PackageVersionView {
+    version: String,
+    mpk: String,
+    size: u64,
+    source: crate::system::BundleSource,
+    services: BTreeMap<String, String>,
+    components: crate::types::Components,
+    metadata: Value,
+    outbound: Vec<String>,
+    installed_by: String,
+    installed_at: u64,
+    /// Left out for a release recorded before the node kept it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    visibility: Option<crate::system::Visibility>,
+    /// Of a private release's organizations, only those the caller is a member of.
+    #[serde(default)]
+    orgs: Vec<ReleaseOrg>,
+}
+
+/// An organization a private [`PackageVersionView`] is for.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ReleaseOrg {
+    org_id: String,
+    name: String,
 }
 
 /// The packages the caller may see (`package_json`): on a cluster several
@@ -177,7 +209,7 @@ async fn package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiR
     let principal = signed_in(&node, &headers).await?;
     let account = principal.account()?;
     node.sys_fresh_from(principal.sys_index).await;
-    let packages: Vec<Value> = node.sys(|s| {
+    let packages: Vec<PackageAnswer> = node.sys(|s| {
         s.packages
             .values()
             .filter_map(|p| {
@@ -197,7 +229,7 @@ async fn package_get(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(package): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<PackageAnswer>> {
     let principal = signed_in(&node, &headers).await?;
     let account = principal.account()?;
     let frontend = principal.bound_app() == Some(package.as_str());
@@ -386,7 +418,7 @@ async fn ops_package_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> 
     operator(&node, &headers)?;
     // An install committed through another node is listed (read index).
     node.sys_fresh().await;
-    let packages: Vec<Value> = node.sys(|s| {
+    let packages: Vec<PackageAnswer> = node.sys(|s| {
         s.packages
             .values()
             .filter_map(|p| package_json(s, p, crate::system::OPERATOR, false))

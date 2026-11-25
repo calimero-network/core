@@ -28,7 +28,7 @@ async fn new_session(
     from: Option<AppOrigin>,
     new: NewSession,
     consent: Value,
-) -> ApiResult {
+) -> ApiResult<Json<SessionAnswer>> {
     let origin = from.as_ref().and_then(AppOrigin::registered);
     let app = from.map(|a| a.package);
     if let (Some(package), Some(origin)) = (&app, &origin) {
@@ -192,7 +192,7 @@ async fn register_finish(
     State(node): State<Arc<Node>>,
     sealed: Option<Extension<SealedSession>>,
     Json(body): Json<RegisterFinish>,
-) -> ApiResult {
+) -> ApiResult<Json<SessionAnswer>> {
     // A new account approves this node's release, so only a release the
     // operator did not approve (where it holds release approvals) refuses it:
     // decided before the challenge is spent, so the client can finish on
@@ -279,7 +279,11 @@ async fn register_finish(
 /// The sign-up's retry: the new passkey's assertion over the account, then
 /// the account and its first session. `invite` (the same token the first
 /// half carried) is redeemed for the account here, signed with its key.
-async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&str>) -> ApiResult {
+async fn sign_up_confirmed(
+    node: &Node,
+    confirm: ConfirmBody,
+    invite: Option<&str>,
+) -> ApiResult<Json<SessionAnswer>> {
     let Pending::SignUp {
         challenge,
         statement,
@@ -425,7 +429,10 @@ async fn check_assertion(
     check_assertion_for(node, base, challenge, assertion, account, bound, any_app).await
 }
 
-async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionBody>) -> ApiResult {
+async fn login_finish(
+    State(node): State<Arc<Node>>,
+    Json(body): Json<AssertionBody>,
+) -> ApiResult<Json<SessionAnswer>> {
     // The account the passkey names, if this replica knows it: refused before
     // the challenge is spent when this node may not serve it, so the client
     // finishes the same ceremony on another node. (A replica that does not
@@ -623,7 +630,10 @@ pub(super) struct RefreshBody {
     refresh_token: String,
 }
 
-async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -> ApiResult {
+async fn refresh(
+    State(node): State<Arc<Node>>,
+    Json(body): Json<RefreshBody>,
+) -> ApiResult<Json<SessionAnswer>> {
     let old_hash = b64url(&sha256(body.refresh_token.as_bytes()));
     let mut found = node.sys(|s| s.refresh.get(&old_hash).cloned());
     let mut caught_up = true;
@@ -747,9 +757,12 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
             key: String::new(),
         },
     )?;
-    Ok(Json(
-        json!({ "accountId": rec.account, "sessionToken": token, "expiresAt": expires_at, "refreshToken": new_refresh }),
-    ))
+    Ok(Json(SessionAnswer {
+        account_id: rec.account,
+        session_token: token,
+        expires_at,
+        refresh_token: new_refresh,
+    }))
 }
 
 /// A refresh that keeps its token and writes nothing to the system log: the
@@ -768,7 +781,7 @@ async fn kept_refresh(
     token: &str,
     hash: &str,
     rec: &RefreshRecord,
-) -> Result<Option<Json<Value>>, ApiError> {
+) -> Result<Option<Json<SessionAnswer>>, ApiError> {
     let now = now_secs();
     let issued = rec.expires_at.saturating_sub(REFRESH_TTL);
     if rec.key.is_empty()
@@ -805,12 +818,12 @@ async fn kept_refresh(
             key: String::new(),
         },
     )?;
-    Ok(Some(Json(json!({
-        "accountId": rec.account,
-        "sessionToken": session,
-        "expiresAt": expires_at,
-        "refreshToken": token,
-    }))))
+    Ok(Some(Json(SessionAnswer {
+        account_id: rec.account.clone(),
+        session_token: session,
+        expires_at,
+        refresh_token: token.to_owned(),
+    })))
 }
 
 async fn logout(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
