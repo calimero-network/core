@@ -820,8 +820,8 @@ fn chosen_parts(node: &Node, r: &PackageRef) -> Result<(String, Option<String>),
 /// The [`Unit`] of `release`, read from its verified manifest and embedded ABI. Each
 /// member's release is the one its lock pinned (`uses.version`), else the newest installed
 /// release of the package inside its range, among those `creator` may use, the release's
-/// own signer published, or `deployment` (the instance's) offers; a package with none is
-/// `409 USES_NOT_INSTALLED`, naming what to install.
+/// own signer published, or someone acting for the owner of `deployment` (the instance's)
+/// may use; a package with none is `409 USES_NOT_INSTALLED`, naming what to install.
 pub(crate) async fn unit_members(
     node: &Node,
     release: &crate::system::PackageRef,
@@ -865,21 +865,17 @@ pub(crate) async fn unit_members(
             .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
         let installed: Vec<String> = node.sys(|s| {
             let same_signer = s.same_signer(&release.package, &u.package);
-            let offers = deployment.and_then(|d| s.deployments.get(d));
-            let offered = |version: &str, v: &crate::system::PackageVersion| {
-                offers.is_some_and(|d| {
-                    s.offer_serves(d, v)
-                        && d.apps
-                            .values()
-                            .any(|o| o.package == u.package && o.version == version)
-                })
+            let serves = |v: &crate::system::PackageVersion| {
+                deployment
+                    .and_then(|d| s.deployments.get(d))
+                    .is_some_and(|d| s.offer_serves(d, v))
             };
             s.packages
                 .get(&u.package)
                 .map(|p| {
                     p.versions
                         .iter()
-                        .filter(|(k, v)| same_signer || s.sees_release(v, creator) || offered(k, v))
+                        .filter(|(_, v)| same_signer || s.sees_release(v, creator) || serves(v))
                         .map(|(k, _)| k.clone())
                         .collect()
                 })

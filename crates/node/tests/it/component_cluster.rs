@@ -7651,50 +7651,43 @@ async fn a_deployments_unit_never_creates_a_member_from_a_private_release_it_doe
     assert!(mine["apps"].as_array().unwrap().is_empty(), "{mine}");
 }
 
-/// A deployment's unit takes a member from a release the same deployment offers, though
-/// its customer may not use that release otherwise; until it offers it, the customer's
-/// create is `409 USES_NOT_INSTALLED`.
+/// A deployment's unit takes a member its owner may use though the deployment does not
+/// offer it: Q, signed by another publisher and private to Acme (the owner's org), is
+/// created for Bob of Bobco from Acme's offer of P. A Q private to a third org the owner is
+/// not in is still refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_deployments_unit_creates_a_member_from_a_release_the_deployment_offers() {
-    let acme_key = ed25519_dalek::SigningKey::from_bytes(&[48; 32]);
-    let other_key = ed25519_dalek::SigningKey::from_bytes(&[49; 32]);
+async fn a_deployments_unit_creates_a_member_its_owner_may_use_without_offering_it() {
+    let q_key = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+    let p_key = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
     let c = Cluster::start(3).await;
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
-    let _acme = new_org(&alice, "Acme").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let acme = new_org(&alice, "Acme").await;
     let _bobco = new_org(&bob, "Bobco").await;
-    let vault = "com.acme.vault";
-    upload_release(&alice, None, vault, &acme_key, "vault", Value::Null).await;
-    let notes = "com.other.notes";
-    upload_release(
-        &alice,
-        None,
-        notes,
-        &other_key,
-        "notes",
-        creates_vault(vault, false),
-    )
-    .await;
+    let third = new_org(&carol, "Third").await;
+    let (q, r) = ("com.acme.q", "com.third.r");
+    upload_release(&alice, Some(&acme), q, &q_key, "q", Value::Null).await;
+    upload_release(&carol, Some(&third), r, &q_key, "r", Value::Null).await;
+    let (p, w) = ("com.other.p", "com.other.w");
+    upload_release(&alice, None, p, &p_key, "p", creates_vault(q, false)).await;
+    upload_release(&alice, None, w, &p_key, "w", creates_vault(r, false)).await;
     let d = own_deployment(&alice, &mut a).await;
-    let _ = alice
-        .deployments()
-        .offer(&d, "notes", notes, "0.1.0", Some(&mut a))
-        .await
-        .unwrap();
+    for (name, package) in [("p", p), ("w", w)] {
+        let _ = alice
+            .deployments()
+            .offer(&d, name, package, "0.1.0", Some(&mut a))
+            .await
+            .unwrap();
+    }
 
-    let e = from_offer(&bob, &d, notes).await.unwrap_err();
-    assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
-
-    let _ = alice
-        .deployments()
-        .offer(&d, "vault", vault, "0.1.0", Some(&mut a))
-        .await
-        .unwrap();
-    let made = from_offer(&bob, &d, notes).await.unwrap();
+    let made = from_offer(&bob, &d, p).await.unwrap();
     let member = made["links"]["vault"].as_str().unwrap();
     let record = bob.apps().get(member).await.map(wire).unwrap();
-    assert_eq!(record["release"]["package"], json!(vault));
-    assert_eq!(record["deployment"], json!(d));
+    assert_eq!(record["release"]["package"], json!(q));
+
+    let e = from_offer(&bob, &d, w).await.unwrap_err();
+    assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
 }
 
 /// An offer that no longer serves is no source for a member: once Mal, whose account owns
