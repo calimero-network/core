@@ -17,8 +17,12 @@ on:
   merge_group:
   push:
     branches: ["master"]
+  # Nightly soak, off the hour; Sunday's run is the weekly one, which adds what only a
+  # release needs (the latest release image's suites) and the flamegraph. The two
+  # expressions never fire together, and jobs tell them apart by `github.event.schedule`.
   schedule:
-    - cron: "23 3 * * *" # nightly soak, off the hour
+    - cron: "23 3 * * 1-6"
+    - cron: "23 3 * * 0"
   workflow_dispatch:
     inputs:
       nightly:
@@ -74,6 +78,7 @@ jobs:
       node: ${{ steps.plan.outputs.node }}
       clients: ${{ steps.plan.outputs.clients }}
       consent_page: ${{ steps.plan.outputs.consent_page }}
+      release_cut: ${{ steps.plan.outputs.release_cut }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -147,6 +152,9 @@ jobs:
             node=true
           fi
           clients=$node
+          # A push to master runs the clients (mero-swift's on macOS) only when it changes
+          # them; the nightly, a release cut and a `ci:e2e` PR run them whatever changed.
+          if [ "$EVENT" = push ]; then clients=false; fi
           if [ "$e2e" = true ] && [ "$sdk_clients" = true ]; then clients=true; fi
           # The consent page's browser tests run on every PR that reaches the page (its code, its
           # tests, this workflow), labelled or not: nothing else in the suite exercises the page.
@@ -159,16 +167,19 @@ jobs:
           echo "node=$node" >> "$GITHUB_OUTPUT"
           echo "clients=$clients" >> "$GITHUB_OUTPUT"
           echo "consent_page=$consent_page" >> "$GITHUB_OUTPUT"
+          echo "release_cut=$release_cut" >> "$GITHUB_OUTPUT"
           echo "event=$EVENT labelled=$LABELLED rust=$rust node_closure=$node_closure sdk_clients=$sdk_clients all=$all -> e2e=$e2e node=$node clients=$clients consent_page=$consent_page"
           if [ "$EVENT" = pull_request ] && [ "$wanted" != true ]; then
             echo "::notice::e2e runs on master after the merge; add the ci:e2e label to run it on this PR first"
           fi
 
-  # The check to require: passes when every e2e job passed or was skipped by `plan`.
+  # The check to require: passes when every e2e job passed or was skipped by `plan`. The
+  # latest release's suites are in it, so a release cut waits for them; the flamegraph
+  # too, so a red weekly run is reported.
   result:
     name: E2E result
     if: ${{ !cancelled() }}
-    needs: [plan, build-release, build-scenarios, scenarios, process-suite, compute-e2e, clients, clients-swift, consent-page]
+    needs: [plan, build-release, build-scenarios, scenarios, process-suite, compute-e2e, clients, clients-swift, consent-page, release-image, release-fixtures, release-scenarios, release-process-suite, flamegraph]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -178,12 +189,13 @@ jobs:
         run: |
           jq -e '.plan.result == "success" and (to_entries | all(.value.result == "success" or .value.result == "skipped"))' <<<"$NEEDS"
 
-  # Master's push runs what the queue does not (every test; e2e.yml): a red push opens
-  # an issue, a green one closes it (.github/actions/report-master).
+  # Master's push runs what the queue does not, and the nightly what a push does not (the
+  # clients, the soak; weekly, the latest release's suites): a red run opens an issue,
+  # a green one closes it (.github/actions/report-master), one issue for each.
   report-master:
     name: Report master
     needs: [result]
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -200,7 +212,7 @@ jobs:
         uses: ./.github/actions/report-master
         with:
           needs: ${{ toJSON(needs) }}
-          workflow: E2E
+          workflow: ${{ github.event_name == 'schedule' && 'E2E nightly' || 'E2E' }}
 
   # merod, meroctl and the kv releases, built once; nightly builds with fat LTO so the soak
   # numbers are the release's, other runs skip it to link in a fraction of the time.
@@ -407,7 +419,8 @@ jobs:
   # Nightly: where one node's CPU goes during the kv-store soak.
   flamegraph:
     name: merod flamegraph (kv-store soak)
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.flamegraph))
+    # Weekly: a profile changes slowly, and it holds a runner for about 50 minutes.
+    if: github.event.schedule == '23 3 * * 0' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.flamegraph))
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -546,7 +559,13 @@ jobs:
   # built from, so a test added after the release cannot fail it.
   release-image:
     name: Latest release image
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.release_image != ''))
+    # This tree against the latest release (its image, its scenarios, its process suite)
+    # matters when cutting the next one: weekly, and on the pull request that cuts it.
+    needs: plan
+    if: >-
+      github.event.schedule == '23 3 * * 0'
+      || needs.plan.outputs.release_cut == 'true'
+      || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.release_image != ''))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
