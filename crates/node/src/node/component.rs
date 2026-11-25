@@ -2036,7 +2036,7 @@ impl Node {
 
     /// What `developer`'s component apps used today (UTC, on app time), for the API:
     /// each app's book read from a replica, all apps at once (Q20, D78). The developer
-    /// is `usage::developer`'s (#4839), the identity usage is billed to: the owner of
+    /// is `usage::developer`'s, the identity usage is billed to: the owner of
     /// the deployment an app was created from (an organization's id, or
     /// `account:{id}`), else the app's organization or `account:{owner}`
     /// (`usage::account_payer`). An app no replica answers for counts as nothing.

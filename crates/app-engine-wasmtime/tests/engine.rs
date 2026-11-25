@@ -883,7 +883,7 @@ fn writes_past_the_run_cap_trap_host_denied_at_the_call() {
     // Event audiences count too; 100 events naming a 1 MiB account each are all refused.
     // Past the run's bytes an event is the soft error `emit` returns (C10), which this guest
     // ignores: the run ends `Ok` and keeps none of them. Each refused event still pays for the
-    // 1 MiB it was handed (C7), 100 MiB of fuel in all, more than a call's default budget, so
+    // 1 MiB it was handed (host fuel per byte), 100 MiB of fuel in all, more than a call's default budget, so
     // it runs on a larger one.
     let out = fx
         .engine
@@ -1731,7 +1731,7 @@ fn last_count(out: &Outcome) -> u64 {
         .unwrap_or(0)
 }
 
-/// Review of C7, finding 1: fuel the host already charged is not spent again by the guest.
+/// Fuel the host already charged is not spent again by the guest.
 /// A view whose reads owe about nine tenths of its budget may then run only the last tenth
 /// of guest code, not a whole budget more.
 #[test]
@@ -1766,7 +1766,7 @@ fn a_guest_cannot_spend_fuel_its_host_calls_already_owe() {
     );
 }
 
-/// Review of C7, finding 2: a host call pays for the bytes it is handed before it checks
+/// A host call pays for the bytes it is handed before it checks
 /// them, so refused 32 MiB xcall arguments cost fuel.
 #[test]
 fn refused_xcall_arguments_cost_fuel() {
@@ -1799,7 +1799,7 @@ fn refused_xcall_arguments_cost_fuel() {
     );
 }
 
-/// Review of C7, finding 3: stdout costs fuel per byte, also once the log is full and the
+/// Stdout costs fuel per byte, also once the log is full and the
 /// bytes are dropped.
 #[test]
 fn stdout_costs_fuel_after_the_log_is_full() {

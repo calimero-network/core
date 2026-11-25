@@ -141,8 +141,9 @@ through `Transport::send`. mero-js (`src/runtime/`) and calimero-client-py
 
 The route layer is generated from the node's OpenAPI document
 (`docs/public/openapi.json`) by `calimero-client-gen` (`crates/client/gen`), as
-mero-js (`scripts/gen-methods.mjs`), calimero-client-py
-(`scripts/generate_openapi_client.py`) and the Kotlin SDK (`codegen/facade.py`)
+mero-js (`sdks/clients/mero-js/scripts/gen-methods.mjs`), calimero-client-py
+(`sdks/clients/mero-py/scripts/generate_openapi_client.py`) and the Kotlin SDK
+(`sdks/clients/mero-kotlin/codegen/facade.py`)
 generate theirs, and checked in under `src/generated/` (never edited by hand):
 
 - `routes.rs`: one async method per operation on its `x-calimero-group`'s

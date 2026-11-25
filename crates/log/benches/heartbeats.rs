@@ -8,7 +8,7 @@
 //!
 //! Heartbeats travel batched per peer (`network::Batcher`), so a peer gets
 //! about one message per tick whatever the groups it shares; before they were
-//! batched, it got one per shared group (#5340's rows). The CPU per message shows whether routing one costs
+//! batched, it got one per shared group. The CPU per message shows whether routing one costs
 //! more with more groups: a scan of every group per message would grow it with
 //! them; a lookup keeps it flat.
 

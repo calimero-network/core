@@ -7346,7 +7346,7 @@ async fn a_replica_whose_state_differs_from_its_leaders_is_reported() {
     assert!(!node.digests_for(peer, &[id]).groups.is_empty());
 }
 
-/// Review finding B2: a node whose system-group core stopped on a write the disk
+/// A node whose system-group core stopped on a write the disk
 /// refused (EIO, ENOSPC) stayed out of the cluster until the process restarted:
 /// openraft treats it as fatal, and nothing started the core again. Now the group
 /// reads its state again from the disk and restarts the core, waiting

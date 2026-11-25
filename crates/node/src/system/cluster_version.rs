@@ -33,38 +33,38 @@ use crate::types::TeamJoin;
 pub enum Feature {
     /// `SetClusterVersion` itself.
     ClusterVersion,
-    /// `MoveApp` (#4907).
+    /// `MoveApp`.
     MoveApp,
-    /// `ScopeApps` naming one app team's `join` or `keep` (#4903): an earlier
+    /// `ScopeApps` naming one app team's `join` or `keep`: an earlier
     /// `ScopeApp` refuses unknown fields.
     AppTeamJoin,
-    /// `SetOrgQuotas` (#4899).
+    /// `SetOrgQuotas`.
     OrgQuotas,
-    /// `SetPools` (#4898).
+    /// `SetPools`.
     ComputePools,
-    /// `UpdateTeam` closing a team with `close_drops_below` (#4911): an
+    /// `UpdateTeam` closing a team with `close_drops_below`: an
     /// earlier release ignores the field and keeps the rows below.
     TeamCloseDropsBelow,
-    /// `MoveApp` with `accounts_in_app_team` (#4912): an earlier release
+    /// `MoveApp` with `accounts_in_app_team`: an earlier release
     /// ignores the field and gives a moved DM's people no app-team row.
     MoveAccountsAppTeam,
-    /// `ScopeApps` with `by_release` (#4931): an earlier release judges an
+    /// `ScopeApps` with `by_release`: an earlier release judges an
     /// instance's package by its bundle and can put it on another app team.
     ScopeByRelease,
     /// `SetAllApps`, and an invite that gives every app added later
-    /// (`Invite::all_apps`) (#4914): an earlier release cannot read the
+    /// (`Invite::all_apps`): an earlier release cannot read the
     /// command and drops the invite's flag.
     AllApps,
-    /// `RestoreApp` and `FinishRestore` (#4928): an earlier release cannot
+    /// `RestoreApp` and `FinishRestore`: an earlier release cannot
     /// read them, so its replicas keep the app where it was.
     RestoreApp,
-    /// `RenameOrg` (#4913): an earlier release cannot read it, so its
+    /// `RenameOrg`: an earlier release cannot read it, so its
     /// replicas keep the old name.
     RenameOrg,
-    /// `SetTeamMembers` and `RemoveTeamMembers` (#4916): an earlier release
+    /// `SetTeamMembers` and `RemoveTeamMembers`: an earlier release
     /// cannot read them.
     TeamMembersBatch,
-    /// `ScopeApps` naming one app team's `childTeams` (#4917): an earlier
+    /// `ScopeApps` naming one app team's `childTeams`: an earlier
     /// `ScopeApp` refuses unknown fields.
     AppTeamChildTeams,
     /// `SetPriceTable`: an earlier release cannot read it.
@@ -76,11 +76,11 @@ pub enum Feature {
     Pipelines,
     /// `AcquireRun` naming a pool: an earlier release ignores `pool` and places by memory.
     NamedPool,
-    /// `AttributeByRelease` (#4935): an earlier release cannot read it, so
+    /// `AttributeByRelease`: an earlier release cannot read it, so
     /// its replicas would keep judging apps by the release each bundle was
     /// first recorded from.
     AttributeByRelease,
-    /// `RequireCurrentRules` (#4940): an earlier release cannot read it, so
+    /// `RequireCurrentRules`: an earlier release cannot read it, so
     /// its replicas would keep applying later entries' flags as logged.
     CurrentRules,
     /// `SetBackupKey` and `ImportHolder`: an earlier release cannot read

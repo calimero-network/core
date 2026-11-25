@@ -351,7 +351,7 @@ fn range_is_lazy() {
     assert_eq!(big.len(), 1_000, "max is capped at 1,000");
 }
 
-/// Review finding A4: 1,000 values of about 1 MiB each made one `range_next` gather
+/// 1,000 values of about 1 MiB each made one `range_next` gather
 /// about 1 GiB on the host before the guest (64 MiB) saw any of it. A batch now stops at
 /// `MAX_RANGE_BATCH_BYTES`, and the next one carries on where it stopped.
 #[test]
@@ -1364,7 +1364,7 @@ fn only_views_search_and_queries_are_bounded() {
     assert!(bare.search_query(&query(10, "eggs")).unwrap().is_err());
 }
 
-/// C7: a request makes at most `MAX_SEARCHES_PER_RUN` searches, across its run and the views
+/// A request makes at most `MAX_SEARCHES_PER_RUN` searches, across its run and the views
 /// its xcalls reach, and each one owes fuel for the documents it matched and the hits it
 /// returned.
 #[test]
@@ -1415,7 +1415,7 @@ fn a_read_owes_what_the_fuel_table_says() {
     );
 }
 
-/// Review of C7, findings 2 and 8: a host call owes for the bytes it was handed before it
+/// A host call owes for the bytes it was handed before it
 /// checks anything, so a refused or denied call costs fuel too; a denial is still
 /// `HostDenied`.
 #[test]
@@ -1445,7 +1445,7 @@ fn refused_and_denied_calls_owe_for_the_bytes_they_were_handed() {
     assert!(owed >= 4_096, "a denied 4 KiB query owes {owed}");
 }
 
-/// C7 with C10: a write refused with a run limit (`put-checked`, `delete-checked`,
+/// A write refused with a run limit (`put-checked`, `delete-checked`,
 /// `add-checked`) is a soft error, and still owes for the bytes it was handed.
 #[test]
 fn writes_refused_with_a_run_limit_owe_for_the_bytes_they_were_handed() {

@@ -1,4 +1,4 @@
-//! Account recovery ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)): a
+//! [Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery): a
 //! person who lost every passkey gets back in with a recovery code they made
 //! while signed in. The code and a new passkey start a recovery; for 72 hours
 //! a passkey the account still has cancels it; after, the new passkey

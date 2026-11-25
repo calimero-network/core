@@ -769,7 +769,7 @@ async fn forged_sessions_counters_key_revocations_and_accounts_are_refused() {
     let _s = c.client(1).sign_up(&mut victim, "victim").await.unwrap();
 }
 
-/// The decisions master added since (#4771) carry their proofs too, checked
+/// The later decisions carry their proofs too, checked
 /// where they apply: binding a package's key to an organization needs a
 /// passkey consent of an `APPROVE_RELEASES` holder over that key's binding
 /// generation; a release deadline needs the operator's signature; a

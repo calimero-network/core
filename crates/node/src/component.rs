@@ -237,7 +237,7 @@ pub struct PublishedMark {
 /// `wall_ms` and `writes` are the run's whatever its status (`writes` is the host
 /// core's count of `put`s and `delete`s); `bytes_written` (keys and values of the
 /// diff) and `events` are what the entry commits, so nothing unless it is `Ok`.
-/// A run that timed out is not logged, so it is not counted (charging it is #4736).
+/// A run that timed out is not logged, so it is not counted (charging it is [#4736](https://github.com/calimero-network/core/issues/4736)).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunUsage {
@@ -2584,7 +2584,7 @@ mod tests {
         assert!(!Outcome::default().is_retryable());
     }
 
-    /// Review finding B3: a row an apply read but could not decode read as absent, and
+    /// A row an apply read but could not decode read as absent, and
     /// the batch went on (a pipeline step applied as if its run were unknown, a replayed
     /// call ran again, an idempotency record was dropped). It now fails the batch.
     #[test]

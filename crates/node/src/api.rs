@@ -742,7 +742,7 @@ impl Principal {
     /// Whether this principal may change `team` of `org` as `reach` says: a
     /// package-bound session only a team of its own package's, the org's
     /// app team for that package ([`crate::types::Org::package_of_team`])
-    /// or one below it, so an app's frontend runs its own channels (#5014).
+    /// or one below it, so an app's frontend runs its own channels.
     /// Who may do the change itself is judged where it applies, as for any
     /// session; this only keeps the session to its package's teams.
     pub(crate) fn within_team(
@@ -1317,7 +1317,7 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     let app_hash: [u8; 32] = match (&q.app, &q.app_hash) {
         (Some(app), _) => {
             // In the clear and without a credential, so judged as an anonymous
-            // `GET /apps/{app}` is (#4723): on the cluster's latest system state,
+            // `GET /apps/{app}` is: on the cluster's latest system state,
             // and an app nobody anonymous may reach answers as one that does not
             // exist, so the bound hash never says that a private app exists or
             // which release it runs. Read at once after the round: an unknown id

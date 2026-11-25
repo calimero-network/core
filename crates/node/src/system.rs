@@ -61,7 +61,7 @@ pub struct Quotas {
     pub compute_fuel_per_org: u64,
     /// Fuel a developer's apps may burn per UTC day, summed over its component apps
     /// (Q20, D76, D78); 0 (the default) is no limit. The developer is the one usage
-    /// is billed to (`usage::developer`, #4839): the owner of the deployment an app
+    /// is billed to (`usage::developer`): the owner of the deployment an app
     /// was created from, else the app's organization or owner. Over it, a client's
     /// call or an xcall delivery to any of the developer's apps is refused before it
     /// runs (`429 QUOTA_EXCEEDED`); `init` and timer ticks still run, and still

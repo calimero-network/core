@@ -252,8 +252,8 @@ B6): 1, 100 and 1,000 idle groups (`HEARTBEAT_GROUPS`) on 3 engines, all led by
 node 1, on `Config::default()`; it prints the messages node 1 sends one follower per
 second and per heartbeat interval, the heartbeats each carries, and the process CPU per
 Raft message. Batched, a peer gets about one message per 200 ms tick (1.6 at 1,000
-groups, ~610 heartbeats each); before (#5340), one per shared group per 300 ms (663 per
+groups, ~610 heartbeats each); before batching, one per shared group per 300 ms (663 per
 200 ms at 1,000 groups).
 Routing a message is a hash lookup here (`Engine::handle_rpc`) and in the node
-(`SystemMachine::app_of_group`, #5163), so the CPU per message stays flat with the
+(`SystemMachine::app_of_group`), so the CPU per message stays flat with the
 groups.

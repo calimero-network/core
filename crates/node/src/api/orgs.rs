@@ -1410,7 +1410,7 @@ async fn app_teams_scope(
             "too many packages in one step",
         ));
     }
-    // The API always sets `by_release` (#4931).
+    // The API always sets `by_release`.
     let mut features = scope_app_features(body.apps.as_deref());
     features.push(Feature::ScopeByRelease);
     node.require_features(&features).await?;

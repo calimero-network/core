@@ -1,5 +1,6 @@
 //! Names and types as the ABI writes them: camelCase names, ABI type strings, and the
-//! 64-bit integer fields that travel as decimal strings in JSON (D20).
+//! 64-bit integer fields that travel as decimal strings in JSON
+//! ([App interface types](https://calimero-network.github.io/core/build/app-abi/#types)).
 
 use quote::ToTokens;
 use serde_json::Value;
@@ -25,7 +26,7 @@ pub fn camel(snake: &str) -> String {
 }
 
 /// A field type JSON writes differently from serde's default: 64-bit integers as decimal
-/// strings and bytes as base64url (D20), plain or optional.
+/// strings and bytes as base64url, plain or optional.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wire {
     U64,
@@ -154,7 +155,7 @@ fn inner_types(ty: &Type) -> Vec<&Type> {
 }
 
 /// Integer types serde writes as a JSON number that may pass 2^53, where JavaScript stops
-/// reading numbers exactly, and that have no D20 string form: refused wherever the ABI
+/// reading numbers exactly, and that have no decimal-string form: refused wherever the ABI
 /// describes a type.
 const WIDE: &[&str] = &["u128", "i128", "usize", "isize"];
 
@@ -180,8 +181,8 @@ fn wide_error(outer: &Type, name: &str) -> syn::Error {
 }
 
 /// Refuse what JSON would carry wrongly: a `u64`, `i64` or `Vec<u8>` the macros cannot convert
-/// because it sits inside another type (Ruling 27), where JSON would get a number that loses
-/// precision, or an array of bytes, instead of the D20 form; and a `u128`, `i128`, `usize` or
+/// because it sits inside another type, where JSON would get a number that loses
+/// precision, or an array of bytes, instead of a decimal string or base64url; and a `u128`, `i128`, `usize` or
 /// `isize` anywhere ([`WIDE`]). A type defined elsewhere (a record, a serde struct, an alias)
 /// is checked through its `AbiType`, which every type the ABI describes must implement.
 pub fn check_wire(ty: &Type) -> syn::Result<()> {
@@ -277,7 +278,7 @@ pub fn abi_type(ty: &Type) -> String {
 
 /// The ABI name of a Rust type as plain serde writes it (`#[abi(plain)]`): as [`abi_type`],
 /// but at any depth `u64`/`i64` are `u64_number`/`i64_number` (JSON numbers) and `Vec<u8>`/`[u8]`
-/// `byte_list` (an array of numbers), where D20 would write decimal strings and base64url.
+/// `byte_list` (an array of numbers), where the ABI says decimal strings and base64url.
 pub fn plain_abi_type(ty: &Type) -> String {
     match ty {
         Type::Reference(r) => plain_abi_type(&r.elem),
@@ -431,7 +432,7 @@ fn concrete(ty: &Type, params: &[syn::Ident]) -> Type {
 /// `<T as AbiType>::DEF` of every app type inside `ty`, for the ABI's `types`: the type
 /// itself and its generic arguments, through references, tuples and arrays. Each one requires
 /// `AbiType`, spanned at the type, so a type without a shape (and with it a bare 64-bit
-/// integer the shape would refuse) fails to compile where it is used (D20).
+/// integer the shape would refuse) fails to compile where it is used.
 /// `skip` names what has no entry here: the generic parameters of the type being described,
 /// its own name (a recursive field) and `Self`.
 pub fn probes(

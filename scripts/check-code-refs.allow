@@ -1,0 +1,6 @@
+# Paths scripts/check-code-refs.py reports that are right as written, one per line:
+# <file> | <a quoted piece of the line> | <why>
+crates/AGENTS.md | `scripts/pack-component.py` were removed | names a script as removed
+crates/app-build/src/lib.rs | so the build landed in `apps/kv-store/logic/apps/kv-store/logic/target` | the wrong path an old bug made
+crates/client/src/files.rs | The request path after `apps/app/files/` | a URL path of the node's API, not a file
+crates/node/src/cluster_key.rs | mero-tee `docs/design/gcp-tdx-kms.md` | a file of the mero-tee repository
