@@ -35,6 +35,8 @@ mod routing;
 mod sign_up;
 mod updates;
 
+pub use approvals::egress_args;
+
 /// Per-account limits, replicated so every node enforces the same ones at apply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -217,8 +219,12 @@ pub const UNDO_STALE: &str =
 /// restore points name (the instance and the members its unit's upgrade moved).
 pub const UNDO_NOT_AS_NAMED: &str =
     "UNDO_NOT_AS_NAMED: an undo reverts the instance and the members its upgrade moved, each seeded by the node that holds its restore point";
+/// The apply error for an undo to a release that is no longer installed (a bundle another
+/// release ships may remain, but the release itself and its frontend are gone).
+pub const UNDO_RELEASE_GONE: &str =
+    "UNDO_RELEASE_GONE: the release the app ran before is no longer installed";
 /// The apply errors a code prefixes (`CODE: why`), with the status the API answers.
-pub const UPDATE_REFUSALS: [(&str, u16); 12] = [
+pub const UPDATE_REFUSALS: [(&str, u16); 13] = [
     (BAD_UPGRADE_POLICY, 400),
     (SECOND_APPROVAL_REQUIRED, 409),
     (UPGRADE_CLASS_MISMATCH, 409),
@@ -231,6 +237,7 @@ pub const UPDATE_REFUSALS: [(&str, u16); 12] = [
     (UNDO_WINDOW_PASSED, 409),
     (UNDO_STALE, 409),
     (UNDO_NOT_AS_NAMED, 409),
+    (UNDO_RELEASE_GONE, 409),
 ];
 /// The apply error for a price table whose version is not the current one plus one.
 pub const PRICE_VERSION: &str = "PRICE_VERSION: the version must be the current one plus one";
@@ -437,10 +444,11 @@ pub struct PackageVersion {
     /// URL prefixes the app may call out to (the manifest's signed `outbound`).
     #[serde(default)]
     pub outbound: Vec<String>,
-    /// The secrets the release declares (`BundleManifest::secrets`): the node fills only
-    /// these names, each only into a request to one of its hosts. Empty for a release that
-    /// declares none (and every release recorded before), which keeps the operator's
-    /// bindings alone, as before.
+    /// The credentials the release binds (`BundleManifest::secrets`): the node attaches
+    /// each to its host's requests, in its header or body field, and no other. Empty for a
+    /// release that binds none, whose requests carry no secret. Its shape changed in
+    /// 1.0.0-rc.36 (one host and one place, from a list of hosts), a hard cutover: an
+    /// `InstallPackage` an earlier release recorded is not read.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secrets: BTreeMap<String, calimero_bundle::BundleSecret>,
     /// The apps the release references (`BundleManifest::uses`), by reference name: a
@@ -1076,6 +1084,40 @@ pub const NO_PERSONAL_ORGS: &str =
 /// How far up a unit [`SystemState::guest_holder`] walks: a unit nests at most
 /// `api::apps::MAX_UNIT_DEPTH` deep, so this leaves room and bounds a cycle.
 pub const MAX_UNIT_LINKS_UP: usize = 8;
+
+/// A refusal: the organization turned egress off, so it approves no outbound host
+/// until it is on again; the API answers it `409 EGRESS_OFF`.
+pub const EGRESS_OFF: &str =
+    "egress is off for this organization: turn it on before approving outbound hosts";
+
+/// Who turned egress off for an app ([`SystemState::egress_off`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EgressOff {
+    /// Its organization, for every app of it.
+    Org,
+    /// The instance itself.
+    Instance,
+}
+
+impl EgressOff {
+    /// Who, as a refusal and a page name it.
+    #[must_use]
+    pub const fn who(self) -> &'static str {
+        match self {
+            Self::Org => "its organization",
+            Self::Instance => "the instance",
+        }
+    }
+
+    /// Its name on the wire (`offBy`).
+    #[must_use]
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::Org => "organization",
+            Self::Instance => "instance",
+        }
+    }
+}
 
 /// An organization's settings, as `SetOrgSettings` changes them and its consent states them
 /// (camelCase, a setting left out kept as it is).
@@ -2217,6 +2259,18 @@ impl SystemState {
         self.orgs.get(&app.org)?.outbound_approvals.get(signer)
     }
 
+    /// Who turned egress off for `app`, if anyone: its organization
+    /// ([`crate::types::Org::egress_off`]) before the instance itself
+    /// ([`crate::types::AppRecord::egress_off`]). While it is off no outbound request
+    /// leaves the cluster for the app, whatever was approved (`Node::outbound_for`).
+    #[must_use]
+    pub fn egress_off(&self, app: &AppRecord) -> Option<EgressOff> {
+        if self.orgs.get(&app.org).is_some_and(|o| o.egress_off) {
+            return Some(EgressOff::Org);
+        }
+        app.egress_off.then_some(EgressOff::Instance)
+    }
+
     /// The release `app` runs, if installed: the one it records
     /// (`AppRecord::release`), else the one its bundle came out of (as
     /// `Node::release_of_app`).
@@ -2848,8 +2902,8 @@ impl SystemState {
     }
 
     /// The secret values of the deployment `app_id` was created from, by name,
-    /// for a run of `package`: what fills `{{secret:NAME}}` for it where the
-    /// instance set no value of its own. `None` for an instance from no
+    /// for a run of `package`: what the outbound gate attaches where the
+    /// release binds `NAME` and the instance set no value of its own. `None` for an instance from no
     /// deployment, one deleted since, or a run of a package the deployment does
     /// not offer or reference ([`Self::deployment_covers`]): its managers set
     /// the values for the code they ship, and no other code gets them, whatever the record
@@ -3307,6 +3361,14 @@ impl SystemState {
     #[must_use]
     pub fn owner_approves(&self, flagged: bool) -> bool {
         flagged || self.cluster_brings(cluster_version::Feature::OwnerApprovedUpgrades)
+    }
+
+    /// Whether an update on its own is refused where it would move the unit's members
+    /// ([`cluster_version::Feature::AutoUpdateMembersStay`]): an entry that says so, or the
+    /// logged cluster version.
+    #[must_use]
+    pub fn members_stay(&self, flagged: bool) -> bool {
+        flagged || self.cluster_brings(cluster_version::Feature::AutoUpdateMembersStay)
     }
 
     /// [`Self::may_upgrade`], with the owner judged as the release that
@@ -4967,6 +5029,7 @@ impl SystemCmd {
             Self::SetDeploymentSecret { .. } => Area::Deployments,
             Self::ClearDeploymentSecret { .. } => Area::Deployments,
             Self::SetOutboundApproval { .. } => Area::Approvals,
+            Self::SetEgress { .. } => Area::Approvals,
             Self::DeleteOrg { .. } => Area::Orgs,
             Self::SetOrgMetadata { .. } => Area::Orgs,
             Self::SetMemberMetadata { .. } => Area::Orgs,
@@ -5545,6 +5608,13 @@ pub enum SystemCmd {
         /// ([`SystemState::auto_update_gate`]). [`cluster_version::Feature::AutoUpdates`].
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         auto: bool,
+        /// An update on its own leaves the unit's members where they are, so it is refused
+        /// where its release would move them ([`SystemState::moves_members`]). Set with
+        /// `auto` once every node reads it ([`cluster_version::Feature::AutoUpdateMembersStay`]);
+        /// absent in an earlier entry, which replays as it applied unless the logged cluster
+        /// version brings the rule.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        members_stay: bool,
         /// The restore point taken just before the upgrade ran
         /// ([`crate::types::TakenRestorePoint`]): recorded as the app's
         /// `restore_point`, which its owner or an admin may undo for
@@ -5608,6 +5678,10 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// The release it returns to must still be installed ([`SystemState::undo_release_installed`]);
+        /// set once every node reads it ([`cluster_version::Feature::UndoToInstalledRelease`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        release_installed: bool,
     },
     TransferApp {
         app_id: AppId,
@@ -6379,6 +6453,22 @@ pub enum SystemCmd {
         selection: calimero_primitives::outbound::OutboundSelection,
         #[serde(default)]
         replace: bool,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Turn egress off (`egress: false`) or back on for every app of an organization, or
+    /// with `app` for that instance alone ([`crate::types::Org::egress_off`],
+    /// [`crate::types::AppRecord::egress_off`]): the organization's owner or an admin, with
+    /// passkey consent (`org:<org> / __set_egress / { app, egress }`). Off, no outbound
+    /// request leaves the cluster for the apps it covers, over every approval, and the
+    /// organization approves no new outbound host. Not gated: a node of an earlier release
+    /// cannot decode it (a hard cutover).
+    SetEgress {
+        org: OrgId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app: Option<AppId>,
+        egress: bool,
         actor: AccountId,
         #[serde(default)]
         consent: Value,
@@ -7186,10 +7276,15 @@ impl Machine for SystemMachine {
                 // joined on an older one). Skipping it would leave this node
                 // serving a state the others no longer have (a revoked key
                 // still working here), so the group stops on it instead.
+                // Named, never quoted: serde_json's words quote the entry (a name, an
+                // email), and the operator reads this line and the stop reason.
                 let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::System);
-                error!(index, error = %e, undecodable = n,
+                let named = crate::log_safe::serde(&e);
+                error!(index, error_kind = %named, undecodable = n,
                     "a system entry this node cannot decode: the system group stops here; run a release that reads it");
-                state.fail(format_args!("system entry {index} does not decode: {e}"));
+                state.fail(format_args!(
+                    "system entry {index} does not decode: {named}"
+                ));
                 err(&format!("malformed command: {e}"))
             }
         }

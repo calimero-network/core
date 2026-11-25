@@ -720,6 +720,7 @@ async fn create_instance(
                 links,
                 attached: BTreeMap::new(),
                 restore_point: None,
+                egress_off: false,
             }),
             unit_offer: body.unit_offer,
             offers_only,
@@ -808,24 +809,10 @@ pub(crate) async fn unit_members(
         if u.mode != calimero_bundle::UseMode::Create {
             continue;
         }
-        let range = semver::VersionReq::parse(&u.range)
-            .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
-        let installed: Vec<String> = node.sys(|s| {
-            s.packages
-                .get(&u.package)
-                .map(|p| p.versions.keys().cloned().collect())
-                .unwrap_or_default()
-        });
-        let chosen = match &u.version {
-            Some(v) if installed.contains(v) => Some(v.clone()),
-            Some(_) => None,
-            None => installed
-                .iter()
-                .filter_map(|v| semver::Version::parse(v).ok().map(|p| (p, v)))
-                .filter(|(p, _)| range.matches(p))
-                .max_by(|a, b| a.0.cmp(&b.0))
-                .map(|(_, v)| v.clone()),
-        };
+        if let Err(e) = semver::VersionReq::parse(&u.range) {
+            return Err(ApiError::bad_request("BAD_USES", &e.to_string()));
+        }
+        let chosen = node.sys(|s| s.release_of_use(&(&u).into()).map(|(_, v)| v));
         let Some(chosen) = chosen else {
             return Err(ApiError::new(
                 409,
@@ -1313,7 +1300,7 @@ async fn app_transfer(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor)) {
+    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_TRANSFER));
     }
     // Before organizations are ordinary, an app in a personal organization handed to
@@ -1390,7 +1377,7 @@ async fn app_move(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor)) {
+    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_MOVE));
     }
     if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
@@ -1834,9 +1821,18 @@ async fn app_secrets(
         .into_iter()
         .map(|(name, d)| {
             let mut row = json!({
-                "hosts": d.hosts, "description": d.description, "required": d.required,
-                "source": "cluster",
+                "host": d.host, "paths": d.paths, "binding": d.describe(&name), "description": d.description,
+                "required": d.required, "source": "cluster",
             });
+            for (key, value) in [
+                ("header", &d.header),
+                ("format", &d.format),
+                ("bodyField", &d.body_field),
+            ] {
+                if let Some(v) = value {
+                    row[key] = json!(v);
+                }
+            }
             if let Some(o) = own.get(&name).filter(|o| o.is_object()) {
                 row["source"] = json!("app");
                 row["fingerprint"] = o["fingerprint"].clone();
@@ -1851,8 +1847,8 @@ async fn app_secrets(
     Ok(Json(json!({ "secrets": secrets })))
 }
 
-/// Set the instance's own value of a secret its release declares, sent only to that
-/// secret's declared hosts and never shown again: the owner's (or whoever manages the
+/// Set the instance's own value of a secret its release declares, attached only where
+/// that secret's binding says and never shown again: the owner's (or whoever manages the
 /// organization's apps), with a step-up over `{ name, fingerprint }` (never the value).
 async fn app_secret_set(
     State(node): State<Arc<Node>>,
@@ -2064,7 +2060,10 @@ async fn app_link(
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
     let target = node.app(&target_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor) && s.manages_app(&target, &actor)) {
+    if !node.sys(|s| {
+        fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))
+            && fresh_record(s, &target).is_some_and(|target| s.manages_app(target, &actor))
+    }) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
     }
     if target_id == app_id || target.org != app.org {
@@ -2124,7 +2123,7 @@ async fn app_unlink(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| s.manages_app(&app, &actor)) {
+    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
         return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
     }
     if !app.attached.contains_key(&name) {

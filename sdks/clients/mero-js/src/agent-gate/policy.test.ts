@@ -5,7 +5,7 @@ import { verify as dcapVerify } from '@phala/dcap-qvl';
 import { describe, expect, it } from 'vitest';
 
 import { hex } from '../crypto/internal.js';
-import type { DcapCollateral } from '../sealed/verify.js';
+import type { DcapCollateral, DcapVerify } from '../sealed/verify.js';
 import { agentQuoteVerifier, verifySignedAgentPolicy, type AgentPolicy } from './policy.js';
 
 const sealedFixture = (name: string) => fileURLToPath(new URL(`../sealed/fixtures/${name}`, import.meta.url));
@@ -15,6 +15,16 @@ const COLLATERAL = JSON.parse(readFileSync(sealedFixture('tdx_quote_collateral.j
 const AT = 1_751_000_000_000;
 const sample = dcapVerify(QUOTE, COLLATERAL, AT / 1000);
 const td = sample.report.data as Record<'mrTd' | 'rtMr0' | 'rtMr1' | 'rtMr2' | 'rtMr3' | 'reportData', Uint8Array>;
+// The sample collateral is Intel's TCB evaluation data 17 (June 2025), below the
+// floor every verifier enforces (core's DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER, 20).
+// `genuine` verifies the quote's signatures against the genuine collateral while
+// the floor reads CURRENT, the same collateral naming 20 (only Intel can re-sign it).
+const CURRENT: DcapCollateral = {
+  ...COLLATERAL,
+  tcb_info: COLLATERAL.tcb_info.replace(/"tcbEvaluationDataNumber":\d+/, '"tcbEvaluationDataNumber":20'),
+};
+const genuine: DcapVerify = (quote, collateral, nowSecs) =>
+  dcapVerify(quote, collateral === CURRENT ? COLLATERAL : collateral, nowSecs);
 
 /** The sample quote's image as an agent allowlist, written the way a release may write it. */
 const policy = (): AgentPolicy => ({
@@ -37,10 +47,16 @@ const args = () => ({
 
 describe('an agent quote verifier', () => {
   const verifier = (p: AgentPolicy) =>
-    agentQuoteVerifier(p, { dcapVerify, fetchCollateral: async () => COLLATERAL, now: () => AT });
+    agentQuoteVerifier(p, { dcapVerify: genuine, fetchCollateral: async () => CURRENT, now: () => AT });
 
   it('accepts a genuine quote of an image the policy lists, fetching its collateral', async () => {
     await expect(verifier(policy())(args())).resolves.toBe(true);
+  });
+
+  // The gate's quote is held to the same floor as a node's.
+  it('refuses a quote whose collateral is below the TCB evaluation data floor', async () => {
+    const old = agentQuoteVerifier(policy(), { dcapVerify, fetchCollateral: async () => COLLATERAL, now: () => AT });
+    await expect(old(args())).rejects.toThrow('Intel TCB evaluation data 17, older than the minimum 20');
   });
 
   it('refuses a register outside the policy', async () => {

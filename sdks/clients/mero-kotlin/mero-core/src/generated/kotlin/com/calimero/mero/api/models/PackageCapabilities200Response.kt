@@ -43,6 +43,7 @@ import kotlinx.serialization.Contextual
  * @param author 
  * @param outbound 
  * @param secrets Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+ * @param secretBindings 
  * @param uses Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param abi Free-form JSON: its shape is not this API's (see the description around it for whose it is).
  * @param destinations 
@@ -85,6 +86,9 @@ data class PackageCapabilities200Response (
     /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
     @Contextual @SerialName(value = "secrets")
     val secrets: kotlinx.serialization.json.JsonElement?,
+
+    @SerialName(value = "secretBindings")
+    val secretBindings: kotlin.collections.List<kotlin.String>,
 
     /* Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
     @Contextual @SerialName(value = "uses")

@@ -100,7 +100,7 @@ impl<C: crate::collections::Nestable<S>, S: Store + Clone> Vector<C, S> {
         let index = self.len()?;
         let path = self.name.child(&[KeyPart::Int(index.into())]);
         let _fits = crate::commons::encode(path.parts())?;
-        self.store.add(&self.len_key()?, 1);
+        self.store.add(&self.len_key()?, 1)?;
         Ok((index, C::at(path, self.store.clone())))
     }
 }
@@ -118,8 +118,8 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
     pub fn push(&mut self, v: &T) -> Result<u64, StorageError> {
         let index = self.len()?;
         let key = self.storage_key(index)?;
-        self.store.put(&key, &value::to_vec(v)?);
-        self.store.add(&self.len_key()?, 1);
+        self.store.put(&key, &value::to_vec(v)?)?;
+        self.store.add(&self.len_key()?, 1)?;
         Ok(index)
     }
 
@@ -129,7 +129,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
     pub fn set(&mut self, index: u64, v: &T) -> Result<T, StorageError> {
         let key = self.storage_key(index)?;
         let old = self.read_at(&key, index)?;
-        self.store.put(&key, &value::to_vec(v)?);
+        self.store.put(&key, &value::to_vec(v)?)?;
         Ok(old)
     }
 
@@ -203,7 +203,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
                 .and_then(|key| Ok((key, value::to_vec(v)?)));
             match written {
                 Ok((key, bytes)) => {
-                    self.store.put(&key, &bytes);
+                    self.store.put(&key, &bytes)?;
                     n += 1;
                 }
                 Err(e) => {
@@ -214,7 +214,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
         }
         // The length covers what was written even when a value failed to encode.
         if n > 0 {
-            self.store.add(&self.len_key()?, n as i64);
+            self.store.add(&self.len_key()?, n as i64)?;
         }
         match failed {
             Some(e) => Err(e),
@@ -235,12 +235,12 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
         if index != last {
             let last_key = self.storage_key(last)?;
             let bytes = self.store.get(&last_key).ok_or(StorageError::Dangling)?;
-            self.store.put(&key, &bytes);
-            self.store.delete(&last_key);
+            self.store.put(&key, &bytes)?;
+            self.store.delete(&last_key)?;
         } else {
-            self.store.delete(&key);
+            self.store.delete(&key)?;
         }
-        self.store.add(&self.len_key()?, -1);
+        self.store.add(&self.len_key()?, -1)?;
         Ok(removed)
     }
 
@@ -262,11 +262,11 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
     pub fn truncate(&mut self, len: u64) -> Result<u64, StorageError> {
         let have = self.len()?;
         for index in (len..have).rev() {
-            self.store.delete(&self.storage_key(index)?);
+            self.store.delete(&self.storage_key(index)?)?;
         }
         let removed = have.saturating_sub(len);
         if removed > 0 {
-            self.store.add(&self.len_key()?, -(removed as i64));
+            self.store.add(&self.len_key()?, -(removed as i64))?;
         }
         Ok(removed)
     }
@@ -276,7 +276,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
     pub fn update(&mut self, index: u64, f: impl FnOnce(T) -> T) -> Result<T, StorageError> {
         let key = self.storage_key(index)?;
         let new = f(self.read_at(&key, index)?);
-        self.store.put(&key, &value::to_vec(&new)?);
+        self.store.put(&key, &value::to_vec(&new)?)?;
         Ok(new)
     }
 
@@ -291,8 +291,8 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
             return Err(StorageError::OutOfBounds { index, len });
         };
         if a != b {
-            self.store.put(&key_a, &at_b);
-            self.store.put(&key_b, &at_a);
+            self.store.put(&key_a, &at_b)?;
+            self.store.put(&key_b, &at_a)?;
         }
         Ok(())
     }
@@ -316,15 +316,15 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
                 break;
             }
             for (_, moved) in batch {
-                self.store.put(&self.storage_key(position)?, &moved);
+                self.store.put(&self.storage_key(position)?, &moved)?;
                 position -= 1;
             }
         }
         if position != index {
             return Err(StorageError::Dangling);
         }
-        self.store.put(&self.storage_key(index)?, &bytes);
-        self.store.add(&self.len_key()?, 1);
+        self.store.put(&self.storage_key(index)?, &bytes)?;
+        self.store.add(&self.len_key()?, 1)?;
         Ok(())
     }
 
@@ -350,14 +350,14 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
                 if position == index {
                     removed = Some(value::from_slice(&bytes)?);
                 } else {
-                    self.store.put(&self.storage_key(position - 1)?, &bytes);
+                    self.store.put(&self.storage_key(position - 1)?, &bytes)?;
                 }
                 position += 1;
             }
         }
         let removed = removed.ok_or(StorageError::Dangling)?;
-        self.store.delete(&self.storage_key(len - 1)?);
-        self.store.add(&self.len_key()?, -1);
+        self.store.delete(&self.storage_key(len - 1)?)?;
+        self.store.add(&self.len_key()?, -1)?;
         Ok(removed)
     }
 
@@ -377,7 +377,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
             for (_, bytes) in batch {
                 if keep(&value::from_slice(&bytes)?) {
                     if kept != read {
-                        self.store.put(&self.storage_key(kept)?, &bytes);
+                        self.store.put(&self.storage_key(kept)?, &bytes)?;
                     }
                     kept += 1;
                 }
@@ -385,11 +385,11 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
             }
         }
         for index in kept..len {
-            self.store.delete(&self.storage_key(index)?);
+            self.store.delete(&self.storage_key(index)?)?;
         }
         let removed = len - kept;
         if removed > 0 {
-            self.store.add(&self.len_key()?, -(removed as i64));
+            self.store.add(&self.len_key()?, -(removed as i64))?;
         }
         Ok(removed)
     }

@@ -25,6 +25,8 @@ tokio.workspace = true
 # Only what the engine uses: no `cache`, `gc`, `wat`, `threads`, `component-model-async`,
 # profiling or debug support (Ruling 21).
 wasmtime = { workspace = true, features = [
+    # Host calls are charged to fuel as they return (C7, `charge_host_fuel`).
+    "call-hook",
     "component-model",
     "cranelift",
     "parallel-compilation",

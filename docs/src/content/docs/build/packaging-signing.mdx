@@ -325,11 +325,12 @@ attestation in your own code; it is still listed.
 The next line says what an organization that lets updates apply on their own
 (`autoApply: noDestinations`, [Updates that apply on their
 own](/protocol/upgrades/#updates-that-apply-on-their-own)) would see: only a
-green release of an app whose unit sends nothing out, before or after, and that
-removes no method, applies on its own, after the hold, and it moves the app
-alone: the apps it created stay on the releases they run until an owner or admin
-moves the unit. A green release that can send data out, or that removes a
-method another app may call, still waits for an owner's or admin's approval.
+green release of an app whose unit sends nothing out, before or after, that
+removes no method and moves none of the apps the release creates, applies on its
+own, after the hold. A green release that can send data out, removes a method or
+moves the apps the release creates still waits for an owner's or admin's
+approval: an update on its own moves the app alone, so an owner or admin moves
+the unit whole.
 
 A release is **red**, and waits for a person's approval, when it is signed by
 another key, can send data somewhere new, declares another state version,

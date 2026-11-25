@@ -480,6 +480,21 @@ fn say(r: &Reason) -> String {
             who(member.as_ref()),
             list(methods)
         ),
+        Reason::SecretBindingChanged {
+            member,
+            name,
+            before,
+            after,
+        } => match before {
+            None => format!(
+                "{} now has the node attach {name}: {after}",
+                who(member.as_ref())
+            ),
+            Some(before) => format!(
+                "{} binds {name} elsewhere: {before} → {after}",
+                who(member.as_ref())
+            ),
+        },
         Reason::Unclassified {
             member,
             package,
@@ -509,14 +524,14 @@ fn summary(j: &Judged<'_>) -> String {
 
     // What a node does with it under an organization's `autoApply: noDestinations` policy
     // (`SystemState::auto_update_gate`): only a green update whose unit sends nothing out,
-    // before or after, and that removes no method, applies on its own; it moves the app alone.
+    // before or after, that removes no method and moves no member, applies on its own.
     let sends_out = !c.egress.before.is_empty() || !c.egress.after.is_empty();
     let members_move = before.members != after.members;
     out += match c.class {
         Class::Red => "  Users on automatic updates: wait for a person's approval (red):\n",
         Class::Green if sends_out => "  Users on automatic updates: wait for an owner's or admin's approval (green, but the app or the apps it created can send data out; only an update whose unit sends nothing out applies on its own)\n",
         Class::Green if !c.removed_methods.is_empty() => "  Users on automatic updates: wait for an owner's or admin's approval (green, but it removes a method another app may call)\n",
-        Class::Green if members_move => "  Users on automatic updates: apply it on their own after the hold where the policy is noDestinations, moving the app alone (green, no data leaves Calimero; the apps it created stay on their releases until an owner or admin moves the unit)\n",
+        Class::Green if members_move => "  Users on automatic updates: wait for an owner's or admin's approval (green, but it moves the apps it created, and an update on its own moves the app alone)\n",
         Class::Green => "  Users on automatic updates: apply it on their own after the hold where the policy is noDestinations (green: same signer, no new destination, same state version, no data leaves Calimero)\n",
     };
     if c.class == Class::Red {
@@ -808,7 +823,7 @@ mod tests {
             "{text}"
         );
 
-        // Members that move: it still applies on its own, and the members stay where they are.
+        // Members that move: an update on its own never moves them, so it waits for a person.
         let mut before = Unit::of(release("1.3.0", &[], &["get"]));
         let mut after = Unit::of(release("1.4.0", &[], &["get"]));
         let mut store = release("1.0.0", &[], &["put"]);
@@ -818,7 +833,7 @@ mod tests {
         let _prev = after.members.insert("store".into(), store);
         let (text, _) = judge(&before, &after, None, &[]);
         assert!(
-            text.contains("  Users on automatic updates: apply it on their own after the hold where the policy is noDestinations, moving the app alone (green, no data leaves Calimero; the apps it created stay on their releases until an owner or admin moves the unit)\n"),
+            text.contains("  Users on automatic updates: wait for an owner's or admin's approval (green, but it moves the apps it created, and an update on its own moves the app alone)\n"),
             "{text}"
         );
     }

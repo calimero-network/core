@@ -6,7 +6,11 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..models.app_egress_response_200_egress import AppEgressResponse200Egress
+from ..models.app_egress_response_200_off_by import AppEgressResponse200OffBy
+from ..types import UNSET, Unset
 from typing import cast
+from typing import Union
 
 if TYPE_CHECKING:
     from ..models.app_egress_response_200_members import AppEgressResponse200Members
@@ -22,11 +26,17 @@ class AppEgressResponse200:
         app (str):
         destinations (list[str]):
         members (AppEgressResponse200Members):
+        egress (AppEgressResponse200Egress):
+        off_by (Union[Unset, AppEgressResponse200OffBy]):
+        summary (Union[Unset, str]):
     """
 
     app: str
     destinations: list[str]
     members: "AppEgressResponse200Members"
+    egress: AppEgressResponse200Egress
+    off_by: Union[Unset, AppEgressResponse200OffBy] = UNSET
+    summary: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -38,6 +48,14 @@ class AppEgressResponse200:
 
         members = self.members.to_dict()
 
+        egress = self.egress.value
+
+        off_by: Union[Unset, str] = UNSET
+        if not isinstance(self.off_by, Unset):
+            off_by = self.off_by.value
+
+        summary = self.summary
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -45,8 +63,13 @@ class AppEgressResponse200:
                 "app": app,
                 "destinations": destinations,
                 "members": members,
+                "egress": egress,
             }
         )
+        if off_by is not UNSET:
+            field_dict["offBy"] = off_by
+        if summary is not UNSET:
+            field_dict["summary"] = summary
 
         return field_dict
 
@@ -61,10 +84,24 @@ class AppEgressResponse200:
 
         members = AppEgressResponse200Members.from_dict(d.pop("members"))
 
+        egress = AppEgressResponse200Egress(d.pop("egress"))
+
+        _off_by = d.pop("offBy", UNSET)
+        off_by: Union[Unset, AppEgressResponse200OffBy]
+        if isinstance(_off_by, Unset):
+            off_by = UNSET
+        else:
+            off_by = AppEgressResponse200OffBy(_off_by)
+
+        summary = d.pop("summary", UNSET)
+
         app_egress_response_200 = cls(
             app=app,
             destinations=destinations,
             members=members,
+            egress=egress,
+            off_by=off_by,
+            summary=summary,
         )
 
         app_egress_response_200.additional_properties = d

@@ -8,12 +8,11 @@ from ..types import UNSET, Unset
 
 from ..types import UNSET, Unset
 from typing import cast
-from typing import cast, Union
 from typing import Union
 
 if TYPE_CHECKING:
-    from ..models.consent_page_create_body_type_19_subject_policy_type_0 import (
-        ConsentPageCreateBodyType19SubjectPolicyType0,
+    from ..models.consent_page_create_body_type_19_subject_new_org import (
+        ConsentPageCreateBodyType19SubjectNewOrg,
     )
 
 
@@ -24,84 +23,101 @@ T = TypeVar("T", bound="ConsentPageCreateBodyType19Subject")
 class ConsentPageCreateBodyType19Subject:
     """
     Attributes:
+        package (str):
+        name (str):
+        version (Union[Unset, str]):
+        deployment (Union[Unset, str]):
         org (Union[Unset, str]):
-        app (Union[Unset, str]):
-        policy (Union['ConsentPageCreateBodyType19SubjectPolicyType0', None, Unset]):
+        new_org (Union[Unset, ConsentPageCreateBodyType19SubjectNewOrg]):
+        init_args (Union[Unset, Any]): Free-form JSON: its shape is not this API's (see the description around it for
+            whose it is).
     """
 
+    package: str
+    name: str
+    version: Union[Unset, str] = UNSET
+    deployment: Union[Unset, str] = UNSET
     org: Union[Unset, str] = UNSET
-    app: Union[Unset, str] = UNSET
-    policy: Union["ConsentPageCreateBodyType19SubjectPolicyType0", None, Unset] = UNSET
+    new_org: Union[Unset, "ConsentPageCreateBodyType19SubjectNewOrg"] = UNSET
+    init_args: Union[Unset, Any] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.consent_page_create_body_type_19_subject_policy_type_0 import (
-            ConsentPageCreateBodyType19SubjectPolicyType0,
+        from ..models.consent_page_create_body_type_19_subject_new_org import (
+            ConsentPageCreateBodyType19SubjectNewOrg,
         )
+
+        package = self.package
+
+        name = self.name
+
+        version = self.version
+
+        deployment = self.deployment
 
         org = self.org
 
-        app = self.app
+        new_org: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.new_org, Unset):
+            new_org = self.new_org.to_dict()
 
-        policy: Union[None, Unset, dict[str, Any]]
-        if isinstance(self.policy, Unset):
-            policy = UNSET
-        elif isinstance(self.policy, ConsentPageCreateBodyType19SubjectPolicyType0):
-            policy = self.policy.to_dict()
-        else:
-            policy = self.policy
+        init_args = self.init_args
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
+        field_dict.update(
+            {
+                "package": package,
+                "name": name,
+            }
+        )
+        if version is not UNSET:
+            field_dict["version"] = version
+        if deployment is not UNSET:
+            field_dict["deployment"] = deployment
         if org is not UNSET:
             field_dict["org"] = org
-        if app is not UNSET:
-            field_dict["app"] = app
-        if policy is not UNSET:
-            field_dict["policy"] = policy
+        if new_org is not UNSET:
+            field_dict["newOrg"] = new_org
+        if init_args is not UNSET:
+            field_dict["initArgs"] = init_args
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.consent_page_create_body_type_19_subject_policy_type_0 import (
-            ConsentPageCreateBodyType19SubjectPolicyType0,
+        from ..models.consent_page_create_body_type_19_subject_new_org import (
+            ConsentPageCreateBodyType19SubjectNewOrg,
         )
 
         d = dict(src_dict)
+        package = d.pop("package")
+
+        name = d.pop("name")
+
+        version = d.pop("version", UNSET)
+
+        deployment = d.pop("deployment", UNSET)
+
         org = d.pop("org", UNSET)
 
-        app = d.pop("app", UNSET)
+        _new_org = d.pop("newOrg", UNSET)
+        new_org: Union[Unset, ConsentPageCreateBodyType19SubjectNewOrg]
+        if isinstance(_new_org, Unset):
+            new_org = UNSET
+        else:
+            new_org = ConsentPageCreateBodyType19SubjectNewOrg.from_dict(_new_org)
 
-        def _parse_policy(
-            data: object,
-        ) -> Union["ConsentPageCreateBodyType19SubjectPolicyType0", None, Unset]:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                policy_type_0 = ConsentPageCreateBodyType19SubjectPolicyType0.from_dict(
-                    data
-                )
-
-                return policy_type_0
-            except:  # noqa: E722
-                pass
-            return cast(
-                Union["ConsentPageCreateBodyType19SubjectPolicyType0", None, Unset],
-                data,
-            )
-
-        policy = _parse_policy(d.pop("policy", UNSET))
+        init_args = d.pop("initArgs", UNSET)
 
         consent_page_create_body_type_19_subject = cls(
+            package=package,
+            name=name,
+            version=version,
+            deployment=deployment,
             org=org,
-            app=app,
-            policy=policy,
+            new_org=new_org,
+            init_args=init_args,
         )
 
         consent_page_create_body_type_19_subject.additional_properties = d

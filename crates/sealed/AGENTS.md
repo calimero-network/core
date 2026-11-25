@@ -26,6 +26,10 @@ The sealed transport (wire format v2) between clients and the node.
   to NK. Peers only: clients stay on NK, so mero-js is unaffected. Tests:
   `an_identified_session_names_its_caller`,
   `an_identified_handshake_with_another_nodes_key_is_refused`.
+- **Session on the request**: `intercept` puts the session an opened request
+  came in on it as a `SealedSession` extension, set last like `PeerKey`, and on
+  no plain request; the node keys per-client limits on it (anonymous passkey
+  ceremonies). Test: `an_opened_request_names_its_session`.
 - **Limits apart** (`server::handshake`, `session::Sessions`): identified
   handshakes draw on their own token bucket (`IDENTIFIED_HANDSHAKES_PER_SECOND`)
   and identified sessions on their own cap (`MAX_IDENTIFIED_SESSIONS`), so a

@@ -8,6 +8,7 @@ use calimero_client::types::{
     OutboundSelectionManifest, TeamJoin,
 };
 use clap::{Subcommand, ValueEnum};
+use reqwest::Method;
 use serde_json::{json, Value};
 
 use crate::env::{json_arg, to_json, DevPasskey, Env};
@@ -158,6 +159,26 @@ pub enum NamespaceCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
+    /// The organization's egress switch, or with `--app` one instance's. Without a state,
+    /// read it. `off` turns it off at once (its owner or an admin, with a passkey): from
+    /// then on no app it covers sends anything out of the cluster, whatever its release
+    /// declares and whatever an outbound approval says. `on` is a red change made only on
+    /// the node's consent page: it asks for the page and prints its URL to approve there.
+    Egress {
+        #[arg(value_name = "ORG")]
+        namespace: String,
+        #[arg(value_enum)]
+        state: Option<EgressState>,
+        /// One instance of the organization instead of all of them.
+        #[arg(long)]
+        app: Option<String>,
+        /// With `on`: where the consent page returns after the decision (one of the
+        /// cluster's configured origins).
+        #[arg(long, required_if_eq("state", "on"))]
+        return_to: Option<String>,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
     /// The organization's update policy (the one its instances without their own
     /// follow); with a flag, set it (its owner or an admin, with a passkey).
     UpgradePolicy {
@@ -186,6 +207,13 @@ pub enum NamespaceCmd {
     },
 }
 
+/// `org egress`'s switch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum EgressState {
+    On,
+    Off,
+}
+
 /// `--auto-apply`: which updates apply on their own after the hold.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum AutoApply {
@@ -201,8 +229,8 @@ pub struct PolicyArgs {
     #[arg(long)]
     second_approver: Option<bool>,
     /// Which updates apply on their own after the hold: `never`, or `no-destinations` (a
-    /// green update that removes no method, of an app whose unit sends data nowhere outside
-    /// Calimero, before or after).
+    /// green update that removes no method and moves none of the apps it created, of an app
+    /// whose unit sends data nowhere outside Calimero, before or after).
     #[arg(long, value_enum)]
     auto_apply: Option<AutoApply>,
     /// How long a green update waits before applying on its own: 24 to 168 hours.
@@ -457,6 +485,23 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             )
             .await?
         }
+        NamespaceCmd::Egress {
+            namespace,
+            state,
+            app,
+            return_to,
+            dev_passkey,
+        } => {
+            egress(
+                env,
+                &namespace,
+                state,
+                app.as_deref(),
+                return_to,
+                dev_passkey,
+            )
+            .await?
+        }
         NamespaceCmd::ApproveRelease {
             namespace,
             version,
@@ -514,6 +559,70 @@ pub async fn outbound(
         .await;
     pk.save()?;
     to_json(&out?)
+}
+
+/// `org egress`: read the switch, turn it off, or ask the consent page to turn it on.
+async fn egress(
+    env: &Env,
+    org: &str,
+    state: Option<EgressState>,
+    app: Option<&str>,
+    return_to: Option<String>,
+    dev_passkey: Option<PathBuf>,
+) -> eyre::Result<Value> {
+    let path = app.map_or_else(
+        || format!("orgs/{org}/egress"),
+        |a| format!("apps/{a}/egress"),
+    );
+    match state {
+        None => {
+            let org_off = env
+                .raw(Method::GET, &format!("orgs/{org}"), None, None)
+                .await?["egressOff"]
+                == json!(true);
+            let mut out = json!({ "org": org, "egress": if org_off { "off" } else { "on" } });
+            if let Some(app) = app {
+                let card = env.raw(Method::GET, &path, None, None).await?;
+                out["app"] = json!({
+                    "app": app,
+                    "egress": card["egress"],
+                    "offBy": card["offBy"],
+                    "summary": card["summary"],
+                    "destinations": card["destinations"],
+                });
+            }
+            Ok(out)
+        }
+        Some(EgressState::Off) => {
+            env.raw(
+                Method::POST,
+                &path,
+                Some(json!({ "egress": false })),
+                dev_passkey.as_deref(),
+            )
+            .await
+        }
+        Some(EgressState::On) => {
+            let asked = env
+                .raw(
+                    Method::POST,
+                    "consent/requests",
+                    Some(json!({
+                        "kind": "setEgress",
+                        "subject": { "org": org, "app": app, "egress": true },
+                        "returnTo": return_to,
+                    })),
+                    None,
+                )
+                .await?;
+            Ok(json!({
+                "approveAt": asked["url"],
+                "code": asked["code"],
+                "requestId": asked["requestId"],
+                "note": "turning egress on is approved on the consent page: open approveAt in a browser",
+            }))
+        }
+    }
 }
 
 /// The owner approves a mero-tee release (an org's apps, or the account's own:
