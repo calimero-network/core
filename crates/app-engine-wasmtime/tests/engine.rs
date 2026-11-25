@@ -124,6 +124,16 @@ fn trap_kind(outcome: &Outcome) -> Option<TrapKind> {
 }
 
 #[test]
+fn a_replica_engine_reserves_4_gib_per_memory_slot() {
+    let fx = fixture();
+    assert_eq!(
+        fx.engine.memory_reservation(),
+        calimero_app_engine_wasmtime::SLOT_RESERVATION_BYTES
+    );
+    assert_eq!(fx.engine.memory_reservation(), 1 << 32);
+}
+
+#[test]
 fn infinite_loop_runs_out_of_fuel() {
     let fx = fixture();
     let app = prepare(&fx, "spin");
